@@ -270,6 +270,51 @@ describe("navigation history", () => {
     expect(h.entries).toHaveLength(2);
     expect(h.index).toBe(0);
   });
+
+  it("tracks split panes and non-path inputs while keeping snapshots text-only", () => {
+    const h = new NavigationHistory();
+    const agent = { kind: "agent-session", key: "agent:t1", data: { task: "t1" } };
+    const cli = { kind: "cli", key: "cli:1", data: { name: "Local", command: "" } };
+    h.update({ path: "/p/a.ts", line: 10, col: 0, paneId: "p1" }, true);
+    h.update({ path: "/p/a.ts", line: 10, col: 0, paneId: "p2" }, true);
+    h.update({ path: "", line: 0, col: 0, input: agent, paneId: "p1" }, true);
+    h.update({ path: "", line: 0, col: 0, input: cli, paneId: "p2" }, true);
+    h.update({ path: "", line: 0, col: 0, input: agent, paneId: "p1" }, true);
+
+    expect(h.entries).toHaveLength(5);
+    expect(h.snapshot()).toMatchObject({
+      index: 1,
+      entries: [
+        { path: "/p/a.ts", paneId: "p1" },
+        { path: "/p/a.ts", paneId: "p2" },
+      ],
+    });
+
+    // Skipping a stale intermediate entry also skips the duplicate place it exposes.
+    expect(h.back((loc) => loc.input?.key !== cli.key)).toMatchObject({
+      path: "/p/a.ts",
+      paneId: "p2",
+    });
+    expect(h.back(() => false)).toBeNull();
+    expect(h.current).toMatchObject({ path: "/p/a.ts", paneId: "p2" });
+    expect(h.forward((loc) => loc.input?.key !== cli.key)).toMatchObject({
+      input: agent,
+      paneId: "p1",
+    });
+  });
+
+  it("removePath ignores empty paths and collapses newly adjacent duplicates", () => {
+    const h = new NavigationHistory();
+    const agent = { kind: "agent-session", key: "agent:t1", data: { task: "t1" } };
+    h.update({ path: "", line: 0, col: 0, input: agent, paneId: "p1" }, true);
+    h.update({ path: "/p/gone.ts", line: 5, col: 0, paneId: "p1" }, true);
+    h.update({ path: "", line: 0, col: 0, input: agent, paneId: "p1" }, true);
+    h.removePath("");
+    expect(h.entries).toHaveLength(3);
+    h.removePath("/p/gone.ts");
+    expect(h.entries).toHaveLength(1);
+    expect(h.current).toMatchObject({ input: agent, paneId: "p1" });
+  });
 });
 
 describe("selection stack", () => {

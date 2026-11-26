@@ -96,7 +96,7 @@ interface FormatDocumentOptions {
   explicit: boolean;
   selectionOnly?: boolean;
   onSave?: boolean;
-  /** Runs this external formatter whatever the settings select (Reformat with Prettier/oxfmt/Biome). */
+  /** Runs this external formatter whatever the settings select (Reformat with Prettier/oxfmt/Biome/dprint). */
   tool?: ExternalFormatter;
   /** Formats only these ranges, e.g. the text changed since the last commit; an empty list formats nothing. */
   ranges?: readonly OffsetRange[];
@@ -181,6 +181,7 @@ async function format(view: EditorView, opts: FormatDocumentOptions): Promise<Fo
             prettier: { failed: "Prettier formatting failed", timedOut: "Prettier formatting timed out" },
             oxfmt: { failed: "oxfmt formatting failed", timedOut: "oxfmt formatting timed out" },
             biome: { failed: "Biome formatting failed", timedOut: "Biome formatting timed out" },
+            dprint: { failed: "dprint formatting failed", timedOut: "dprint formatting timed out" },
             ruff: { failed: "Ruff formatting failed", timedOut: "Ruff formatting timed out" },
             black: { failed: "Black formatting failed", timedOut: "Black formatting timed out" },
           }[e.data.tool]

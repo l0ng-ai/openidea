@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { EditorView } from "@codemirror/view";
+import { _setActiveEditor, _setFocusedCellEditor, type TextEditorHandle } from "@/editor/api";
+import { caretLine } from "../index";
 import {
   assignMnemonic,
   bookmarkByMnemonic,
@@ -100,5 +103,28 @@ describe("mnemonic bookmarks", () => {
     expect(bookmarkLabel(list[0]!)).toBe("renamed");
     list = describeBookmark(list, "/p/a", 0, " ");
     expect(bookmarkLabel(list[0]!)).toBe("let x = 1;");
+  });
+});
+
+describe("bookmarks in a notebook", () => {
+  it("read no caret line from a focused notebook cell", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const view = new EditorView({ doc: "a\nb\n", parent: host });
+    const handle = { view, ctx: { doc: 1, path: "/p/a.ts", language: "", uiMode: null, readOnly: false } };
+    _setActiveEditor(handle as TextEditorHandle);
+    try {
+      expect(caretLine()?.path).toBe("/p/a.ts");
+      const cell = new EditorView({ doc: "x = 1\n", parent: host });
+      cell.focus();
+      _setFocusedCellEditor(cell);
+      expect(caretLine()).toBeNull();
+      _setFocusedCellEditor(null);
+      expect(caretLine()?.path).toBe("/p/a.ts");
+    } finally {
+      _setActiveEditor(null);
+      view.destroy();
+      view.dom.remove();
+    }
   });
 });

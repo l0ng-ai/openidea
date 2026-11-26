@@ -64,6 +64,8 @@ describe("IDEA keymap parity", () => {
     // `Mac OS X 10.5+` removes the ⌘↑ / ⌘↓ it would inherit from `Mac OS X`.
     ["editor.scrollUp", [], ["Ctrl+Up"]],
     ["editor.scrollDown", [], ["Ctrl+Down"]],
+    ["editor.scrollUpAndMove", [], []],
+    ["editor.scrollDownAndMove", [], []],
     // Only IDEA's Xcode keymap binds these (Home / End).
     ["editor.scrollToTop", [], []],
     ["editor.scrollToBottom", [], []],
@@ -86,6 +88,8 @@ describe("IDEA keymap parity", () => {
     // CopyAsPlainText / CopyAsRichText have no shortcut.
     ["code.copyAsPlainText", [], []],
     ["code.copyAsRichText", [], []],
+    // ToggleZenMode has no shortcut.
+    ["view.toggleZenMode", [], []],
     ["navigate.nextOccurrence", ["Meta+Alt+Down"], ["Ctrl+Alt+Down"]],
     ["navigate.prevOccurrence", ["Meta+Alt+Up"], ["Ctrl+Alt+Up"]],
     // Rerun in the Find / Find Usages tool windows uses the Rerun shortcut.
@@ -103,6 +107,13 @@ describe("IDEA keymap parity", () => {
     ["editor.paragraphBackward", [], []],
     ["editor.paragraphForwardWithSelection", [], []],
     ["editor.paragraphBackwardWithSelection", [], []],
+    // The "in Different "CamelHumps" Mode" word moves and deletes have no shortcut.
+    ["editor.nextWordInDifferentHumpsMode", [], []],
+    ["editor.previousWordInDifferentHumpsMode", [], []],
+    ["editor.nextWordInDifferentHumpsModeWithSelection", [], []],
+    ["editor.previousWordInDifferentHumpsModeWithSelection", [], []],
+    ["code.deleteToWordStartInDifferentHumpsMode", [], []],
+    ["code.deleteToWordEndInDifferentHumpsMode", [], []],
     ["code.collapseBlock", ["Meta+Shift+."], ["Ctrl+Shift+."]],
     ["code.autoIndentLines", ["Ctrl+Alt+I"], ["Ctrl+Alt+I"]],
     ["code.showErrorDescription", ["Meta+F1"], ["Ctrl+F1"]],

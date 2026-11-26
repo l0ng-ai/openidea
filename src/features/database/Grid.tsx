@@ -86,6 +86,8 @@ export interface GridProps {
   onSort?: (column: string, add: boolean) => void;
   /** Extra context menu items for the selected rows. */
   rowMenu?: (rows: number[]) => MenuItem[];
+  /** More Copy as entries for the selected rows (SQL statements of the whole rows). */
+  copyAs?: (rows: number[]) => MenuItem[];
   /** Row number shown for row 0 (paging). */
   firstRowNumber?: number;
   /** Row number shown for a row (local sort / filter reorder them); `firstRowNumber + row` otherwise. */
@@ -629,6 +631,10 @@ export function Grid(props: GridProps) {
           { kind: "action", action: "db.copyAsTsv", label: "TSV", arg: cellActions.current },
           { kind: "action", action: "db.copyAsCsv", label: "CSV", arg: cellActions.current },
           { kind: "action", action: "db.copyAsOneRow", label: "One-Row", arg: cellActions.current },
+          ...(() => {
+            const more = props.copyAs?.(selectedRows()) ?? [];
+            return more.length ? [{ kind: "separator" } as const, ...more] : [];
+          })(),
         ],
       },
       { kind: "action", action: "db.copyWithHeader", arg: cellActions.current },

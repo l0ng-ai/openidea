@@ -1376,6 +1376,27 @@ export async function checkoutAndRebase({ branch, repos }: CheckoutRebaseTarget)
   });
 }
 
+/**
+ * Checkout and Update on a local branch: checks it out (in `roots`, or the
+ * current repository), then updates it like Update does, in each repository
+ * where the checkout took place.
+ */
+export async function checkoutAndUpdate(branch: NamedBranch, roots?: readonly string[]) {
+  const project = useProject.getState().project;
+  if (roots) await checkoutInRepos(branch, roots);
+  else await checkoutBranch(branch);
+  if (useProject.getState().project !== project) return;
+  const repos: readonly (string | null)[] = roots ?? [currentRepo()];
+  const heads = await Promise.all(
+    repos.map(async (repo) => [repo, await call(commands.vcsBranchInfo(repo)).catch(() => null)] as const),
+  );
+  if (useProject.getState().project !== project) return;
+  const targets = heads
+    .filter(([, info]) => info?.head === branch.name)
+    .map(([repo]) => ({ repo: repo ?? undefined, branch }));
+  if (targets.length) await updateBranches(targets);
+}
+
 export type BranchUpdateTarget = { repo?: string; branch?: Pick<Branch, "name" | "remote"> };
 
 /** Update the named branches. Checked-out branches follow the configured update method. */

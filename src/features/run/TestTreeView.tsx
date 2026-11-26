@@ -194,6 +194,8 @@ export interface TestTreeViewProps {
   /** Run / Debug the selected tests (context menu); absent when the configuration can't be narrowed. */
   onRunTests?: (ids: string[], debug: boolean) => void;
   canRunTests?: (ids: string[]) => boolean | Promise<boolean>;
+  /** Jest / Vitest runs: the "Rerun Automatically" (watch mode) toggle. */
+  rerunAutomatically?: { on: boolean; toggle: () => void };
 }
 
 export function TestTreeView({
@@ -208,6 +210,7 @@ export function TestTreeView({
   canUpdateSnapshots,
   onRunTests,
   canRunTests,
+  rerunAutomatically,
 }: TestTreeViewProps) {
   const [filters, setFilters] = useState(loadTestFilters);
   const { showPassed, showIgnored, showDurations, selectFirstFailed, sortAlphabetically, sortByDuration } = filters;
@@ -385,6 +388,16 @@ export function TestTreeView({
   return (
     <div className={styles.testPane}>
       <Toolbar className={styles.testToolbar} aria-label="Test results">
+        {rerunAutomatically && (
+          <IconButton
+            icon="rerun-automatically"
+            size="small"
+            iconSize={16}
+            title="Rerun Automatically"
+            pressed={rerunAutomatically.on}
+            onClick={rerunAutomatically.toggle}
+          />
+        )}
         <div className={styles.testFilters}>
           <IconButton
             icon="test-show-passed"

@@ -496,6 +496,15 @@ pub struct LanguageCodeStyle {
     /// IDEA's default 3; unset keeps the language server's default).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub names_count_to_use_static_import_with_star: Option<u32>,
+    /// JavaScript / TypeScript › Punctuation › Semicolons: `ignore` | `insert` | `remove`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub semicolons: Option<String>,
+    /// JavaScript / TypeScript › Punctuation › Quotes: `auto` | `single` | `double`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quotes: Option<String>,
+    /// JavaScript / TypeScript › Spaces, by tsserver format option (`insertSpaceAfterCommaDelimiter`).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub spaces: BTreeMap<String, bool>,
 }
 
 /// Editor › Code Style (General tab + per-language overrides).

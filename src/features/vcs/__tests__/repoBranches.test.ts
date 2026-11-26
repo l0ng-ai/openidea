@@ -160,6 +160,15 @@ describe("buildMultiRepoRows", () => {
     ]);
   });
 
+  it("lists the current repository first, keeping the others' order and colours", () => {
+    const rows = summary(buildMultiRepoRows({ ...input, current: "/p/ology-gateway", query: "" }));
+    expect(rows.filter((r) => r.startsWith("repo"))).toEqual([
+      "repo ology-gateway [dev] c3",
+      "repo ology-collect [dev] c1",
+      "repo ology-dependencies [dev] c2",
+    ]);
+  });
+
   it("groups common remote branches by remote when expanded", () => {
     const expanded = new Map([
       ["common:local", false],

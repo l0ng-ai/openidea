@@ -767,6 +767,7 @@ pub async fn maven_dependency_completion(
     use ide_build::maven::completion::{PomCompletionKind, local_options};
     let project = host.project(window)?;
     let cache = host.dependency_versions.clone();
+    let central = !host.configured_registries_only();
     let cancel = host.begin_project_read_request(window, request);
     let result = host
         .blocking(move || {
@@ -785,7 +786,10 @@ pub async fn maven_dependency_completion(
             // The local repository answers at once: Central gets `CENTRAL_WAIT`, then the
             // lookup finishes in the background and fills the cache for the next request.
             // Offline, behind a proxy or rate-limited, a failed fetch never fails completion.
-            let remote = {
+            // Only the configured package registries: the local repository alone.
+            let remote = if !central {
+                Vec::new()
+            } else {
                 let (cache, target) = (cache.clone(), target.clone());
                 let (tx, rx) = std::sync::mpsc::channel();
                 std::thread::spawn(move || {

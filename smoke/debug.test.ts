@@ -5,8 +5,20 @@
  * variables, evaluation, Step Over and Resume, with the debugger the IDE installs (GDB:
  * the toolchain's own, 14+ for its DAP interpreter).
  */
-import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import {
+  appendFileSync,
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { createServer } from "node:net";
 import { get } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,9 +33,19 @@ import { activate as activateBuildTools } from "@/features/build-tools";
 import { useBuild } from "@/features/build-tools/store";
 import { activate as activateDebugger } from "@/features/debugger";
 import { addBreakpoint, flushBreakpoints } from "@/features/debugger/breakpoints/store";
-import { activeSession, evaluate, rootOf, sessionSupports, useDebug } from "@/features/debugger/state";
+import { nodeRemoteType, remoteWaitingNote } from "@/features/debugger/remote";
+import {
+  activeSession,
+  evaluate,
+  isLive,
+  rootOf,
+  selectSession,
+  sessionSupports,
+  useDebug,
+} from "@/features/debugger/state";
 import { activate as activateRun } from "@/features/run";
 import { resetRuns, useRun } from "@/features/run/store";
+import { newConfigOfType, withParams } from "@/features/run/types";
 import { activateWorkbench } from "@/workbench/activate";
 import { useNotifications } from "@/workbench/notificationStore";
 import { connectDesktop } from "./desktop";
@@ -220,14 +242,18 @@ beforeAll(() => {
 });
 afterAll(() => deactivate?.());
 
-afterEach(async () => {
+async function teardown() {
   resetRuns();
   disconnect?.();
+  disconnect = null;
   // `close` kills the server and what it started (debug adapters, language servers)
   // and waits until they're gone, so the removal below can't race their writes.
   await server?.close();
+  server = null;
   if (base) rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
-});
+  base = "";
+}
+afterEach(teardown);
 
 async function open(c: Case): Promise<string> {
   base = realpathSync(mkdtempSync(join(tmpdir(), "openidea-smoke-")));
@@ -615,6 +641,102 @@ async function traceStream(language: string, t: NonNullable<Case["streamTrace"]>
   ]);
 }
 
+/** More of a language's debugging, each with a project of its own (CI runs one test per language). */
+const MORE: Record<string, Array<() => Promise<void>>> = {
+  typescript: [() => nodeReconnect(true), () => nodeReconnect(false)],
+};
+
 for (const language of Object.keys(CASES)) {
-  test(language, () => smoke(language));
+  test(language, async () => {
+    await smoke(language);
+    for (const more of MORE[language] ?? []) {
+      // oxlint-disable-next-line no-await-in-loop -- each case starts its own server after the last one is gone.
+      await teardown();
+      // oxlint-disable-next-line no-await-in-loop -- see above.
+      await more();
+    }
+  });
+}
+
+/** A free TCP port on the loopback interface. */
+const freePort = () =>
+  new Promise<number>((resolve, reject) => {
+    const srv = createServer();
+    srv.once("error", reject);
+    srv.listen(0, "127.0.0.1", () => {
+      const { port } = srv.address() as { port: number };
+      srv.close(() => resolve(port));
+    });
+  });
+
+/**
+ * Attach to Node.js on a `node --watch` process that restarts when its file changes: with
+ * Reconnect automatically the session waits and attaches again, stopping at the same
+ * breakpoint; without it the session ends with the process.
+ */
+async function nodeReconnect(restart: boolean) {
+  const root = await open({ fixture: "node-test-app" } as Case);
+  await install("js-debug");
+  const path = join(root, "watched.js");
+  writeFileSync(path, "function work(n) {\n  return n * 2;\n}\nsetInterval(() => work(21), 300);\n");
+  addBreakpoint(path, 1);
+  const port = await freePort();
+  const node: ChildProcess = spawn("node", ["--watch", `--inspect=127.0.0.1:${port}`, "watched.js"], {
+    cwd: root,
+    stdio: "ignore",
+  });
+  try {
+    const blank = newConfigOfType(nodeRemoteType, []);
+    const params = { ...blank.params, host: "127.0.0.1", port: String(port), ...(restart ? { restart: "true" } : {}) };
+    const config = withParams({ ...blank, name: "Attach" }, params, nodeRemoteType);
+    // The inspector comes up once node has started the program.
+    await new Promise((r) => setTimeout(r, 1000));
+    const stops = useDebug.getState().stopSeq;
+    await executeAction("debug.startConfig", config);
+    const first = await until("the breakpoint", stoppedAfter(stops));
+    expect([first.frames[0]!.path, first.frames[0]!.line], shown()).toEqual([path, 1]);
+    const rootId = rootOf(first).id;
+    const processes = () => Object.values(useDebug.getState().sessions).filter((c) => c.parent === rootId);
+    // What the Frames pane shows for the session: the note once its process has ended and none is attached.
+    const note = () =>
+      remoteWaitingNote(
+        useDebug.getState().sessions[rootId]?.runConfig,
+        processes().length > 0 && !processes().some(isLive),
+      );
+    expect(note(), "no note while attached the first time").toBeNull();
+    await executeAction("debug.resume");
+
+    // `node --watch` restarts the program when its file changes.
+    appendFileSync(path, "// changed\n");
+    if (!restart) {
+      await until("the end", () => Object.values(useDebug.getState().sessions).every((d) => !isLive(d)));
+      return;
+    }
+    let waited = "";
+    const again = await until("the breakpoint after the restart", () => {
+      if (!isLive(useDebug.getState().sessions[rootId]))
+        throw new Error(`the session ended with the process\n${shown()}`);
+      waited ||= note() ?? "";
+      const s = paused();
+      return s && s.id !== first.id && s;
+    });
+    expect([again.frames[0]!.path, again.frames[0]!.line], shown()).toEqual([path, 1]);
+    expect(rootOf(again).id, "the same debug session").toBe(rootId);
+    expect(again.id, "a new process").not.toBe(first.id);
+    expect(
+      processes().map((c) => c.id),
+      "one process tab",
+    ).toEqual([again.id]);
+    expect(waited).toBe(`Waiting to reconnect to Node.js on 127.0.0.1:${port}`);
+
+    // With the process gone, the session waits for it; Stop ends it.
+    await executeAction("debug.resume");
+    node.kill();
+    await until("the wait for the process", () => note());
+    selectSession(rootId);
+    await executeAction("debug.stop");
+    await until("the end", () => Object.values(useDebug.getState().sessions).every((d) => !isLive(d)));
+  } finally {
+    node.kill();
+  }
 }

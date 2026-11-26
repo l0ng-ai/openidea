@@ -95,6 +95,7 @@ import { dispatchMouseShortcut, shortcutLabel } from "@/platform/keymap";
 import { isNavigationGesture, onNavigationModifier, navigationModifierHeld } from "@/platform/navigationModifier";
 import { create } from "zustand";
 import { tx } from "@/platform/i18n";
+import { cssVariableAt, STYLESHEETS } from "./cssVariables";
 import {
   CONFIGURATION_NAVIGATION_MAX_AGE,
   configurationNavigationRevision,
@@ -504,6 +505,12 @@ async function gotoResolved(
       await navigateTo(module);
       return;
     }
+  }
+  // `var(--x)`: the server only knows this stylesheet's declarations; list the project's.
+  if (declaration && STYLESHEETS.has(doc.language)) {
+    const line = view.state.doc.lineAt(offset);
+    if (cssVariableAt(line.text, offset - line.from) && (await gotoWebReference(view, doc, pos, offset, superseded)))
+      return;
   }
   // Python: its servers have no type hierarchy and see one root, so the IDE's inheritance
   // graph answers implementations too (merged with the server's, not replacing them).

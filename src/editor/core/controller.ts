@@ -20,6 +20,7 @@ import {
   _provideNavigationHistory,
   _provideOpenEditorPaths,
   _setActiveEditor,
+  focusedCellEditor,
   shownLine,
   type NavigationLocation,
 } from "@/editor/api";
@@ -322,6 +323,7 @@ export class EditorController implements SlotHost {
   private openSequence = 0;
   private selectionRequests = new Map<string, number>();
   private activationGeneration = 0;
+  private navGeneration = 0;
   private admitting = false;
   /** Tabs restored from a saved session: not a user's activation, so a pending open still activates its tab. */
   private restoring = false;
@@ -834,7 +836,10 @@ export class EditorController implements SlotHost {
     if (loc) {
       const s = useTabs.getState();
       const next = activateTab(setActivePane(s, loc.paneId), loc.paneId, slot.tabId);
-      if (next !== s) useTabs.setState(next, true);
+      if (next !== s) {
+        this.recordLeaving();
+        useTabs.setState(next, true);
+      }
     }
     if (this.activeSlot !== slot) this.setActiveSlot(slot);
     else _setActiveEditor(slot.handle);
@@ -854,7 +859,8 @@ export class EditorController implements SlotHost {
     if (slot !== this.activeSlot) return;
     if (navigatedFrom && this.navSuppress === 0 && !slot.disposed) {
       // The place left behind is where the caret was right before the navigation.
-      this.nav.update({ path: slot.model.path, ...navigatedFrom });
+      const paneId = this.locateTab(slot.tabId)?.paneId;
+      this.nav.update({ path: slot.model.path, ...navigatedFrom, ...(paneId ? { paneId } : {}) });
       this.recordNav(slot, true);
     }
     // The status bar reflects the view state synchronously (programmatic and
@@ -1111,6 +1117,9 @@ export class EditorController implements SlotHost {
     const slot = this.activeSlot;
     const meta = slot?.model.getMeta();
     const s = useTabs.getState();
+    // A focused notebook cell editor stands in for the active text editor (the notebook
+    // publishes the editor context keys for it): republishing on tab churn keeps them on.
+    const cell = focusedCellEditor();
     setContext("editorPath", slot?.model.path ?? null);
     setContext("editorLangId", meta?.language ?? null);
     setContext("editorReadOnly", !!meta?.readOnly);
@@ -1120,66 +1129,145 @@ export class EditorController implements SlotHost {
       Object.values(s.panes).some((p) => p.tabs.length > 0),
     );
     setContext("editorSplit", paneIds(s).length > 1);
-    setContext("editorTextFocus", !!slot?.view?.hasFocus);
-    setContext("textEditorActive", !!slot);
+    setContext("editorTextFocus", cell ? cell.hasFocus : !!slot?.view?.hasFocus);
+    setContext("textEditorActive", !!slot || !!cell);
   }
 
   // --- navigation history --------------------------------------------------------------
 
-  /** `navigation`: the caret got here by a navigation (see NavigationHistory.update). */
-  private recordNav(slot: EditorSlot, navigation = false) {
-    if (this.navSuppress > 0 || slot.disposed) return;
+  private slotLocation(slot: EditorSlot): Omit<NavigationLocation, "time"> {
     const c = slot.caret();
     // A view standing in for the editor (Markdown Preview only) is where the reader is.
     const shown = shownLine(slot.model.path);
     const loc = shown === null || shown === c.line ? { line: c.line, col: c.col } : { line: shown, col: 0 };
-    this.nav.update({ path: slot.model.path, ...loc }, navigation);
+    const paneId = this.locateTab(slot.tabId)?.paneId;
+    return { path: slot.model.path, ...loc, ...(paneId ? { paneId } : {}) };
+  }
+
+  /** `navigation`: the caret got here by a navigation (see NavigationHistory.update). */
+  private recordNav(slot: EditorSlot, navigation = false) {
+    if (this.navSuppress > 0 || slot.disposed) return;
+    this.nav.update(this.slotLocation(slot), navigation);
+  }
+
+  private recordInput(input: EditorInput, paneId: string | undefined, navigation = true) {
+    if (this.navSuppress > 0 || isTextInput(input)) return;
+    const kind = useContributions.getState().editorKinds.get(input.kind);
+    const place = kind?.navigationInput?.(input) ?? input;
+    this.nav.update(
+      { path: input.path ?? "", line: 0, col: 0, input: place, ...(paneId ? { paneId } : {}) },
+      navigation,
+    );
+  }
+
+  private recordActiveEditor(navigation = true) {
+    if (this.navSuppress > 0) return;
+    if (this.activeSlot && !this.activeSlot.disposed) {
+      this.recordNav(this.activeSlot, navigation);
+      return;
+    }
+    const input = this.activeInput();
+    if (!input || isTextInput(input)) return;
+    this.recordInput(input, useTabs.getState().activePane, navigation);
   }
 
   /**
-   * The place a navigation leaves: the text editor's caret, or a tab showing no text editor
-   * (a diff) as a whole, so Back returns to it as IDEA does.
+   * The place a navigation leaves: the text editor's caret, or a non-text editor tab
+   * (diff, agent chat, terminal tab…) as a whole, so Back returns to it as IDEA does.
    */
   private recordLeaving() {
     if (this.navSuppress > 0) return;
-    if (this.activeSlot) return this.recordNav(this.activeSlot);
+    if (this.activeSlot && !this.activeSlot.disposed) {
+      this.recordNav(this.activeSlot);
+      return;
+    }
     const input = this.activeInput();
-    if (!input?.path || isTextInput(input)) return;
-    const kind = useContributions.getState().editorKinds.get(input.kind);
-    const place = kind?.navigationInput?.(input) ?? input;
-    this.nav.update({ path: input.path, line: 0, col: 0, input: place }, true);
+    if (!input || isTextInput(input)) return;
+    this.recordInput(input, useTabs.getState().activePane, true);
   }
 
-  /** Whether the active tab is the current place (a tab place, as a text editor's records itself). */
+  /** Whether the active editor tab and split pane already show `nav.current`. */
   private showsCurrentPlace(): boolean {
-    const key = this.nav.current?.input?.key;
-    return !!key && this.activeInput()?.key === key;
+    const cur = this.nav.current;
+    if (!cur) return false;
+    const matchesTab = cur.input
+      ? this.activeInput()?.key === cur.input.key
+      : !!this.activeSlot && !this.activeSlot.disposed && this.activeSlot.model.path === cur.path;
+    if (!matchesTab) return false;
+    // If the recorded pane still holds this tab (a split copy), require that pane to be active;
+    // if the tab moved out of that pane, showing it in its new pane still counts as the current place.
+    const preferred = this.preferredPaneFor(cur);
+    return !preferred || useTabs.getState().activePane === preferred;
+  }
+
+  private canNavigateTo(loc: NavigationLocation): boolean {
+    if (loc.input) {
+      const kind = useContributions.getState().editorKinds.get(loc.input.kind);
+      if (kind?.canNavigate) return kind.canNavigate(loc.input, !!findTab(useTabs.getState(), loc.input.key));
+    }
+    return true;
+  }
+
+  private preferredPaneFor(loc: NavigationLocation): string | undefined {
+    const id = loc.paneId;
+    if (!id) return undefined;
+    const s = useTabs.getState();
+    const pane = s.panes[id];
+    if (!pane) return undefined;
+    const matches = (t: Tab) =>
+      loc.input ? t.input.key === loc.input.key : isTextInput(t.input) && t.input.path === loc.path;
+    if (pane.tabs.some(matches)) return id;
+    const openElsewhere = Object.values(s.panes).some((p) => p.tabs.some(matches));
+    return openElsewhere ? undefined : id;
   }
 
   async navigateTo(loc: NavigationLocation | null) {
     if (!loc) return;
+    const gen = ++this.navGeneration;
     this.navSuppress++;
     try {
+      const pane = this.preferredPaneFor(loc);
       // At the place recorded on leaving it (a diff at its caret): a background tab shows afresh.
-      if (loc.input) await this.openInput(loc.input, { focus: true });
-      else await this.openFile(loc.path, { selection: { line: loc.line, col: loc.col }, focus: true });
+      if (loc.input) await this.openInput(loc.input, { ...(pane ? { pane } : {}), focus: true });
+      else
+        await this.openFile(loc.path, {
+          ...(pane ? { pane } : {}),
+          selection: { line: loc.line, col: loc.col },
+          focus: true,
+        });
     } finally {
       this.navSuppress--;
-      if (this.activeSlot) this.recordNav(this.activeSlot);
+      if (gen === this.navGeneration && this.activeSlot) this.recordNav(this.activeSlot);
     }
   }
 
+  private refreshCurrentPlace() {
+    const cur = this.nav.current;
+    if (!cur) return;
+    if (this.activeSlot && !this.activeSlot.disposed) {
+      const loc = this.slotLocation(this.activeSlot);
+      if (!cur.input && loc.path === cur.path)
+        this.nav.update({ ...loc, ...(cur.paneId ? { paneId: cur.paneId } : {}) });
+      return;
+    }
+    const input = this.activeInput();
+    if (input && !isTextInput(input) && cur.input?.key === input.key) this.recordInput(input, cur.paneId, false);
+  }
+
   back() {
-    const slot = this.activeSlot;
-    if (slot && !slot.disposed) this.recordNav(slot);
     // Nothing shows the current place (its last tab was closed, or another tab is active):
     // going back returns to it first, as in IDEA.
-    else if (!this.showsCurrentPlace()) return this.navigateTo(this.nav.current);
-    return this.navigateTo(this.nav.back());
+    if (!this.showsCurrentPlace()) {
+      if (this.nav.current && this.canNavigateTo(this.nav.current)) return this.navigateTo(this.nav.current);
+    } else {
+      this.refreshCurrentPlace();
+    }
+    return this.navigateTo(this.nav.back((loc) => this.canNavigateTo(loc)));
   }
 
   forward() {
-    return this.navigateTo(this.nav.forward());
+    if (this.showsCurrentPlace()) this.refreshCurrentPlace();
+    return this.navigateTo(this.nav.forward((loc) => this.canNavigateTo(loc)));
   }
 
   /** Navigate › Last Edit Location (⇧⌘⌫): repeated, walks back through older edits. */
@@ -1307,6 +1395,7 @@ export class EditorController implements SlotHost {
 
   async openInput(input: EditorInput, o: OpenOptions = {}) {
     if (input.path && isClassFile(input.path)) return this.openFile(input.path, o);
+    this.recordLeaving();
     return this.admitInput(input, o, this.openingGeneration(o));
   }
 
@@ -1405,7 +1494,7 @@ export class EditorController implements SlotHost {
       const before = useTabs.getState();
       let s = before;
       const activate = this.isCurrentOpening(generation);
-      if (activate) restoreMaximizedToolWindow();
+      const restored = activate ? restoreMaximizedToolWindow() : false;
       const kinds = useContributions.getState().editorKinds;
       const lifecycle = documentLifecycle(input, kinds);
       const canPreview = !lifecycle || (lifecycle.allowPreview && !documentDirty({ input, lifecycle }));
@@ -1539,12 +1628,16 @@ export class EditorController implements SlotHost {
         slot.reveal({ anchor: head, head: anchor, center: true });
       }
       if (o.focus !== false && canFocus()) {
-        if (slot.view) slot.focus();
+        if (restored) {
+          requestAnimationFrame(() => {
+            if (canFocus()) this.focus();
+          });
+        } else if (slot.view) slot.focus();
         else slot.wantsFocus = true;
       }
     } finally {
       this.navSuppress--;
-      if (this.navSuppress === 0 && this.activeSlot) this.recordNav(this.activeSlot, true);
+      if (this.navSuppress === 0 && this.isCurrentOpening(generation)) this.recordActiveEditor(true);
     }
   }
 
@@ -1583,10 +1676,23 @@ export class EditorController implements SlotHost {
     ).then((keys) => evict(new Set(keys.filter((key): key is string => key !== null))));
   }
 
+  /** Switches `activePane` when focus enters an inactive split pane (e.g. a non-text tab). */
+  focusPane(paneId: string) {
+    const s = useTabs.getState();
+    if (!s.panes[paneId] || s.activePane === paneId) return;
+    this.recordLeaving();
+    useTabs.setState(setActivePane(s, paneId), true);
+    const tab = this.activeTabOf();
+    if (tab && !isTextTab(tab)) this.recordActiveEditor(true);
+  }
+
   activate(paneId: string, tabId: string, focus = true) {
     const restored = restoreMaximizedToolWindow();
+    this.recordLeaving();
     ++this.activationGeneration;
     useTabs.setState((s) => activateTab(setActivePane(s, paneId), paneId, tabId), true);
+    const tab = this.activeTabOf();
+    if (tab && !isTextTab(tab)) this.recordActiveEditor(true);
     if (focus) {
       if (restored) {
         requestAnimationFrame(() => this.focus());
@@ -1993,7 +2099,10 @@ export class EditorController implements SlotHost {
     this.focus();
   }
   cycle(delta: number) {
+    this.recordLeaving();
     this.apply((s) => cycleTab(s, delta));
+    const tab = this.activeTabOf();
+    if (tab && !isTextTab(tab)) this.recordActiveEditor(true);
     this.focus();
   }
   async reopenClosed(): Promise<void> {
@@ -2003,7 +2112,10 @@ export class EditorController implements SlotHost {
     if (generation !== this.projectGeneration || this.closeSession) return;
     const r = reopenClosed(useTabs.getState());
     if (!r) return;
+    this.recordLeaving();
     useTabs.setState(r.state, true);
+    const tab = this.activeTabOf();
+    if (tab && !isTextTab(tab)) this.recordActiveEditor(true);
     void this.ensureSlot(r.tabId).then((slot) => slot && (slot.view ? slot.focus() : (slot.wantsFocus = true)));
   }
 
@@ -2024,8 +2136,11 @@ export class EditorController implements SlotHost {
       return;
     }
     const srcSlot = srcPane?.active ? this.slots.get(srcPane.active) : undefined;
+    this.recordLeaving();
     const r = splitPane(s, paneId, dir);
     useTabs.setState(r.state, true);
+    const tab = this.activeTabOf();
+    if (tab && !isTextTab(tab)) this.recordActiveEditor(true);
     const newTab = r.state.panes[r.paneId]?.active;
     if (newTab) {
       void this.ensureSlot(newTab, { from: srcSlot }).then((slot) => {
@@ -2148,8 +2263,11 @@ export class EditorController implements SlotHost {
       }
       return;
     }
+    this.recordLeaving();
     const r = openTab(s, target, tab.input);
     useTabs.setState(r.state, true);
+    const activeTab = this.activeTabOf();
+    if (activeTab && !isTextTab(activeTab)) this.recordActiveEditor(true);
     void this.ensureSlot(r.tabId, { from: this.slots.get(tabId) }).then((slot) => {
       if (slot?.view) slot.focus();
       else if (slot) slot.wantsFocus = true;
@@ -2222,7 +2340,9 @@ export class EditorController implements SlotHost {
       return;
     }
     const pane = document.querySelector<HTMLElement>(`[data-pane-id="${useTabs.getState().activePane}"]`);
-    pane?.querySelector<HTMLElement>("[data-editor-focus], .cm-content")?.focus({ preventScroll: true });
+    (pane?.querySelector<HTMLElement>("[data-editor-focus]") ?? pane?.querySelector<HTMLElement>(".cm-content"))?.focus(
+      { preventScroll: true },
+    );
   }
 
   private stampActive(s: TabsState) {

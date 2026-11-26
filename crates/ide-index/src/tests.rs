@@ -676,6 +676,37 @@ fn css_selectors_are_found_by_exact_name() {
 }
 
 #[test]
+fn css_custom_properties_are_listed_with_their_values_and_follow_edits() {
+    let f = Fixture::new(&[
+        ("theme/light.css", ":root {\n  --bg: #fff;\n  --gap:\n    4px  8px;\n}\n"),
+        ("theme/dark.scss", "[data-theme=dark] { .x { --bg: rgb(0 0 0) !important; } }\n"),
+        ("theme/extra.less", ".a { --ring: var(--bg); color: red; }\n"),
+    ]);
+    let idx = f.open();
+    let vars = |idx: &ProjectIndex| -> Vec<(String, String, Option<String>)> {
+        idx.symbols_prefixed("--", SymbolKind::Variable, 100)
+            .into_iter()
+            .map(|m| (m.rel_path, m.name, m.container))
+            .collect()
+    };
+    assert_eq!(
+        vars(&idx),
+        vec![
+            ("theme/dark.scss".into(), "--bg".into(), Some("rgb(0 0 0) !important".into())),
+            ("theme/extra.less".into(), "--ring".into(), Some("var(--bg)".into())),
+            ("theme/light.css".into(), "--bg".into(), Some("#fff".into())),
+            ("theme/light.css".into(), "--gap".into(), Some("4px 8px".into())),
+        ]
+    );
+    let light = f.root.join("theme/light.css");
+    std::fs::write(&light, ":root { --fg: #222; }\n").unwrap();
+    idx.update(std::slice::from_ref(&light), &[]);
+    assert!(idx.wait_idle(WAIT));
+    let names: Vec<String> = vars(&idx).into_iter().filter(|v| v.0 == "theme/light.css").map(|v| v.1).collect();
+    assert_eq!(names, vec!["--fg".to_string()]);
+}
+
+#[test]
 fn symbols_named_within_keeps_out_of_root_matches_from_evicting_a_root() {
     let f = Fixture::new(&[
         ("a/w.rs", "struct Decoder;\nstruct Decoder;\n"),

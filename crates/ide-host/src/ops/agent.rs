@@ -88,6 +88,13 @@ pub fn agent_set_command(host: &Host, window: &str, id: String, command: Option<
     host.project(window)?.agents.set_builtin_command(&id, command)
 }
 
+/// Sets additional launch arguments for a built-in ACP agent; an empty list resets them.
+#[command(trust = trusted)]
+pub fn agent_set_additional_args(host: &Host, window: &str, id: String, args: Vec<String>) -> IdeResult<()> {
+    host.require_trust(window)?;
+    host.project(window)?.agents.set_builtin_additional_args(&id, args)
+}
+
 /// Environment variables built-in agent `id` starts with (saved in its agent file);
 /// an empty map clears them.
 #[command(trust = trusted)]
@@ -178,6 +185,7 @@ pub async fn agent_registry_install(
 ) -> IdeResult<()> {
     // The agent then shows in `agent_providers`.
     let paths = registry_paths(host);
+    let public_npm_fallback = !host.configured_registries_only();
     let installing = Installing::begin(&id)?;
     let cancel = host.begin_request(request);
     // Also a background task of every project window, so it stays visible and can be
@@ -204,7 +212,7 @@ pub async fn agent_registry_install(
             move || cancel.cancel()
         });
         report(None, None, false);
-        let result = ide_agent::registry::install(&paths, &id, &cancel, &|e| {
+        let result = ide_agent::registry::install(&paths, &id, public_npm_fallback, &cancel, &|e| {
             match &e {
                 InstallEvent::Line { text } => report(Some(text.clone()), None, false),
                 InstallEvent::Progress { fraction, message } => {
@@ -1485,6 +1493,7 @@ ide_command::domain!(
     agent_rollback,
     agent_rollback_changes,
     agent_send_queued_now,
+    agent_set_additional_args,
     agent_set_command,
     agent_shell,
     agent_set_config,

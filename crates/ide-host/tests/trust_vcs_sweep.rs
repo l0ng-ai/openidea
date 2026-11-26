@@ -52,6 +52,7 @@ fn arm(root: &Path, markers: &Path) -> Armed {
         git(root, &["config", key, value]);
     }
     std::fs::write(root.join("src/a.txt"), "one\ntwo\n").unwrap();
+    std::fs::write(root.join("asset.jpg"), [0xff, 0xd8]).unwrap();
     git(root, &["add", "."]);
     git(root, &["commit", "-qm", "first"]);
     let first = git(root, &["rev-parse", "HEAD"]);
@@ -168,6 +169,7 @@ async fn restricted_vcs_commands_run_no_program_of_the_repository() {
         call!("vcs_line_hunks", "", vcs::vcs_line_hunks(host, w, file.clone())),
         call!("vcs_staging_line_hunks", "", vcs::vcs_staging_line_hunks(host, w, file.clone(), None)),
         call!("vcs_file_at", "", vcs::vcs_file_at(host, w, file.clone(), None)),
+        call!("vcs_image_at", "", vcs::vcs_image_at(host, w, project.root.join("asset.jpg"), ":0".into())),
         call!(
             "vcs_diff_entries",
             "",

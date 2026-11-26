@@ -954,6 +954,23 @@
   padding: 2px 4px;
   border-bottom: 1px solid var(--border);
 }
+.modifyFilter {
+  flex: 1;
+  min-width: 0;
+}
+.modifyGroup {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: 22px;
+  padding: 0 6px;
+  color: var(--fg-muted);
+  cursor: default;
+  white-space: nowrap;
+}
+.modifyGroup:hover {
+  color: var(--fg);
+}
 .modifyList {
   flex: 1;
   overflow: auto;

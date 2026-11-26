@@ -152,9 +152,11 @@ fn webpack_aliases(root: &Path, config: &Path, node: &Path) -> Option<Vec<(Strin
 }
 
 /// Directory aliases as `paths`; `name$` (exact module) and file aliases have no equivalent.
-fn alias_paths(aliases: &[(String, String)]) -> Paths {
+pub(crate) fn alias_paths(aliases: &[(String, String)]) -> Paths {
     let mut paths = Paths::new();
     for (name, target) in aliases {
+        // `'@/': '/src/'` is the `@` alias too.
+        let name = name.trim_end_matches('/');
         let dir = Path::new(target);
         if name.is_empty() || name.ends_with('$') || name.contains('*') || !dir.is_absolute() || !dir.is_dir() {
             continue;
@@ -162,7 +164,7 @@ fn alias_paths(aliases: &[(String, String)]) -> Paths {
         let dir = target.replace('\\', "/");
         let dir = dir.trim_end_matches('/');
         paths.insert(format!("{name}/*"), vec![format!("{dir}/*")]);
-        paths.insert(name.clone(), vec![dir.to_owned()]);
+        paths.insert(name.to_owned(), vec![dir.to_owned()]);
     }
     paths
 }

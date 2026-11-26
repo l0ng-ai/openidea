@@ -4,7 +4,7 @@
  * window, the Structure tool window + File Structure popup, and bookmarks.
  */
 import { lazyComponent, lazyWhen } from "@/ui";
-import { activeEditor, registerEditorContribution } from "@/editor/api";
+import { activeEditor, focusedCellEditor, registerEditorContribution } from "@/editor/api";
 import { executeAction, registerActions } from "@/platform/actions";
 import { onFilesMoved, pendingFileMoves } from "@/platform/fileOps";
 import { call, commands, IpcError, isTauri, onIdeEvent } from "@/platform/ipc";
@@ -92,7 +92,10 @@ function editorSelectionText(): string | null {
 }
 
 /** The active editor's caret line (and where to show a popup for it). */
-function caretLine(): { path: string; line: number; text: string; at?: { x: number; y: number } } | null {
+export function caretLine(): { path: string; line: number; text: string; at?: { x: number; y: number } } | null {
+  // A notebook cell editor has no line in a bookmarkable file yet: no bookmark rather
+  // than the last text tab's caret (the notebook's own lines are a later step).
+  if (focusedCellEditor()) return null;
   const handle = activeEditor();
   if (!handle) return null;
   const head = handle.view.state.selection.main.head;

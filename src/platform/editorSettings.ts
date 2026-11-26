@@ -51,6 +51,11 @@ export interface LanguageCodeStyle {
   classCountToUseImportWithStar?: number;
   /** Java: organize imports switches to a wildcard static import once this many names are used (jdtls passthrough). */
   namesCountToUseStaticImportWithStar?: number;
+  /** JavaScript / TypeScript › Punctuation (unset: tsserver's default, `ignore` / `auto`). */
+  semicolons?: "ignore" | "insert" | "remove";
+  quotes?: "auto" | "single" | "double";
+  /** JavaScript / TypeScript › Spaces, by tsserver format option (`insertSpaceAfterCommaDelimiter`). */
+  spaces?: Record<string, boolean>;
 }
 
 /** IDEA's SQL word case: To upper / To lower / Do not change. */
