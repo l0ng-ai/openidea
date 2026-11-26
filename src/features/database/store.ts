@@ -37,7 +37,6 @@ import {
   editorService,
   maybeEditorService,
   notifications,
-  showServiceView,
   toolWindowService,
   type FileDecoration,
 } from "@/workbench/contributions";
@@ -70,9 +69,10 @@ import type { TableSnapshot } from "./schemaCompare";
 import { resolutionScopeOf, resolutionScopesOf, type SqlResolutionScope } from "./resolutionScopes";
 import { databaseRequest, invalidateDatabaseRequests, projectRequest } from "./requests";
 import { tx } from "@/platform/i18n";
+import { revealDatabaseResults } from "./outputDestination";
+export { RESULTS_VIEW } from "./outputDestination";
 
 export const DB_TOOL_WINDOW = "database";
-export const RESULTS_VIEW = "dbResults";
 const BINDINGS_KEY = "openidea.database.consoles";
 const CONSOLE_SCHEMAS_KEY = "openidea.database.consoleSchemas";
 const VIEW_OPTIONS_KEY = "openidea.database.viewOptions";
@@ -127,6 +127,8 @@ export interface OutputLine {
   text: string;
   /** Prompt before a statement: the schema it ran in (`main>`). */
   prompt?: string;
+  /** SQL console or file that emitted the line. */
+  path?: string;
 }
 
 /** `activeResult` value of the Output tab. */
@@ -229,6 +231,7 @@ interface DatabaseState {
   inline: ResultTab[];
   /** Result tab id, or `OUTPUT_TAB`. */
   activeResult: number | null;
+  activeClientResults: Record<string, number>;
   output: OutputLine[];
   /** Console path → running request. */
   running: Record<string, RequestId>;
@@ -301,6 +304,7 @@ export const useDatabase = create<DatabaseState>(() => ({
   results: [],
   inline: [],
   activeResult: null,
+  activeClientResults: {},
   output: [],
   running: {},
   executions: {},
@@ -1187,17 +1191,17 @@ let nextTab = 1;
 let nextRun = 1;
 let nextLine = 1;
 
-function outputLine(kind: OutputLine["kind"], text: string, prompt?: string): OutputLine {
-  return { id: nextLine++, time: Date.now(), kind, text, prompt };
+function outputLine(kind: OutputLine["kind"], text: string, prompt?: string, path?: string): OutputLine {
+  return { id: nextLine++, time: Date.now(), kind, text, prompt, path };
 }
 
-export function log(kind: OutputLine["kind"], text: string, prompt?: string) {
-  const line = outputLine(kind, text, prompt);
+export function log(kind: OutputLine["kind"], text: string, prompt?: string, path?: string) {
+  const line = outputLine(kind, text, prompt, path);
   useDatabase.setState((s) => ({ output: [...s.output, line].slice(-MAX_OUTPUT) }));
 }
 
-export function clearOutput() {
-  useDatabase.setState({ output: [] });
+export function clearOutput(path?: string) {
+  useDatabase.setState((s) => ({ output: path === undefined ? [] : s.output.filter((line) => line.path !== path) }));
 }
 
 function elapsed(ms: number): string {
@@ -1232,15 +1236,16 @@ function outcomeUpdates(
   schema: string | undefined,
   outcomes: readonly DbStatementOutcome[],
   logConnected: boolean,
+  path?: string,
 ): Pick<DatabaseState, "output" | "pendingTx"> {
   const prompt = `${schema || promptOf(id)}>`;
-  const lines = logConnected ? [outputLine("info", "Connected")] : [];
+  const lines = logConnected ? [outputLine("info", "Connected", undefined, path)] : [];
   for (const outcome of outcomes) {
-    lines.push(outputLine("statement", outcome.statement.text, prompt));
+    lines.push(outputLine("statement", outcome.statement.text, prompt, path));
     lines.push(
       outcome.error
-        ? outputLine("error", `[${targetLabel(id)}] ${outcome.error}`)
-        : outputLine("result", outcomeSummary(outcome)),
+        ? outputLine("error", `[${targetLabel(id)}] ${outcome.error}`, undefined, path)
+        : outputLine("result", outcomeSummary(outcome), undefined, path),
     );
   }
   const pending =
@@ -1260,7 +1265,7 @@ function outcomeUpdates(
  * each statement in it, so unqualified names resolve there.
  */
 /** Shows `id` disconnected when the backend closed its connection (it reconnects on next use). */
-async function syncDropped(id: string) {
+async function syncDropped(id: string, path?: string) {
   const current = databaseRequest(id);
   const server = await call(commands.dbConnected()).catch(() => null);
   if (!current() || !server || server.includes(id) || !useDatabase.getState().connected.has(id)) return;
@@ -1269,7 +1274,7 @@ async function syncDropped(id: string) {
     connected.delete(id);
     return { connected };
   });
-  log("info", `${targetLabel(id)}: the connection was lost; the next statement reconnects`);
+  log("info", `${targetLabel(id)}: the connection was lost; the next statement reconnects`, undefined, path);
 }
 
 async function run(
@@ -1285,6 +1290,7 @@ async function run(
     onStatementCancelled: () => void;
     onIncompleteDelivery: () => void;
   },
+  path?: string,
 ): Promise<DbStatementOutcome[]> {
   const current = databaseRequest(id);
   const wasConnected = useDatabase.getState().connected.has(id);
@@ -1364,10 +1370,10 @@ async function run(
   });
   if (!current()) return outcomes;
   // A failed statement can have found the session dead; the backend then dropped it.
-  if (outcomes.some((o) => o.error)) void syncDropped(id);
+  if (outcomes.some((o) => o.error)) void syncDropped(id, path);
   // Consoles publish the same outcome updates alongside their progress and grids.
   if (progress) return outcomes;
-  useDatabase.setState((s) => outcomeUpdates(s, id, schema, outcomes, !wasConnected));
+  useDatabase.setState((s) => outcomeUpdates(s, id, schema, outcomes, !wasConnected, path));
   if (outcomes.some(changesSchema)) void refresh(id);
   return outcomes;
 }
@@ -1548,6 +1554,7 @@ export async function executeConsole(
   let schemaChanged = false;
   let statementCancelled = false;
   let deliveryIncomplete = false;
+  const inline = inEditorResults();
   try {
     const statements = await consoleStatements(id, text, from, to);
     if (!current() || preparingConsoles.get(path) !== request || !statements.length) return [];
@@ -1560,8 +1567,7 @@ export async function executeConsole(
       executions: { ...s.executions, [path]: execution },
     }));
     onStart?.(statements);
-    const inline = inEditorResults();
-    if (!inline) showServiceView(RESULTS_VIEW, false);
+    if (!inline) revealDatabaseResults();
     const pageSize = useDatabase.getState().maxRows;
     const schema = consoleSchema(path) || (await loadCompletion(id))?.defaultSchema || "";
     if (!ownsRun()) return [];
@@ -1596,12 +1602,17 @@ export async function executeConsole(
       useDatabase.setState((s) => {
         const executions = { ...s.executions, [path]: { ...execution, active } };
         const state = completed.length
-          ? { executions, ...outcomeUpdates(s, id, schema, completed, logConnected) }
+          ? { executions, ...outcomeUpdates(s, id, schema, completed, logConnected, path) }
           : { executions };
         const latest = tabs.at(-1);
         if (!latest) return state;
         if (inline) return { ...state, inline: [...s.inline, ...tabs.map((tab) => ({ ...tab, inline: true }))] };
-        return { ...state, results: capResults([...s.results, ...tabs], resultIds), activeResult: latest.id };
+        return {
+          ...state,
+          results: capResults([...s.results, ...tabs], resultIds),
+          activeResult: latest.id,
+          activeClientResults: { ...s.activeClientResults, [path]: latest.id },
+        };
       });
       if (completed.length) logConnected = false;
     };
@@ -1613,16 +1624,25 @@ export async function executeConsole(
     };
     let outcomes: DbStatementOutcome[];
     try {
-      outcomes = await run(id, statements, request, pageSize, 0, schema, {
-        emit,
-        current: ownsRun,
-        onStatementCancelled: () => {
-          statementCancelled = true;
+      outcomes = await run(
+        id,
+        statements,
+        request,
+        pageSize,
+        0,
+        schema,
+        {
+          emit,
+          current: ownsRun,
+          onStatementCancelled: () => {
+            statementCancelled = true;
+          },
+          onIncompleteDelivery: () => {
+            deliveryIncomplete = true;
+          },
         },
-        onIncompleteDelivery: () => {
-          deliveryIncomplete = true;
-        },
-      });
+        path,
+      );
     } finally {
       if (frame !== undefined) cancelAnimationFrame(frame);
       publish();
@@ -1630,7 +1650,7 @@ export async function executeConsole(
     if (!ownsRun()) return [];
     if (deliveryIncomplete) {
       const summary = tx("SQL result delivery was incomplete. The final execution status is unknown.");
-      log("info", summary);
+      log("info", summary, undefined, path);
       notifications().notify({ level: "warning", title: summary, key: "db-execute" });
       if (useDatabase.getState().manualCommit.has(id)) setPending(id, true);
     }
@@ -1640,13 +1660,14 @@ export async function executeConsole(
   } catch (e) {
     if (!current() || (!ownsRun() && preparingConsoles.get(path) !== request)) return [];
     if (!isCancelled(e)) {
-      log("error", message(e));
+      if (!inline) showOutputFor(path);
+      log("error", message(e), undefined, path);
       notifications().notify({ level: "error", title: "Cannot execute", body: message(e), key: "db-execute" });
     } else {
-      log("info", "Cancelled");
+      log("info", "Cancelled", undefined, path);
       // Interrupting a running statement discards its held transaction. Between statements it stays open.
       if (statementCancelled && useDatabase.getState().pendingTx.has(id)) {
-        log("info", "Transaction rolled back");
+        log("info", "Transaction rolled back", undefined, path);
         setPending(id, false);
       }
     }
@@ -1673,7 +1694,15 @@ export async function executeConsole(
             )
           : capResults(s.results, resultIds);
       }
-      return { running, executions, results, activeResult: selectOutput ? OUTPUT_TAB : s.activeResult };
+      return {
+        running,
+        executions,
+        results,
+        ...(selectOutput && {
+          activeResult: OUTPUT_TAB,
+          activeClientResults: { ...s.activeClientResults, [path]: OUTPUT_TAB },
+        }),
+      };
     });
     if (refreshMetadata) void refresh(id);
   }
@@ -1714,10 +1743,10 @@ async function consoleStatements(id: string, text: string, from: number, to: num
 
 const PLAN_TITLE = "Query Plan";
 
-/** Shows `plan` of `statement` in the window's Query Plan tab (one per window, like IDEA's). */
+/** Shows `plan` of `statement` in the console's Query Plan tab. */
 function showPlan(path: string, id: string, statement: SqlStatement, plan: DbPlanNode[]) {
   useDatabase.setState((s) => {
-    const old = s.results.find((r) => r.plan && !r.pinned);
+    const old = s.results.find((r) => r.path === path && r.plan && !r.pinned);
     const tab: ResultTab = {
       id: old?.id ?? nextTab++,
       title: old?.title ?? PLAN_TITLE,
@@ -1729,17 +1758,21 @@ function showPlan(path: string, id: string, statement: SqlStatement, plan: DbPla
     const results = old
       ? s.results.map((r) => (r === old ? tab : r))
       : capResults([...s.results, tab], new Set([tab.id]));
-    return { results, activeResult: tab.id };
+    return { results, activeResult: tab.id, activeClientResults: { ...s.activeClientResults, [path]: tab.id } };
   });
-  showServiceView(RESULTS_VIEW, false);
 }
 
-async function explain(id: string, statement: SqlStatement, schema?: string): Promise<DbPlanNode[]> {
+async function explain(
+  id: string,
+  statement: SqlStatement,
+  schema: string | undefined,
+  path: string,
+): Promise<DbPlanNode[]> {
   const plan = await withConnection(id, () =>
     call(commands.dbExplain(nextRequestId(), id, statement.text, schema || null)),
   );
-  log("statement", `explain ${statement.text}`, `${schema || promptOf(id)}>`);
-  log("result", `${plan.length} plan node${plan.length === 1 ? "" : "s"}`);
+  log("statement", `explain ${statement.text}`, `${schema || promptOf(id)}>`, path);
+  log("result", `${plan.length} plan node${plan.length === 1 ? "" : "s"}`, undefined, path);
   return plan;
 }
 
@@ -1750,15 +1783,17 @@ export async function explainConsole(path: string, text: string, from: number, t
   try {
     const [statement] = await consoleStatements(id, text, from, to);
     if (!statement) return;
+    revealDatabaseResults();
     showPlan(
       path,
       id,
       statement,
-      await explain(id, statement, useDatabase.getState().consoleSchemas[path] || undefined),
+      await explain(id, statement, useDatabase.getState().consoleSchemas[path] || undefined, path),
     );
   } catch (e) {
     if (isCancelled(e)) return;
-    log("error", `[${targetLabel(id)}] ${message(e)}`);
+    showOutputFor(path);
+    log("error", `[${targetLabel(id)}] ${message(e)}`, undefined, path);
     notifications().notify({
       level: "error",
       title: "Cannot explain the statement",
@@ -1802,12 +1837,12 @@ export async function rerunResult(tabId: number): Promise<void> {
     patchResult(tabId, { busy: true });
     try {
       patchResult(tabId, {
-        plan: await explain(tab.sourceId, tab.outcome.statement, tab.schema ?? consoleSchema(tab.path)),
+        plan: await explain(tab.sourceId, tab.outcome.statement, tab.schema ?? consoleSchema(tab.path), tab.path),
         busy: false,
       });
     } catch (e) {
       patchResult(tabId, { busy: false });
-      if (!isCancelled(e)) log("error", `[${targetLabel(tab.sourceId)}] ${message(e)}`);
+      if (!isCancelled(e)) log("error", `[${targetLabel(tab.sourceId)}] ${message(e)}`, undefined, tab.path);
     }
     return;
   }
@@ -1870,6 +1905,8 @@ export async function loadResultPage(tabId: number, page: number, pageSize: numb
       maxRows,
       skip,
       tab.schema ?? consoleSchema(tab.path),
+      undefined,
+      tab.path,
     );
     const r = outcome?.result;
     if (r) {
@@ -1883,11 +1920,10 @@ export async function loadResultPage(tabId: number, page: number, pageSize: numb
       });
     } else patchResult(tabId, { busy: false });
     // A run of its console may have replaced the tab meanwhile.
-    if (outcome?.error && useDatabase.getState().results.some((r) => r.id === tabId))
-      useDatabase.setState({ activeResult: OUTPUT_TAB });
+    if (outcome?.error && useDatabase.getState().results.some((r) => r.id === tabId)) showOutputFor(tab.path);
   } catch (e) {
     patchResult(tabId, { busy: false });
-    if (!isCancelled(e)) log("error", message(e));
+    if (!isCancelled(e)) log("error", message(e), undefined, tab.path);
   }
 }
 
@@ -1917,6 +1953,8 @@ export async function countResult(tabId: number): Promise<number | null> {
       1,
       0,
       tab.schema ?? consoleSchema(tab.path),
+      undefined,
+      tab.path,
     );
     const total = Number(outcome?.result?.rows[0]?.[0]);
     const known = outcome?.error || !Number.isFinite(total) ? null : total;
@@ -1924,7 +1962,7 @@ export async function countResult(tabId: number): Promise<number | null> {
     return known;
   } catch (e) {
     patchResult(tabId, { busy: false });
-    if (!isCancelled(e)) log("error", message(e));
+    if (!isCancelled(e)) log("error", message(e), undefined, tab.path);
     return null;
   }
 }
@@ -1942,16 +1980,16 @@ function setPending(id: string, pending: boolean) {
 }
 
 /** Commits or rolls back the open transaction of a manual-commit data source. */
-export async function finishTransaction(id: string, commit: boolean): Promise<boolean> {
+export async function finishTransaction(id: string, commit: boolean, path?: string): Promise<boolean> {
   if (sourceById(id)?.driver === "clickhouse" || sourceById(id)?.driver === "jdbc") return false;
   try {
     await call(commands.dbFinishTransaction(id, commit));
-    log("statement", commit ? "commit" : "rollback", `${promptOf(id)}>`);
-    log("result", commit ? "Transaction committed" : "Transaction rolled back");
+    log("statement", commit ? "commit" : "rollback", `${promptOf(id)}>`, path);
+    log("result", commit ? "Transaction committed" : "Transaction rolled back", undefined, path);
     setPending(id, false);
     return true;
   } catch (e) {
-    log("error", `[${targetLabel(id)}] ${message(e)}`);
+    log("error", `[${targetLabel(id)}] ${message(e)}`, undefined, path);
     notifications().notify({ level: "error", title: commit ? "Cannot commit" : "Cannot roll back", body: message(e) });
     return false;
   }
@@ -2003,14 +2041,53 @@ function cancelExecution(request: RequestId) {
   void commands.cancelRequest(request);
 }
 
+export function resultsFor(s: Pick<DatabaseState, "results">, path?: string) {
+  return path === undefined ? s.results : s.results.filter((tab) => tab.path === path);
+}
+
+export function activeResultFor(
+  s: Pick<DatabaseState, "activeResult" | "activeClientResults" | "results">,
+  path?: string,
+) {
+  const selected = path === undefined ? s.activeResult : s.activeClientResults[path];
+  if (
+    selected === OUTPUT_TAB ||
+    s.results.some((tab) => tab.id === selected && (path === undefined || tab.path === path))
+  )
+    return selected ?? OUTPUT_TAB;
+  return path === undefined ? OUTPUT_TAB : (resultsFor(s, path).at(-1)?.id ?? OUTPUT_TAB);
+}
+
+function showOutputFor(path: string) {
+  useDatabase.setState((s) => ({
+    activeResult: OUTPUT_TAB,
+    activeClientResults: { ...s.activeClientResults, [path]: OUTPUT_TAB },
+  }));
+}
+
+export function selectResult(id: number, path?: string) {
+  useDatabase.setState((s) =>
+    path === undefined ? { activeResult: id } : { activeClientResults: { ...s.activeClientResults, [path]: id } },
+  );
+}
+
 export function closeResult(id: number) {
   useDatabase.setState((s) => {
     const index = s.results.findIndex((r) => r.id === id);
     if (index < 0) return s;
+    const path = s.results[index]!.path;
     const results = s.results.filter((r) => r.id !== id);
+    const sameClient = resultsFor(s, path);
+    const clientIndex = sameClient.findIndex((r) => r.id === id);
     return {
       results,
       activeResult: s.activeResult === id ? ((results[index - 1] ?? results[index])?.id ?? OUTPUT_TAB) : s.activeResult,
+      ...(s.activeClientResults[path] === id && {
+        activeClientResults: {
+          ...s.activeClientResults,
+          [path]: (sameClient[clientIndex - 1] ?? sameClient[clientIndex + 1])?.id ?? OUTPUT_TAB,
+        },
+      }),
     };
   });
 }

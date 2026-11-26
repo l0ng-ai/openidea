@@ -5203,13 +5203,18 @@ export type DataSource_Serialize = {
 	pluginSourceId?: string | null,
 };
 
+/**  Database › Query Output: where SQL results open. */
+export type DatabaseOutputDestination = "databaseOutput" | "services";
+
 /**  Database settings: Query Execution and SQL Resolution Scopes. */
 export type DatabaseSettings = {
 	/**
 	 *  A console's result sets show under the statements that produced them, in the editor,
-	 *  instead of in the Services view's result tabs.
+	 *  instead of in the output window's result tabs.
 	 */
 	inEditorResults?: boolean,
+	/**  The tool window that receives SQL query output and plans. */
+	outputDestination?: DatabaseOutputDestination,
 	/**
 	 *  Languages & Frameworks › SQL Resolution Scopes: the data source SQL in a file or folder
 	 *  resolves against (completion, inspections, navigation), most specific path first.

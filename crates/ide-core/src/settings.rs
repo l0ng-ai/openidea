@@ -1947,6 +1947,19 @@ mod tests {
     }
 
     #[test]
+    fn database_output_destination_defaults_and_round_trips() {
+        let old: Settings = serde_json::from_str(r#"{"database":{"inEditorResults":true}}"#).unwrap();
+        assert_eq!(old.database.output_destination, DatabaseOutputDestination::DatabaseOutput);
+        assert!(old.database.in_editor_results);
+
+        let services: Settings = serde_json::from_str(r#"{"database":{"outputDestination":"services"}}"#).unwrap();
+        assert_eq!(services.database.output_destination, DatabaseOutputDestination::Services);
+        let saved = serde_json::to_value(&services).unwrap();
+        assert_eq!(saved["database"]["outputDestination"], "services");
+        assert_eq!(serde_json::from_value::<Settings>(saved).unwrap().database, services.database);
+    }
+
+    #[test]
     fn window_close_settings_default_off_and_round_trip() {
         for old in [r#"{}"#, r#"{"general":{"confirmExit":false}}"#] {
             let settings: Settings = serde_json::from_str(old).unwrap();

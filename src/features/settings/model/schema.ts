@@ -68,7 +68,11 @@ export interface ValidSettings extends WorkflowSettings {
   scopes: NamedScope[];
   fileColors: FileColorSettings;
   /** Database › Query Execution. */
-  database: { inEditorResults: boolean; resolutionScopes: Array<{ path: string; dataSource: string; schema: string }> };
+  database: {
+    inEditorResults: boolean;
+    outputDestination: "databaseOutput" | "services";
+    resolutionScopes: Array<{ path: string; dataSource: string; schema: string }>;
+  };
   general: {
     reopenLastProject: boolean;
     confirmExit: boolean;
@@ -185,7 +189,7 @@ export const DEFAULT_SETTINGS: ValidSettings = {
   plugins: {},
   scopes: [],
   fileColors: DEFAULT_FILE_COLORS,
-  database: { inEditorResults: false, resolutionScopes: [] },
+  database: { inEditorResults: false, outputDestination: "databaseOutput", resolutionScopes: [] },
   general: {
     reopenLastProject: true,
     confirmExit: true,
@@ -366,6 +370,8 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
     fileColors: validateFileColors(root.fileColors),
     database: {
       inEditorResults: bool(obj(root.database).inEditorResults, d.database.inEditorResults),
+      outputDestination:
+        obj(root.database).outputDestination === "services" ? "services" : d.database.outputDestination,
       resolutionScopes: (Array.isArray(obj(root.database).resolutionScopes)
         ? (obj(root.database).resolutionScopes as unknown[])
         : []

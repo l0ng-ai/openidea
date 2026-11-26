@@ -390,11 +390,22 @@ impl Default for LogLevelColors {
 #[serde(default, rename_all = "camelCase")]
 pub struct DatabaseSettings {
     /// A console's result sets show under the statements that produced them, in the editor,
-    /// instead of in the Services view's result tabs.
+    /// instead of in the output window's result tabs.
     pub in_editor_results: bool,
+    /// The tool window that receives SQL query output and plans.
+    pub output_destination: DatabaseOutputDestination,
     /// Languages & Frameworks › SQL Resolution Scopes: the data source SQL in a file or folder
     /// resolves against (completion, inspections, navigation), most specific path first.
     pub resolution_scopes: Vec<SqlResolutionScope>,
+}
+
+/// Database › Query Output: where SQL results open.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum DatabaseOutputDestination {
+    #[default]
+    DatabaseOutput,
+    Services,
 }
 
 /// One row of SQL Resolution Scopes.

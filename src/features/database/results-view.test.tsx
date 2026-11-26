@@ -13,7 +13,7 @@ import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
 import { disableRemote, enableRemote } from "@/platform/remote";
 import { installCellActions } from "./cellActions";
 import { getContext } from "@/platform/context";
-import { ResultsView } from "./ResultsView";
+import { ResultsContent, ResultsView } from "./ResultsView";
 import { streamExecution } from "./executeStream.fixture";
 import {
   cancelConsole,
@@ -450,6 +450,22 @@ describe("editable result grid", () => {
     });
     expect(screen.getByRole("gridcell", { name: "Ann" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Submit" }).hasAttribute("disabled")).toBe(true);
+    expect(backend.applyEdits).not.toHaveBeenCalled();
+  });
+
+  it("keeps pinned pending edits when moving the same result between output windows", async () => {
+    const result = show("SELECT * FROM users", [{ name: "id" }, { name: "name" }], [["1", "Ann"]]);
+    const view = render(<ResultsContent path={result.path} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Pin Tab" }));
+    fireEvent.doubleClick(screen.getByRole("gridcell", { name: "Ann" }));
+    const cell = screen.getByRole("textbox", { name: "Edit name" });
+    fireEvent.change(cell, { target: { value: "Bob" } });
+    fireEvent.keyDown(cell, { key: "Enter" });
+
+    view.rerender(<ResultsView />);
+    expect(screen.getByRole("gridcell", { name: "Bob" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Submit" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Pin Tab" })).toHaveAttribute("aria-pressed", "true");
     expect(backend.applyEdits).not.toHaveBeenCalled();
   });
 
