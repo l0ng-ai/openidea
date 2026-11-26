@@ -49,8 +49,11 @@ export function jsParser(watch = false): TestOutputParser {
         ended = false;
         events.unshift({ type: "reset" });
       }
-      // The counts line (`Tests: …`); `Time:` / `Duration` follow it.
-      if (events.some((e) => e.type === "summary" && e.durationMs === undefined)) ended = true;
+      // The counts line (`Tests: …`) ends the cycle; `Time:` / `Duration` follow it.
+      if (!ended && events.some((e) => e.type === "summary" && e.durationMs === undefined)) {
+        ended = true;
+        events.push({ type: "end" });
+      }
       return events;
     },
   };

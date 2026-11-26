@@ -23,7 +23,9 @@ export type TestEvent =
   | { type: "output"; path: string[]; line: string }
   | { type: "summary"; passed?: number; failed?: number; skipped?: number; durationMs?: number }
   /** A watch mode cycle begins: its results replace the previous ones. */
-  | { type: "reset" };
+  | { type: "reset" }
+  /** A watch mode cycle has reported all its results. */
+  | { type: "end" };
 
 export interface TestOutputParser {
   feed(line: string): TestEvent[];

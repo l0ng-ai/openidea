@@ -71,7 +71,7 @@ Detected test configurations show results in the tree automatically. For your ow
 
 ### Watch mode (Jest, Vitest)
 
-Turn on **Modify options › Watch for changes** in a Jest or Vitest test configuration, or the **Rerun Automatically** toggle in the test tree toolbar, to keep the runner watching (`jest --watchAll`, `vitest watch`). After each edit the tests run again in the same tab, and each cycle's results replace the previous ones in the tree. **Stop**, turning the toggle off, or closing the tab ends the watcher. Debug runs the tests once, without watching.
+Turn on **Modify options › Watch for changes** in a Jest or Vitest test configuration, or the **Rerun Automatically** toggle in the test tree toolbar, to keep the runner watching (`jest --watchAll`, `vitest watch`). After each edit the tests run again in the same tab, and each cycle's results replace the previous ones in the tree. **Stop**, turning the toggle off, or closing the tab ends the watcher. Debug, **Rerun Failed Tests** and runs of selected tests run once. A script that runs `vitest run` is started as `vitest watch` through the package manager; a script that runs more than Jest or Vitest (`jest && eslint .`, `tsc && vitest run`) runs once.
 
 ## Navigate between code and tests
 

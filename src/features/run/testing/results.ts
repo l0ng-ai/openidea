@@ -172,6 +172,10 @@ export class TestResults {
           this.roots.length = 0;
           this.byId.clear();
           this.summary = {};
+          this.finished = false;
+          break;
+        case "end":
+          this.finished = true;
           break;
       }
     }

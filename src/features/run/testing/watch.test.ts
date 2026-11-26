@@ -69,6 +69,19 @@ describe("watch mode cycles", () => {
       ["zero", "passed"],
     ]);
     expect(tests.counts()).toMatchObject({ passed: 1, failed: 1, total: 2 });
+    expect(tests.finished).toBe(true);
+  });
+
+  it("ends each cycle once and starts the next one unfinished", () => {
+    const parser = jsParser(true);
+    const tests = new TestResults();
+    const lines = JEST_CYCLES.split("\n");
+    const firstEnd = lines.findIndex((l) => l.startsWith("Tests:"));
+    for (const l of lines.slice(0, firstEnd + 3)) tests.apply(parser.feed(l));
+    expect(tests.finished).toBe(true);
+    tests.apply(parser.feed("FAIL src/sum.test.js"));
+    expect(tests.finished).toBe(false);
+    expect(parseAll(jsParser(true), JEST_CYCLES).filter((e) => e.type === "end")).toHaveLength(2);
   });
 
   it("replaces the tree with each Vitest cycle", () => {
@@ -85,23 +98,37 @@ describe("watch mode cycles", () => {
   });
 });
 
+const script = (text: string, pre = false) => ({ text, pre });
+
 describe("watchLaunch", () => {
   it("appends the watch flag to a package.json script", () => {
-    expect(watchLaunch(cfg({}), "jest")?.args).toEqual(["run", "test", "--", "--watchAll"]);
-    expect(watchLaunch(cfg({ command: "pnpm", args: ["run", "test"] }), "vitest --config v.ts")?.args).toEqual([
+    expect(watchLaunch(cfg({}), script("tsc && jest", true))?.args).toEqual(["run", "test", "--", "--watchAll"]);
+    expect(watchLaunch(cfg({ command: "pnpm" }), script("vitest --config v.ts"))?.args).toEqual([
       "run",
       "test",
       "--watch",
     ]);
   });
 
-  it("starts `vitest watch` for a script running `vitest run`", () => {
-    const watched = watchLaunch(cfg({ args: ["run", "test", "--", "tests/a.test.ts"] }), "CI=1 vitest run --dir src");
+  it("starts `vitest watch` through the package manager for a script running `vitest run`", () => {
+    const watched = watchLaunch(
+      cfg({ args: ["run", "test", "--", "tests/a.test.ts"] }),
+      script("CI=1 vitest run --dir src"),
+    );
     expect(watched).toMatchObject({
-      command: "npx",
-      args: ["--no", "vitest", "watch", "--dir", "src", "tests/a.test.ts"],
+      command: "npm",
+      args: ["exec", "--", "vitest", "watch", "--dir", "src", "tests/a.test.ts"],
       env: { CI: "1" },
     });
+    expect(watchLaunch(cfg({ command: "yarn" }), script("vitest run"))?.args).toEqual(["vitest", "watch"]);
+    expect(watchLaunch(cfg({ command: "pnpm" }), script("vitest run"))?.args).toEqual(["exec", "vitest", "watch"]);
+  });
+
+  it("runs once when the watch flag would reach another tool or steps would be skipped", () => {
+    expect(watchLaunch(cfg({}), script("jest && eslint ."))).toBeNull();
+    expect(watchLaunch(cfg({}), script("tsc && vitest run"))).toBeNull();
+    expect(watchLaunch(cfg({}), script("vitest run", true))).toBeNull();
+    expect(watchLaunch(cfg({}), script("cross-env CI=1 vitest run"))).toBeNull();
   });
 
   it("changes the runner's own command line", () => {
@@ -117,7 +144,9 @@ describe("watchLaunch", () => {
   });
 
   it("is null without Jest or Vitest", () => {
-    expect(watchLaunch(cfg({}), "mocha")).toBeNull();
+    expect(watchLaunch(cfg({}), script("mocha"))).toBeNull();
     expect(watchLaunch(cfg({}), null)).toBeNull();
+    // `bun test` is Bun's own runner, not the `test` script.
+    expect(watchLaunch(cfg({ kind: "bun", command: "bun", args: ["test"] }), script("vitest"))).toBeNull();
   });
 });
