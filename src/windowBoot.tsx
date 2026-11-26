@@ -13,7 +13,7 @@ import { installReorderedTapClick } from "./platform/reordered-tap-click";
 import { hideSplash } from "./platform/splash";
 import { installMiddleClickPasteGuard, installWebKitClipboardGuard } from "./platform/webkitClipboard";
 import { prefetchLazyComponents } from "./ui";
-import { installWindowDrag } from "./workbench/window-drag";
+import { installFullscreenDragGuard, installWindowDrag, trackFullscreen } from "./workbench/window-drag";
 
 export type Activate = () => void | (() => void);
 
@@ -52,6 +52,7 @@ export async function installCommonWindowBoot(): Promise<void> {
   installWindowDrag({
     toggleMaximize: () => call(commands.windowToggleZoom()).catch((e) => console.warn("cannot zoom the window", e)),
   });
+  if (guessOs() !== "macos" && isTauri()) installFullscreenDragGuard(trackFullscreen());
   installPointerFocus();
   installMiddleClickLinks();
   installImeKeyGuard();
