@@ -185,6 +185,15 @@ describe("expansion", () => {
       'import React from "react";\n\nexport default class UserCard extends React.Component {\n  render() {\n    return (\n      <div>\n        |\n      </div>\n    );\n  }\n}',
     );
     expect(expand("typescriptreact", "rcc")).toContain("class UserCard extends React.Component<Props> {");
+
+    const nameFrom = (file: string) =>
+      evaluateExpression("componentName(fileNameWithoutExtension())", { fileNameWithoutExtension: () => file });
+    expect(nameFrom("APIClient")).toBe("APIClient");
+    expect(nameFrom("UIButton")).toBe("UIButton");
+    expect(nameFrom("user_card")).toBe("UserCard");
+    expect(nameFrom("404")).toBe("Component404");
+    expect(nameFrom("2fa-form")).toBe("Component2faForm");
+    expect(nameFrom("")).toBe("");
   });
 
   it("writes PHP variables with their $", () => {

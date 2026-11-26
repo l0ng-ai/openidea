@@ -122,7 +122,7 @@ function reactComponents(tsx: boolean): LiveTemplate[] {
   const props = tsx ? "type Props = {};\n\n" : "";
   const param = tsx ? "{}: Props" : "";
   const render = (t: string) => `${t}return (\n${t}\t<div>\n${t}\t\t$END$\n${t}\t</div>\n${t});\n`;
-  const variables = [v("NAME", "pascalCase(fileNameWithoutExtension())", '"Component"', true)];
+  const variables = [v("NAME", "componentName(fileNameWithoutExtension())", '"Component"', true)];
   const defs: Def[] = [
     {
       abbrev: "rfc",
