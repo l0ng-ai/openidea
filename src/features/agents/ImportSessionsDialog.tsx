@@ -201,7 +201,7 @@ function ImportSessionsDialog() {
       }
       buttons={[
         { label: "Cancel", role: "cancel" },
-        { label: forkLabel, role: "cancel", onClick: forkChosen, disabled: busy || !shown || !chosen.length },
+        { label: forkLabel, onClick: forkChosen, disabled: busy || !shown || !chosen.length },
         { label: importLabel, role: "default", onClick: importChosen, disabled: busy || !shown || !chosen.length },
       ]}
     >
