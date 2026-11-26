@@ -48,8 +48,8 @@ export function cypressParser(specs: readonly string[] = []): TestOutputParser {
   return {
     feed(raw) {
       const line = stripAnsi(raw);
-      const wrapped = wrapping !== null ? WRAPPED_RE.exec(line) : null;
-      if (wrapped && !line.includes("##teamcity[")) {
+      const wrapped = WRAPPED_RE.exec(line);
+      if (wrapping !== null && wrapped && !line.includes("##teamcity[")) {
         wrapping += wrapped[1]!;
         file = specFile(wrapping, specs);
         return [];

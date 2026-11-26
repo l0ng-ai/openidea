@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { ProjectInfo, RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { testBasesFor, testConfigFor } from "../context";
-import { cypressType, withCypressExpose } from "../cypressType";
+import { provideNotificationService, type NotificationService } from "@/workbench/contributions";
+import { cypressType, prepareCypressLaunch } from "../cypressType";
 import { detectRunTargets, targetConfig } from "../targets";
 import { formParams } from "../types";
 import { cypressSpecs } from "./cypress";
@@ -250,17 +251,27 @@ describe("Cypress Rerun Failed Tests", () => {
     useProject.setState({
       project: { root: "/p", name: "p", trusted: true, isGit: false, settings: {} as ProjectInfo["settings"] },
     });
+    const notify = vi.fn();
+    provideNotificationService({ notify } as unknown as NotificationService);
     const selected = { ...script, args: ["run", "cy:run", "--", "--spec", "a.cy.ts"], env: { CYPRESS_grep: "a b" } };
-    expect(await withCypressExpose(selected)).toEqual(selected);
-    installed.files["/p/node_modules/cypress/package.json"] = '{"version":"15.9.1"}';
-    expect(await withCypressExpose(selected)).toEqual(selected);
+    // No grep plugin: the whole spec runs, and a notification says so.
     installed.files["/p/node_modules/cypress/package.json"] = '{"version":"16.4.0"}';
-    expect((await withCypressExpose({ ...selected, cwd: "web" })).args).toEqual([
+    installed.files["/p/package.json"] = '{"devDependencies":{"cypress":"^16.0.0"}}';
+    expect(await prepareCypressLaunch(selected)).toEqual(selected);
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify.mock.calls[0]![0]).toMatchObject({ key: "cypress-grep", title: "Cypress ran the whole spec file" });
+    notify.mockClear();
+    // A workspace member: the plugin and Cypress are found in the folders above it.
+    installed.files["/p/package.json"] = '{"devDependencies":{"cypress":"^16.0.0","@cypress/grep":"^7.0.0"}}';
+    expect((await prepareCypressLaunch({ ...selected, cwd: "web" })).args).toEqual([
       ...selected.args,
       "--expose",
       '{"grep":"a b","grepOmitFiltered":true}',
     ]);
+    installed.files["/p/node_modules/cypress/package.json"] = '{"version":"15.9.1"}';
+    expect(await prepareCypressLaunch(selected)).toEqual(selected);
     // Whole specs need no selection.
-    expect(await withCypressExpose({ ...selected, env: {} })).toEqual({ ...selected, env: {} });
+    expect(await prepareCypressLaunch({ ...selected, env: {} })).toEqual({ ...selected, env: {} });
+    expect(notify).not.toHaveBeenCalled();
   });
 });

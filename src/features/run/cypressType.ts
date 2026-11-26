@@ -3,7 +3,7 @@
  * the testing type (end-to-end or component), the browser, the specs and further options.
  */
 import { call, commands, type RunConfig } from "@/platform/ipc";
-import type { RunConfigTypeContribution } from "@/workbench/contributions";
+import { notifications, type RunConfigTypeContribution } from "@/workbench/contributions";
 import { formatArgs, parseArgs } from "./configs";
 import { joinPath } from "./links";
 import { runDirectory } from "./navigate";
@@ -12,35 +12,67 @@ import { CYPRESS_GREP } from "./testing/cypress";
 
 const BROWSERS = ["chrome", "chromium", "edge", "electron", "firefox"];
 
-async function versionIn(dir: string): Promise<[number, number] | null> {
-  try {
-    const pkg = JSON.parse(await call(commands.fsReadText(joinPath(dir, "node_modules/cypress/package.json"))));
-    const m = /^(\d+)\.(\d+)/.exec(String(pkg.version));
-    return m ? [Number(m[1]), Number(m[2])] : null;
-  } catch {
-    return null;
-  }
-}
+/** Plugins that select tests by the titles in `grep` (`@cypress/grep` and its predecessors). */
+const GREP_PLUGINS = ["@cypress/grep", "cypress-grep", "@bahmutov/cy-grep"];
 
-/** The installed Cypress's `[major, minor]`: its package in the run directory or a folder above it in the project (workspaces). */
-async function cypressVersion(cwd: string | null | undefined): Promise<[number, number] | null> {
+/** The run directory and the project folders above it (workspaces keep dependencies at the root). */
+function searchDirs(cwd: string | null | undefined): string[] {
   const root = runDirectory(null);
   const dirs: string[] = [];
   for (let dir = runDirectory(cwd); dir.startsWith(root); dir = dir.slice(0, dir.lastIndexOf("/"))) {
     dirs.push(dir);
     if (dir === root) break;
   }
-  return (await Promise.all(dirs.map(versionIn))).find((v) => v !== null) ?? null;
+  return dirs;
+}
+
+async function readJson(path: string): Promise<Record<string, unknown> | null> {
+  try {
+    return JSON.parse(await call(commands.fsReadText(path))) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+/** The installed Cypress's `[major, minor]`. */
+async function versionIn(dir: string): Promise<[number, number] | null> {
+  const pkg = await readJson(joinPath(dir, "node_modules/cypress/package.json"));
+  const m = /^(\d+)\.(\d+)/.exec(String(pkg?.version));
+  return m ? [Number(m[1]), Number(m[2])] : null;
+}
+
+/** Whether `dir/package.json` depends on a grep plugin. */
+async function dependsOnGrep(dir: string): Promise<boolean> {
+  const pkg = await readJson(joinPath(dir, "package.json"));
+  const deps = [pkg?.dependencies, pkg?.devDependencies].flatMap((d) => Object.keys(d ?? {}));
+  return deps.some((d) => GREP_PLUGINS.includes(d));
 }
 
 /**
- * The titles a run selects (`CYPRESS_grep`) as `--expose grep=…` too, where `@cypress/grep` 7 reads them:
- * Cypress 15.10 added `--expose`, which older versions reject.
+ * A run selecting tests by title (`CYPRESS_grep`): with a grep plugin, also as `--expose grep=…`, where
+ * `@cypress/grep` 7 reads it (Cypress 15.10 added `--expose`, which older versions reject). Without one,
+ * the whole spec runs: a notification says so, so the run doesn't pass for the selected tests alone.
  */
-export async function withCypressExpose<T extends RunConfig>(config: T): Promise<T> {
+export async function prepareCypressLaunch<T extends RunConfig>(config: T): Promise<T> {
   const grep = config.env[CYPRESS_GREP];
-  if (!grep || config.args.some((a) => a === "--expose" || a.startsWith("--expose="))) return config;
-  const version = await cypressVersion(config.cwd);
+  if (!grep) return config;
+  const dirs = searchDirs(config.cwd);
+  const [plugins, versions] = await Promise.all([
+    Promise.all(dirs.map(dependsOnGrep)),
+    Promise.all(dirs.map(versionIn)),
+  ]);
+  if (!plugins.includes(true)) {
+    notifications().notify({
+      group: "run",
+      level: "info",
+      key: "cypress-grep",
+      title: "Cypress ran the whole spec file",
+      body: "Cypress can select tests by name only through a grep plugin such as @cypress/grep, which this project doesn't depend on: every test of the spec ran.",
+    });
+    return config;
+  }
+  const version = versions.find((v) => v !== null);
+  if (config.args.some((a) => a === "--expose" || a.startsWith("--expose="))) return config;
   if (!version || version[0] < 15 || (version[0] === 15 && version[1] < 10)) return config;
   return {
     ...config,
@@ -56,7 +88,7 @@ export const cypressType: RunConfigTypeContribution = {
   defaults: { testingType: "e2e" },
   ownsWorkingDirectory: true,
   terminal: false,
-  prepareLaunch: withCypressExpose,
+  prepareLaunch: prepareCypressLaunch,
   fields: [
     {
       key: "packageDir",
