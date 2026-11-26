@@ -302,7 +302,6 @@ impl PluginHost {
         self.shared.run_configurations.write().retain(|(p, r), _| r != root || owners.contains(p));
         for plugin in owners {
             let project = root.to_path_buf();
-            let generation = self.shared.project_generation(root).ok();
             let invocation = ide_plugin::Invocation { workspace_root: Some(project.clone()), ..Default::default() };
             let result = self.code_call(&plugin, invocation, "run-configurations", |rt, ctx| {
                 rt.run_configurations(
@@ -311,12 +310,6 @@ impl PluginHost {
                 )
             });
             let Ok(items) = result else { continue };
-            if let Some(expected) = generation
-                && self.shared.project_generation(root).is_ok_and(|cur| cur != expected)
-            {
-                tracing::debug!(%plugin, "dropping stale run configurations");
-                continue;
-            }
             if let Err(error) = validate_configurations(root, &items) {
                 tracing::warn!(%plugin, %error, "invalid run configurations");
                 continue;

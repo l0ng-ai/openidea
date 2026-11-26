@@ -1813,8 +1813,8 @@ impl PluginHost {
     }
 
     /// A project closed (or the last window for it detached). Closes the project
-    /// generation, drops queued events for that window and project, cancels in-flight
-    /// actor work for it, withdraws run targets and run configurations, and delivers
+    /// generation, drops queued events for that window and project, withdraws run
+    /// targets and run configurations, and delivers
     /// `project-closed` to subscribed plugins.
     pub fn project_closed(&self, root: &Path, window: &str) {
         self.shared.close_project_generation(root);
@@ -1848,11 +1848,10 @@ impl PluginHost {
                     client.as_deref() != Some(window) && ws_root.as_deref() != Some(root)
                 });
             }
-            if let Some(actor) = p.runtime.lock().as_ref() {
-                actor.cancel_soft();
-            }
         }
         drop(plugins);
+        // In-flight work is not cancelled: an instance serves every project, and its
+        // results for this one are refused now that the project's generation moved on.
 
         self.post_events(None, vec![WorkbenchEvent::ProjectClosed(root_ipc)]);
         self.flush_events();

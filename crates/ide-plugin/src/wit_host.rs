@@ -2609,8 +2609,10 @@ impl StoreData {
         }
         let res = self.table.get(&project)?;
         let root = res.root.clone();
-        let generation = res.generation;
-        Ok(self.host.register_run_target(&root, target, Some(generation)).map_err(to_wit))
+        // Components built for API 1.18 or later have a registration from an outdated
+        // handle refused; older ones keep registering whatever the generation.
+        let generation = self.host.require_api("project.generation", 18).is_ok().then_some(res.generation);
+        Ok(self.host.register_run_target(&root, target, generation).map_err(to_wit))
     }
 }
 

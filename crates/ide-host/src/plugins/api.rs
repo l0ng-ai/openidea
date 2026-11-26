@@ -796,8 +796,10 @@ impl Shared {
         *cur
     }
 
+    /// Moves a closed project's generation on rather than forgetting it, so a handle
+    /// taken before the close stays stale if the project is opened again.
     pub(super) fn close_project_generation(&self, root: &Path) {
-        self.project_generations.lock().remove(root);
+        self.bump_project_generation(root);
     }
 
     pub(super) fn workspace(&self) -> Option<Arc<dyn PluginWorkspace>> {
