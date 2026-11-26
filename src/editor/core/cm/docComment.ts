@@ -2,7 +2,8 @@
  * Smart Keys › Enter › Insert documentation comment stub: Enter right after a `/**` that opens a
  * new comment closes it, the caret on the summary line. In PHP the stub of a function lists its
  * parameters (`@param`) and return type (`@return`), as PhpStorm does; in Java a method's,
- * constructor's or generic type's parameters, return value and exceptions, as IDEA does.
+ * constructor's or generic type's parameters, return value and exceptions, as IDEA does; in
+ * JavaScript / TypeScript a function's parameters and result, as WebStorm does.
  */
 import { ensureSyntaxTree, language, syntaxTree } from "@codemirror/language";
 import type { SyntaxNode } from "@lezer/common";
@@ -220,26 +221,127 @@ function paramList(text: string, open: number): { params: string; after: string 
   return null;
 }
 
-/** `@param` / `@returns` lines for the JavaScript / TypeScript function declared in `text`. */
-export function jsDocTags(text: string): string[] {
+/** The JSDoc type of a default value (`= "a"`, `= 1`, `= []`, `= new Map()`), when it shows one. */
+function defaultType(value: string): string | undefined {
+  if (/^["'`]/.test(value)) return "string";
+  if (/^-?\.?\d[\w.]*$/.test(value)) return value.endsWith("n") ? "bigint" : "number";
+  if (/^(true|false)$/.test(value)) return "boolean";
+  if (value.startsWith("[")) return "Array";
+  if (value.startsWith("{")) return "Object";
+  return /^new\s+([\w$.]+)/.exec(value)?.[1];
+}
+
+/** Code with string literals and comments emptied, so their text is not read as code. */
+const STRINGS_AND_COMMENTS = /\/\/[^\n]*|\/\*[\s\S]*?\*\/|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|`(?:\\.|[^`\\])*`/g;
+/** What ends right before the `{` of a nested function body: `=>`, `function f(…)` or a method `f(…)`. */
+const NESTED_BODY =
+  /(?:=>|\bfunction\b[^{};]*|(?:^|[^\w$.])(?!(?:if|for|await|while|switch|catch|with)\b)[\w$]+\s*\([^(){};]*\))\s*$/;
+
+/**
+ * Whether the block at the start of `code` returns a value (`return x`), not counting the
+ * functions declared in it.
+ */
+// A text scan, not a parse: a regex literal or a `${}` with braces in a template can mislead it.
+function returnsValue(code: string): boolean {
+  const s = code.replace(STRINGS_AND_COMMENTS, '""');
+  let depth = 0;
+  let nested = Infinity;
+  for (const m of s.matchAll(/[{}]|\breturn\b[ \t]*([^\s;}])?/g)) {
+    if (m[0] === "{") {
+      depth++;
+      if (depth > 1 && nested === Infinity && NESTED_BODY.test(s.slice(Math.max(0, m.index - 200), m.index)))
+        nested = depth;
+    } else if (m[0] === "}") {
+      if (depth === nested) nested = Infinity;
+      if (--depth <= 0) return false;
+    } else if (m[1] && depth > 0 && nested === Infinity) return true;
+  }
+  return false;
+}
+
+/**
+ * The declared result type in `after` (the code after a parameter list) and the body that follows
+ * it: a block for a method or function declaration, `=>` for an arrow. Null when neither follows.
+ */
+function signature(after: string): { declared?: string; arrow: boolean; body: string } | null {
+  let s = after.trimStart();
+  let declared: string | undefined;
+  if (s.startsWith(":")) {
+    let depth = 0;
+    let i = 1;
+    for (; i < s.length; i++) {
+      const arrow = s.startsWith("=>", i);
+      // A `{` ends the type once some type is there (`{ x: number } {`, not `A | {`).
+      if (depth === 0 && (arrow || (s[i] === "{" && /[^\s|&:,]\s*$/.test(s.slice(1, i))))) break;
+      if (arrow) i++;
+      else if ("{(<[".includes(s[i]!)) depth++;
+      else if ("})>]".includes(s[i]!) && --depth < 0) return null;
+    }
+    declared = s.slice(1, i).trim();
+    s = s.slice(i);
+  }
+  if (s.startsWith("=>")) return { declared, arrow: true, body: s.slice(2).trimStart() };
+  return s.startsWith("{") ? { declared, arrow: false, body: s } : null;
+}
+
+/**
+ * `@param` / `@returns` lines for the JavaScript / TypeScript function declared in `text`, as
+ * WebStorm writes them: rest parameters as `...name`, a destructured one as `options`, and in
+ * JavaScript (`withTypes`) the `{type}` a default value shows. `@returns` when a declared result
+ * isn't void, or without one when the body returns a value; never for a constructor.
+ */
+export function jsDocTags(text: string, withTypes = false): string[] {
   const head = text.trimStart();
   const decl =
-    /^(?:export\s+(?:default\s+)?)?(?:async\s+)?function\s*\*?\s*[\w$]*\s*(?:<[^(]*>)?\s*(?=\()/.exec(head) ??
-    /^(?:export\s+)?(?:const|let|var)\s+[\w$]+\s*(?::[^=]+)?=\s*(?:async\s+)?(?:<[^(]*>)?\s*(?=\()/.exec(head) ??
-    /^(?:(?:public|private|protected|static|async|override|readonly|abstract|get|set)\s+)*(?!(?:if|for|while|switch|catch|return|function)\b)[\w$]+\s*(?:<[^(]*>)?\s*(?=\()/.exec(
+    /^(?:export\s+(?:default\s+)?)?(?:async\s+)?function\s*\*?\s*([\w$]*)\s*(?:<[^(]*>)?\s*(?=\()/.exec(head) ??
+    /^(?:export\s+)?(?:const|let|var)\s+([\w$]+)\s*(?::[^=]+)?=\s*(?:async\s+)?(?:function\s*\*?\s*[\w$]*\s*)?(?:<[^(]*>)?\s*(?=\(|[\w$]+\s*=>)/.exec(
+      head,
+    ) ??
+    /^(?:(?:public|private|protected|static|async|override|readonly|abstract|get|set)\s+)*\*?\s*(?!(?:if|for|while|switch|catch|return|function)\b)([\w$]+)\s*(?:<[^(]*>)?\s*(?=\()/.exec(
       head,
     );
   if (!decl) return [];
-  const list = paramList(head, decl[0].length);
+  // `x => …`: a single parameter without parentheses.
+  const bare = /^([\w$]+)\s*=>/.exec(head.slice(decl[0].length));
+  const list = bare
+    ? { params: bare[1]!, after: head.slice(decl[0].length + bare[1]!.length) }
+    : paramList(head, decl[0].length);
   if (!list) return [];
-  // A method or function declaration has its body next; an arrow has `=>`.
-  if (!/^\s*(:[^{=]*)?(\{|=>)/.test(list.after)) return [];
-  const tags = splitParams(list.params).flatMap((p) => {
-    const m = /^(?:(?:public|private|protected|readonly|override)\s+)*(?:\.\.\.)?([\w$]+)/.exec(p);
-    return m && m[1] !== "this" ? [`@param ${m[1]}`] : [];
+  const sig = signature(list.after);
+  if (!sig) return [];
+  let destructured = 0;
+  const tags = splitParams(list.params).flatMap((param) => {
+    const p = param.replace(/^(?:(?:public|private|protected|readonly|override)\s+)*/, "");
+    const rest = p.startsWith("...") ? "..." : "";
+    const q = p.slice(rest.length).trimStart();
+    let name: string;
+    let tail: string;
+    if (q[0] === "{" || q[0] === "[") {
+      let depth = 0;
+      let end = 0;
+      for (; end < q.length; end++) {
+        if ("{[(".includes(q[end]!)) depth++;
+        else if ("}])".includes(q[end]!) && --depth === 0) break;
+      }
+      name = `options${destructured++ || ""}`;
+      tail = q.slice(end + 1);
+    } else {
+      const n = /^[\w$]+/.exec(q)?.[0];
+      if (!n || n === "this") return [];
+      name = n;
+      tail = q.slice(n.length);
+    }
+    const value = /^\s*\??\s*(?::[^=]*)?=\s*([\s\S]+)$/.exec(tail)?.[1];
+    const type = withTypes && !rest && value ? defaultType(value.trim()) : undefined;
+    return [type ? `@param {${type}} ${rest}${name}` : `@param ${rest}${name}`];
   });
-  const ret = /^\s*:\s*([^{=]+?)\s*(\{|=>)/.exec(list.after)?.[1];
-  if (ret && !/^(void|undefined|never|Promise<void>)$/.test(ret.replace(/\s+/g, ""))) tags.push("@returns");
+  if (decl[1] === "constructor") return tags;
+  const declared = sig.declared?.replace(/\s+/g, "");
+  // An arrow's expression body is its result.
+  const returns = declared
+    ? !/^(void|undefined|never|Promise<void>)$/.test(declared)
+    : (sig.arrow && !sig.body.startsWith("{")) || returnsValue(sig.body);
+  if (returns) tags.push("@returns");
   return tags;
 }
 
@@ -410,7 +512,7 @@ export function enterInDocComment(language: string | undefined): Command {
         : language === "java"
           ? javaDocTags(code)
           : /^(java|type)script(react)?$/.test(language ?? "")
-            ? jsDocTags(code)
+            ? jsDocTags(code, language!.startsWith("javascript"))
             : /^(c|cpp|objective-c|objective-cpp)$/.test(language ?? "")
               ? cDocTags(code)
               : [];

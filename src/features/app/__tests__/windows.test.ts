@@ -12,6 +12,7 @@ const windowGroupJoin = vi.fn();
 const windowTakeLaunch = vi.fn();
 const windowCompleteLaunch = vi.fn();
 const wslResolve = vi.fn();
+const windowOpenRemote = vi.fn();
 const cancelClose = vi.fn();
 const notify = vi.fn();
 const listen = vi.fn();
@@ -51,6 +52,7 @@ vi.mock("@/platform/ipc", async (orig) => {
       windowTakeLaunch: () => windowTakeLaunch(),
       windowCompleteLaunch: () => windowCompleteLaunch(),
       wslResolve: (p: string) => wslResolve(p),
+      windowOpenRemote: (...a: unknown[]) => windowOpenRemote(...a),
       lightEditOpen: (p: string) => lightEditOpen(p),
       fsReadDir: (p: string) => fsReadDir(p),
     },
@@ -265,6 +267,14 @@ describe("a recent project opened with a modifier key", () => {
     expect(windowOpenProject).toHaveBeenLastCalledWith("/p/b", true, []);
     await action.run({ arg: "/p/b" } as never);
     expect(windowOpenProject).toHaveBeenLastCalledWith("/p/b", false, []);
+  });
+
+  it("opens a Remote Development project from Open Recent on its host (#6124)", async () => {
+    windowOpenRemote.mockResolvedValue(ok({ kind: "focused" }));
+    const action = windowActions().find((a) => a.id === "file.openRecentProject")!;
+    await action.run({ arg: "wsl://Ubuntu/home/me/api" } as never);
+    expect(windowOpenRemote).toHaveBeenCalledWith({ kind: "wsl", distro: "Ubuntu" }, "/home/me/api", false);
+    expect(windowOpenProject).not.toHaveBeenCalled();
   });
 });
 

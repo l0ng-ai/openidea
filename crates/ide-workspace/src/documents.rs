@@ -29,8 +29,8 @@ pub struct DocumentInfo {
     /// (archive entries, JDT sources with an editable attachment encoding,
     /// Git revisions); false for server-generated content (decompiled code).
     pub can_reload_encoding: bool,
-    /// Larger than `ide_vfs::LARGE_FILE_THRESHOLD`: language servers, syntax
-    /// structure and folding are disabled; the editor should drop heavy features.
+    /// Marks files above `ide_vfs::LARGE_FILE_THRESHOLD` for reduced editor
+    /// features such as disabling language servers and folding.
     #[specta(optional)]
     pub large: bool,
     /// Effective `.editorconfig` properties, when any section applies.
@@ -919,6 +919,20 @@ impl Documents {
     /// on disk after this buffer was edited, which only an explicit save may overwrite.
     pub fn autosave(&self, doc: DocId) -> IdeResult<bool> {
         self.with_doc(doc, |st| {
+            // The watcher event for an external write may not have arrived yet: check the stamp now.
+            if st.dirty
+                && !st.disk_conflict
+                && st.uri.is_none()
+                && let Ok(meta) = std::fs::metadata(&st.path)
+                && (ide_vfs::mtime_ms(&meta) != st.disk_mtime || meta.len() != st.disk_len)
+            {
+                st.disk_mtime = ide_vfs::mtime_ms(&meta);
+                st.disk_len = meta.len();
+                st.disk_conflict = true;
+                // The text read before no longer matches the file: undoing back to it is not clean.
+                st.clean_text = None;
+                self.sink.emit(IdeEvent::DocDiskConflict { doc, path: st.path.to_string_lossy().into_owned() });
+            }
             if st.dirty && st.disk_conflict {
                 return Ok(false);
             }

@@ -1,6 +1,6 @@
 /** IDE-rendered plugin settings; every control edits the dialog's staged form. */
 import { useMemo, useRef, useState } from "react";
-import { tx } from "@/platform/i18n";
+import { tx, VerbatimTextContext } from "@/platform/i18n";
 import { Button, Checkbox, IconButton, Input, Select, T } from "@/ui";
 import { registerSettingsPages, useSettingsForm } from "@/workbench/contributions";
 import { pluginsBackend } from "./backend";
@@ -73,6 +73,27 @@ function ValueControl({
   cell?: boolean;
 }) {
   if (s.type === "array") return <ArrayControl s={s} value={value as unknown[]} set={set} />;
+  // Titles and options come from the plugin, already in its own translation.
+  return (
+    <VerbatimTextContext.Provider value={true}>
+      <ScalarControl s={s} value={value} set={set} label={label} cell={cell} />
+    </VerbatimTextContext.Provider>
+  );
+}
+
+function ScalarControl({
+  s,
+  value,
+  set,
+  label,
+  cell,
+}: {
+  s: SettingSchema;
+  value: unknown;
+  set(value: unknown): void;
+  label: string;
+  cell: boolean;
+}) {
   if (s.type === "boolean")
     return <Checkbox checked={value === true} label={cell ? undefined : s.title} aria-label={label} onChange={set} />;
   if (s.options)
@@ -80,7 +101,7 @@ function ValueControl({
       <Select
         aria-label={label}
         value={String(value)}
-        options={s.options.map((o) => ({ value: o, label: o }))}
+        options={s.options.map((o) => ({ value: o, label: o, verbatim: true }))}
         onChange={set}
       />
     );

@@ -15,6 +15,109 @@ fn write(root: &Path, rel: &str, text: &str) {
     fs::write(path, text).unwrap();
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pom_launch_uses_dependency_classpath_without_a_java_project() {
+    let has_jdk = std::env::var_os("JAVA_HOME").is_some_and(|h| Path::new(&h).join("bin").is_dir());
+    if !has_jdk || ide_core::process::find_executable("mvn", &ide_core::tool_path::search_path()).is_none() {
+        eprintln!("skipped: needs JAVA_HOME and mvn");
+        return;
+    }
+    for (jdtls, delegate) in [(false, false), (true, false), (true, true)] {
+        let temp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(temp.path()).unwrap();
+        let root = base.join("project");
+        let pom = include_str!("../../ide-build/tests/fixtures/jbuild-maven/pom.xml")
+            .replace("</modules>", "<module>assembly</module></modules>");
+        write(&root, "pom.xml", &pom);
+        write(&root, "lib/pom.xml", include_str!("../../ide-build/tests/fixtures/jbuild-maven/lib/pom.xml"));
+        write(&root, "app/pom.xml", include_str!("../../ide-build/tests/fixtures/jbuild-maven/app/pom.xml"));
+        write(
+            &root,
+            "assembly/pom.xml",
+            r#"<project><modelVersion>4.0.0</modelVersion>
+            <parent><groupId>t</groupId><artifactId>root</artifactId><version>1</version></parent>
+            <artifactId>assembly</artifactId><packaging>pom</packaging>
+            <dependencies>
+              <dependency><groupId>t</groupId><artifactId>app</artifactId><version>1</version><scope>runtime</scope></dependency>
+              <dependency><groupId>org.slf4j</groupId><artifactId>slf4j-api</artifactId><version>1.7.36</version></dependency>
+            </dependencies></project>"#,
+        );
+        write(
+            &root,
+            "lib/src/main/java/l/L.java",
+            "package l;\npublic class L { public static String name() { return \"lib\"; } }\n",
+        );
+        let main = "package a;\npublic class A { public static void main(String[] args) throws Exception { Class.forName(\"org.slf4j.Logger\"); System.out.println(l.L.name()); } }\n";
+        write(&root, "app/src/main/java/a/A.java", main);
+        let global = SettingsStore::load(&base.join("config"), None);
+        for server in ["jdtls", "java-analyzer", "kmp-lsp"] {
+            global
+                .set(
+                    SettingsScope::Global,
+                    &format!("languageServers.{server}.enabled"),
+                    serde_json::json!(server == "jdtls" && jdtls),
+                )
+                .unwrap();
+        }
+        global.set(SettingsScope::Global, "languages.java.maven.delegateBuild", serde_json::json!(delegate)).unwrap();
+        global
+            .set(
+                SettingsScope::Global,
+                "languageServers.jdtls.command",
+                serde_json::json!(root.join("must-not-start-jdtls")),
+            )
+            .unwrap();
+        let host = Host::new(common::host_config(&base));
+        host.trust.decide(&root, true, false).unwrap();
+        host.open_project("main", &root).unwrap();
+        let module = root.join("assembly");
+        assert_eq!(host.project("main").unwrap().lsp.java_served_by_jdtls(&module), jdtls);
+
+        for (policy, debug) in [
+            (BuildPolicy::Make, false),
+            (BuildPolicy::NoBuild, false),
+            (BuildPolicy::NoBuild, true),
+            (BuildPolicy::Rebuild, true),
+        ] {
+            if policy == BuildPolicy::NoBuild {
+                write(&root, "app/src/main/java/a/A.java", "this must not be compiled");
+            } else {
+                write(&root, "app/src/main/java/a/A.java", main);
+            }
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let sink = events.clone();
+            let info = ops::java::java_resolve_launch(
+                &host,
+                "main",
+                module.clone(),
+                false,
+                debug,
+                policy,
+                RequestId::next(),
+                ops::Channel::new(move |event: BuildEvent| sink.lock().unwrap().push(event)),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("jdtls={jdtls}, delegate={delegate}, policy={policy:?}: {e:?}"));
+            assert_eq!(info.build.is_some(), policy != BuildPolicy::NoBuild);
+            assert!(info.class_paths.iter().any(|p| p.ends_with("slf4j-api-1.7.36.jar")), "{:?}", info.class_paths);
+            assert!(!info.class_paths.iter().any(|p| p.contains("t.assembly/classes")), "{:?}", info.class_paths);
+            let cp = std::env::join_paths(&info.class_paths).unwrap();
+            let out = std::process::Command::new(info.java_exec.as_ref().expect("resolved Java executable"))
+                .arg("-cp")
+                .arg(cp)
+                .arg("a.A")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "lib");
+            if policy == BuildPolicy::NoBuild {
+                assert!(!events.lock().unwrap().iter().any(|e| matches!(e, BuildEvent::Step { .. })));
+            }
+        }
+        host.shutdown().await;
+    }
+}
+
 /// A Maven launch compiles with the IDE's Java build (javac, outputs in the project cache)
 /// and runs from its outputs. Needs `mvn` and a JDK (`JAVA_HOME`), else it is skipped.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -27,24 +130,9 @@ async fn maven_launch_compiles_with_the_ides_java_build() {
     let temp = tempfile::tempdir().unwrap();
     let base = dunce::canonicalize(temp.path()).unwrap();
     let root = base.join("project");
-    write(
-        &root,
-        "pom.xml",
-        r#"<project><modelVersion>4.0.0</modelVersion><groupId>t</groupId><artifactId>root</artifactId><version>1</version><packaging>pom</packaging>
-<modules><module>lib</module><module>app</module></modules>
-<properties><maven.compiler.release>11</maven.compiler.release><project.build.sourceEncoding>UTF-8</project.build.sourceEncoding></properties></project>"#,
-    );
-    write(
-        &root,
-        "lib/pom.xml",
-        r#"<project><modelVersion>4.0.0</modelVersion><parent><groupId>t</groupId><artifactId>root</artifactId><version>1</version></parent><artifactId>lib</artifactId></project>"#,
-    );
-    write(
-        &root,
-        "app/pom.xml",
-        r#"<project><modelVersion>4.0.0</modelVersion><parent><groupId>t</groupId><artifactId>root</artifactId><version>1</version></parent><artifactId>app</artifactId>
-<dependencies><dependency><groupId>t</groupId><artifactId>lib</artifactId><version>1</version></dependency></dependencies></project>"#,
-    );
+    write(&root, "pom.xml", include_str!("../../ide-build/tests/fixtures/jbuild-maven/pom.xml"));
+    write(&root, "lib/pom.xml", include_str!("../../ide-build/tests/fixtures/jbuild-maven/lib/pom.xml"));
+    write(&root, "app/pom.xml", include_str!("../../ide-build/tests/fixtures/jbuild-maven/app/pom.xml"));
     write(
         &root,
         "lib/src/main/java/l/L.java",

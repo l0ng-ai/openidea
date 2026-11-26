@@ -43,6 +43,7 @@ impl Plugin for MyPlugin {
 | `file-saved`                                          | `events`       | A file is written                                                                       |
 | `file-closed`                                         | `events`       | A file's editor closes (API 1.4)                                                        |
 | `files-changed`                                       | `events`       | Files are created, modified or removed in open projects, debounced (API 1.3)            |
+| `watched-files-changed`                               | `events`       | Paths outside the project watched with `host::watch_paths` changed (API 1.18)           |
 | `editor-focused`                                      | `events`       | The focused editor changes                                                              |
 | `vcs-changed`                                         | `events`       | A repository's state changed (commit, checkout, fetch…)                                 |
 | `settings-changed`                                    | `events`       | Some of this plugin's settings changed (API 1.4)                                        |

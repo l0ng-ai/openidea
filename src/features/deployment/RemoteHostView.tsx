@@ -156,7 +156,7 @@ export function RemoteHostView() {
           className={styles.serverSelect}
           aria-label="Deployment server"
           value={server.id}
-          options={servers.map((s) => ({ value: s.id, label: serverLabel(s) }))}
+          options={servers.map((s) => ({ value: s.id, verbatim: true, label: serverLabel(s) }))}
           onChange={(id) => useDeployment.setState({ remoteServer: id })}
         />
         <IconButton icon="refresh" size="small" title="Refresh" onClick={() => void refreshAll(server)} />

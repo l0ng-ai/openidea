@@ -331,6 +331,26 @@ fn save_to_a_path_replaced_by_a_directory_preserves_the_dirty_buffer() {
 }
 
 #[test]
+fn autosave_checks_the_disk_before_the_watcher_reports_a_change() {
+    let f = fixture();
+    let path = f.root.join("notes.txt");
+    fs::write(&path, "alpha\nbeta\n").unwrap();
+    let info = f.docs.open(&path).unwrap();
+    f.docs.edit(info.id, 0, change(0, 5, "edited")).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    // An external write (git checkout, another editor) whose watcher event has not arrived yet.
+    fs::write(&path, "alpha\nbeta external\n").unwrap();
+
+    assert!(!f.docs.autosave(info.id).unwrap());
+    assert_eq!(fs::read_to_string(&path).unwrap(), "alpha\nbeta external\n");
+    assert!(f.docs.snapshot(info.id).unwrap().dirty);
+    assert!(
+        f.events.lock().iter().any(|e| matches!(e, IdeEvent::DocDiskConflict { doc, .. } if *doc == info.id)),
+        "the refused autosave must surface the conflict"
+    );
+}
+
+#[test]
 fn autosave_leaves_a_file_changed_on_disk_after_an_edit() {
     let f = fixture();
     let path = f.root.join("notes.txt");
@@ -1197,7 +1217,7 @@ fn untitled_buffers_are_editable_and_saved_to_a_chosen_path() {
     assert_eq!(f.docs.by_path(&target), Some(info.id));
     assert_eq!(f.docs.by_path(Path::new("untitled:Untitled-1")), None);
     f.docs.edit(info.id, version, change(0, 0, "// hi\n")).unwrap();
-    f.docs.save(info.id).unwrap();
+    assert!(f.docs.autosave(info.id).unwrap(), "Save As records the disk state autosave checks");
     assert!(!f.docs.is_dirty(info.id).unwrap());
     assert_eq!(fs::read_to_string(&target).unwrap(), "// hi\nfn main() {}\n");
 

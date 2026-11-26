@@ -290,6 +290,9 @@ const inlineBlameField = StateField.define<DecorationSet>({
   provide: (field) => EditorView.decorations.from(field),
 });
 
+/** Created once: every `EditorView.baseTheme` call mounts new CSS rules into the document. */
+const INLINE_BLAME_THEME = EditorView.baseTheme(inlineBlameTheme);
+
 export function inlineBlame(ctx: EditorDocContext): Extension {
   if (ctx.virtual || ctx.readOnly) return [];
   const plugin = ViewPlugin.fromClass(
@@ -488,6 +491,6 @@ export function inlineBlame(ctx: EditorDocContext): Extension {
         hideOn: (tr) => tr.effects.some((effect) => effect.is(setInlineBlame)),
       },
     ),
-    EditorView.baseTheme(inlineBlameTheme),
+    INLINE_BLAME_THEME,
   ];
 }

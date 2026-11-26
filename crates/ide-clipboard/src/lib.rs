@@ -58,9 +58,10 @@ pub fn set_text(text: &str, owner: usize) -> std::io::Result<()> {
     imp::set_text(text, owner)
 }
 
-/// The clipboard's plain text, None when it holds none. macOS only (main thread);
-/// Linux reads it asynchronously through GTK in the app, Windows through the WebView.
-#[cfg(target_os = "macos")]
+/// The clipboard's plain text. None when macOS holds none, or when Windows cannot
+/// open the clipboard; empty when Windows holds none. Call on the main thread on
+/// macOS; Linux reads it asynchronously through GTK in the app.
+#[cfg(any(windows, target_os = "macos"))]
 pub fn text() -> Option<String> {
     imp::text()
 }
@@ -255,6 +256,15 @@ pub fn decode(bytes: &[u8]) -> Vec<PathBuf> {
     out
 }
 
+/// A `CF_UNICODETEXT` block as a string: UTF-16LE up to the first NUL. The block
+/// may be larger than the text, and a malformed one may lack the NUL.
+#[cfg(any(windows, test))]
+fn unicode_text(bytes: &[u8]) -> String {
+    let (pairs, _) = bytes.as_chunks::<2>();
+    let units: Vec<u16> = pairs.iter().map(|&pair| u16::from_le_bytes(pair)).take_while(|&unit| unit != 0).collect();
+    String::from_utf16_lossy(&units)
+}
+
 /// `BI_RGB` and `BI_BITFIELDS`: uncompressed pixels, the forms screenshots take.
 #[cfg(any(windows, test))]
 const BI_RGB: u32 = 0;
@@ -310,7 +320,7 @@ fn dib_to_png(dib: &[u8]) -> Option<Vec<u8>> {
 
 #[cfg(windows)]
 mod imp {
-    use super::{HEADER, decode, dib_to_png, encode, names_text};
+    use super::{HEADER, decode, dib_to_png, encode, names_text, unicode_text};
     use std::ffi::c_void;
     use std::path::PathBuf;
     use std::ptr;
@@ -392,6 +402,19 @@ mod imp {
         };
         unsafe { CloseClipboard() };
         image
+    }
+
+    pub fn text() -> Option<String> {
+        // Empty rather than None: a None falls back to the WebView, which prompts the user.
+        if unsafe { IsClipboardFormatAvailable(CF_UNICODETEXT) } == 0 {
+            return Some(String::new());
+        }
+        if !open() {
+            return None;
+        }
+        let text = read_block(CF_UNICODETEXT).map(|bytes| unicode_text(&bytes));
+        unsafe { CloseClipboard() };
+        text
     }
 
     #[link(name = "kernel32")]
@@ -888,6 +911,16 @@ mod tests {
         header.extend_from_slice(&100_000u32.to_be_bytes());
         header.extend_from_slice(&100_000u32.to_be_bytes());
         assert!(set_png(&header, 0).is_err());
+    }
+
+    #[test]
+    fn unicode_text_stops_at_the_nul() {
+        let mut bytes: Vec<u8> = "héllo\r\n世界".encode_utf16().chain([0, 0x41]).flat_map(u16::to_le_bytes).collect();
+        assert_eq!(unicode_text(&bytes), "héllo\r\n世界");
+        // No terminator, and a stray odd byte, still read the whole text.
+        bytes.truncate(bytes.len() - 4);
+        bytes.push(7);
+        assert_eq!(unicode_text(&bytes), "héllo\r\n世界");
     }
 
     fn paths(list: &[&str]) -> Vec<PathBuf> {

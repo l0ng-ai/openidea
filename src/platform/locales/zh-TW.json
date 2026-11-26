@@ -301,6 +301,7 @@
   "menu.refactor.extractConstant": "引入常量…",
   "menu.refactor.extractField": "引入欄位…",
   "menu.refactor.extractInterface": "提取介面…",
+  "menu.refactor.extractTypeAlias": "提取型別別名…",
   "menu.refactor.extractMethod": "提取方法…",
   "menu.refactor.extractParameter": "引入參數…",
   "menu.refactor.extractVariable": "引入變數…",

@@ -73,6 +73,28 @@ pub struct ContentTabReply {
     pub diff: Option<ContentDiff>,
 }
 
+/// Output stream transport for a plugin-owned run configuration (API 1.18).
+///
+/// Ordinary pseudo-terminals combine stdout and stderr and can change
+/// buffering, input handling, and terminal behavior.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum PluginOutputMode {
+    /// Separate stdout and stderr pipes in the Run console (default).
+    #[default]
+    Pipes,
+    /// Pseudo-terminal ("Emulate terminal in output console").
+    Pty,
+}
+
+/// Per-launch options for `run.start-with-options` (API 1.18).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginRunStartOptions {
+    pub debug: bool,
+    pub output_mode: Option<PluginOutputMode>,
+}
+
 /// PluginRunConfiguration data exchanged with the IDE.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -90,6 +112,9 @@ pub struct PluginRunConfiguration {
     /// API 1.9: how Debug starts the configuration.
     #[serde(default)]
     pub debugger: Option<PluginDebugger>,
+    /// API 1.18: default output stream transport (`pipes` or `pty`).
+    #[serde(default)]
+    pub output_mode: PluginOutputMode,
 }
 
 /// How Debug starts a plugin configuration (API 1.9 `launch-configurations.debugger`).

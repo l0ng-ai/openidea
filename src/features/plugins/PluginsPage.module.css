@@ -98,7 +98,6 @@
   background: none;
   color: inherit;
   font: inherit;
-  cursor: pointer;
 }
 .groupToggle:hover {
   color: var(--fg);
@@ -511,6 +510,34 @@
   flex-direction: column;
   gap: 10px;
   min-width: 0;
+}
+
+.consentList {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  overflow: hidden;
+}
+
+.consentList > .items {
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.consentSelectAll {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--bg-control);
+  border-bottom: 1px solid var(--border);
+}
+
+.consentCount {
+  flex: none;
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
 }
 
 .consentWarning {

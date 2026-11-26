@@ -51,6 +51,53 @@ pub async fn plugin_run_command(
     result
 }
 
+/// Run Anything entries of the plugin declaring `prefix` for the field's `text` (API 1.18).
+#[command(trust = trusted)]
+pub async fn plugin_run_anything_suggest(
+    host: &Host,
+    plugins: &Arc<PluginHost>,
+    window: &str,
+    plugin_id: String,
+    prefix: String,
+    text: String,
+) -> IdeResult<Vec<ide_plugin::RunAnythingItem>> {
+    let (plugins, window_id) = (plugins.clone(), window.to_owned());
+    let root = host.project(window).ok().map(|p| p.root.clone());
+    host.blocking(move || plugins.run_anything_suggest(&plugin_id, &window_id, root, &prefix, &text)).await
+}
+
+/// Runs a Run Anything line starting with the plugin's `prefix` (API 1.18): whether
+/// the plugin claimed it.
+#[command(trust = trusted)]
+pub async fn plugin_run_anything_run(
+    host: &Host,
+    plugins: &Arc<PluginHost>,
+    window: &str,
+    plugin_id: String,
+    prefix: String,
+    line: String,
+) -> IdeResult<bool> {
+    let (plugins, window_id) = (plugins.clone(), window.to_owned());
+    let root = host.project(window).ok().map(|p| p.root.clone());
+    host.blocking(move || plugins.run_anything_run(&plugin_id, &window_id, root, &prefix, &line)).await
+}
+
+/// Completions for a field of a plugin's own run configuration (API 1.18).
+#[command(trust = trusted)]
+pub async fn plugin_run_configuration_complete(
+    host: &Host,
+    plugins: &Arc<PluginHost>,
+    window: &str,
+    config_id: String,
+    field: String,
+    text: String,
+    caret: u32,
+) -> IdeResult<Vec<ide_plugin::RunConfigCompletion>> {
+    let (plugins, window_id) = (plugins.clone(), window.to_owned());
+    let root = host.project(window)?.root.clone();
+    host.blocking(move || plugins.run_configuration_complete(&window_id, &root, &config_id, &field, &text, caret)).await
+}
+
 /// The UI language (BCP 47) that plugin code reads with `ui.locale()`.
 #[command(trust = always)]
 pub async fn plugin_set_ui_locale(plugins: &Arc<PluginHost>, tag: String) -> IdeResult<()> {
@@ -316,7 +363,10 @@ ide_command::domain!(
     plugin_post_events,
     plugin_prepare_debug_run,
     plugin_program,
+    plugin_run_anything_run,
+    plugin_run_anything_suggest,
     plugin_run_command,
+    plugin_run_configuration_complete,
     plugin_select_tests,
     plugin_set_active_file,
     plugin_set_ui_locale,

@@ -8,7 +8,12 @@
 //! args = "optional-arguments"                # optional
 //! vmOptions = ["-XX:+AllowEnhancedClassRedefinition"]  # optional, API 1.14
 //! jdk = "jetbrains"                          # optional: only those VM options on JBR
+//! executor = "Hot Reload"                    # optional, API 1.18: see below
 //! ```
+//!
+//! With `executor`, the agent is not added to every launch: the plugin contributes an
+//! executor beside Run and Debug ("Run with Hot Reload", "Debug with Hot Reload"), and only
+//! launches through it get the agent and its `vmOptions`.
 //!
 //! One agent per plugin. The declaration derives the optional high-risk `java.agent`
 //! capability; granting it records the jar's hash, and a launch adds the agent only
@@ -28,6 +33,7 @@ pub const POINT_ID: &str = "javaAgents";
 const MAX_ARGS: usize = 4096;
 const MAX_VM_OPTION: usize = 512;
 const MAX_VM_OPTIONS: usize = 32;
+const MAX_EXECUTOR: usize = 40;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -39,6 +45,8 @@ struct Decl {
     vm_options: Vec<String>,
     #[serde(default)]
     jdk: Option<String>,
+    #[serde(default)]
+    executor: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -48,6 +56,8 @@ pub(super) struct Agent {
     pub(super) args: Option<String>,
     pub(super) vm_options: Vec<String>,
     pub(super) jdk: Option<String>,
+    /// The executor title: only launches through it get the agent.
+    pub(super) executor: Option<String>,
 }
 
 /// Agents of enabled plugins.
@@ -111,9 +121,16 @@ impl ExtensionPoint for JavaAgentsPoint {
         if !vm_options.is_empty() || jdk.is_some() {
             pkg.manifest.needs_api("contributes.javaAgents.vmOptions", 14)?;
         }
-        let label = label(&d.path, args.as_deref(), &vm_options);
+        let executor = validate_executor(d.executor)?;
+        if executor.is_some() {
+            pkg.manifest.needs_api("contributes.javaAgents.executor", 18)?;
+        }
+        let mut label = label(&d.path, args.as_deref(), &vm_options);
+        if let Some(title) = &executor {
+            label = format!("{label} (Run with {title})");
+        }
         let (store, plugin) = (self.store.clone(), pkg.id().to_owned());
-        let agent = Agent { jar, args, vm_options, jdk };
+        let agent = Agent { jar, args, vm_options, jdk, executor };
         Ok(Prepared::new(label, move || Ok(store.add(plugin, agent))).file(d.path).capability(Capability::JavaAgent))
     }
 }
@@ -151,6 +168,17 @@ fn validate_jdk(jdk: Option<String>) -> Result<Option<String>, String> {
         return Err("contributes.javaAgents: `jdk` must be \"jetbrains\" when set".into());
     }
     Ok(Some(raw))
+}
+
+/// The executor's title: one line, short enough for "Debug '<configuration>' with <title>".
+fn validate_executor(executor: Option<String>) -> Result<Option<String>, String> {
+    let Some(title) = executor.map(|s| s.trim().to_owned()) else { return Ok(None) };
+    if title.is_empty() || title.chars().count() > MAX_EXECUTOR || title.contains(|c: char| c.is_control()) {
+        return Err(format!(
+            "contributes.javaAgents: `executor` must be a title of 1–{MAX_EXECUTOR} characters on one line"
+        ));
+    }
+    Ok(Some(title))
 }
 
 /// What Settings › Plugins shows: jar name, args, and any JVM options.
@@ -224,6 +252,7 @@ impl JavaAgentSource for PluginJavaAgents {
                 vm_options: agent.vm_options.clone(),
                 jdk: agent.jdk.clone(),
                 approved_hash: pins.get(&(plugin.clone(), cap.clone())).map(|pin| pin.hash.clone()),
+                executor: agent.executor.clone(),
             })
             .collect()
     }
@@ -304,6 +333,33 @@ mod tests {
         let agent = store.for_plugin("acme.spring").unwrap();
         assert_eq!(agent.vm_options, ["-XX:+AllowEnhancedClassRedefinition"]);
         assert_eq!(agent.jdk.as_deref(), Some("jetbrains"));
+    }
+
+    #[test]
+    fn parses_an_executor_from_api_18() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manifest = MANIFEST.replace("^1.10", "^1.18");
+        let decl = "[[contributes.javaAgents]]\npath = \"agent/spring agent.jar\"\nexecutor = \" Hot Reload \"\n";
+        let pkg = package(&tmp.path().join("ok"), &format!("{manifest}{decl}"));
+        assert_eq!(prepare(&pkg).unwrap().label, "spring agent.jar (Run with Hot Reload)");
+        let store: Arc<JavaAgents> = Arc::default();
+        let point = JavaAgentsPoint::new(store.clone());
+        let _keep = (point.prepare(&pkg, pkg.manifest.declarations(POINT_ID).remove(0)).unwrap().commit)().unwrap();
+        assert_eq!(store.for_plugin("acme.spring").unwrap().executor.as_deref(), Some("Hot Reload"));
+        let source = PluginJavaAgents { store, pins: Arc::default() };
+        assert_eq!(source.agents()[0].executor.as_deref(), Some("Hot Reload"));
+
+        let old = package(&tmp.path().join("old"), &format!("{MANIFEST_14}{decl}"));
+        assert!(prepare(&old).map(|_| ()).unwrap_err().contains("new in plugin API 1.18"));
+        let long = format!(
+            "[[contributes.javaAgents]]\npath = \"agent/spring agent.jar\"\nexecutor = \"{}\"\n",
+            "x".repeat(41)
+        );
+        let long = package(&tmp.path().join("long"), &format!("{manifest}{long}"));
+        assert!(prepare(&long).map(|_| ()).unwrap_err().contains("`executor`"));
+        let empty = "[[contributes.javaAgents]]\npath = \"agent/spring agent.jar\"\nexecutor = \" \"\n";
+        let empty = package(&tmp.path().join("empty"), &format!("{manifest}{empty}"));
+        assert!(prepare(&empty).map(|_| ()).unwrap_err().contains("`executor`"));
     }
 
     #[test]

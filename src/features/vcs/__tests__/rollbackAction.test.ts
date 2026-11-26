@@ -29,6 +29,7 @@ vi.mock("../changeOps", async (orig) => {
 });
 
 const { registerVcsActions } = await import("../actions");
+const { setCommitDialogSelection } = await import("../commitDialogSelection");
 const { useVcs } = await import("../store");
 const { useCommit } = await import("../commitStore");
 
@@ -53,9 +54,16 @@ const status = [
 afterEach(() => {
   vi.clearAllMocks();
   toolWindow = null;
+  setCommitDialogSelection(null);
+  document.body.innerHTML = "";
   useVcs.setState({ status: [], root: null, roots: [] });
   useCommit.setState({ selection: [], checks: new Map() });
 });
+
+function focusDialogTree() {
+  document.body.innerHTML = '<div data-changes-tree="dialog" tabindex="0"></div>';
+  (document.querySelector('[data-changes-tree="dialog"]') as HTMLElement).focus();
+}
 
 describe("vcs.rollback targets", () => {
   it("rolls back the checked changes when the selection holds unversioned files", async () => {
@@ -125,6 +133,48 @@ describe("vcs.rollback targets", () => {
       toolWindow = "commit";
       await getAction("vcs.rollback")!.run({ arg: { path: "/r/src/main.tsx" }, ctx: { vcsAvailable: true } });
       expect(mocks.showDialog).toHaveBeenCalledWith([status[1]]);
+    } finally {
+      unregister();
+    }
+  });
+
+  it("rolls back the Commit dialog tree's own selection while it has focus", async () => {
+    const unregister = registerVcsActions();
+    try {
+      useVcs.setState({ status, root: "/r", roots: ["/r"] });
+      setCommitDialogSelection({ paths: ["/r/src/main.tsx"], keys: ["k"] });
+      focusDialogTree();
+      await getAction("vcs.rollback")!.run({ arg: undefined, ctx: { vcsAvailable: true } });
+      expect(mocks.showDialog).toHaveBeenCalledWith([status[1]]);
+    } finally {
+      unregister();
+    }
+  });
+
+  it("does nothing on an empty dialog selection instead of falling back to the checked changes", async () => {
+    const unregister = registerVcsActions();
+    try {
+      useVcs.setState({ status, root: "/r", roots: ["/r"] });
+      setCommitDialogSelection({ paths: [], keys: [] });
+      focusDialogTree();
+      await getAction("vcs.rollback")!.run({ arg: undefined, ctx: { vcsAvailable: true } });
+      expect(mocks.showDialog).not.toHaveBeenCalled();
+    } finally {
+      unregister();
+    }
+  });
+
+  it("ignores the dialog selection once focus leaves its changes tree", async () => {
+    const unregister = registerVcsActions();
+    try {
+      useVcs.setState({ status, root: "/r", roots: ["/r"] });
+      setCommitDialogSelection({ paths: ["/r/src/main.tsx"], keys: ["k"] });
+      focusDialogTree();
+      const message = document.createElement("textarea");
+      document.body.append(message);
+      message.focus();
+      await getAction("vcs.rollback")!.run({ arg: undefined, ctx: { vcsAvailable: true } });
+      expect(mocks.showDialog).toHaveBeenCalledWith([status[0], status[1]]);
     } finally {
       unregister();
     }

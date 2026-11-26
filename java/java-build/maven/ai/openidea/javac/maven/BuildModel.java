@@ -303,7 +303,11 @@ public final class BuildModel extends AbstractMavenLifecycleParticipant {
         json.append("}}");
     }
 
-    /** The classpaths of the resolved graph, in Maven's order: compile, runtime, test scopes. */
+    /**
+     * The classpaths of the resolved graph, in Maven's order: compile, runtime, test scopes. A
+     * {@code system} jar is on the runtime classpath too: it is an explicit file the launched JVM
+     * must load (IDEA imports the scope as Compile), while {@code provided} is the container's.
+     */
     private static void classpaths(DependencyNode root, List<String> compile, List<String> runtime, List<String> test) {
         List<DependencyNode> nodes = new ArrayList<>();
         collect(root, nodes, new HashSet<>());
@@ -314,7 +318,7 @@ public final class BuildModel extends AbstractMavenLifecycleParticipant {
             String scope = node.getDependency().getScope();
             String path = file.getAbsolutePath();
             if (!"test".equals(scope) && !"runtime".equals(scope)) compile.add(path);
-            if (!"test".equals(scope) && !"provided".equals(scope) && !"system".equals(scope)) runtime.add(path);
+            if (!"test".equals(scope) && !"provided".equals(scope)) runtime.add(path);
             test.add(path);
         }
     }

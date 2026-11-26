@@ -26,7 +26,7 @@ import type { EditorView } from "@codemirror/view";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { editorPrefs, useEditorPrefs } from "@/platform/editorSettings";
 import { useMarkdownPreviewFontSize, useMarkdownPreviewLayout } from "@/platform/languageSettings";
-import { maybeEditorService, registerFontZoomSurface, useEditorShown } from "@/workbench/contributions";
+import { maybeEditorService, notifications, registerFontZoomSurface, useEditorShown } from "@/workbench/contributions";
 import { editorsFor, setShownLine } from "@/editor/api";
 import { highlightInto } from "@/editor/lsp/markdown";
 import {
@@ -70,6 +70,7 @@ import {
   ANCHOR_PREFIX,
   createMarkdownRenderer,
   headingLine,
+  isRenderedFence,
   previewLineAtOffset,
   previewOffsetForLine,
   resolveLink,
@@ -77,8 +78,10 @@ import {
 } from "./render";
 import { applyImageZoomWidth, svgDataUrlSize } from "@/ui/svgSize";
 import styles from "./Markdown.module.css";
+import { writeClipboardText } from "@/platform/clipboard";
 import { tx } from "@/platform/i18n";
 import { wheelZoomStep } from "@/platform/wheelZoom";
+import { iconNode } from "@/ui/iconNode";
 import { isMarkdownPath } from "../fileKinds";
 import { attachPanZoom } from "../panZoom";
 
@@ -292,6 +295,52 @@ function typesetPreview(content: HTMLElement, previous: HTMLElement, svg: typeof
   return rendered;
 }
 
+function attachCodeCopy(pre: HTMLElement, source: string) {
+  const parent = pre.parentElement;
+  if (parent?.querySelector(`:scope > .${styles.codeCopy}`)) return;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = styles.codeCopy!;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const setCopied = (copied: boolean) => {
+    const label = copied ? tx("Copied") + "!" : tx("Copy Code");
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    button.replaceChildren(iconNode(copied ? "check" : "copy", 14));
+    button.toggleAttribute("data-copied", copied);
+  };
+  setCopied(false);
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    // Drop the blank lines around the code, but keep the first line's indentation.
+    void writeClipboardText(source.replace(/^\s*\n/, "").trimEnd()).then(
+      () => {
+        clearTimeout(timer);
+        setCopied(true);
+        timer = setTimeout(() => setCopied(false), 1500);
+      },
+      (error: unknown) => {
+        notifications().notify({
+          level: "error",
+          title: tx("Cannot access the clipboard"),
+          body: error instanceof Error ? error.message : String(error),
+        });
+      },
+    );
+  });
+
+  if (parent?.matches(MERMAID_SELECTOR)) {
+    parent.append(button);
+    return;
+  }
+
+  // A control inside <pre> interferes with WebKit's selection of the block
+  const block = document.createElement("div");
+  block.className = styles.codeBlock!;
+  pre.replaceWith(block);
+  block.append(pre, button);
+}
+
 function MarkdownPreview({ path, tabId, sync }: { path: string; tabId: string; sync: boolean }) {
   const shown = useEditorShown();
   const text = useLiveMarkdown((s) => s[path]?.text);
@@ -434,9 +483,11 @@ function MarkdownPreview({ path, tabId, sync }: { path: string; tabId: string; s
       );
     });
     root.querySelectorAll<HTMLElement>("pre > code").forEach((code) => {
+      const pre = code.parentElement!;
+      const src = (code.textContent ?? "").replace(/\n+$/, "");
+      if (isRenderedFence(pre)) attachCodeCopy(pre, src);
       if (code.closest(MERMAID_SELECTOR)) return;
       const lang = [...code.classList].find((c) => c.startsWith("language-"))?.slice("language-".length) ?? null;
-      const src = (code.textContent ?? "").replace(/\n+$/, "");
       code.textContent = src;
       void highlightInto(code, src, lang);
     });
