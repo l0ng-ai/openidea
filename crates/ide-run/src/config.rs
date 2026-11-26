@@ -120,6 +120,8 @@ struct FileConfig {
     target: Option<String>,
     #[serde(alias = "testRunner")]
     test_runner: Option<String>,
+    #[serde(default)]
+    watch: bool,
 }
 
 pub(crate) fn slug(s: &str) -> String {
@@ -186,6 +188,8 @@ fn convert(configs: Vec<FileConfig>, local: bool) -> Vec<RunConfig> {
                 stop_command: non_empty(c.stop_command),
                 target: non_empty(c.target),
                 test_runner: non_empty(c.test_runner),
+                watch: c.watch,
+                executor: None,
             },
         });
     }
@@ -287,6 +291,7 @@ fn to_table(c: &RunConfig) -> Table {
         ("show-on-stderr", x.show_on_stderr),
         ("focus-tool-window", x.focus_tool_window),
         ("emulate-terminal", x.emulate_terminal),
+        ("watch", x.watch),
     ] {
         if on {
             t.insert(key, value(true));

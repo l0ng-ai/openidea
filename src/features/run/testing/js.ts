@@ -37,7 +37,29 @@ function counts(text: string) {
   return out;
 }
 
-export function jsParser(): TestOutputParser {
+/** `watch`: after a run's summary, the next output starts a new cycle (`reset`). */
+export function jsParser(watch = false): TestOutputParser {
+  const parser = runParser();
+  if (!watch) return parser;
+  let ended = false;
+  return {
+    feed(line) {
+      const events = parser.feed(line);
+      if (ended && events.some((e) => e.type !== "summary")) {
+        ended = false;
+        events.unshift({ type: "reset" });
+      }
+      // The counts line (`Tests: …`) ends the cycle; `Time:` / `Duration` follow it.
+      if (!ended && events.some((e) => e.type === "summary" && e.durationMs === undefined)) {
+        ended = true;
+        events.push({ type: "end" });
+      }
+      return events;
+    },
+  };
+}
+
+function runParser(): TestOutputParser {
   let file: string | null = null;
   /** Jest verbose describe blocks: indentation → name. */
   let describes: Array<{ indent: number; name: string }> = [];

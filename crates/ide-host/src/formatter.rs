@@ -15,6 +15,52 @@ const OXFMT_CONFIGS: [&str; 4] = [".oxfmtrc.json", ".oxfmtrc.jsonc", "oxfmt.conf
 /// A Biome configuration, or Biome installed as a project dependency (it then uses its defaults).
 const BIOME_MARKERS: [&str; 3] = ["biome.json", "biome.jsonc", "node_modules/@biomejs/biome/package.json"];
 
+/// dprint's configuration files, and dprint installed as a project dependency.
+const DPRINT_MARKERS: [&str; 5] =
+    ["dprint.json", ".dprint.json", "dprint.jsonc", ".dprint.jsonc", "node_modules/dprint/package.json"];
+
+/// The nearest of `names` in `file`'s folder or above, up to the project `root` (none outside it).
+fn find_in_project(file: &Path, root: &Path, names: &[&str]) -> Option<PathBuf> {
+    file.parent()?
+        .ancestors()
+        .take_while(|dir| dir.starts_with(root))
+        .find_map(|dir| names.iter().map(|name| dir.join(name)).find(|p| p.is_file()))
+}
+
+fn dprint_project(file: &Path, root: &Path) -> bool {
+    find_in_project(file, root, &DPRINT_MARKERS).is_some()
+}
+
+/// `dprint editor-info` results by configuration file (the project root without one) and the
+/// configuration's modification time. Failures are kept too: an offline plugin download would
+/// otherwise time out again on every format.
+// ponytail: `extends` files and a configuration outside the project are not watched; editing one needs a change of the project's file (or a restart).
+type EditorInfo = (Option<std::time::SystemTime>, IdeResult<String>);
+static DPRINT_EDITOR_INFO: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<PathBuf, EditorInfo>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Whether the dprint configuration found for `file` (from its folder, as dprint finds it) has a
+/// plugin for it. `retry` runs `editor-info` again after a remembered failure.
+fn dprint_covers(tools: &Tools, custom: Option<&Path>, file: &Path, root: &Path, retry: bool) -> IdeResult<bool> {
+    let dir = file.parent().ok_or_else(|| IdeError::invalid("dprint: file has no directory"))?;
+    let config = find_in_project(file, root, &DPRINT_MARKERS[..4]);
+    let modified = config.as_ref().and_then(|c| std::fs::metadata(c).and_then(|m| m.modified()).ok());
+    let key = config.unwrap_or_else(|| root.to_path_buf());
+    let cached = {
+        let cache = DPRINT_EDITOR_INFO.lock().unwrap_or_else(|e| e.into_inner());
+        cache.get(&key).filter(|(at, info)| *at == modified && !(retry && info.is_err())).map(|(_, info)| info.clone())
+    };
+    let info = cached.unwrap_or_else(|| {
+        let info = tools.formatter_command("dprint", file, custom).and_then(|mut command| {
+            command.current_dir(dir);
+            formatter::dprint_editor_info(command)
+        });
+        DPRINT_EDITOR_INFO.lock().unwrap_or_else(|e| e.into_inner()).insert(key, (modified, info.clone()));
+        info
+    })?;
+    formatter::dprint_covers(&info, file)
+}
+
 /// Reformat Code uses Biome below a Biome configuration or installation, unless the nearest
 /// configuration turns its formatter off (Biome lints, another tool formats).
 fn biome_formats(file: &Path) -> bool {
@@ -283,6 +329,47 @@ fn minimal_edits(text: &str, edits: Vec<TextEdit>) -> Vec<TextEdit> {
         .collect()
 }
 
+/// The edits on the lines of `range`. Some servers (Intelephense, #6055) answer a range request
+/// with edits across the whole file; Reformat Code with a selection changes only the selected
+/// lines. An edit that reaches past them and keeps its line count is split into one per line.
+fn within_lines(text: &str, edits: Vec<TextEdit>, range: Range) -> Vec<TextEdit> {
+    let from = Pos::new(range.start.line, 0);
+    // A selection ending at a line start leaves that line out.
+    let to = if range.end.col == 0 && range.end.line > range.start.line {
+        range.end
+    } else {
+        Pos::new(range.end.line + 1, 0)
+    };
+    let doc = ide_text::Document::new(text);
+    edits
+        .into_iter()
+        .flat_map(|e| if e.range.start >= from && e.range.end <= to { vec![e] } else { per_line(&doc, e) })
+        .filter(|e| e.range.start >= from && e.range.end <= to)
+        .collect()
+}
+
+/// `edit` as one edit per line when it replaces as many lines as it inserts, else nothing.
+fn per_line(doc: &ide_text::Document, edit: TextEdit) -> Vec<TextEdit> {
+    let Range { start, end } = edit.range;
+    let lines: Vec<&str> = edit.new_text.split('\n').collect();
+    if lines.len() as u32 != end.line - start.line + 1 {
+        return Vec::new();
+    }
+    let width = |line: u32| doc.line(line).map_or(0, |l| l.encode_utf16().count() as u32);
+    lines
+        .into_iter()
+        .zip(start.line..=end.line)
+        .map(|(new_text, line)| TextEdit {
+            range: Range::new(
+                Pos::new(line, if line == start.line { start.col } else { 0 }),
+                Pos::new(line, if line == end.line { end.col } else { width(line) }),
+            ),
+            new_text: new_text.to_owned(),
+        })
+        .filter(|e| doc.slice(doc.pos_to_offset(e.range.start), doc.pos_to_offset(e.range.end)) != e.new_text)
+        .collect()
+}
+
 pub async fn format(
     host: &Host,
     window: &str,
@@ -492,10 +579,42 @@ async fn provider_edits(
         }
         return Ok(Some(edits));
     }
-    let mut selected = external_tool(options.tool, language.as_ref(), &snap.path, &settings.languages)?;
+    // dprint formats what its configuration covers, before the language's own formatters.
+    let dprint = &settings.languages.dprint;
+    let forced_dprint = options.tool == Some(ExternalFormatter::Dprint);
+    let auto_dprint = options.tool.is_none()
+        && (dprint.prefer || dprint_project(&snap.path, &project.root))
+        && project.require_trust().is_ok();
+    let mut selected = None;
+    if forced_dprint || auto_dprint {
+        host.require_trust(window)?;
+        let tools = Tools::new(&host.local_data_dir);
+        let custom = ide_sdk::apply::setting_path(&project.root, &dprint.path);
+        let (path, root) = (snap.path.clone(), project.root.clone());
+        let covers =
+            tokio::task::spawn_blocking(move || dprint_covers(&tools, custom.as_deref(), &path, &root, forced_dprint))
+                .await
+                .map_err(|e| IdeError::internal(e.to_string()))?;
+        match covers {
+            Ok(true) => selected = Some(ExternalFormatter::Dprint),
+            Ok(false) if forced_dprint => {
+                return Err(
+                    IdeError::invalid("The dprint configuration has no plugin for this file").with_tool("dprint")
+                );
+            }
+            Ok(false) => {}
+            Err(e) if forced_dprint => return Err(e.with_tool("dprint")),
+            // Not installed, no configuration, plugins not downloadable: the usual formatter.
+            Err(e) => tracing::warn!("dprint editor-info failed, using the usual formatter: {}", e.message),
+        }
+    }
+    if selected.is_none() {
+        selected = external_tool(options.tool, language.as_ref(), &snap.path, &settings.languages)?;
+    }
     // Black is selected only when configured or preferred: the Ruff server's formatting doesn't replace it.
     if let Some(tool) = selected
         && options.tool.is_none()
+        && tool != ExternalFormatter::Dprint
         && tool != ExternalFormatter::Black
         && !settings.languages.formatter(tool).prefer
         && match doc {
@@ -514,14 +633,20 @@ async fn provider_edits(
             None => project.lsp.format_text(&snap.path, &snap.language, &snap.text, options).await?,
         };
         let text = snap.text;
-        return tokio::task::spawn_blocking(move || Some(minimal_edits(&text, edits)))
-            .await
-            .map_err(|e| IdeError::internal(e.to_string()));
+        return tokio::task::spawn_blocking(move || {
+            let edits = minimal_edits(&text, edits);
+            Some(match range {
+                Some(range) => within_lines(&text, edits, range),
+                None => edits,
+            })
+        })
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()));
     };
     let tool_settings = settings.languages.formatter(selected);
-    // Black takes over from the language server in its projects, so Format on save runs it too.
-    let runs_on_save =
-        tool_settings.run_on_save || (selected == ExternalFormatter::Black && settings.editor.format_on_save);
+    // Black and dprint take over from the language server in their projects, so Format on save runs them too.
+    let runs_on_save = tool_settings.run_on_save
+        || (matches!(selected, ExternalFormatter::Black | ExternalFormatter::Dprint) && settings.editor.format_on_save);
     if options.on_save && !runs_on_save {
         return Ok(None);
     }
@@ -529,7 +654,16 @@ async fn provider_edits(
     if snap.read_only {
         return Err(IdeError::invalid("The file is read-only"));
     }
-    let config = language.and_then(|l| l.formatter).expect("external_tool selects languages with a formatter");
+    let config = language
+        .and_then(|l| l.formatter)
+        .or_else(|| {
+            (selected == ExternalFormatter::Dprint).then(|| ide_language::FormatterConfig {
+                tool: "dprint".into(),
+                parser: String::new(),
+                range: false,
+            })
+        })
+        .expect("external_tool selects languages with a formatter");
     let tool = selected.name();
     let name = formatter::display_name(tool);
     let mut custom = ide_sdk::apply::setting_path(&project.root, &tool_settings.path);
@@ -899,6 +1033,90 @@ mod tests {
     }
 
     #[test]
+    fn a_dprint_configuration_or_dependency_in_the_project_marks_a_dprint_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("home/project");
+        let file = root.join("web/src/app.ts");
+        assert!(!dprint_project(&file, &root));
+        for marker in DPRINT_MARKERS {
+            let path = root.join("web").join(marker);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "{}").unwrap();
+            assert!(dprint_project(&file, &root), "{marker}");
+            assert!(!dprint_project(&root.join("api/main.ts"), &root), "{marker}");
+            // A file outside the project is not below the project's dprint.
+            assert!(!dprint_project(&dir.path().join("elsewhere/web/src/app.ts"), &root), "{marker}");
+            std::fs::remove_file(&path).unwrap();
+        }
+        // dprint installed above the project (a stray `~/node_modules/dprint`) doesn't count.
+        let stray = dir.path().join("home/node_modules/dprint/package.json");
+        std::fs::create_dir_all(stray.parent().unwrap()).unwrap();
+        std::fs::write(&stray, "{}").unwrap();
+        std::fs::write(dir.path().join("home/dprint.json"), "{}").unwrap();
+        assert!(!dprint_project(&file, &root));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dprint_coverage_comes_from_editor_info_cached_per_configuration() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let config = root.join("dprint.json");
+        std::fs::write(&config, "{}").unwrap();
+        // Shell builtins only: the command runs with the tools' empty PATH.
+        let info = r#"{"plugins":[{"fileExtensions":["ts"],"fileNames":["Dockerfile"]}]}"#;
+        let fake = root.join("fake-dprint");
+        let script = format!(
+            "#!/bin/sh\necho run >> \"$0.runs\"\n[ -f fail ] && {{ echo 'bad config' >&2; exit 1; }}\nprintf '%s' '{info}'\n"
+        );
+        std::fs::write(&fake, script).unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let tools = Tools::with_paths(root.join("tools"), Default::default(), ide_tools::platform::Platform::current());
+        let runs = || std::fs::read_to_string(root.join("fake-dprint.runs")).unwrap_or_default().lines().count();
+        let covers = |file: &str, retry| dprint_covers(&tools, Some(&fake), &root.join(file), root, retry);
+
+        assert!(covers("src/app.ts", false).unwrap());
+        assert!(covers("src/Dockerfile", false).unwrap());
+        // Not covered: the usual formatter takes the file.
+        assert!(!covers("src/main.py", false).unwrap());
+        assert_eq!(runs(), 1);
+
+        // A changed configuration is read again, and its error is dprint's.
+        std::fs::write(root.join("src/fail"), "").unwrap();
+        let later = std::fs::metadata(&config).unwrap().modified().unwrap() + std::time::Duration::from_secs(5);
+        std::fs::File::options().write(true).open(&config).unwrap().set_modified(later).unwrap();
+        let error = covers("src/app.ts", false).unwrap_err();
+        assert!(error.message.contains("bad config"), "{}", error.message);
+        assert_eq!(error.data, Some(ide_core::error::ErrorData::Tool { tool: "dprint".into(), missing: false }));
+        assert_eq!(runs(), 2);
+        // The failure is remembered (an offline download would time out again), unless retried.
+        assert!(covers("src/app.ts", false).is_err());
+        assert_eq!(runs(), 2);
+        std::fs::remove_file(root.join("src/fail")).unwrap();
+        assert!(covers("src/app.ts", true).unwrap());
+        assert_eq!(runs(), 3);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dprint_without_a_project_configuration_runs_once_per_project() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("a/b")).unwrap();
+        let fake = root.join("fake-dprint");
+        std::fs::write(&fake, "#!/bin/sh\necho run >> \"$0.runs\"\nprintf '%s' '{\"plugins\":[]}'\n").unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let tools = Tools::with_paths(root.join("tools"), Default::default(), ide_tools::platform::Platform::current());
+        for file in ["a/x.ts", "a/b/y.ts", "z.ts"] {
+            assert!(!dprint_covers(&tools, Some(&fake), &root.join(file), root, false).unwrap());
+        }
+        assert_eq!(std::fs::read_to_string(root.join("fake-dprint.runs")).unwrap().lines().count(), 1);
+    }
+
+    #[test]
     fn biome_config_or_dependency_selects_biome_for_its_languages() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -1049,6 +1267,26 @@ mod tests {
     }
 
     const ALIGN: PhpAlignment = PhpAlignment { key_value_pairs: true, assignments: true };
+
+    #[test]
+    fn range_formatting_changes_only_the_selected_lines() {
+        // Intelephense answers a range request for lines 2-3 with edits across the file (#6055).
+        let text = "<?php\nf(\"a\");\n$x  = 1;\n$y  = 2;\nf(\"b\");\n";
+        let formatted = "<?php\nf('a');\n$x = 1;\n$y = 2;\nf('b');\n";
+        let whole = vec![TextEdit { range: Range::new(Pos::new(0, 0), Pos::new(5, 0)), new_text: formatted.into() }];
+        let edits = minimal_edits(text, whole);
+        let selected = Range::new(Pos::new(2, 0), Pos::new(3, 8));
+        assert_eq!(
+            after(text, &within_lines(text, edits.clone(), selected)),
+            "<?php\nf(\"a\");\n$x = 1;\n$y = 2;\nf(\"b\");\n"
+        );
+        // Selected up to the start of line 4: line 4 stays as it is.
+        let to_line_start = Range::new(Pos::new(2, 3), Pos::new(3, 0));
+        assert_eq!(
+            after(text, &within_lines(text, edits, to_line_start)),
+            "<?php\nf(\"a\");\n$x = 1;\n$y  = 2;\nf(\"b\");\n"
+        );
+    }
 
     #[test]
     fn a_whole_file_edit_becomes_one_edit_per_changed_region() {

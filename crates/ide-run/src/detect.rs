@@ -248,6 +248,10 @@ fn script_test_runner(script: &str) -> Option<&'static str> {
     if tokens.iter().any(|t| matches!(t.rsplit('/').next(), Some("mocha" | "_mocha"))) {
         return Some("mocha");
     }
+    // Jasmine too, through the IDE's hook like Mocha.
+    if tokens.iter().any(|t| matches!(t.rsplit('/').next(), Some("jasmine" | "jasmine.js"))) {
+        return Some("jasmine");
+    }
     let node = tokens.iter().position(|t| matches!(*t, "node" | "tsx"))?;
     // Node's own options: up to the script (`node server.js --test` passes `--test` to the program).
     let mut options = Vec::new();

@@ -247,6 +247,7 @@ function PaneView({ paneId }: { paneId: string }) {
           </>
         ),
         text: prefix ? `${prefix}${name}` : dupe ? `${name} — ${dupe}` : name,
+        verbatim: true,
         icon: showFileIcon
           ? t.input.kind === "file" && t.input.path
             ? (tabIcons[i] ?? file?.icon)
@@ -359,7 +360,7 @@ function PaneView({ paneId }: { paneId: string }) {
 
   const onFocus = () => {
     setContext("editorFocus", true);
-    if (!isActivePane) useTabs.setState((s) => ({ ...s, activePane: paneId }), true);
+    if (!isActivePane) ctrl.focusPane(paneId);
     ctrl.publishContext();
   };
   const onBlur = (e: FocusEvent) => {

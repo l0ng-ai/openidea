@@ -31,6 +31,8 @@ export type MenuItem =
       action: string;
       arg?: unknown;
       label?: string;
+      /** The label is data (e.g. a shell path): shown as is, never looked up in the catalog. */
+      verbatim?: boolean;
       /** A check mark in this state instead of the action's own `toggled` (one row per argument). */
       checked?: boolean;
       /** Overrides the action's icon; `null` shows the row without one. */
@@ -102,7 +104,7 @@ export function resolveMenuItems(items: MenuItem[]): Resolved[] {
       out.push({
         kind: "item",
         key: typeof item.arg === "string" ? `${item.action}|${item.arg}` : item.action,
-        label: tx(item.label) ?? a.title,
+        label: (item.verbatim ? item.label : tx(item.label)) ?? a.title,
         icon: item.icon === null ? undefined : (item.icon ?? a.icon),
         shortcut: shortcutLabel(item.action),
         disabled: !!item.disabled || !isActionEnabled(a, undefined, item.arg),

@@ -30,10 +30,10 @@ function isClickable(el: HTMLElement) {
 }
 
 /** Same rules as Tauri's script: a bare attribute counts only for direct clicks, `deep` for the subtree. */
-function isDragRegion(path: EventTarget[]) {
+function isDragRegion(path: EventTarget[], region = REGION) {
   for (const el of path) {
     if (!(el instanceof HTMLElement)) continue;
-    const attr = el.getAttribute(REGION);
+    const attr = el.getAttribute(region);
     if (attr === null) {
       if (isClickable(el)) return false;
       continue;
@@ -83,4 +83,35 @@ export function installWindowDrag({
     document.removeEventListener("mousedown", onMouseDown);
     document.removeEventListener("mouseup", onMouseUp);
   };
+}
+
+/**
+ * Windows and Linux: Tauri's drag-region script moves the window on a title bar press and toggles
+ * maximize on a double click, in full screen too, where neither applies: dragging a full-screen
+ * window or maximizing it under the full-screen frame left it in a broken state (#6029). While
+ * `isFullscreen()`, a press on a drag region stops before that script (a `document` listener) sees it.
+ */
+export function installFullscreenDragGuard(isFullscreen: () => boolean, target: Window = window): () => void {
+  const onMouseDown = (e: MouseEvent) => {
+    if (e.button === 0 && isFullscreen() && isDragRegion(e.composedPath(), "data-tauri-drag-region"))
+      e.stopPropagation();
+  };
+  target.addEventListener("mousedown", onMouseDown, true);
+  return () => target.removeEventListener("mousedown", onMouseDown, true);
+}
+
+/** Whether this window is in full screen, kept current as it resizes (entering or leaving resizes it). */
+export function trackFullscreen(): () => boolean {
+  let fullscreen = false;
+  void import("@tauri-apps/api/window").then(async ({ getCurrentWindow }) => {
+    const w = getCurrentWindow();
+    const sync = () =>
+      void w
+        .isFullscreen()
+        .then((on) => (fullscreen = on))
+        .catch(() => {});
+    sync();
+    await w.onResized(sync);
+  });
+  return () => fullscreen;
 }

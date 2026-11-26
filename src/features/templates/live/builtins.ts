@@ -116,6 +116,47 @@ const ts = group("JavaScript / TypeScript", "ts", TS_LANGS, [
   { abbrev: "useEffect", description: "React useEffect hook", body: "useEffect(() => {\n\t$END$\n}, [$DEPS$]);" },
 ]);
 
+/** React components named after the file; the TSX variants declare a `Props` type. */
+function reactComponents(tsx: boolean): LiveTemplate[] {
+  const ext = tsx ? "tsx" : "jsx";
+  const props = tsx ? "type Props = {};\n\n" : "";
+  const param = tsx ? "{}: Props" : "";
+  const render = (t: string) => `${t}return (\n${t}\t<div>\n${t}\t\t$END$\n${t}\t</div>\n${t});\n`;
+  const variables = [v("NAME", "componentName(fileNameWithoutExtension())", '"Component"', true)];
+  const defs: Def[] = [
+    {
+      abbrev: "rfc",
+      description: tsx ? "React function component with Props" : "React function component",
+      body: `${props}export default function $NAME$(${param}) {\n${render("\t")}}`,
+    },
+    {
+      abbrev: "rfce",
+      description: tsx
+        ? "React function component with Props and export default"
+        : "React function component with export default",
+      body: `${props}function $NAME$(${param}) {\n${render("\t")}}\n\nexport default $NAME$;`,
+    },
+    {
+      abbrev: "rafce",
+      description: tsx
+        ? "React arrow function component with Props and export default"
+        : "React arrow function component with export default",
+      body: `${props}const $NAME$ = (${param}) => {\n${render("\t")}};\n\nexport default $NAME$;`,
+    },
+    {
+      abbrev: "rcc",
+      description: tsx ? "React class component with Props" : "React class component",
+      body: `import React from "react";\n\n${props}export default class $NAME$ extends React.Component${tsx ? "<Props>" : ""} {\n\trender() {\n${render("\t\t")}\t}\n}`,
+    },
+  ];
+  return group(
+    "JavaScript / TypeScript",
+    "ts",
+    [tsx ? "typescriptreact" : "javascriptreact"],
+    defs.map((d) => ({ ...d, id: `${d.abbrev}.${ext}`, variables })),
+  );
+}
+
 const python = group(
   "Python",
   "py",
@@ -545,6 +586,8 @@ const sqlCode = group(
 export const BUILTIN_TEMPLATES: readonly LiveTemplate[] = [
   ...rust,
   ...ts,
+  ...reactComponents(false),
+  ...reactComponents(true),
   ...python,
   ...go,
   ...zig,

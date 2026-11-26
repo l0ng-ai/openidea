@@ -97,6 +97,7 @@ const UNTRANSLATED = new Set<string>([
   "Prettier",
   "oxfmt",
   "Biome",
+  "dprint",
   "Ruff",
   "Cypress",
   "IntelliJ IDEA",
@@ -138,6 +139,9 @@ const UNTRANSLATED = new Set<string>([
   "java",
   "node",
   "python3",
+  // Command Rules pattern placeholders
+  "cargo test",
+  "rm -rf *",
   // Products, tools and formats
   "Amazon Aurora MySQL",
   "Amazon Redshift",

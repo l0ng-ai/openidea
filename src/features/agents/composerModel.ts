@@ -285,16 +285,15 @@ export function fenced(text: string, info: string): string {
   return `${fence}${info}\n${text.replace(/\r\n?/g, "\n").replace(/\s+$/, "")}\n${fence}`;
 }
 
-export type FenceKind = "terminal" | "problems" | "trace" | "element" | "text" | "code";
+export type FenceKind = "terminal" | "problems" | "trace" | "text" | "code";
 
 /**
  * A block's kind and label: `terminal zsh` → a terminal named zsh, `problems`, `trace` (an
- * error's stack), `element <button>` (a picked browser element), `text` (a long paste);
- * anything else is code in that language (`ts`).
+ * error's stack), `text` (a long paste); anything else is code in that language (`ts`).
  */
 export function fenceLabel(info: string): { kind: FenceKind; label: string; language: string | null } {
   const [first = "", ...rest] = info.split(/\s+/);
-  if (first === "terminal" || first === "problems" || first === "trace" || first === "element" || first === "text")
+  if (first === "terminal" || first === "problems" || first === "trace" || first === "text")
     return { kind: first, label: rest.join(" "), language: null };
   return { kind: "code", label: info, language: first || null };
 }
@@ -463,7 +462,8 @@ export const isPerModelOption = (o: AgentConfigOption) =>
   o.category === "context_tier" ||
   o.category === "model_config" ||
   isFastOption(o.id) ||
-  isContextOption(o.id);
+  isContextOption(o.id) ||
+  o.id === "service_tier";
 
 const matchesCategory = (o: AgentConfigOption, category: string) =>
   o.category === category ||

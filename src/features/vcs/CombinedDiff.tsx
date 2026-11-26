@@ -40,6 +40,11 @@ export function blockKind(item: DiffData): Kind {
 
 /** Height of a block not measured yet: its header and a short diff. */
 const ESTIMATE = 200;
+/**
+ * The panel library puts `overflow: auto` on its content div. The file tree and the diff list
+ * scroll themselves; a sub-pixel overflow of the panel would add a second native scrollbar.
+ */
+const CLIP = { overflow: "hidden" } as const;
 
 /** A file of the view: `key` tells apart the same file shown twice (staged and unstaged, in two commits). */
 export interface CombinedDiffItem {
@@ -394,11 +399,18 @@ export function CombinedDiffView({
       </div>
       {files ? (
         <SplitGroup orientation="horizontal" storageKey={files.storageKey} className={styles.split}>
-          <SplitPanel id="combined-files" defaultSize={240} minSize={160} maxSize="50%" className={styles.files}>
+          <SplitPanel
+            id="combined-files"
+            defaultSize={240}
+            minSize={160}
+            maxSize="50%"
+            className={styles.files}
+            style={CLIP}
+          >
             {files.content}
           </SplitPanel>
           <SplitHandle aria-label={files.label} />
-          <SplitPanel id="combined-diffs" minSize={240} className={styles.diffs}>
+          <SplitPanel id="combined-diffs" minSize={240} className={styles.diffs} style={CLIP}>
             {scroller}
           </SplitPanel>
         </SplitGroup>

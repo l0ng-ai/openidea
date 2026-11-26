@@ -2,9 +2,12 @@
 import { create } from "zustand";
 import { Channel } from "@tauri-apps/api/core";
 import type { ClassifiedReference, ReferenceAccess, ReferenceKind, Location, References, RequestId } from "@/bindings";
+import { editorsFor } from "@/editor/api";
 import { clearLineTokens } from "@/editor/lineTokens";
 import { showPendingHint } from "@/editor/lsp/hint";
 import { incompleteNote } from "@/editor/lsp/lsp";
+import { dedupeLocations } from "@/editor/lsp/navigation";
+import { overriddenMethods, overriddenReferences } from "@/editor/lsp/overriddenReferences";
 import { commands, IpcError, isCancelled, nextRequestId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { shortcutLabel } from "@/platform/keymap";
@@ -18,6 +21,7 @@ import {
   openLocation,
   readManyFileLines,
   reportError,
+  withDocument,
   type CaretContext,
 } from "./ipc";
 import { syntaxUsages } from "./syntaxUsages";
@@ -254,6 +258,8 @@ export async function fetchUsages(
       });
     });
   };
+  // Needs no request: looked up while the server searches.
+  const overridden = overriddenMethods(c.path, c.doc, { line: c.line, col: c.col });
   try {
     const refs = await lspRequest(() =>
       commands.lspReferences(request, c.doc, { line: c.line, col: c.col }, false, true, libraries, channel),
@@ -264,6 +270,14 @@ export async function fetchUsages(
     classified = refs.classified ?? [];
     librariesSkipped = refs.librariesSkipped ?? false;
     if (refs.incomplete) note = incompleteNote(refs.incomplete, c.word);
+    const inherited = await overriddenReferences(await overridden, (doc, at) =>
+      lspRequest(() => commands.lspReferences(request, doc, at, false, true, libraries, new Channel())),
+    );
+    for (const r of inherited) {
+      locs = locs.concat(r.locations);
+      if (r.incomplete) note ??= incompleteNote(r.incomplete, c.word);
+    }
+    if (inherited.length) locs = dedupeLocations(locs);
   } catch (e) {
     if (isCancelled(e)) throw e;
     let fb = null;
@@ -299,6 +313,7 @@ export function resetUsages() {
   if (popupRequest !== null) void commands.cancelRequest(popupRequest).catch(() => {});
   popupRequest = null;
   useUsages.setState({ tabs: [], active: null });
+  recentSearches = [];
   useUsagesPopup.setState({ open: false, symbol: null, groups: [], note: null, loading: false, scope: null });
   popupTarget = null;
 }
@@ -309,8 +324,56 @@ export async function findUsages() {
     hint("Open a file to find usages");
     return;
   }
+  await searchUsages(c, (fetch) => fetch(c), false, false);
+}
+
+/** A past Find Usages search, run again by Recent Find Usages. */
+export interface RecentUsageSearch {
+  path: string;
+  line: number;
+  col: number;
+  symbol: string | null;
+  libraries: boolean;
+  widenable: boolean;
+}
+
+const MAX_RECENT = 10;
+let recentSearches: RecentUsageSearch[] = [];
+
+/** Recent Find Usages: the last searches, newest first, one per caret position. */
+export const recentUsageSearches = (): readonly RecentUsageSearch[] => recentSearches;
+
+/** Runs `search` again in a new tab, in its file's document whether or not an editor still has it open. */
+export async function rerunRecentUsages(search: RecentUsageSearch) {
+  const { path, line, col, symbol, libraries, widenable } = search;
+  await searchUsages(
+    { path, line, col, word: symbol },
+    (fetch) =>
+      withDocument(path, (doc) =>
+        fetch({ doc, path, line, col, word: symbol, view: editorsFor(path)[0]?.view ?? null }),
+      ),
+    libraries,
+    widenable,
+  );
+}
+
+/** Runs `fetch` with the caret of a search: the editor's, or one in a document opened for each run. */
+type InDocument = <T>(fetch: (c: CaretContext) => Promise<T>) => Promise<T>;
+
+/** Searches the usages at `c` into the tool window. */
+async function searchUsages(
+  c: Pick<CaretContext, "path" | "line" | "col" | "word">,
+  inDocument: InDocument,
+  libraries: boolean,
+  widenable: boolean,
+) {
+  const here = (r: RecentUsageSearch) => r.path === c.path && r.line === c.line && r.col === c.col;
   // `widenable`: an earlier run of this search skipped the libraries.
   const run = async (prev: number | null, libraries: boolean, widenable: boolean) => {
+    recentSearches = [
+      { path: c.path, line: c.line, col: c.col, symbol: c.word, libraries, widenable },
+      ...recentSearches.filter((r) => !here(r)),
+    ].slice(0, MAX_RECENT);
     const id = ++searchSeq;
     const base = {
       id,
@@ -325,13 +388,16 @@ export async function findUsages() {
     const request = nextRequestId();
     inflight.set(id, request);
     try {
-      const { groups, note, librariesSkipped } = await fetchUsages(
-        c,
-        request,
-        (found) => {
-          if (inflight.get(id) === request) replaceUsageTab(id, { ...loading, groups: found.groups, note: found.note });
-        },
-        libraries,
+      const { groups, note, librariesSkipped } = await inDocument((caret) =>
+        fetchUsages(
+          caret,
+          request,
+          (found) => {
+            if (inflight.get(id) === request)
+              replaceUsageTab(id, { ...loading, groups: found.groups, note: found.note });
+          },
+          libraries,
+        ),
       );
       const scope = searchedScope(libraries, librariesSkipped, widenable);
       replaceUsageTab(id, { ...base, loading: false, groups, error: null, note, scope });
@@ -345,7 +411,7 @@ export async function findUsages() {
       if (inflight.get(id) === request) inflight.delete(id);
     }
   };
-  await run(null, false, false);
+  await run(null, libraries, widenable);
 }
 
 /**

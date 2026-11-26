@@ -32,6 +32,7 @@ import {
   moveTerminalToEditor,
   openNewTerminalInEditor,
   splitCliTab,
+  useClis,
 } from "./cli";
 import { installTerminalKeys } from "./keys";
 import { loadTerminalRuntime, terminalRuntime } from "./loader";
@@ -170,6 +171,7 @@ export function activate(): () => void {
       keepAlive: true,
       singleton: true,
       splitInput: splitCliTab,
+      canNavigate: (input, open) => open || !!useClis.getState().sessions[input.key],
       onClose: (input) => terminalRuntime()?.disposeCli(input.key),
       isBusy: (input) => terminalRuntime()?.cliBusy(input.key) ?? false,
     }),

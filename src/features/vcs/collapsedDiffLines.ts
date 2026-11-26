@@ -20,8 +20,13 @@ const collapseButtons = ViewPlugin.define((view) => {
       row.replaceChildren(button);
     }
   };
-  view.requestMeasure({ read: () => null, write: enhance });
-  return { docViewUpdate: enhance };
+  // Defer DOM replacement into CodeMirror's measure write phase rather than mutating synchronously
+  // during docViewUpdate: in WebKit, inserting the inline SVG while updated viewport gaps have not
+  // flushed layout yet causes scrollTop to clamp backwards and trap wheel scrolling in a loop.
+  const measure = { key: enhance, read: () => null, write: enhance };
+  const schedule = () => view.requestMeasure(measure);
+  schedule();
+  return { docViewUpdate: schedule };
 });
 
 export function collapsedDiffLines(): Extension {

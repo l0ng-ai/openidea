@@ -2127,6 +2127,31 @@ fn python_library_paths_are_parsed_and_deduplicated() {
 }
 
 #[test]
+fn python_libraries_include_the_other_folders_on_sys_path() {
+    // Ubuntu's /usr/bin/python3: `purelib` is the empty /usr/local dist-packages; apt's packages
+    // and the user's site-packages are only on `sys.path` (#6042).
+    let project = std::path::PathBuf::from("/home/u/app");
+    let sysconfig =
+        r#"["/usr/lib/python3.12", "/usr/lib/python3.12", "/usr/local/lib/python3.12/dist-packages", null]"#;
+    let sys_path = r#"["/usr/lib/python312.zip", "/usr/lib/python3.12", "/usr/lib/python3.12/lib-dynload", "/home/u/.local/lib/python3.12/site-packages", "/home/u/app/src", "/usr/lib/python3/dist-packages"]"#;
+    let paths = crate::libraries::python_library_paths(&format!("{sysconfig}\n{sys_path}\n"), &[project]);
+    let paths: Vec<_> = paths.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    assert_eq!(
+        paths,
+        [
+            "/usr/lib/python3.12",
+            "/usr/lib/python3.12",
+            "/usr/local/lib/python3.12/dist-packages",
+            "/usr/lib/python312.zip",
+            "/usr/lib/python3.12",
+            "/usr/lib/python3.12/lib-dynload",
+            "/home/u/.local/lib/python3.12/site-packages",
+            "/usr/lib/python3/dist-packages",
+        ]
+    );
+}
+
+#[test]
 fn no_libraries_without_an_interpreter() {
     let tmp = tempfile::tempdir().unwrap();
     assert!(crate::libraries::project_libraries(tmp.path(), &Settings::default(), &[]).is_empty());
@@ -3484,6 +3509,44 @@ fn vue_module_resolution_plugin_follows_the_vue_plugin() {
         .unwrap()
         .clone();
     assert_eq!(plugins.len(), 2);
+}
+
+#[test]
+fn vtsls_gets_the_path_alias_plugin_for_vite_aliases() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (root, data) = (tmp.path().join("app"), tmp.path().join("data"));
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let mut cfg = server("vtsls");
+    cfg.tsserver_project = true;
+    assert!(!crate::apply::configure_path_aliases(&mut cfg, &root, &data), "no bundler configuration");
+    std::fs::write(
+        root.join("vite.config.js"),
+        "import path from 'path';\nexport default { resolve: { alias: { '@': path.resolve(__dirname, 'src') } } };",
+    )
+    .unwrap();
+    let mut other = server("typescript-language-server");
+    other.tsserver_project = true;
+    assert!(!crate::apply::configure_path_aliases(&mut other, &root, &data));
+    // TypeScript 7's native server hosts no plugins.
+    let mut native = server("vtsls");
+    assert!(!crate::apply::configure_path_aliases(&mut native, &root, &data));
+    crate::apply::merge_init_options(
+        &mut cfg,
+        serde_json::json!({ "vtsls": { "tsserver": { "globalPlugins": [crate::vue::tsserver_plugin(Path::new("/vue"))] } } }),
+    );
+    for _ in 0..2 {
+        assert!(crate::apply::configure_path_aliases(&mut cfg, &root, &data));
+        let init = serde_json::to_value(cfg.initialization_options.as_ref().unwrap()).unwrap();
+        let names: Vec<_> = init
+            .pointer("/vtsls/tsserver/globalPlugins")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["name"].clone())
+            .collect();
+        assert_eq!(names, ["@vue/typescript-plugin", "openidea-path-aliases"], "kept once, after the others");
+    }
 }
 
 #[test]

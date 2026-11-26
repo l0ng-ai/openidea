@@ -1,0 +1,83 @@
+---
+title: Web Server Mode
+description: Run OpenIDEA in a web browser on a configurable host and port, directly or behind a reverse proxy.
+---
+
+OpenIDEA can run as a headless web application using `openidea-server --web`. The server hosts the built frontend assets and exposes the full Rust IDE backend (files, search, LSP code intelligence, integrated terminal, Git, run/debug, settings) over a single HTTP + WebSocket port.
+
+## Build
+
+Build both the frontend bundle and `openidea-server`:
+
+```bash
+pnpm install
+pnpm build
+cargo build --release -p ide-host --bin openidea-server
+```
+
+## Run
+
+The quickest way to launch the web IDE (from a repo checkout or inside a container) is the standalone launcher script:
+
+```bash
+./scripts/start-web.sh
+```
+
+It listens on `127.0.0.1:8080` by default (set `OPENIDEA_HOST=0.0.0.0` inside a container; `OPENIDEA_PORT` changes the port), auto-detects the `openidea-server` binary, the built `dist/` folder, and the workspace directory, and stores persistent settings and caches in `~/.openidea` (outside the workspace so indexes and downloaded tools are not watched as project files).
+
+Or invoke `openidea-server --web` directly on any host and port (default: `127.0.0.1:8080`):
+
+```bash
+./target/release/openidea-server --web \
+  --host 0.0.0.0 \
+  --port 8080 \
+  --web-dir ./dist \
+  --project /path/to/workspace
+```
+
+Then open `http://localhost:8080/` in a browser.
+
+## CLI Options & Environment Variables
+
+| Flag                     | Environment Variable     | Default                    | Description                                                                 |
+| ------------------------ | ------------------------ | -------------------------- | --------------------------------------------------------------------------- |
+| `--host <addr>`          | `OPENIDEA_HOST`          | `127.0.0.1`                | Bind address (use `0.0.0.0` inside containers)                              |
+| `--port <port>`          | `OPENIDEA_PORT`          | `8080`                     | TCP port for HTTP and WebSocket traffic                                     |
+| `--base-path <prefix>`   | `OPENIDEA_BASE_PATH`     | _(auto)_                   | Optional reverse-proxy URL prefix                                           |
+| `--web-dir <dir>`        | `OPENIDEA_WEB_DIR`       | auto-detected `dist/`      | Built frontend directory                                                    |
+| `--project <path>`       | `OPENIDEA_WORKSPACE_DIR` | _(none)_                   | Workspace folder opened automatically on startup                            |
+| `--home <dir>`           | `OPENIDEA_SERVER_HOME`   | `~/.openidea`              | Persistent directory for settings, indexes, and caches                      |
+| `--token <secret\|auto>` | `OPENIDEA_WEB_TOKEN`     | `auto` (random token)      | Access token required for browser and WebSocket sessions                    |
+| `--no-auth`              | `OPENIDEA_WEB_NO_AUTH`   | _(disabled)_               | Disable built-in token auth (use only behind an authenticating proxy)       |
+| `--no-trust-project`     | —                        | _(auto-trust `--project`)_ | Prompt for trust confirmation instead of trusting `--project` automatically |
+
+## Reverse Proxy & Subpath Deployments
+
+OpenIDEA web mode uses relative asset URLs and relative WebSocket resolution (`api/ws`), and automatically resolves static assets and API endpoints whether a reverse proxy strips its path prefix or forwards the full prefix untouched:
+
+- **Direct access**: `http://localhost:8080/`
+- **Prefix-stripping proxy**: `https://proxy.example/ide/` → backend receives `/` and `/api/ws`
+- **Prefix-preserving proxy**: `https://proxy.example/user/session/123/` → backend receives `/user/session/123/` and `/user/session/123/api/ws`
+
+### Health Endpoint
+
+`GET /api/health` (also reachable under any proxy prefix, e.g. `.../api/health`) returns `200 OK` with JSON status without requiring authentication, suitable for container readiness and liveness probes.
+
+## Authentication & Security
+
+Web mode is **authenticated by default**:
+
+- `openidea-server --web` binds to `127.0.0.1` by default and generates a random access token unless `--token <secret>` or `--no-auth` is passed.
+- On startup, the server prints a one-click URL containing `?token=...` (which sets a path-scoped `HttpOnly; SameSite=Lax` cookie — plus `Secure` behind HTTPS proxies — and redirects to strip the token from the URL) and serves a sign-in form for unauthenticated visitors.
+- WebSocket upgrades (`/api/ws`) enforce same-origin validation (`Origin` against `Host` / `X-Forwarded-Host`) to block Cross-Site WebSocket Hijacking (CSWSH).
+- When running behind a reverse proxy that already authenticates every request, disable built-in token auth explicitly with `--no-auth` or `OPENIDEA_WEB_NO_AUTH=1`. Never expose the server without authentication: anyone who reaches it can read and write files and run commands.
+
+## Session Lifecycle & Browser Tabs
+
+- **Server-owned state**: Open projects, terminals, background runs, and language servers live in `openidea-server`, not in the browser tab. Reloading or briefly disconnecting preserves running processes and reconnects automatically. When the server itself restarted, the tab reloads, since what it showed is gone.
+- **Unsaved-changes protection**: The browser prompts before closing or reloading a tab when open buffers have unsaved edits.
+- **Single active tab per window**: Opening the same server window in a second tab hands control to the newer tab and pauses the older tab with a **Take Over** banner to avoid conflicting edits. Independent server instances (for example two separate workspace containers under the same proxy domain) have isolated server hubs and path-scoped cookies, so they run side by side without interfering.
+
+## Persistent Storage & Containers
+
+In ephemeral container environments, point `OPENIDEA_SERVER_HOME` at a mounted persistent volume outside the project directory (for example `/home/openidea/.openidea`) so settings, recent projects, and indexes survive restarts without being watched or indexed as project files.

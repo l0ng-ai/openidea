@@ -172,6 +172,10 @@ pub fn arguments(
         args.push("-".into());
         return args;
     }
+    if tool == "dprint" {
+        // dprint finds its configuration from the working directory, the file's folder.
+        return vec!["fmt".into(), "--stdin".into(), file.as_os_str().to_owned()];
+    }
     if tool == "biome" {
         // Biome finds its `biome.json` and ignore files from the file's path itself.
         let mut path = OsString::from("--stdin-file-path=");
@@ -290,6 +294,30 @@ impl Tools {
 pub fn run_php_cs_fixer(mut command: Command, cancel: &CancellationToken) -> IdeResult<String> {
     crate::process::run_input(&mut command, "", Duration::from_secs(30), cancel)
         .map_err(|e| IdeError::invalid(format!("PHP-CS-Fixer: {}", e.message.trim())))
+}
+
+/// `dprint editor-info`: the plugins of the configuration dprint finds. The first run downloads
+/// them, hence the longer timeout.
+pub fn dprint_editor_info(mut command: Command) -> IdeResult<String> {
+    command.arg("editor-info");
+    crate::process::run_input(&mut command, "", Duration::from_secs(120), &Default::default())
+        .map_err(|e| e.with_tool("dprint"))
+}
+
+/// Whether a plugin listed by `dprint editor-info` formats `file`, by its extension or file name.
+pub fn dprint_covers(editor_info: &str, file: &Path) -> IdeResult<bool> {
+    let info: serde_json::Value = serde_json::from_str(editor_info)
+        .map_err(|e| IdeError::invalid(format!("dprint: unexpected editor-info output: {e}")).with_tool("dprint"))?;
+    let Some(name) = file.file_name().and_then(|n| n.to_str()) else { return Ok(false) };
+    let lower = name.to_lowercase();
+    fn strings(v: &serde_json::Value) -> impl Iterator<Item = &str> {
+        v.as_array().into_iter().flatten().filter_map(|s| s.as_str())
+    }
+    Ok(info["plugins"].as_array().into_iter().flatten().any(|plugin| {
+        strings(&plugin["fileNames"]).any(|n| n == name)
+            || strings(&plugin["fileExtensions"])
+                .any(|ext| lower.strip_suffix(&ext.to_lowercase()).is_some_and(|rest| rest.ends_with('.')))
+    }))
 }
 
 pub fn run(tool: &str, mut command: Command, text: &str, cancel: &CancellationToken) -> IdeResult<String> {
@@ -455,6 +483,40 @@ mod tests {
         // No Prettier ignore files or indentation: Biome reads its own configuration.
         assert_eq!(arguments("biome", &config, &file, 4, false, range, None), ["format".into(), stdin_path]);
         assert!(!supports_range("biome", &config));
+    }
+
+    #[test]
+    fn dprint_runs_the_nearest_package_on_stdin_for_what_its_plugins_cover() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("node_modules/dprint")).unwrap();
+        std::fs::write(root.join("node_modules/dprint/package.json"), r#"{"bin":"bin.cjs"}"#).unwrap();
+        std::fs::write(root.join("node_modules/dprint/bin.cjs"), "").unwrap();
+        let file = root.join("packages/web/src/app.ts");
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let tools = Tools::with_paths(root.join("tools"), path, crate::platform::Platform::current());
+        let command = tools.formatter_command("dprint", &file, None).unwrap();
+        assert_eq!(Path::new(command.get_program()).file_stem().unwrap(), "node");
+
+        let config = FormatterConfig { tool: "prettier".into(), parser: "typescript".into(), range: true };
+        let range =
+            Some(FormatRange { start_offset: 3, end_offset: 9, start_line: 1, start_col: 1, end_line: 1, end_col: 7 });
+        assert_eq!(
+            arguments("dprint", &config, &file, 4, false, range, None),
+            ["fmt".into(), "--stdin".into(), file.clone().into_os_string()]
+        );
+        assert!(!supports_range("dprint", &config));
+
+        let info = r#"{"schemaVersion":5,"plugins":[
+            {"fileExtensions":["ts","tsx","d.mts"],"fileNames":[]},
+            {"fileExtensions":["toml"],"fileNames":["Dockerfile"]}]}"#;
+        let covers = |name: &str| dprint_covers(info, &root.join(name)).unwrap();
+        assert!(covers("src/app.ts") && covers("src/App.TSX") && covers("types/x.d.mts"));
+        assert!(covers("Cargo.toml") && covers("Dockerfile"));
+        assert!(!covers("README.md") && !covers("main.mts") && !covers("ts") && !covers("dockerfile"));
+        assert!(!dprint_covers(r#"{"plugins":[]}"#, &file).unwrap());
+        let invalid = dprint_covers("No config file found", &file).unwrap_err();
+        assert_eq!(invalid.data, Some(ide_core::error::ErrorData::Tool { tool: "dprint".into(), missing: false }));
     }
 
     #[test]

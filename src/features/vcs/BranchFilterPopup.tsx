@@ -1,5 +1,5 @@
 import clsx from "clsx";
-import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Branch } from "@/bindings";
 import { HighlightedText, Icon, List, Popup, SearchField, T, firstSelectable, fuzzyMatch, listNavigate } from "@/ui";
 import { useRowHeight } from "@/ui/density";
@@ -25,7 +25,10 @@ type Row =
     };
 
 const ROW_HEIGHT = 24;
+/** The list's height limit when the window has no more room below the popup. */
 const MAX_LIST_HEIGHT = 320;
+/** Popup's gap to its anchor and its margin to the window edge. */
+const POPUP_MARGINS = 4 + 6;
 
 /**
  * IDEA's branch filter: HEAD, the favorite branches (★), then Local and Remote collapsed like its
@@ -129,7 +132,19 @@ export function BranchFilterPopup({
       setActive(next);
     }
   };
-  const height = Math.min(MAX_LIST_HEIGHT, Math.max(rowHeight * 3, rows.length * rowHeight));
+  const listRef = useRef<HTMLDivElement>(null);
+  const [maxListHeight, setMaxListHeight] = useState(MAX_LIST_HEIGHT);
+  // Opened groups grow the list down to the window's bottom edge, so the popup stays where it opened.
+  // With less room than that below the anchor, the list keeps its usual limit.
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    const popup = list?.parentElement;
+    if (!list || !popup) return;
+    const room = window.innerHeight - anchor.getBoundingClientRect().bottom - POPUP_MARGINS;
+    const others = popup.offsetHeight - parseFloat(list.style.height);
+    setMaxListHeight(Math.max(MAX_LIST_HEIGHT, Math.floor(room - others)));
+  }, [anchor]);
+  const height = Math.min(maxListHeight, Math.max(rowHeight * 3, rows.length * rowHeight));
   return (
     <Popup
       open
@@ -152,7 +167,7 @@ export function BranchFilterPopup({
           aria-label="Search branches"
         />
       </div>
-      <div className={styles.branchFilterList} style={{ height }}>
+      <div ref={listRef} className={styles.branchFilterList} style={{ height }}>
         <List
           items={rows}
           getKey={(r) => r.key}

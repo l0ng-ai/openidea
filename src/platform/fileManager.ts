@@ -2,6 +2,7 @@ import type { RemoteTarget } from "./ipc";
 import { call, commands, isTauri } from "./ipc";
 import { usePlatform } from "./platformInfo";
 import { useRemote } from "./remote";
+import { isWebMode } from "./webBridge";
 
 function wslSharePath(path: string, target: RemoteTarget | null): string {
   if (target?.kind !== "wsl" || !path.startsWith("/")) return path;
@@ -49,6 +50,7 @@ export function revealInFileManagerLabel(os = usePlatform.getState().os): string
  * Windows through their `\\wsl.localhost` share.
  */
 export function canRevealInFileManager(target = windowTarget(), os = usePlatform.getState().os): boolean {
+  if (isWebMode()) return false;
   return target === null || (target.kind === "wsl" && os === "windows");
 }
 
@@ -60,7 +62,7 @@ export async function revealInFileManager(
   paths: string | readonly string[],
   target = windowTarget(),
 ): Promise<boolean> {
-  if (!isTauri() || !canRevealInFileManager(target)) return false;
+  if (!isTauri() || isWebMode() || !canRevealInFileManager(target)) return false;
   const list = (typeof paths === "string" ? [paths] : paths).map((path) => fileManagerPath(path, undefined, target));
   if (!list.length) return false;
   const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
@@ -74,7 +76,7 @@ export async function revealInFileManager(
  * their server.
  */
 export function canOpenWithSystemApp(target = windowTarget()): boolean {
-  return isTauri() && target === null;
+  return isTauri() && !isWebMode() && target === null;
 }
 
 /**
