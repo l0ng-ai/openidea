@@ -63,7 +63,7 @@ pub mod views;
 pub mod web;
 mod websocket;
 
-pub use api::{FileSecretStore, HostWorkspace, PluginWorkspace, SecretStore};
+pub use api::{CredentialSecretStore, FileSecretStore, HostWorkspace, PluginWorkspace, SecretStore};
 pub use build_graph::{BuildGraph, GradleModule};
 pub(crate) use hover::merge as merge_hover;
 pub use icons::{
@@ -1947,6 +1947,12 @@ impl PluginHost {
     /// directory; the desktop app uses the OS keychain).
     pub fn set_secret_store(&self, store: Arc<dyn SecretStore>) {
         *self.shared.secrets.write() = store;
+    }
+
+    /// Keeps plugin secrets in the OS credential store, with the owner-only
+    /// files under the plugins directory as the fallback.
+    pub fn use_credential_store(&self) {
+        self.set_secret_store(Arc::new(CredentialSecretStore::new(self.shared.data_dir.clone())));
     }
 
     /// Stores (or, with `None`, deletes) a secret the plugin declares under

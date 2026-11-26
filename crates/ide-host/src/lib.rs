@@ -701,6 +701,12 @@ impl Host {
         self.requests.begin(id)
     }
 
+    /// Settings › Tools › Download Mirrors › Use only the configured package registries: nothing
+    /// is fetched from public package registries the user's tools weren't pointed at.
+    pub fn configured_registries_only(&self) -> bool {
+        self.global_settings.effective().tool_downloads.configured_registries_only
+    }
+
     pub fn begin_project_request(&self, window: &str, id: RequestId) -> CancellationToken {
         let token = self.begin_project_read_request(window, id);
         if self.project(window).is_ok_and(|p| !p.is_trusted()) {

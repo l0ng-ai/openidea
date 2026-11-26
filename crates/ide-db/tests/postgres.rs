@@ -338,6 +338,8 @@ async fn table_details_routines_and_completion_on_older_catalogs() -> IdeResult<
         "CREATE TABLE oi_meta.lines (n INT PRIMARY KEY, o_region INT, o_id INT, \
          FOREIGN KEY (o_region, o_id) REFERENCES oi_meta.orders (region, id))",
         "CREATE INDEX lines_order ON oi_meta.lines (o_id, o_region)",
+        "COMMENT ON TABLE oi_meta.orders IS 'Customer''s orders'",
+        "COMMENT ON COLUMN oi_meta.orders.note IS 'Free text'",
         "CREATE FUNCTION oi_meta.twice(v INT) RETURNS INT AS 'SELECT v * 2' LANGUAGE sql",
     ] {
         db.execute("p", stmt, 10, &c).await?;
@@ -350,6 +352,10 @@ async fn table_details_routines_and_completion_on_older_catalogs() -> IdeResult<
     assert_eq!(details.foreign_keys[0].columns, ["o_region", "o_id"]);
     assert_eq!(details.foreign_keys[0].ref_columns, ["region", "id"]);
     let orders = db.table_details("p", "oi_meta", "orders").await?;
+    assert_eq!(orders.comment.as_deref(), Some("Customer's orders"));
+    let comments: Vec<_> = orders.columns.iter().map(|c| c.comment.as_deref()).collect();
+    assert_eq!(comments, [None, None, Some("Free text")]);
+    assert_eq!(details.comment, None);
     let key = orders.indexes.iter().find(|i| i.unique).expect("primary key index");
     assert_eq!(key.columns, ["region", "id"]);
 

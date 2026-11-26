@@ -24,7 +24,9 @@ import { registerKeyClaim } from "@/platform/keymap";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import { copySourceOf } from "@/platform/clipboardSource";
 import {
+  EDITOR_TAB_MIME,
   getAgentContextSources,
+  maybeEditorService,
   notifications,
   OWNS_FILE_DROP,
   type AgentContextSource,
@@ -99,6 +101,18 @@ type Item =
   | { kind: "section"; source: Section };
 
 const isSection = (item: Item) => item.kind === "section";
+
+/** The file of an editor tab drag payload (`{paneId, tabId}`), null for virtual and non-file tabs. */
+const tabFilePath = (payload: string): string | null => {
+  try {
+    const p = JSON.parse(payload) as { paneId?: unknown; tabId?: unknown };
+    if (typeof p.paneId !== "string" || typeof p.tabId !== "string") return null;
+    const input = maybeEditorService()?.tabInput?.(p.paneId, p.tabId);
+    return input?.kind === "file" && input.path && !isVirtualUri(input.path) ? input.path : null;
+  } catch {
+    return null;
+  }
+};
 
 const SECTION_TITLES: Record<Section, string> = {
   command: "Commands",
@@ -941,17 +955,21 @@ export function Composer(props: ComposerProps) {
     };
   }, [addPaths, addImages]);
 
-  // Files and folders dragged from the Project view: the same `@` references.
+  // Files and folders dragged from the Project view, and file tabs dragged from the editor:
+  // the same `@` references.
   useEffect(() => {
     const el = boxRef.current;
     if (!el) return;
     return registerDropTarget(el, {
-      accepts: (type) => type === FILES_DRAG,
+      accepts: (type, data) => type === FILES_DRAG || (type === EDITOR_TAB_MIME && !!tabFilePath(data.payload)),
       over: () => setFileOver(true),
       leave: () => setFileOver(false),
       drop: (data) => {
         setFileOver(false);
-        addPaths(data.payload.split("\n").filter(Boolean));
+        if (data.type === EDITOR_TAB_MIME) {
+          const path = tabFilePath(data.payload);
+          if (path) addPaths([path]);
+        } else addPaths(data.payload.split("\n").filter(Boolean));
       },
     });
   }, [addPaths]);

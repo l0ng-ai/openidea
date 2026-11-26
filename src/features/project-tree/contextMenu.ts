@@ -1,5 +1,7 @@
 /** Context menu and "New" popup of the project view. */
+import { openCopyPathChooser } from "@/editor/api";
 import { executeAction, getAction } from "@/platform/actions";
+import type { PathKind } from "@/platform/copyPath";
 import { getContext } from "@/platform/context";
 import { canOpenWithSystemApp, canRevealInFileManager, fileManagerName } from "@/platform/fileManager";
 import { formatBinding, hostBinding, isMacHost, shortcutLabel } from "@/platform/keymap";
@@ -18,6 +20,7 @@ import {
   canPaste,
   copyPaths,
   copySelection,
+  pathsFor,
   delegate,
   deleteSelection,
   findFileUsages,
@@ -151,6 +154,8 @@ function delegated(
 }
 
 type Entry = MenuItem | null | false | undefined;
+/** Where a menu opens; popups its items open appear there. */
+type MenuPoint = { x: number; y: number } | "center";
 
 /** A submenu of the present entries, or nothing when none is left (never an empty submenu). */
 function submenu(id: string, label: string, entries: Entry[], icon?: string): MenuItem | null {
@@ -160,8 +165,13 @@ function submenu(id: string, label: string, entries: Entry[], icon?: string): Me
 }
 
 /** Project view actions available for the selected files and directories. */
-export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
-  if (nodes.some((n) => n.readOnly)) return libraryMenuItems(nodes.filter((n) => !n.group));
+/** `at`: where the menu opens, for the popups its items open (Copy Path/Reference…). */
+export function contextMenuItems(nodes: ProjectNode[], at: MenuPoint = "center"): MenuItem[] {
+  if (nodes.some((n) => n.readOnly))
+    return libraryMenuItems(
+      nodes.filter((n) => !n.group),
+      at,
+    );
   const lead = nodes[0] ?? null;
   const single = nodes.length === 1 ? lead : null;
   const nonRoot = nodes.filter((n) => !n.root);
@@ -217,22 +227,7 @@ export function contextMenuItems(nodes: ProjectNode[]): MenuItem[] {
       disabled: !nonRoot.length,
       run: () => copySelection(false),
     },
-    {
-      id: "copyPath",
-      label: "Copy Path/Reference…",
-      submenu: [
-        {
-          id: "abs",
-          label: "Absolute Path",
-          shortcut: keyLabel("project.copyAbsolutePath"),
-          run: () => void copyPaths("absolute", nodes),
-        },
-        { id: "name", label: "File Name", run: () => void copyPaths("name", nodes) },
-        { id: "rel", label: "Path From Content Root", run: () => void copyPaths("relative", nodes) },
-        { kind: "separator" },
-        ...menuGroupItems("copyPath", menuGroupContext(nodes)),
-      ],
-    },
+    copyPathItem(nodes, at, false),
     {
       id: "paste",
       label: "Paste",
@@ -464,27 +459,13 @@ function openInRightSplitItem(files: ProjectNode[]): MenuItem {
 }
 
 /** Library sources (External Libraries) are read-only: copy, find and reveal only. */
-function libraryMenuItems(nodes: ProjectNode[]): MenuItem[] {
+function libraryMenuItems(nodes: ProjectNode[], at: MenuPoint): MenuItem[] {
   if (!nodes.length) return [];
   const single = nodes.length === 1 ? nodes[0]! : null;
   const folder = single?.dir ? single.path : null;
   const items: Entry[] = [
     { id: "copy", label: "Copy", icon: "copy", shortcut: keyLabel("project.copy"), run: () => copySelection(false) },
-    {
-      id: "copyPath",
-      label: "Copy Path/Reference…",
-      submenu: [
-        {
-          id: "abs",
-          label: "Absolute Path",
-          shortcut: keyLabel("project.copyAbsolutePath"),
-          run: () => void copyPaths("absolute", nodes),
-        },
-        { id: "name", label: "File Name", run: () => void copyPaths("name", nodes) },
-        { kind: "separator" },
-        ...menuGroupItems("copyPath", menuGroupContext(nodes)),
-      ],
-    },
+    copyPathItem(nodes, at, true),
     { kind: "separator" },
     !!folder && delegated("find.inPath", { directory: folder }, "Find in Files…", { icon: "search" }),
     !!folder && { kind: "separator" },
@@ -516,6 +497,43 @@ function libraryMenuItems(nodes: ProjectNode[]): MenuItem[] {
 
 export function revealLabel() {
   return fileManagerName();
+}
+
+/**
+ * Copy Path/Reference…: a chooser previewing what each way copies for the selection (several
+ * paths one per line), contributed links and references included. Library files have no
+ * content or source root.
+ */
+function copyPathItem(nodes: ProjectNode[], at: MenuPoint, library: boolean): Entry {
+  const row = (kind: PathKind, id: string, label: string) => {
+    const paths = pathsFor(kind, nodes);
+    return {
+      id,
+      label,
+      // A selection only partly under a source root has no source-root path.
+      preview: paths.length && paths.length === nodes.length ? paths.join("\n") : null,
+      run: () => void copyPaths(kind, nodes),
+    };
+  };
+  return {
+    id: "copyPath",
+    label: "Copy Path/Reference…",
+    run: () =>
+      openCopyPathChooser(
+        at,
+        [
+          row("absolute", "project.copyAbsolutePath", "Absolute Path"),
+          row("name", "project.copyFileName", "File Name"),
+          ...(library
+            ? []
+            : [
+                row("relative", "project.copyRelativePath", "Path From Content Root"),
+                row("source", "project.copySourceRootPath", "Path From Source Root"),
+              ]),
+        ],
+        menuGroupContext(nodes),
+      ),
+  };
 }
 
 /** What contributed menu groups see: the selected (non-placeholder) paths. */

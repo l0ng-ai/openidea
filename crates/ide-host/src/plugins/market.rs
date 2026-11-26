@@ -700,7 +700,10 @@ mod tests {
         // tampered package — and the official host must still be asked.
         let candidates = mirror::candidates(
             "https://github.com/acme/hello/releases/download/v1/acme.hello-1.0.0.oiplugin",
-            &ide_core::settings::ToolDownloadSettings { github_mirror: "https://gh-proxy.com/".into() },
+            &ide_core::settings::ToolDownloadSettings {
+                github_mirror: "https://gh-proxy.com/".into(),
+                ..Default::default()
+            },
         );
         let asked: std::cell::RefCell<Vec<usize>> = std::cell::RefCell::new(Vec::new());
         let picked = try_sources(&candidates, |index, candidate| {
@@ -731,7 +734,10 @@ mod tests {
         let url = "https://github.com/acme/hello/releases/download/v1/acme.hello-1.0.0.oiplugin";
         let through = mirror::candidates(
             url,
-            &ide_core::settings::ToolDownloadSettings { github_mirror: "https://gh-proxy.com/".into() },
+            &ide_core::settings::ToolDownloadSettings {
+                github_mirror: "https://gh-proxy.com/".into(),
+                ..Default::default()
+            },
         );
         assert_eq!(through.len(), 2);
         assert_eq!(through[0].url, format!("https://gh-proxy.com/{url}"));
@@ -741,7 +747,10 @@ mod tests {
         // A local index's own package is not on GitHub: no prefix may carry it.
         let local = mirror::candidates(
             "/srv/market/a.oiplugin",
-            &ide_core::settings::ToolDownloadSettings { github_mirror: "https://gh-proxy.com/".into() },
+            &ide_core::settings::ToolDownloadSettings {
+                github_mirror: "https://gh-proxy.com/".into(),
+                ..Default::default()
+            },
         );
         assert_eq!(local.len(), 1);
         assert_eq!(local[0].url, "/srv/market/a.oiplugin");

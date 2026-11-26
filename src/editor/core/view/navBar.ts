@@ -67,6 +67,17 @@ export function symbolChildren(path: string, items: readonly OutlineItem[]): Nav
   return items.map((item) => ({ kind: "symbol", path, label: item.name, item }));
 }
 
+/**
+ * The segment whose children are the siblings of `chain[index]` (IDEA / PyCharm
+ * breadcrumb chooser): the file for a top-level symbol, else its enclosing symbol.
+ */
+export function siblingSegment(path: string, chain: readonly OutlineItem[], index: number): NavSegment {
+  const parent = index > 0 ? chain[index - 1]! : null;
+  return parent
+    ? { kind: "symbol", path, label: parent.name, item: parent }
+    : { kind: "file", path, label: nameOf(path) };
+}
+
 export function iconOf(x: NavSegment | NavChild): string {
   if (x.kind === "dir") return "root" in x && x.root ? "module" : "folder";
   if (x.kind === "file") return fileIconName(x.label);

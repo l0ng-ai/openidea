@@ -211,7 +211,7 @@ fn write_index(
 
 /// The download sources setting with `mirror` as the GitHub proxy prefix (Tools › Download sources).
 fn download_sources(mirror: &str) -> ide_core::settings::ToolDownloadSettings {
-    ide_core::settings::ToolDownloadSettings { github_mirror: mirror.into() }
+    ide_core::settings::ToolDownloadSettings { github_mirror: mirror.into(), ..Default::default() }
 }
 
 /// Security audit lead 5: an index entry's id and version name the download file,

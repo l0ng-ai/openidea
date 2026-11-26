@@ -8,7 +8,8 @@ import { call, commands, isTauri } from "@/platform/ipc";
 import { loadSettings, relativePath, useProject } from "@/platform/project";
 import type { MenuItem } from "@/ui";
 
-const LABELS: Record<(typeof FILE_COLOR_NAMES)[number], string> = {
+/** English title per colour, also the title of its `file.<colour>` action (the editor tab menu). */
+export const LABELS: Record<(typeof FILE_COLOR_NAMES)[number], string> = {
   blue: "Blue",
   green: "Green",
   orange: "Orange",

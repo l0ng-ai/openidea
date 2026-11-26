@@ -10,6 +10,7 @@ import { notifications } from "@/workbench/contributions";
 import {
   DEFAULT_EXPORT_OPTIONS,
   EXPORT_FORMATS,
+  SQL_FORMATS,
   exportData,
   type ExportData,
   type ExportFormat,
@@ -169,7 +170,7 @@ export function ExportDialog({
           <CodePreview
             className={styles.exportPreviewText}
             aria-label="Export preview"
-            sql={format === "sql"}
+            sql={SQL_FORMATS.has(format)}
             text={preview + (data.rows.length > PREVIEW_ROWS ? `\n… ${data.rows.length - PREVIEW_ROWS} more rows` : "")}
           />
         </div>

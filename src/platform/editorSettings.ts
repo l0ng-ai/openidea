@@ -47,6 +47,10 @@ export interface LanguageCodeStyle {
   /** SQL › Case: Reformat Code's case for keywords and unquoted identifiers. */
   keywordCase?: SqlWordCase;
   identifierCase?: SqlWordCase;
+  /** Java: organize imports switches to a wildcard import once this many classes of one package are used (jdtls passthrough). */
+  classCountToUseImportWithStar?: number;
+  /** Java: organize imports switches to a wildcard static import once this many names are used (jdtls passthrough). */
+  namesCountToUseStaticImportWithStar?: number;
   /** JavaScript / TypeScript › Punctuation (unset: tsserver's default, `ignore` / `auto`). */
   semicolons?: "ignore" | "insert" | "remove";
   quotes?: "auto" | "single" | "double";
