@@ -555,7 +555,7 @@ export function SourceDialog({
     ((savedJdbcWithPreset &&
       (initial.jdbcDriver !== s.jdbcDriver ||
         nativeSource ||
-        (s.url && s.url === jdbcProfile?.urlTemplate && s.url !== initial.url))) ||
+        (!duckdb && s.url && s.url === jdbcProfile?.urlTemplate && s.url !== initial.url))) ||
       (nativeSource &&
         (!!initial ||
           nativeSource.driver === "clickhouse" ||
@@ -669,7 +669,7 @@ export function SourceDialog({
       : duckdb
         ? duckDbMode === "memory"
           ? DUCKDB_JDBC_PREFIX
-          : (urlDraft ?? "")
+          : (urlDraft ?? s.url ?? "")
         : fromTemplate
           ? renderedUrl
           : (s.url ?? "");
@@ -1074,7 +1074,7 @@ export function SourceDialog({
                 aria-pressed={id === duckDbMode}
                 onClick={() => {
                   setDuckDbMode(id);
-                  if (id === "url" && urlDraft === null) setUrlDraft(jdbcUrl);
+                  if (id === "url" && duckDbMode !== "url" && urlDraft === null) set({ url: jdbcUrl });
                   setTest(null);
                 }}
               >
@@ -1130,7 +1130,7 @@ export function SourceDialog({
             mono
             value={jdbcUrl}
             readOnly={duckDbMode !== "url"}
-            invalid={duckDbMode === "url" && !!urlDraft && !jdbcUrlValid}
+            invalid={duckDbMode === "url" && !!jdbcUrl && !jdbcUrlValid}
             placeholder={DUCKDB_JDBC_PREFIX}
             onChange={(e) => {
               setUrlDraft(e.target.value);

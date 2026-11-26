@@ -241,6 +241,55 @@ describe("DuckDB data sources", () => {
     expect(screen.getByLabelText("URL:")).toHaveValue("jdbc:duckdb:/tmp/current.duckdb");
   });
 
+  it.each([
+    { draft: "generated", authoredUrl: null, expected: "jdbc:duckdb:/tmp/selected.duckdb" },
+    {
+      draft: "user-authored",
+      authoredUrl: "jdbc:duckdb:/tmp/explicit.duckdb;threads=2",
+      expected: "jdbc:duckdb:/tmp/explicit.duckdb;threads=2",
+    },
+  ])("handles a $draft JDBC URL draft after choosing a new file", async ({ authoredUrl, expected }) => {
+    backend.call.mockImplementation(async ([op]) => (op === "list" ? [duckdb] : "OK"));
+    backend.pick.mockResolvedValueOnce("/tmp/selected.duckdb");
+    render(
+      <SourceDialog
+        initial={{
+          driver: "jdbc",
+          vendor: "duckdb",
+          jdbcDriver: duckdb.id,
+          file: "/tmp/original.duckdb",
+          url: "jdbc:duckdb:/tmp/original.duckdb",
+        }}
+      />,
+    );
+    await waitFor(() => expect(screen.getByRole("button", { name: "Go to Driver" })).toBeEnabled());
+    const urlMode = screen.getByRole("button", { name: "JDBC URL" });
+    const fileMode = screen.getByRole("button", { name: "File" });
+    fireEvent.click(urlMode);
+    expect(screen.getByLabelText("URL:")).toHaveValue("jdbc:duckdb:/tmp/original.duckdb");
+    if (authoredUrl) fireEvent.change(screen.getByLabelText("URL:"), { target: { value: authoredUrl } });
+
+    fireEvent.click(fileMode);
+    fireEvent.click(screen.getByRole("button", { name: "Browse…" }));
+    await waitFor(() => expect(screen.getByLabelText("File:")).toHaveValue("/tmp/selected.duckdb"));
+    fireEvent.click(urlMode);
+    expect(screen.getByLabelText("URL:")).toHaveValue(expected);
+
+    fireEvent.click(screen.getByRole("button", { name: "In memory" }));
+    fireEvent.click(urlMode);
+    expect(screen.getByLabelText("URL:")).toHaveValue(authoredUrl ?? "jdbc:duckdb:");
+    fireEvent.click(fileMode);
+    fireEvent.click(urlMode);
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+    await waitFor(() =>
+      expect(backend.saveSource).toHaveBeenCalledWith(
+        expect.objectContaining({ url: expected, urlOnly: true }),
+        undefined,
+        undefined,
+      ),
+    );
+  });
+
   it("rejects a database path the JDBC driver would parse as URL properties", async () => {
     backend.call.mockImplementation(async ([op]) => (op === "list" ? [duckdb] : "OK"));
     startDuckDb();
