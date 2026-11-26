@@ -260,6 +260,13 @@ impl EditorConfig {
 
     /// Effective properties for `file` (absolute); `None` when no section applies.
     pub fn resolve(&self, file: &Path) -> Option<EditorConfigProps> {
+        let props = props_from(&self.resolve_pairs(file)?);
+        (!props.is_empty()).then_some(props)
+    }
+
+    /// Every `key = value` that applies to `file` (keys lower-cased), domain-specific ones
+    /// (`quote_type`, `ij_*`) included; `None` when no section applies.
+    pub fn resolve_pairs(&self, file: &Path) -> Option<HashMap<String, String>> {
         let mut chain: Vec<(PathBuf, Arc<ParsedFile>)> = Vec::new();
         for dir in file.ancestors().skip(1) {
             if let Some(parsed) = self.load(&dir.join(FILE_NAME)) {
@@ -286,11 +293,7 @@ impl EditorConfig {
                 }
             }
         }
-        if !matched {
-            return None;
-        }
-        let props = props_from(&map);
-        (!props.is_empty()).then_some(props)
+        matched.then_some(map)
     }
 }
 

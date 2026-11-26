@@ -26,6 +26,7 @@ mod requests;
 pub mod rpc;
 pub mod shell_env;
 pub mod trust;
+mod ts_code_style;
 
 pub use project::{Project, history_retention};
 

@@ -31,6 +31,52 @@ fn biome_formats(file: &Path) -> bool {
     }
 }
 
+const PRETTIER_CONFIGS: [&str; 18] = [
+    ".prettierrc",
+    ".prettierrc.json",
+    ".prettierrc.json5",
+    ".prettierrc.yaml",
+    ".prettierrc.yml",
+    ".prettierrc.toml",
+    ".prettierrc.js",
+    ".prettierrc.cjs",
+    ".prettierrc.mjs",
+    ".prettierrc.ts",
+    ".prettierrc.cts",
+    ".prettierrc.mts",
+    "prettier.config.js",
+    "prettier.config.cjs",
+    "prettier.config.mjs",
+    "prettier.config.ts",
+    "prettier.config.cts",
+    "prettier.config.mts",
+];
+
+/// A Prettier configuration applies to `file`: a configuration file or a `prettier` key in a
+/// `package.json` above it.
+fn prettier_configured(file: &Path) -> bool {
+    PRETTIER_CONFIGS.iter().any(|name| formatter::find_up(file, Path::new(name)).is_some())
+        || file.ancestors().skip(1).any(|dir| {
+            std::fs::read_to_string(dir.join("package.json"))
+                .ok()
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+                .is_some_and(|v| v.get("prettier").is_some())
+        })
+}
+
+/// The project configures the selected formatter, so it formats rather than the language server
+/// (whose output follows the IDE's code style, not the project's configuration).
+fn project_configured(tool: ExternalFormatter, file: &Path) -> bool {
+    match tool {
+        ExternalFormatter::Prettier => prettier_configured(file),
+        ExternalFormatter::Oxfmt => {
+            OXFMT_CONFIGS.iter().any(|name| formatter::find_up(file, Path::new(name)).is_some())
+        }
+        ExternalFormatter::Biome => biome_formats(file),
+        ExternalFormatter::Ruff | ExternalFormatter::Black => false,
+    }
+}
+
 /// The `pyproject.toml` Black reads for `file`, in the project root Black finds: the nearest folder
 /// with `.git`, `.hg`, or a `pyproject.toml` that has `[tool.black]` (one without it is skipped).
 /// `None` when that root has no `pyproject.toml`: Black then reads the user's configuration.
@@ -498,6 +544,7 @@ async fn provider_edits(
         && options.tool.is_none()
         && tool != ExternalFormatter::Black
         && !settings.languages.formatter(tool).prefer
+        && !project_configured(tool, &snap.path)
         && match doc {
             Some(doc) => project.lsp.can_format(doc).await?,
             None => project.lsp.can_format_text(&snap.path, &snap.language).await,
@@ -962,6 +1009,26 @@ mod tests {
         settings.oxfmt.prefer = true;
         settings.oxfmt.languages.clear();
         assert_eq!(tool(None, "typescript", file, &settings).unwrap(), None);
+    }
+
+    #[test]
+    fn a_project_configuration_of_the_formatter_wins_over_the_language_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("a/src")).unwrap();
+        std::fs::create_dir_all(root.join("b/src")).unwrap();
+        std::fs::create_dir_all(root.join("c/src")).unwrap();
+        std::fs::write(root.join("a/.prettierrc.json"), "{}").unwrap();
+        std::fs::write(root.join("b/package.json"), r#"{ "prettier": { "semi": false } }"#).unwrap();
+        std::fs::write(root.join("c/package.json"), r#"{ "name": "c" }"#).unwrap();
+        std::fs::write(root.join("c/biome.json"), "{}").unwrap();
+        assert!(project_configured(Prettier, &root.join("a/src/app.ts")));
+        assert!(project_configured(Prettier, &root.join("b/src/app.ts")));
+        assert!(!project_configured(Prettier, &root.join("c/src/app.ts")));
+        assert!(project_configured(Biome, &root.join("c/src/app.ts")));
+        assert!(!project_configured(Oxfmt, &root.join("c/src/app.ts")));
+        std::fs::write(root.join("c/.oxfmtrc.json"), "{}").unwrap();
+        assert!(project_configured(Oxfmt, &root.join("c/src/app.ts")));
     }
 
     #[test]
