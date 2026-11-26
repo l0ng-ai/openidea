@@ -1,4 +1,4 @@
-package openidea:plugin@1.17.0;
+package openidea:plugin@1.18.0;
 
 /// Optional export (API 1.16, world `plugin-completion-list`): completion that
 /// can say its list is incomplete. A plugin exporting it is called instead of
