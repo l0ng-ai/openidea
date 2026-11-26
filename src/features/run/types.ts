@@ -16,6 +16,7 @@ import {
   mavenForkedJvm,
   ROOT_MODULE,
   springBootType,
+  splitJvmArgs,
   type ForkedJvm,
 } from "./jvmTypes";
 import { tx } from "@/platform/i18n";
@@ -282,6 +283,15 @@ const NODE_VALUE_OPTIONS = [
   "--eval",
   "-p",
   "--print",
+  "--run",
+  "--watch-path",
+  "--input-type",
+  "--inspect-port",
+  "--debug-port",
+  "--test-reporter",
+  "--test-reporter-destination",
+  "--env-file-if-exists",
+  "--disable-warning",
 ];
 
 /** `[node options, file, application arguments]` of a Node command line; no file when only options follow. */
@@ -308,24 +318,26 @@ const node: RunConfigTypeContribution = {
       placeholder: "Project default",
       hint: "The node executable, or a runner such as tsx; empty uses Settings › Languages & Frameworks › JavaScript Runtime.",
     },
-    { key: "nodeOptions", label: "Node options", mono: true, placeholder: "e.g. --env-file=.env --inspect" },
+    {
+      key: "nodeOptions",
+      label: "Node options",
+      mono: true,
+      placeholder: "e.g. --env-file=.env --max-old-space-size=4096",
+    },
     { key: "file", label: "JavaScript file", mono: true, required: true, browse: "file" },
     { key: "arguments", label: "Application arguments", mono: true },
   ],
   commandLine: (p) => ({
     command: p.interpreter?.trim() || "node",
-    args: [
-      ...parseArgs(p.nodeOptions ?? ""),
-      ...(p.file?.trim() ? [p.file.trim()] : []),
-      ...parseArgs(p.arguments ?? ""),
-    ],
+    args: [...splitJvmArgs(p.nodeOptions), ...(p.file?.trim() ? [p.file.trim()] : []), ...splitJvmArgs(p.arguments)],
   }),
   paramsFrom(c) {
     // `npx tsx …`, test runs and the like keep their own command line.
     if (c.isTest || !["node", "tsx", "ts-node"].includes(commandName(c.command))) return null;
     const [options, file, rest] = splitNodeArgs(c.args);
-    // A new configuration has no file yet; `node --test` and `node -e …` run none.
-    if (!file && c.args.length) return null;
+    // Only a new configuration (params set, still empty) opens without a file; an older bare `node`
+    // stays a plain command rather than failing validation. `node --test` and `node -e …` run none.
+    if (!file && (c.args.length || !c.params)) return null;
     return {
       ...(c.command !== "node" ? { interpreter: c.command } : {}),
       nodeOptions: formatArgs(options),

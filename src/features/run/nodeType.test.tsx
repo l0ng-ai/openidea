@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import type { RunConfig } from "@/platform/ipc";
+import { usePlatform } from "@/platform/platformInfo";
 import { runConfigTypes } from "@/workbench/contributions";
 import { typeRows } from "./AddConfigPopup";
 import { ConfigForm } from "./ConfigForm";
@@ -87,9 +88,46 @@ describe("Node.js configuration type (#6085)", () => {
     expect(formParams(nodeConfig({ args: ["--test", "a.test.js"], isTest: true }))).toBeNull();
   });
 
+  it("keeps Windows paths in Node options and arguments", () => {
+    const os = usePlatform.getState().os;
+    usePlatform.setState({ os: "windows" });
+    try {
+      const c = withParams(newConfigOfType(typeFor("node")!, []), {
+        nodeOptions: String.raw`--env-file=C:\proj\.env -r C:\x\setup.js`,
+        file: String.raw`C:\proj\main.js`,
+        arguments: String.raw`C:\data\in.txt`,
+      });
+      expect(c.args).toEqual([
+        String.raw`--env-file=C:\proj\.env`,
+        "-r",
+        String.raw`C:\x\setup.js`,
+        String.raw`C:\proj\main.js`,
+        String.raw`C:\data\in.txt`,
+      ]);
+      // An imported Windows command line opens in the form and runs unchanged.
+      const imported = nodeConfig({ args: [String.raw`--env-file=C:\p\.env`, String.raw`C:\p\a.js`] });
+      expect(formParams(imported)).toMatchObject({ file: String.raw`C:\p\a.js` });
+    } finally {
+      usePlatform.setState({ os });
+    }
+  });
+
+  it("doesn't block an older bare node configuration with a missing file", () => {
+    const bare = nodeConfig();
+    expect(formParams(bare)).toBeNull();
+    expect(missingParams(bare)).toEqual({});
+  });
+
   it("splits Node options from the file and its arguments", () => {
     expect(splitNodeArgs(["--env-file", ".env", "a.js", "-v"])).toEqual([["--env-file", ".env"], "a.js", ["-v"]]);
     expect(splitNodeArgs(["--inspect-brk=9230", "a.js"])).toEqual([["--inspect-brk=9230"], "a.js", []]);
     expect(splitNodeArgs(["--test"])).toEqual([["--test"], null, []]);
+    expect(splitNodeArgs(["--watch-path", "src", "--watch", "main.js"])).toEqual([
+      ["--watch-path", "src", "--watch"],
+      "main.js",
+      [],
+    ]);
+    expect(splitNodeArgs(["--inspect-port", "9230", "--disable-warning", "DEP0040", "a.js"])[1]).toBe("a.js");
+    expect(splitNodeArgs(["--run", "build"])[1]).toBeNull();
   });
 });

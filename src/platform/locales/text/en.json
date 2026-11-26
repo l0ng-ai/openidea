@@ -1787,7 +1787,7 @@
   "Run a JavaScript or TypeScript file with Node.js": "Run a JavaScript or TypeScript file with Node.js",
   "The node executable, or a runner such as tsx; empty uses Settings › Languages & Frameworks › JavaScript Runtime.": "The node executable, or a runner such as tsx; empty uses Settings › Languages & Frameworks › JavaScript Runtime.",
   "Node options": "Node options",
-  "e.g. --env-file=.env --inspect": "e.g. --env-file=.env --inspect",
+  "e.g. --env-file=.env --max-old-space-size=4096": "e.g. --env-file=.env --max-old-space-size=4096",
   "JavaScript file": "JavaScript file",
   "Application arguments": "Application arguments",
   "Working directory": "Working directory",
