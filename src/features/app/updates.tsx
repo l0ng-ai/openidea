@@ -229,9 +229,13 @@ async function runInstall(version: string, source: UpdateSource, notes: string |
   upsertTask({ id: INSTALL_TASK_ID, title, message: null, fraction: null, done: false, cancel });
   // Replaces the notification whose action is now spent.
   balloon([{ label: t("app.update.cancel"), run: cancel }]);
+  // The restarted app reads this to show the What's New page of the version it now runs.
+  // Recorded first: the Windows installer ends the app before the install returns.
+  const undoRecord = recordInstalledUpdate(version, notes);
   try {
     await call(commands.appInstallUpdate(source, request, channel));
   } catch (e) {
+    undoRecord();
     if (isCancelled(e)) {
       notifications().notify({
         level: "info",
@@ -257,8 +261,6 @@ async function runInstall(version: string, source: UpdateSource, notes: string |
   } finally {
     upsertTask({ id: INSTALL_TASK_ID, title, message: null, fraction: 1, done: true });
   }
-  // The restarted app reads this to show the What's New page of the version it now runs.
-  recordInstalledUpdate(version, notes);
   const restart = () => void commands.appRestart();
   // Stays if a window cancels the restart (unsaved changes): the update applies on the next start.
   notifications().notify({

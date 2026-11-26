@@ -1,21 +1,19 @@
-use crate::windows::WorkbenchWindows;
 use crate::{window_groups as groups, windows::WindowsState};
-
 use ide_command::desktop_command;
 use ide_core::{IdeError, IdeResult};
-use tauri::{Manager, Window};
+use tauri::{Manager, WebviewWindow};
 
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn window_group_current(window: Window) -> IdeResult<Vec<groups::WindowTab>> {
+pub fn window_group_current(window: WebviewWindow) -> IdeResult<Vec<groups::WindowTab>> {
     Ok(groups::current(window.app_handle(), window.label()))
 }
 
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub async fn window_group_merge(window: Window) -> IdeResult<()> {
+pub async fn window_group_merge(window: WebviewWindow) -> IdeResult<()> {
     groups::merge(window.app_handle(), window.label())?;
     groups::persist(window.app_handle()).await
 }
@@ -25,7 +23,7 @@ pub async fn window_group_merge(window: Window) -> IdeResult<()> {
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub async fn window_group_join(window: Window, label: String) -> IdeResult<()> {
+pub async fn window_group_join(window: WebviewWindow, label: String) -> IdeResult<()> {
     groups::join(window.app_handle(), window.label(), &label)?;
     groups::persist(window.app_handle()).await
 }
@@ -33,7 +31,7 @@ pub async fn window_group_join(window: Window, label: String) -> IdeResult<()> {
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub async fn window_group_select(window: Window, label: String) -> IdeResult<()> {
+pub async fn window_group_select(window: WebviewWindow, label: String) -> IdeResult<()> {
     groups::select(window.app_handle(), window.label(), &label)?;
     groups::persist(window.app_handle()).await
 }
@@ -41,7 +39,7 @@ pub async fn window_group_select(window: Window, label: String) -> IdeResult<()>
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub async fn window_group_detach(window: Window, label: String) -> IdeResult<()> {
+pub async fn window_group_detach(window: WebviewWindow, label: String) -> IdeResult<()> {
     groups::select(window.app_handle(), window.label(), &label)?;
     groups::detach(window.app_handle(), &label)?;
     groups::persist(window.app_handle()).await
@@ -50,10 +48,10 @@ pub async fn window_group_detach(window: Window, label: String) -> IdeResult<()>
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn window_group_close(window: Window, label: String) -> IdeResult<()> {
+pub fn window_group_close(window: WebviewWindow, label: String) -> IdeResult<()> {
     window
         .app_handle()
-        .workbench_window(&label)
+        .get_webview_window(&label)
         .ok_or_else(|| IdeError::not_found("Window closed"))?
         .close()
         .map_err(|e| IdeError::internal(e.to_string()))
@@ -63,7 +61,7 @@ pub fn window_group_close(window: Window, label: String) -> IdeResult<()> {
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn window_group_close_tabs(window: Window, keep: String, labels: Vec<String>) -> IdeResult<()> {
+pub fn window_group_close_tabs(window: WebviewWindow, keep: String, labels: Vec<String>) -> IdeResult<()> {
     groups::close_tabs(window.app_handle(), window.label(), &keep, labels)
 }
 
@@ -71,14 +69,14 @@ pub fn window_group_close_tabs(window: Window, keep: String, labels: Vec<String>
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn window_group_cancel_close(window: Window) {
+pub fn window_group_cancel_close(window: WebviewWindow) {
     groups::cancel_close(window.app_handle(), window.label());
 }
 
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub async fn window_group_reorder(window: Window, labels: Vec<String>) -> IdeResult<()> {
+pub async fn window_group_reorder(window: WebviewWindow, labels: Vec<String>) -> IdeResult<()> {
     window.state::<WindowsState>().groups.lock().reorder(window.label(), labels)?;
     groups::select(window.app_handle(), window.label(), window.label())?;
     groups::persist(window.app_handle()).await
@@ -87,7 +85,7 @@ pub async fn window_group_reorder(window: Window, labels: Vec<String>) -> IdeRes
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub async fn window_group_restore(window: Window) -> IdeResult<()> {
+pub async fn window_group_restore(window: WebviewWindow) -> IdeResult<()> {
     groups::restore(window.app_handle(), window.label()).await
 }
 

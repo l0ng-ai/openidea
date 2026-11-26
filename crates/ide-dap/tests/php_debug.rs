@@ -81,6 +81,7 @@ async fn listens_for_xdebug_until_stopped_with_path_mappings() {
     let local_script = local.join("index.php");
     manager
         .set_breakpoints(
+            "main",
             local_script.clone(),
             vec![Breakpoint {
                 line: BREAK_LINE,

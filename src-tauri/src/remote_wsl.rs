@@ -187,10 +187,11 @@ pub(crate) fn spawn(
     distro: &str,
     bin: &str,
     project_path: &str,
+    replace: bool,
     handler: Arc<dyn Handler>,
     tail: &Tail,
 ) -> IdeResult<Peer> {
-    spawn_with(ide_core::wsl::EXE, distro, bin, project_path, handler, tail)
+    spawn_with(ide_core::wsl::EXE, distro, bin, project_path, replace, handler, tail)
 }
 
 /// [`spawn`] through `launcher` instead of `wsl.exe` (tests put a stand-in there).
@@ -199,10 +200,15 @@ fn spawn_with(
     distro: &str,
     bin: &str,
     project_path: &str,
+    replace: bool,
     handler: Arc<dyn Handler>,
     tail: &Tail,
 ) -> IdeResult<Peer> {
-    let args: Vec<String> = ["-d", checked(distro)?, "--exec", bin, "--attach", project_path].map(str::to_owned).into();
+    let mut args: Vec<String> =
+        ["-d", checked(distro)?, "--exec", bin, "--attach", project_path].map(str::to_owned).into();
+    if replace {
+        args.push("--replace".to_owned());
+    }
     let tail = tail.clone();
     Peer::spawn(launcher, &args, &std::env::temp_dir(), &[], handler, Box::new(move |line| tail.push(line)))
         .map_err(|e| IdeError::unavailable(format!("cannot start wsl.exe: {e}")))
@@ -305,7 +311,8 @@ printf 'Content-Length: %s\r\n\r\n%s' "${{#body}}" "$body"
         std::fs::write(&launcher, script).unwrap();
         std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
         let tail = Tail::default();
-        let peer = spawn_with(launcher.to_str().unwrap(), distro, bin, project, Arc::new(Silent), &tail).unwrap();
+        let peer =
+            spawn_with(launcher.to_str().unwrap(), distro, bin, project, false, Arc::new(Silent), &tail).unwrap();
         let reply: String = peer.request("ping", serde_json::Value::Null, None).await.unwrap_or_else(|e| {
             panic!("{e:?}; launcher said: {}", tail.text());
         });
@@ -314,7 +321,8 @@ printf 'Content-Length: %s\r\n\r\n%s' "${{#body}}" "$body"
 
     #[tokio::test]
     async fn a_bad_distro_name_never_starts_the_launcher() {
-        let err = spawn_with("does-not-exist", "-d", "/x", "~", Arc::new(Silent), &Tail::default()).err().unwrap();
+        let err =
+            spawn_with("does-not-exist", "-d", "/x", "~", false, Arc::new(Silent), &Tail::default()).err().unwrap();
         assert!(err.message.contains("not a valid"), "{}", err.message);
     }
 }

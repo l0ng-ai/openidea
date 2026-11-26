@@ -157,6 +157,8 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 | `views`             | `id`, `title`, `icon?` (an icon name or a package SVG), `location` (`left`, `right`, `bottom`, `services`), `web?` (_Web views_), `frames?` (API 1.16), `group?`, `when?` (API 1.3)                                                    | without `web` |
 | `customEditors`     | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`, `frames?`, `binary?` (API 1.16)                                                                                                           | without `web` |
 | `editorPanels`      | `id`, `web`, `width` (pixels, 40–400), `when?`, `frames?` (API 1.16) — needs `editor.read` (API 1.9; _Editor panels_)                                                                                                                  | no            |
+| `overlays`          | `id`, `web`, `width`, `height` (pixels, 40–800), `anchor?`, `when?`, `interactive?` — floats over the workbench, never takes the focus (API 1.18; _Overlays_)                                                                          | no            |
+| `dialogs`           | `id`, `title`, `web`, `width` (320–1600), `height` (200–1200) — a modal, resizable dialog opened by `views::reveal(id)` (API 1.18; _Dialogs_)                                                                                          | no            |
 | `fileIcons`         | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                                                                                                                               | no            |
 | `fileTemplates`     | `id`, `name`, `extension`, `path`; API 1.3: `fileName`, `variables = [{ name, prompt }]` — New menu                                                                                                                                    | no            |
 | `commitChecks`      | `id`, `title` — a before-commit check in Commit Options (see _Commits_)                                                                                                                                                                | yes           |
@@ -170,7 +172,11 @@ its first `:`, so `pod` for `pod:default/nginx`; the whole key when it has no
 `:`). Only the menu's `when` sees them, not the command's own `when`; a command
 whose `when` is false shows greyed out. Other menus refuse `view`, a web view
 has no item menu, and no menu opens when no declaration matches the item.
-The menu is new in API 1.2, so a plugin using it declares
+A command run without an argument (its shortcut, Find Action) while one of the
+plugin's views has the keyboard focus gets the selected item's key too, when
+that item's `viewItem.context` menu offers the command: a shortcut acts on the
+selected item like the menu entry. With nothing selected, the focus elsewhere or
+the command not in the item's menu, it gets none. The menu is new in API 1.2, so a plugin using it declares
 `engines.openidea = "^1.2"`. For example:
 
 ```toml
@@ -432,6 +438,15 @@ are always available. Calling a gated function without its capability returns
 API 1.18.0 is in development on `main`. Use `engines.openidea = "^1.18"` and the
 matching SDK. Plugins for 1.17 and earlier keep working. New in 1.18:
 
+- **Overlays (`[[contributes.overlays]]`).** A web page of the package floats over
+  the workbench at one of nine anchors while its `when` holds, without ever taking
+  the keyboard focus — a mascot, a reaction, a timer. The page moves and resizes
+  itself with `openidea.overlay`. No code or capability needed. See [Overlays](#overlays).
+- **Dialogs (`[[contributes.dialogs]]`).** A web page of the package in a modal,
+  resizable IDE dialog with a title bar, opened by the plugin's code with
+  `views::reveal(id)`; closing it sends the view a `closed` event
+  (`ViewEvent::closed()`), and the page can close it with `openidea.dialog.close()`.
+  See [Dialogs](#dialogs).
 - `host::subscribe_paths_with_options(kind, &SubscriptionOptions)` (`events.subscribe-paths-with-options`)
   adds optional `debounce_ms` coalescing for `files-changed` events on the host side (up to 5 s) and
   cooperatively cancels in-flight event-handler work via `cancel_soft()` when a newer delta arrives.
@@ -2314,6 +2329,82 @@ older IDEs. Outside the visible area the editor estimates wrapped rows from the
 line's length until it lays the line out; `onLayout` follows when it does.
 `crates/ide-plugin/tests/fixtures/editor-panel` is a minimal minimap (each line
 2 px, its frame draggable, problems marked at its right edge, folded lines left out, the selected lines and the caret's line tinted, VCS changes at its left edge) to install and try.
+
+#### Overlays
+
+With API 1.18 (`engines.openidea = "^1.18"`), a web page can float over the
+workbench — over the editor, tool windows and all — without ever taking the
+keyboard focus: a mascot reacting to your work, a timer, a reaction GIF. It needs
+no code and no capability, since it sees nothing of the IDE:
+
+```toml
+[[contributes.overlays]]
+id = "stage"
+web = "web/stage.html"        # the same rules as a web view's page
+width = 320                   # pixels, 40–800
+height = 240
+anchor = "bottom-right"       # optional: top-left, top-center, top-right, middle-left,
+                              # center, middle-right, bottom-left, bottom-center, bottom-right
+when = "plugin.<id>.showing"  # optional: the plugin's own key through `host::set_context`
+interactive = true            # optional: false lets every click through to the IDE
+```
+
+The overlay is in the window while `when` holds (always, without one), clear of
+the title and status bars, under dialogs, popups and notifications. Its frame is
+out of the tab order and is never focused when it appears, so typing carries on in
+the editor; a click in an interactive overlay goes to its page, as any click does.
+With `interactive = false` the frame lets every click through. The frame is
+transparent: draw only what should show. When the page can't be loaded (the
+plugin was disabled meanwhile), the overlay shows nothing.
+
+The page gets `openidea.overlay` (only an overlay's page has it), besides
+`postMessage` / `onMessage` to the plugin's code and the theme:
+
+| `openidea.overlay`                    | What it does                                                                                                                                        |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `get()`                               | `{ anchor, width, height }`: where the overlay is and its size, the declaration's until the page changes them                                       |
+| `place({ anchor?, width?, height? })` | Moves the overlay to another anchor and/or resizes it (sizes clamped to 40–800 and to the window); resolves with `get()`, rejects an unknown anchor |
+
+The placement lasts while the overlay is shown; the next time `when` holds it
+starts again from the declaration. To fit a picture, the page measures it and
+places the overlay at that size. `crates/ide-plugin/tests/fixtures/overlay` is a
+minimal card that moves itself around the window.
+
+#### Dialogs
+
+With API 1.18 (`engines.openidea = "^1.18"`), a web page of the package can open
+in a modal dialog of the IDE, as IntelliJ's `DialogWrapper` does: the platform's
+title bar with the dialog's title, a close button, Escape, and a grip to resize
+it. A SQL preview, a parameter form beside its result, a confirmation with
+a picture:
+
+```toml
+[[contributes.dialogs]]
+id = "preview"                # not the id of one of the plugin's views
+title = "SQL Preview"         # the title bar; translated by the plugin's catalog
+web = "web/preview.html"      # the same rules as a web view's page
+width = 900                   # pixels, 320–1600: the size it first opens at
+height = 600                  # pixels, 200–1200
+```
+
+The plugin's code opens it in the window of the current command or event with
+`views::reveal("preview")` (`views.reveal`, `invalid` outside one), the same call
+that brings a tool window to the front; revealing an open dialog does nothing.
+The dialog keeps the size the user last gave it. It closes with its close button,
+Escape (unless the page handles Escape itself and calls `preventDefault()`), or
+the page's `openidea.dialog.close()`; then the view gets a `closed` event:
+
+```rust
+fn handle(view: &str, event: ViewEvent) {
+    if view == "preview" && event.closed() { /* forget the preview's state */ }
+}
+```
+
+The page talks to the plugin's code as any web view does (`openidea.postMessage`
+/ `onMessage`, `views::post_message("preview", …)`), and sees nothing else of the
+IDE, so a dialog needs no capability. Only a dialog's page has `openidea.dialog`.
+For something that stays open beside the editor without taking the keyboard,
+use an [overlay](#overlays) or a tool window.
 
 ### Web frame PTYs (API 1.3)
 

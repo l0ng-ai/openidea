@@ -103,20 +103,17 @@ export function distinctValues(
     .slice(0, limit);
 }
 
-/** The new filter after toggling `v` of column `col` (all checked again: no filter). */
-export function toggleFilterValue(
-  filter: LocalFilter,
-  col: number,
-  all: readonly Cell[],
-  v: Cell,
-  checked: boolean,
-): LocalFilter {
+/**
+ * The new filter after checking or unchecking `v` of column `col`: checked values are the ones
+ * shown, and a column with none checked is not filtered (DataGrip's local filter).
+ */
+export function toggleFilterValue(filter: LocalFilter, col: number, v: Cell, checked: boolean): LocalFilter {
   const next = new Map(filter);
-  const current = new Set(filter.get(col) ?? all);
+  const current = new Set(filter.get(col));
   if (checked) current.add(v);
   else current.delete(v);
-  if (all.every((x) => current.has(x))) next.delete(col);
-  else next.set(col, current);
+  if (current.size) next.set(col, current);
+  else next.delete(col);
   return next;
 }
 

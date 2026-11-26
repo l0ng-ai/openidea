@@ -378,6 +378,7 @@ impl Host {
         self.mcp_reports.forget_window(window);
         self.mcp_requests.forget_window(window);
         self.mcp_agent_runs.forget_window(window);
+        self.debugger.forget_breakpoints(self.owner_window(window));
         self.external_logs.write().remove(self.owner_window(window));
         for request in self.project_requests.write().remove(self.owner_window(window)).unwrap_or_default() {
             self.cancel_request(request);

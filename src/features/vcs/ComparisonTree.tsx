@@ -1,11 +1,28 @@
 import { useState, type ReactNode } from "react";
 import { Icon, Tree, fileIconName, lazyComponent } from "@/ui";
-import { diffInput, openVcsDiff, type DiffData } from "./diffInput";
+import { diffInput, openVcsDiff, withChain, type DiffData } from "./diffInput";
 import { dirKeys, type FileTreeNode } from "./fileTree";
+import { filesUnder } from "./logChanges";
 import styles from "./common.module.css";
 
 const DiffEditor = lazyComponent(() => import("./DiffEditor").then((m) => m.DiffEditor));
 const defaultOpenDiff = (diff: DiffData) => void openVcsDiff(diff);
+
+/** `file`'s diff with the tree's other files as its chain, in display order: F7 goes on to the next file (IDEA). */
+export function chainedDiff<F>(
+  tree: readonly FileTreeNode<F>[],
+  file: F,
+  diffFor: (entry: F) => DiffData | null,
+): DiffData | null {
+  const files = filesUnder(tree).filter((f) => diffFor(f));
+  const index = files.indexOf(file);
+  return index < 0
+    ? diffFor(file)
+    : withChain(
+        files.map((f) => diffFor(f)!),
+        index,
+      );
+}
 
 /** Shared changes tree and on-demand diff surface for revisions and disk folders. */
 export function ComparisonTree<F>({
@@ -60,7 +77,7 @@ export function ComparisonTree<F>({
           const entry = n.file ?? n.directory;
           if (!entry) return;
           onSelect(entry);
-          const diff = diffFor(entry);
+          const diff = n.file ? chainedDiff(tree, n.file, diffFor) : diffFor(entry);
           if (openOnActivate && diff) {
             openDiff(diff);
             onOpen?.();

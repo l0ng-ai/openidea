@@ -174,6 +174,8 @@ export async function javaLaunchConfig(
   preparation?.report?.(`${joinJavaArgs([resolved.command, ...resolved.args])}\n`);
   const agentNote = await remoteJavaAgentNote(rc);
   if (agentNote) preparation?.report?.(agentNote);
+  // The host adds JetBrains Runtime's flag for it, or says in the console why the session runs without.
+  const enhanced = rc.params?.enhancedClassRedefinition === "true" ? { enhancedClassRedefinition: true } : {};
   if (kotlin) {
     return {
       name: rc.name,
@@ -191,6 +193,7 @@ export async function javaLaunchConfig(
         javaExec: resolved.command,
         vmArguments: [...consoleVmArgs(rc), ...parsed.vmArgs],
         programArgs: parsed.programArgs,
+        ...enhanced,
       }),
     };
   }
@@ -212,6 +215,7 @@ export async function javaLaunchConfig(
         javaExec: resolved.command === "java" ? undefined : resolved.command,
         vmArgs: [...consoleVmArgs(rc), ...parsed.vmArgs],
         args: parsed.programArgs,
+        ...enhanced,
       }),
     };
   }
@@ -243,6 +247,7 @@ export async function javaLaunchConfig(
       shortenCommandLine: info.shortenCommandLine ?? "none",
       console: "internalConsole",
       stopOnEntry: false,
+      ...enhanced,
     }),
   };
 }

@@ -417,6 +417,7 @@ export const viewerTheme = EditorView.theme(
     ".cm-content": {
       padding: "0 0 4px",
       caretColor: "var(--caret, var(--fg-strong))",
+      cursor: "text",
       WebkitUserSelect: "text",
       userSelect: "text",
     },

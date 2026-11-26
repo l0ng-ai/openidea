@@ -72,6 +72,25 @@ describe("New › Package", () => {
     expect(packageKindAt("build/classes", synced)).toBeNull();
   });
 
+  it("keeps a nested non-Python module out of a root-level Python project", () => {
+    // The roots detection reports for a root `pyproject.toml` next to `frontend/package.json`.
+    const mixed = [
+      root("src", "source", "pyproject.toml"),
+      root("frontend/src", "source", "frontend/package.json"),
+      root("frontend/node_modules", "excluded", "frontend/package.json"),
+    ];
+    expect(packageKindAt("frontend/src/components", mixed)).toBeNull();
+    expect(packageKindAt("src/app", mixed)).toBe("python");
+    expect(packageKindAt("scripts", mixed)).toBe("python");
+  });
+
+  it("keeps Python packages next to a nested package.json outside its roots", () => {
+    // A Django app folder with its own `package.json` for front-end tooling.
+    const django = [root("", "source", "pyproject.toml"), root("web/node_modules", "excluded", "web/package.json")];
+    expect(packageKindAt("web/blog", django)).toBe("python");
+    expect(packageKindAt("web", django)).toBe("python");
+  });
+
   it("validates dotted package names", () => {
     expect(packageSegments("com.acme.util", "jvm")).toEqual({ segments: ["com", "acme", "util"], error: null });
     expect(packageSegments("com..x", "jvm").error).toMatch(/Not a valid package name/);

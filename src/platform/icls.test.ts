@@ -712,3 +712,36 @@ describe(".icls schemes", () => {
     }
   });
 });
+
+describe("annotation colour (#6108)", () => {
+  const opt = (name: string, value: string) =>
+    `<option name="${name}"><value><option name="FOREGROUND" value="${value}"/></value></option>`;
+  const scheme = (parent: string | null, ...options: string[]) =>
+    parseIcls(
+      `<scheme name="A"${parent ? ` parent_scheme="${parent}"` : ""}><attributes>${options.join("")}</attributes></scheme>`,
+    ).scheme;
+
+  it.each([
+    ["Default", "#808000"],
+    ["Darcula", "#bbb529"],
+  ])("keeps %s's own annotation colour when the file only changes DEFAULT_METADATA", (parent, colour) => {
+    // IntelliJ shows Java annotations with the parent's ANNOTATION_NAME_ATTRIBUTES, not the file's default.
+    expect(scheme(parent, opt("DEFAULT_METADATA", "1d8711")).attributes.metadata?.foreground).toBe(colour);
+  });
+
+  it("takes the file's annotation key over its DEFAULT_METADATA", () => {
+    const s = scheme("Default", opt("DEFAULT_METADATA", "1d8711"), opt("ANNOTATION_NAME_ATTRIBUTES", "9e880d"));
+    expect(s.attributes.metadata?.foreground).toBe("#9e880d");
+  });
+
+  it("uses DEFAULT_METADATA without a bundled parent", () => {
+    expect(scheme(null, opt("DEFAULT_METADATA", "1d8711")).attributes.metadata?.foreground).toBe("#1d8711");
+  });
+
+  it("exports the annotation colour under the annotation key, so it survives a re-import", () => {
+    const imported = scheme("Default", opt("ANNOTATION_NAME_ATTRIBUTES", "9e880d"));
+    const xml = exportIcls("custom-a", { "custom-a": imported });
+    expect(xml).toContain('<option name="ANNOTATION_NAME_ATTRIBUTES">');
+    expect(parseIcls(xml).scheme.attributes.metadata?.foreground).toBe("#9e880d");
+  });
+});

@@ -2225,7 +2225,10 @@ impl HostApi for PluginApi {
 
     fn reveal_view(&self, client: Option<&str>, view: &str) -> Result<(), HostError> {
         let client = from_window(client, "reveal a view")?;
-        let declared = self.shared.ui.items(super::ui_points::VIEWS, Some(self.id())).iter().any(|i| i.key == view);
+        // A tool window comes to the front; a dialog (API 1.18) opens.
+        let declared = [super::ui_points::VIEWS, super::ui_points::DIALOGS]
+            .into_iter()
+            .any(|point| self.shared.ui.items(point, Some(self.id())).iter().any(|i| i.key == view));
         if !declared {
             return Err(HostError::NotFound(format!("the plugin declares no view {view:?}")));
         }
