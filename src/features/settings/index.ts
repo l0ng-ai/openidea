@@ -14,6 +14,7 @@
  */
 import { registerActions } from "@/platform/actions";
 import { call, commands, isTauri } from "@/platform/ipc";
+import { isWebMode } from "@/platform/webBridge";
 import { lazyWhen } from "@/ui";
 import { useProject } from "@/platform/project";
 import { provideSettingsSearchIndex, registerOverlay } from "@/workbench/contributions";
@@ -25,7 +26,7 @@ import {
   loadBuiltinPages,
   unloadBuiltinPages,
 } from "./dialog/LazySettingsDialog";
-import { openProjectStructure, openSettings, useSettingsDialog } from "./model/staging";
+import { openProjectStructure, openSettings, trackPageHistoryActions, useSettingsDialog } from "./model/staging";
 import {
   appearanceToggleActions,
   navigationBarActions,
@@ -49,7 +50,7 @@ const separateWindow = () => useProject.getState().settings?.appearance?.setting
 
 /** The native Settings window when it is enabled and the backend can make one, else the dialog. */
 async function showSettings(page?: string, newProjects = false) {
-  if (isTauri() && separateWindow()) {
+  if (isTauri() && !isWebMode() && separateWindow()) {
     try {
       await call(commands.windowOpenSettings(page ?? null, newProjects, windowBackgroundHex()));
       return;
@@ -109,6 +110,8 @@ export function activate(): () => void {
       },
     ]),
     provideSettingsSearchIndex(settingsSearchEntries),
+    // navigate.back / forward drive the page history while Settings is open.
+    trackPageHistoryActions(),
     isTauri() ? installSettingsHost() : () => {},
   ];
   return () => disposers.reverse().forEach((d) => d());

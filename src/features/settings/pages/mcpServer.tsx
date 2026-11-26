@@ -105,7 +105,7 @@ function McpServerEndpoint() {
         label="Endpoint"
         hint={
           status.project
-            ? "For this window's project. Agents name the project with the X-OpenIDEA-Project header or the ?project= query."
+            ? "For this window's project. Other projects: the X-OpenIDEA-Project header or ?project= query."
             : "Open a project to get its endpoint."
         }
       >
@@ -121,7 +121,7 @@ function McpServerEndpoint() {
       <Row
         label="Client configuration"
         stacked
-        hint="The HTTP configuration holds the token: it keeps working after OpenIDEA restarts only with a fixed port and a kept token. The stdio one starts OpenIDEA's executable, which relays to the running IDE."
+        hint="HTTP survives restarts only with a fixed port and a kept token. Stdio relays through OpenIDEA's executable."
       >
         <div className={styles.buttons}>
           <Button size="small" disabled={!http} onClick={() => copy("http", http)}>
@@ -138,7 +138,7 @@ function McpServerEndpoint() {
         </div>
       </Row>
       {fixedToken && (
-        <Row label="Token" hint="Clients configured with the current token stop working.">
+        <Row label="Token" hint="Clients using the current token stop working.">
           <Button size="small" disabled={!status.running} onClick={regenerate}>
             <T>Regenerate Token</T>
           </Button>
@@ -169,7 +169,7 @@ function BackgroundMode() {
       label="Serve without a window"
       options={BACKGROUND_MODES}
       disabled={useRemoteHost()}
-      hint="Decides which folders without a window agents can use: a project opens on the first tool call for a path inside it and unloads when idle. Trusted projects adds trusted projects, trusted recent projects and repositories inside trusted locations to the folders below; Listed projects serves only the folders below. An untrusted folder gets read-only tools."
+      hint="A folder opens on the first tool call inside it and unloads when idle. Trusted projects also serves trusted projects and locations. Untrusted folders get read-only tools."
     />
   );
 }
@@ -178,12 +178,7 @@ function BackgroundFolders() {
   const [paths, setPaths] = useSetting<string[]>("mcpServer.backgroundProjectPaths");
   const off = useBackgroundOff();
   return (
-    <Row
-      label="Folders"
-      stacked
-      disabled={off}
-      hint="Folders served without a window: a tool call for a path inside one opens that folder as a project."
-    >
+    <Row label="Folders" stacked disabled={off} hint="Served without a window.">
       <div inert={off} className={off ? styles.off : undefined}>
         <GlobListEditor
           value={paths}
@@ -208,7 +203,7 @@ function BackgroundIdleMinutes() {
       integer
       unit="min"
       disabled={useBackgroundOff()}
-      hint="Minutes without a request before a background project unloads. 0 never unloads."
+      hint="0 never unloads."
     />
   );
 }
@@ -221,7 +216,7 @@ function BackgroundProjectLimit() {
       {...MCP_BACKGROUND_PROJECT_LIMITS}
       integer
       disabled={useBackgroundOff()}
-      hint="Most background projects loaded at once. At the limit the project idle the longest is unloaded; when all are busy, the request is refused."
+      hint="At the limit, the longest idle project unloads."
     />
   );
 }
@@ -235,11 +230,7 @@ function BackgroundOpenNow() {
   const [mode] = useSetting<string>("mcpServer.backgroundProjects");
   const [enabled] = useSetting<boolean>("mcpServer.enabled");
   return (
-    <Row
-      label="Open now"
-      stacked
-      hint="Unloading acts at once. The project loads again on the next tool call that names it, if the mode still serves it."
-    >
+    <Row label="Open now" stacked hint="Unloading takes effect at once; the next tool call loads the project again.">
       {projects.length === 0 ? (
         <span className={styles.status}>
           {remote ? (
@@ -310,6 +301,9 @@ export const MCP_SERVER_PAGE: PageSpec = {
     "listen",
     "port",
     "token",
+    "brave mode",
+    "run tool window",
+    "archive",
   ],
   sections: [
     {
@@ -318,58 +312,13 @@ export const MCP_SERVER_PAGE: PageSpec = {
           kind: "toggle",
           key: "mcpServer.enabled",
           label: "Enable MCP server",
-          hint: "Agents can read, edit, and run projects open in OpenIDEA through its built-in tools. Run tools ask for confirmation. The server listens on 127.0.0.1 unless Listen address says otherwise, and requires a token.",
+          hint: "Agents can read, edit and run the projects open in OpenIDEA.",
         },
         {
           kind: "toggle",
           key: "mcpServer.runWithoutConfirmation",
-          label: "Run tools without confirmation (brave mode)",
-          hint: "Run configurations, terminal commands and other tools that change a project start without asking, for unattended agents. Only the IDE's own settings can turn this on, not a project's.",
-        },
-        {
-          kind: "text",
-          key: "mcpServer.address",
-          label: "Listen address",
-          placeholder: DEFAULT_MCP_ADDRESS,
-          hint: "The IP address the server listens on: 127.0.0.1 for this computer only (the default); another address of this computer, such as a LAN or VPN one, or 0.0.0.0 for every address, so that agents on other computers can connect. Anyone who can reach the address and has the token can use the tools.",
-        },
-        {
-          kind: "toggle",
-          key: "mcpServer.fixedPort",
-          label: "Use a fixed port",
-          hint: "Listen on the same port in every run, so HTTP clients and port forwards keep working after OpenIDEA restarts. When the port is in use, this run takes a free one and Status says so. Off: a free port in every run.",
-          children: [
-            {
-              kind: "number",
-              key: "mcpServer.port",
-              label: "Port",
-              ...MCP_PORT_LIMITS,
-              integer: true,
-              hint: "The fixed port, used while Use a fixed port is on.",
-            },
-          ],
-        },
-        {
-          kind: "toggle",
-          key: "mcpServer.fixedToken",
-          label: "Keep the token",
-          hint: "Keep the same bearer token in every run, stored for your account only. Off: a new token in every run. Anyone with the token can use the tools while OpenIDEA runs, so regenerate it if it leaks.",
-        },
-        {
-          kind: "number",
-          key: "mcpServer.agentTabLimit",
-          label: "Finished agent tabs to show",
-          ...WORKFLOW_LIMITS.agentTabLimit,
-          integer: true,
-          hint: "Commands agents run appear in the Run tool window as _agent_ tabs. Beyond this many finished ones, the oldest move to the archive at the end of the tab strip. Running commands are never archived.",
-        },
-        {
-          kind: "number",
-          key: "mcpServer.agentArchiveLimit",
-          label: "Archived agent tabs to keep",
-          ...WORKFLOW_LIMITS.agentArchiveLimit,
-          integer: true,
-          hint: "Beyond this many archived agent tabs, the oldest are closed.",
+          label: "Run tools without confirmation",
+          hint: "For unattended agents. Only the IDE settings can turn this on, not a project.",
         },
         {
           kind: "custom",
@@ -380,7 +329,60 @@ export const MCP_SERVER_PAGE: PageSpec = {
       ],
     },
     {
-      title: "Background projects",
+      title: "Connection",
+      options: [
+        {
+          kind: "text",
+          key: "mcpServer.address",
+          label: "Listen address",
+          placeholder: DEFAULT_MCP_ADDRESS,
+          hint: "127.0.0.1 is this computer only. Use 0.0.0.0 or a LAN address to let other computers connect.",
+        },
+        {
+          kind: "toggle",
+          key: "mcpServer.fixedPort",
+          label: "Use a fixed port",
+          hint: "Keeps HTTP clients working after a restart. Falls back to a free port when it's taken.",
+          children: [
+            {
+              kind: "number",
+              key: "mcpServer.port",
+              label: "Port",
+              ...MCP_PORT_LIMITS,
+              integer: true,
+            },
+          ],
+        },
+        {
+          kind: "toggle",
+          key: "mcpServer.fixedToken",
+          label: "Keep the token",
+          hint: "Off: a new token in every run.",
+        },
+      ],
+    },
+    {
+      title: "Agent Tabs",
+      options: [
+        {
+          kind: "number",
+          key: "mcpServer.agentTabLimit",
+          label: "Finished tabs to show",
+          ...WORKFLOW_LIMITS.agentTabLimit,
+          integer: true,
+          hint: "Older finished _agent_ tabs in the Run tool window move to the archive.",
+        },
+        {
+          kind: "number",
+          key: "mcpServer.agentArchiveLimit",
+          label: "Archived tabs to keep",
+          ...WORKFLOW_LIMITS.agentArchiveLimit,
+          integer: true,
+        },
+      ],
+    },
+    {
+      title: "Background Projects",
       options: [
         {
           kind: "custom",

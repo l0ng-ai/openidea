@@ -100,12 +100,20 @@ function NotebookDocument({ session }: { session: NotebookSession }) {
   } as CSSProperties;
   const disabled = state.frozen || !state.snapshot;
   const historyDisabled = disabled || state.running;
-  const options = state.environments.map((sdk) => ({ value: sdk.path, label: sdk.name, detail: sdk.path }));
+  const options = state.environments.map((sdk) => ({
+    value: sdk.path,
+    verbatim: true,
+    verbatimDetail: true,
+    label: sdk.name,
+    detail: sdk.path,
+  }));
   if (state.python && !options.some((option) => option.value === state.python))
     options.unshift({
       value: state.python,
       label: state.python,
+      verbatim: true,
       detail: state.python,
+      verbatimDetail: true,
     });
   return (
     <div

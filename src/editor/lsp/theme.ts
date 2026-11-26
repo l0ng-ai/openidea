@@ -274,7 +274,6 @@ export const lspTheme = EditorView.theme({
     background: "none",
     color: "var(--fg-subtle)",
     font: "inherit",
-    cursor: "pointer",
   },
   ".cm-lsp-completion-sort:hover": { color: "var(--fg)" },
   '.cm-lsp-completion-sort[aria-pressed="true"]': { color: "var(--link)" },
@@ -529,7 +528,6 @@ export const lspTheme = EditorView.theme({
     whiteSpace: "nowrap",
     overflow: "hidden",
     textOverflow: "ellipsis",
-    cursor: "pointer",
   },
   ".cm-lsp-inplace-suggestions button:hover": { backgroundColor: "var(--bg-hover)" },
   '.cm-lsp-inplace-suggestions button[aria-current="true"]': {

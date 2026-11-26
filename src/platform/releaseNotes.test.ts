@@ -57,4 +57,14 @@ describe("the notes' languages", () => {
     expect(releaseNotesOf("0.1.40", "zh")).toBe("- older");
     expect(recordedNotes("0.1.40")).toEqual({ text: "- older", texts: {} });
   });
+
+  it("undo restores what an install that did not finish replaced", () => {
+    recordInstalledUpdate("0.1.40", "- current");
+    recordInstalledUpdate("0.1.41", "- next")();
+    expect(releaseNotesOf("0.1.40")).toBe("- current");
+    expect(releaseNotesOf("0.1.41")).toBeNull();
+    _resetReleaseNotesForTests();
+    recordInstalledUpdate("0.1.41", "- next")();
+    expect(releaseNotesOf("0.1.41")).toBeNull();
+  });
 });

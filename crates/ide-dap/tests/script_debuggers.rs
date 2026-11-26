@@ -253,7 +253,7 @@ async fn scenario(case: &Case) -> Result<Vec<String>, String> {
     let mut report = Vec::new();
     let run = Run::new();
     let m = &run.manager;
-    m.set_breakpoints(case.source.clone(), vec![bp(LOOP_LINE)]).await.map_err(|e| e.message)?;
+    m.set_breakpoints("test", case.source.clone(), vec![bp(LOOP_LINE)]).await.map_err(|e| e.message)?;
     let id = m.start(case.config.clone(), run.owner.clone()).await.map_err(|e| format!("start: {}", e.message))?;
 
     let (s, thread) = run.stopped(0, "the loop breakpoint").await?;
@@ -312,7 +312,7 @@ async fn scenario(case: &Case) -> Result<Vec<String>, String> {
     expect_line(&run.top(s2, t2).await?, LOOP_LINE, "continue")?;
 
     // Without breakpoints, the program runs to its end.
-    m.set_breakpoints(case.source.clone(), vec![]).await.map_err(|e| e.message)?;
+    m.set_breakpoints("test", case.source.clone(), vec![]).await.map_err(|e| e.message)?;
     let seen = run.seen();
     m.resume(s2, t2).await.map_err(|e| e.message)?;
     run.wait(seen, "terminated", |s, e| (s == id && matches!(e, DebugEvent::Terminated)).then_some(())).await?;
@@ -333,7 +333,7 @@ async fn scenario(case: &Case) -> Result<Vec<String>, String> {
     report.push("continue to exit: output and terminated".into());
 
     // Restart (the UI starts the same configuration again), then Stop while paused.
-    m.set_breakpoints(case.source.clone(), vec![bp(LOOP_LINE)]).await.map_err(|e| e.message)?;
+    m.set_breakpoints("test", case.source.clone(), vec![bp(LOOP_LINE)]).await.map_err(|e| e.message)?;
     let seen = run.seen();
     let again = m.start(case.config.clone(), run.owner.clone()).await.map_err(|e| format!("restart: {}", e.message))?;
     let (s, thread) = run.stopped(seen, "the breakpoint after restart").await?;

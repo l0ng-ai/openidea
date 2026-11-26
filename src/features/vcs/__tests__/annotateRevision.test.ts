@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Commit } from "@/bindings";
 import {
   annotateAtRevision,
+  annotateLineRevision,
   annotatePreviousRevision,
   previousRevisionDiffData,
   revisionDiffData,
@@ -132,6 +133,35 @@ describe("annotate at a chosen revision", () => {
     expect(mocks.openDiff).toHaveBeenCalledWith(
       expect.objectContaining({ path: "/repo/a.py", right: { type: "worktree" }, annotateLeft: true }),
       { preview: false },
+    );
+  });
+});
+
+describe("annotate the line's revision from the annotate gutter", () => {
+  const left = (path: string) => ({ type: "rev", rev: sha, label: "f122f5af", path });
+
+  it("shows the file at the line's commit against the working file", async () => {
+    await annotateLineRevision("/repo/a.py", sha);
+    expect(mocks.log).not.toHaveBeenCalled();
+    expect(mocks.openDiff).toHaveBeenCalledWith(
+      { path: "/repo/a.py", left: left("/repo/a.py"), right: { type: "worktree" }, annotateLeft: true },
+      { preview: false },
+    );
+  });
+
+  it("reads the file under the name it had at that commit", async () => {
+    await annotateLineRevision("/repo/a.py", sha, "/repo/old/a.py");
+    expect(mocks.openDiff).toHaveBeenCalledWith(
+      expect.objectContaining({ path: "/repo/a.py", left: left("/repo/old/a.py") }),
+      { preview: false },
+    );
+  });
+
+  it("tells when the revision cannot be read", async () => {
+    mocks.openDiff.mockRejectedValue(new Error("bad revision"));
+    await annotateLineRevision("/repo/a.py", sha, "/repo/a.py");
+    expect(mocks.notify).toHaveBeenCalledWith(
+      expect.objectContaining({ level: "error", title: "Cannot annotate", body: "bad revision" }),
     );
   });
 });

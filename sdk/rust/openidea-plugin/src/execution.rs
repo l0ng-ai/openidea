@@ -204,10 +204,48 @@ pub struct PluginLaunchConfiguration {
     pub debugger: Option<Debugger>,
 }
 
+/// Output stream transport for a plugin-owned run configuration (API 1.18).
+///
+/// Ordinary pseudo-terminals combine stdout and stderr and can change
+/// buffering, input handling, and terminal behavior.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OutputMode {
+    /// Separate stdout and stderr pipes in the Run console (default).
+    #[default]
+    Pipes,
+    /// Pseudo-terminal ("Emulate terminal in output console").
+    Pty,
+}
+
+/// Per-launch options for [`host::start_run_with_options`](crate::host::start_run_with_options) (API 1.18).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunStartOptions {
+    pub debug: bool,
+    /// Optional per-invocation override. A user-saved override wins over
+    /// this value, which wins over the plugin configuration default.
+    pub output_mode: Option<OutputMode>,
+}
+
+/// A run configuration with environment, debugger, and default output mode (API 1.18).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginExecutionConfiguration {
+    pub launch: PluginLaunchConfiguration,
+    /// Default output stream mode (`Pipes` or `Pty`).
+    pub output_mode: OutputMode,
+}
+
 /// Supplies complete project configurations with environments and debuggers (API 1.10);
 /// register with launch_configurations instead of run_configurations.
 pub trait LaunchConfigurations {
     fn launch_configurations(&mut self, project_root: &str) -> Vec<PluginLaunchConfiguration>;
+}
+/// Supplies complete project configurations with environment, debugger, and output mode (API 1.18);
+/// register with `execution_configurations` instead of `launch_configurations` or `run_configurations`.
+pub trait ExecutionConfigurations {
+    fn execution_configurations(&mut self, project_root: &str) -> Vec<PluginExecutionConfiguration>;
 }
 /// Parses bounded test output batches; register with test_results.
 pub trait TestResults {
@@ -307,8 +345,68 @@ pub struct RunTargetLaunch {
     pub cwd: String,
 }
 
+/// A Run Anything entry (API 1.18).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RunAnythingItem {
+    /// What the list shows, such as `task build`.
+    pub label: String,
+    /// Grey text after the label.
+    pub detail: Option<String>,
+    /// The line Tab completes and Enter runs; `label` when `None`.
+    pub line: Option<String>,
+}
+
+/// Run Anything (Ctrl Ctrl) for the prefixes declared under `[[contributes.runAnything]]`
+/// (API 1.18); register with `register_plugin!(T, …, run_anything)`.
+pub trait RunAnything {
+    /// Entries for the field's `text`, which starts with `prefix` or is the start of it.
+    /// Called while the user types: answer from what the plugin already knows (no process
+    /// per keystroke). The IDE keeps the first 100 and drops answers slower than 300 ms.
+    fn suggest(&mut self, project: &str, prefix: &str, text: &str) -> Vec<RunAnythingItem>;
+    /// Runs `line` (its first word is `prefix`) from the invoking window, through the
+    /// plugin's host calls such as [`crate::host::start_run`] or terminals. `true` claims
+    /// the line; `false` leaves it to the IDE's other entries and finally the shell.
+    fn run(&mut self, project: &str, prefix: &str, line: &str) -> bool;
+}
+
 /// Optional pre-launch validation; register with `run_target_validation`.
 pub trait RunTargetValidation {
     /// Refuse with a user-facing explanation, or allow with `Ok(())`.
     fn validate(&mut self, project: &str, target_id: &str, launch: &RunTargetLaunch) -> Result<(), String>;
+}
+
+/// A completion for a field of one of the plugin's own run configurations (API 1.18).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RunConfigurationCompletionItem {
+    /// What the list shows, such as `build`.
+    pub label: String,
+    /// Grey text after the label, such as the file the entry comes from.
+    pub detail: Option<String>,
+    /// The text replacing `replace_start..replace_end`; `label` when `None`.
+    pub insert: Option<String>,
+    /// UTF-16 offsets into the field's text; the caret ends after the inserted text.
+    pub replace_start: u32,
+    pub replace_end: u32,
+}
+
+/// Completion in the fields of the plugin's own run configurations, in the Run/Debug
+/// Configurations dialog (API 1.18); register with
+/// `register_plugin!(T, …, run_configuration_completion)`.
+pub trait RunConfigurationCompletion {
+    /// Completions for `field` (`"arguments"` today; answer none for a field you don't
+    /// know) of the configuration `config` (its id as the plugin reported it) in
+    /// `project`. `text` is the field as typed: whitespace separates arguments and `'`
+    /// or `"` quote, as in a shell. `caret` is a UTF-16 offset into it. Replace only the
+    /// token being completed, so other options, quoted values and arguments after `--`
+    /// stay. Called while the user types: answer from what the plugin already knows.
+    /// The IDE keeps the first 200 items, drops those whose range is outside `text`, and
+    /// drops answers slower than 300 ms.
+    fn complete(
+        &mut self,
+        project: &str,
+        config: &str,
+        field: &str,
+        text: &str,
+        caret: u32,
+    ) -> Vec<RunConfigurationCompletionItem>;
 }

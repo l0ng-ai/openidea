@@ -96,6 +96,7 @@ async fn breakpoints_stepping_and_variables_in_a_real_godot() {
     let script_as_opened = dir.join("player.gd");
     manager
         .set_breakpoints(
+            "main",
             script_as_opened.clone(),
             vec![Breakpoint {
                 line: BREAK_LINE,

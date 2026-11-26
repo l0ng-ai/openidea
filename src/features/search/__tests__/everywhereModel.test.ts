@@ -5,6 +5,7 @@ import {
   buildRows,
   fileItem,
   matchActions,
+  matchOutsideFiles,
   mergeSymbols,
   splitSymbolQuery,
   parseCommand,
@@ -183,6 +184,18 @@ describe("matchActions", () => {
 });
 
 describe("items and rows", () => {
+  it("matchOutsideFiles takes - and _ for each other, the exact spelling scoring higher", () => {
+    const files = [
+      { path: "/s/bit-matcher.txt", relPath: "bit-matcher.txt" },
+      { path: "/s/bit_matcher.txt", relPath: "bit_matcher.txt" },
+    ];
+    const hits = matchOutsideFiles(files, "bit_matcher");
+    expect(hits.map((h) => h.relPath)).toEqual(["bit-matcher.txt", "bit_matcher.txt"]);
+    expect(hits[1]!.score).toBeGreaterThan(hits[0]!.score);
+    expect(hits[0]!.indices).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(matchOutsideFiles(files, "bit.matcher")).toEqual([]);
+  });
+
   it("fileItem splits name and directory highlights", () => {
     const f = fileItem(
       { path: "/p/src/orders/OrderController.kt", relPath: "src/orders/OrderController.kt", indices: [4, 11, 12, 16] },

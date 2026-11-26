@@ -1,16 +1,36 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ isMaximized: async () => false, onResized: async () => () => {} }),
+const win = vi.hoisted(() => ({
+  maximized: false,
+  fullscreen: false,
+  toggleMaximize: vi.fn(),
+  toggleFullscreen: vi.fn(),
 }));
-import { render, screen } from "@testing-library/react";
-import type { WindowButtonLayout } from "@/platform/ipc";
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({
+    isMaximized: async () => win.maximized,
+    isFullscreen: async () => win.fullscreen,
+    onResized: async () => () => {},
+    toggleMaximize: win.toggleMaximize,
+  }),
+}));
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { commands, type WindowButtonLayout } from "@/platform/ipc";
 import { usePlatform } from "@/platform/platformInfo";
 import { WindowControls } from "./WindowControls";
 import { captionButtons } from "./windowButtons";
 
 const initialPlatform = usePlatform.getState();
-afterEach(() => usePlatform.setState(initialPlatform));
+vi.spyOn(commands, "windowToggleFullscreen").mockImplementation(async () => {
+  win.toggleFullscreen();
+  return { status: "ok", data: false };
+});
+afterEach(() => {
+  usePlatform.setState(initialPlatform);
+  Object.assign(win, { maximized: false, fullscreen: false });
+  win.toggleMaximize.mockClear();
+  win.toggleFullscreen.mockClear();
+});
 
 const layouts = {
   default: { left: [], right: ["minimize", "maximize", "close"] },
@@ -67,5 +87,23 @@ describe("WindowControls", () => {
     usePlatform.setState({ windowButtons: layouts.closeOnly });
     render(<WindowControls side="right" />);
     expect(labels()).toEqual(["Close"]);
+  });
+
+  it("restores a full-screen window from the maximize button instead of maximizing it", async () => {
+    win.fullscreen = true;
+    render(<WindowControls side="right" />);
+    await waitFor(() => expect(labels()).toEqual(["Minimize", "Restore Down", "Close"]));
+    fireEvent.click(screen.getByRole("button", { name: "Restore Down" }));
+    await waitFor(() => expect(win.toggleFullscreen).toHaveBeenCalledOnce());
+    expect(win.toggleMaximize).not.toHaveBeenCalled();
+  });
+
+  it("toggles maximize outside full screen", async () => {
+    render(<WindowControls side="right" />);
+    // The button reads the window's state through a dynamic import first.
+    await vi.dynamicImportSettled();
+    fireEvent.click(screen.getByRole("button", { name: "Maximize" }));
+    await waitFor(() => expect(win.toggleMaximize).toHaveBeenCalledOnce());
+    expect(win.toggleFullscreen).not.toHaveBeenCalled();
   });
 });

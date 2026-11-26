@@ -27,7 +27,6 @@
   color: var(--fg-muted);
   font-family: var(--font-ui);
   font-size: var(--fs-small);
-  cursor: pointer;
 }
 
 .button {

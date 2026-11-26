@@ -451,9 +451,13 @@ export function DependencyAnalyzer(_props: { input: EditorInput }) {
   const selected = artifacts.find((a) => a.key === selectedKey) ?? null;
   const scopeOptions: SelectOption[] = [
     { value: ALL_SCOPES, label: tx("All scopes") },
-    ...scopesOf(artifacts).map((s) => ({ value: s, label: s })),
+    ...scopesOf(artifacts).map((s) => ({ value: s, label: s, verbatim: true })),
   ];
-  const configurationOptions: SelectOption[] = (configurations ?? []).map((c) => ({ value: c, label: c }));
+  const configurationOptions: SelectOption[] = (configurations ?? []).map((c) => ({
+    value: c,
+    label: c,
+    verbatim: true,
+  }));
   const refreshGradle = () => {
     if (configuration === null) void syncTool("gradle", buildDir);
     else setGeneration((g) => g + 1);

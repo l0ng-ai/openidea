@@ -392,6 +392,29 @@ it("lists every repository on Push all, checks those with commits, expands none 
   expect(mocks.ops[0]?.repo).toBe("/p/a");
 });
 
+it("selects a repository row to show its files without unticking it; the checkbox or Space includes it", async () => {
+  await openPushDialog();
+  const box = () => screen.getByRole("checkbox", { name: "b" });
+  expect(box()).toBeChecked();
+
+  const name = screen.getByTitle("b");
+  fireEvent.mouseDown(name);
+  fireEvent.click(name);
+  expect(await screen.findByText("b.txt")).toBeInTheDocument();
+  expect(box()).toBeChecked();
+
+  fireEvent.click(box());
+  expect(box()).not.toBeChecked();
+  fireEvent.click(box());
+  expect(box()).toBeChecked();
+
+  const tree = screen.getByRole("tree", { name: "Outgoing commits" });
+  fireEvent.keyDown(tree, { key: " " });
+  expect(box()).not.toBeChecked();
+  fireEvent.keyDown(tree, { key: " " });
+  expect(box()).toBeChecked();
+});
+
 it("shows only the repository Push was invoked from without a checkbox, its files shown at once", async () => {
   render(<VcsDialogHost />);
   await act(() => showPushDialog({ repo: "/p/b" }));
