@@ -46,7 +46,7 @@ git init -q && git add -A && git commit -qm "initial"   # for the VCS checks
 ```
 
 Then open the folder with **File › Open…** (`⌘⇧⌥O`) or from the Welcome screen.
-For `ts-app` / `playwright-app` / `mocha-app` / `jasmine-app` / `polyglot/web` run `pnpm install` first (`npm install` for `biome-app` and `stylelint-app`); for `python-app` create a
+For `ts-app` / `playwright-app` / `mocha-app` / `polyglot/web` run `pnpm install` first (`npm install` for `biome-app` and `stylelint-app`); for `python-app` create a
 venv (`python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'`); for
 `php-app` run `composer install` (debugging it needs Xdebug in the PHP on `PATH`).
 

@@ -396,6 +396,7 @@ export function detectRunTargets(
 ): RunTarget[] {
   if (text.length > MAX_SCAN) return [];
   const lines = text.split("\n");
+  if (specDirectory && /(^|\/)spec\//.test(relPath) && targetLanguage(relPath) === "js") return jsTargets(lines);
   switch (targetLanguage(relPath)) {
     case "csharp":
       return csharpTargets(text);
@@ -403,8 +404,7 @@ export function detectRunTargets(
       return rustTargets(lines, relPath);
     case "js":
       return /\.(test|spec)\.[cm]?[jt]sx?$|(^|\/)__tests__\//.test(relPath) ||
-        (testDirectory && /(^|\/)test\//.test(relPath)) ||
-        (specDirectory && /(^|\/)spec\//.test(relPath))
+        (testDirectory && /(^|\/)test\//.test(relPath))
         ? jsTargets(lines)
         : [];
     case "python":
