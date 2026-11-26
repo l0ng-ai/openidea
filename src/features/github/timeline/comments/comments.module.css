@@ -208,7 +208,6 @@
   gap: var(--space-1-5);
   padding: 2px 8px;
   white-space: nowrap;
-  cursor: pointer;
 }
 .mention[data-active] {
   background: var(--bg-list-selected);
@@ -233,7 +232,6 @@
   color: var(--fg);
   font: inherit;
   font-size: 11px;
-  cursor: pointer;
 }
 .pill:hover:not(:disabled) {
   background: var(--gh-reaction-bg-hover);
@@ -263,7 +261,6 @@
   background: none;
   font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
   font-size: 22px;
-  cursor: pointer;
 }
 .pickerEmoji:hover,
 .pickerEmoji[data-own] {

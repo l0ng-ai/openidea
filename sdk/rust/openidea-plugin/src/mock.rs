@@ -133,6 +133,8 @@ struct State {
     storage: BTreeMap<String, String>,
     subscriptions: BTreeSet<EventKind>,
     path_subscriptions: BTreeMap<String, Vec<String>>,
+    project_generations: BTreeMap<String, u64>,
+    debounce_ms: BTreeMap<String, u32>,
     tasks: Vec<MockTask>,
     vcs: Option<RepositoryStatus>,
     repositories: Vec<RepositoryInfo>,
@@ -181,6 +183,8 @@ struct State {
     view_messages: Vec<(String, String)>,
     terminals: Vec<MockTerminal>,
     terminal_sessions: BTreeMap<String, (String, crate::host::Command, String)>,
+    /// Directory a keyed terminal was opened in with `open_terminal_session_in`.
+    terminal_cwds: BTreeMap<String, String>,
     terminal_writes: Vec<(String, String)>,
     content_tabs: BTreeMap<String, crate::ContentTab>,
     content_replies: Vec<(String, crate::ContentTabReply)>,
@@ -195,7 +199,12 @@ struct State {
     extension_points: BTreeMap<String, Vec<crate::Contribution>>,
     run_targets: BTreeMap<(String, String), crate::PluginRunTargetWithOverrides>,
     run_configurations: BTreeMap<String, crate::PluginRunConfiguration>,
+    execution_configurations: BTreeMap<String, crate::PluginExecutionConfiguration>,
+    user_run_output_overrides: BTreeMap<String, crate::OutputMode>,
+    run_stdin_files: BTreeSet<String>,
+    run_remote_targets: BTreeSet<String>,
     configuration_runs: Vec<(String, String, Vec<String>, bool)>,
+    configuration_run_options: Vec<(String, String, Vec<String>, crate::RunStartOptions, crate::OutputMode)>,
     log_tabs: Vec<MockLogTab>,
     locations: Vec<(String, u32, u32)>,
     settings: BTreeMap<String, String>,
@@ -380,6 +389,21 @@ impl MockHost {
     /// More open projects (for [`crate::host::projects`]).
     pub fn add_project(&self, root: &str) {
         self.state.borrow_mut().other_projects.push(root.to_owned());
+    }
+
+    /// Bumps the generation for project `root` and returns the new generation.
+    pub fn bump_project_generation(&self, root: &str) -> u64 {
+        let mut s = self.state.borrow_mut();
+        let entry = s.project_generations.entry(root.to_owned()).or_insert(1);
+        *entry += 1;
+        *entry
+    }
+
+    /// Simulates closing project `root`: removes its generation and run targets.
+    pub fn project_closed(&self, root: &str) {
+        let mut s = self.state.borrow_mut();
+        s.project_generations.remove(root);
+        s.run_targets.retain(|(r, _), _| r != root);
     }
 
     /// Replaces a project's indexed symbols. Filtering in the mock is a
@@ -592,6 +616,23 @@ impl MockHost {
         self.state.borrow().diagnostics.clone()
     }
 
+    /// Asks a Run Anything provider (API 1.18) for its entries in the mock project.
+    pub fn run_anything_suggest(
+        &self,
+        provider: &mut impl crate::RunAnything,
+        prefix: &str,
+        text: &str,
+    ) -> Vec<crate::RunAnythingItem> {
+        let project = self.invocation().project().expect("mock project").root().expect("mock root");
+        provider.suggest(&project, prefix, text).into_iter().take(100).collect()
+    }
+
+    /// Runs a Run Anything line (API 1.18) in the mock project: whether it was claimed.
+    pub fn run_anything_run(&self, provider: &mut impl crate::RunAnything, prefix: &str, line: &str) -> bool {
+        let project = self.invocation().project().expect("mock project").root().expect("mock root");
+        provider.run(&project, prefix, line)
+    }
+
     /// Calls a target validator with the mock project's root and launch metadata.
     pub fn validate_run_target(
         &self,
@@ -694,6 +735,12 @@ impl MockHost {
     pub fn configuration_runs(&self) -> Vec<(String, String, Vec<String>, bool)> {
         self.state.borrow().configuration_runs.clone()
     }
+    /// Run launches recorded with start options and resolved effective output mode (API 1.18).
+    pub fn configuration_run_options(
+        &self,
+    ) -> Vec<(String, String, Vec<String>, crate::RunStartOptions, crate::OutputMode)> {
+        self.state.borrow().configuration_run_options.clone()
+    }
     /// Makes the language server `server` run and answer `method` with `result` (JSON).
     /// A server with no answer set is not running: requests to it are not-found.
     pub fn set_language_server_response(&self, server: &str, method: &str, result: &str) {
@@ -721,7 +768,49 @@ impl MockHost {
         self.state.borrow_mut().extension_points.insert(point.into(), list);
     }
     pub fn set_run_configurations(&self, configs: Vec<crate::PluginRunConfiguration>) {
-        self.state.borrow_mut().run_configurations = configs.into_iter().map(|c| (c.id.clone(), c)).collect();
+        let mut s = self.state.borrow_mut();
+        s.run_configurations = configs.into_iter().map(|c| (c.id.clone(), c)).collect();
+        s.execution_configurations.clear();
+    }
+    /// Configurations with environment, debugger, and default output mode (API 1.18).
+    pub fn set_execution_configurations(&self, configs: Vec<crate::PluginExecutionConfiguration>) {
+        let mut s = self.state.borrow_mut();
+        s.run_configurations = configs.iter().map(|c| (c.launch.config.id.clone(), c.launch.config.clone())).collect();
+        s.execution_configurations = configs.into_iter().map(|c| (c.launch.config.id.clone(), c)).collect();
+    }
+    /// Simulates a user-saved output-mode override in `.openidea/run.toml` (API 1.18).
+    pub fn set_user_run_output_override(&self, config: &str, mode: Option<crate::OutputMode>) {
+        let mut s = self.state.borrow_mut();
+        match mode {
+            Some(mode) => {
+                s.user_run_output_overrides.insert(config.into(), mode);
+            }
+            None => {
+                s.user_run_output_overrides.remove(config);
+            }
+        }
+    }
+    /// Marks a configuration as having stdin file redirection in native tests.
+    pub fn set_run_configuration_stdin_file(&self, config: &str, redirected: bool) {
+        let mut s = self.state.borrow_mut();
+        if redirected {
+            s.run_stdin_files.insert(config.into());
+        } else {
+            s.run_stdin_files.remove(config);
+        }
+    }
+    /// Marks a configuration as targeting a remote run target in native tests.
+    pub fn set_run_configuration_remote_target(&self, config: &str, remote: bool) {
+        let mut s = self.state.borrow_mut();
+        if remote {
+            s.run_remote_targets.insert(config.into());
+        } else {
+            s.run_remote_targets.remove(config);
+        }
+    }
+    /// The project-relative directory a keyed terminal was opened in (API 1.18), if any.
+    pub fn terminal_cwd(&self, key: &str) -> Option<String> {
+        self.state.borrow().terminal_cwds.get(key).cloned()
     }
     /// Text written through write_terminal.
     pub fn terminal_writes(&self) -> Vec<(String, String)> {
@@ -730,6 +819,7 @@ impl MockHost {
     /// Simulates exit, releasing the key for another operation.
     pub fn finish_terminal(&self, key: &str) -> Option<crate::Event> {
         let (id, _, _) = self.state.borrow_mut().terminal_sessions.remove(key)?;
+        self.state.borrow_mut().terminal_cwds.remove(key);
         Some(crate::Event::Other {
             kind: "terminal-exited".into(),
             data: serde_json::to_string(&crate::TerminalExited { id, key: key.into(), status: Some(0), closed: false })
@@ -839,6 +929,12 @@ pub struct MockInvocation<'a>(PhantomData<&'a ()>);
 #[doc(hidden)]
 pub struct MockProject {
     root: String,
+    generation: u64,
+}
+
+fn make_mock_project(s: &State, root: String) -> MockProject {
+    let generation = s.project_generations.get(&root).copied().unwrap_or(1);
+    MockProject { root, generation }
 }
 
 #[doc(hidden)]
@@ -1309,7 +1405,7 @@ pub mod current {
     pub fn projects() -> Result<Vec<ProjectRes>, Error> {
         with(|s| {
             require(s, "project.read")?;
-            Ok(s.root.iter().chain(&s.other_projects).map(|root| MockProject { root: root.clone() }).collect())
+            Ok(s.root.iter().chain(&s.other_projects).map(|root| make_mock_project(s, root.clone())).collect())
         })
     }
 
@@ -1330,8 +1426,13 @@ pub mod current {
                         || path.strip_prefix(root.trim_end_matches('/')).is_some_and(|rest| rest.starts_with('/'))
                 })
                 .max_by_key(|root| root.replace('\\', "/").split('/').count())
-                .map(|root| MockProject { root: root.clone() })
+                .map(|root| make_mock_project(s, root.clone()))
         })
+    }
+
+    /// The mock's project: every mocked call serves its window.
+    pub fn invoking_project() -> Option<ProjectRes> {
+        with(|s| s.root.clone().map(|root| make_mock_project(s, root)))
     }
 
     pub fn project_root(p: &ProjectRes) -> Result<String, Error> {
@@ -1339,6 +1440,10 @@ pub mod current {
             require(s, "project.read")?;
             Ok(p.root.clone())
         })
+    }
+
+    pub fn project_generation(p: &ProjectRes) -> Result<u64, Error> {
+        Ok(p.generation)
     }
 
     /// `path` inside `p`'s root as a project-relative key, or `Invalid` for a
@@ -1557,7 +1662,7 @@ pub mod current {
     }
 
     pub fn invocation_project(_: InvocationRef<'_>) -> Option<ProjectRes> {
-        with(|s| s.root.clone().map(|root| MockProject { root }))
+        with(|s| s.root.clone().map(|root| make_mock_project(s, root)))
     }
 
     pub fn invocation_editor(_: InvocationRef<'_>) -> Option<EditorRes> {
@@ -1700,7 +1805,7 @@ pub mod current {
                 return s.external.get(path).cloned().ok_or_else(|| Error::NotFound(path.into()));
             }
             require(s, "project.read")?;
-            let p = MockProject { root: s.root.clone().ok_or_else(|| Error::Invalid("no project".into()))? };
+            let p = make_mock_project(s, s.root.clone().ok_or_else(|| Error::Invalid("no project".into()))?);
             let rel = rel_in_root(&p, path)?;
             s.files.get(rel).or_else(|| s.files.get(path)).cloned().ok_or_else(|| Error::NotFound(path.into()))
         })?;
@@ -1756,7 +1861,7 @@ pub mod current {
     pub fn problems(path: Option<&str>) -> Result<Vec<FileProblems>, Error> {
         with(|s| {
             require(s, "project.read")?;
-            let p = MockProject { root: s.root.clone().ok_or_else(|| Error::Invalid("no project".into()))? };
+            let p = make_mock_project(s, s.root.clone().ok_or_else(|| Error::Invalid("no project".into()))?);
             let wanted = path.map(|path| rel_in_root(&p, path).map(|rel| format!("{}/{rel}", p.root))).transpose()?;
             Ok(s.diagnostics
                 .iter()
@@ -1771,7 +1876,7 @@ pub mod current {
         })
     }
     fn decoration_path(s: &State, path: &str) -> Result<String, Error> {
-        let p = MockProject { root: s.root.clone().ok_or_else(|| Error::Invalid("no project".into()))? };
+        let p = make_mock_project(s, s.root.clone().ok_or_else(|| Error::Invalid("no project".into()))?);
         Ok(format!("{}/{}", p.root, rel_in_root(&p, path)?))
     }
     fn style(s: &str) -> bool {
@@ -2168,6 +2273,17 @@ pub mod current {
                 _ => {}
             }
             s.path_subscriptions.insert(kind.to_owned(), globs.iter().map(|g| (*g).to_owned()).collect());
+            Ok(())
+        })
+    }
+
+    pub fn subscribe_paths_with_options(kind: &str, options: &crate::SubscriptionOptions) -> Result<(), Error> {
+        let globs_ref: Vec<&str> = options.globs.iter().map(|s| s.as_str()).collect();
+        subscribe_paths(kind, &globs_ref)?;
+        with(|s| {
+            if let Some(ms) = options.debounce_ms {
+                s.debounce_ms.insert(kind.to_owned(), ms);
+            }
             Ok(())
         })
     }
@@ -2650,6 +2766,10 @@ pub mod current {
             if s.restricted {
                 return Err(Error::Denied("project is not trusted".into()));
             }
+            let cur_gen = s.project_generations.get(&project.root).copied().unwrap_or(1);
+            if project.generation < cur_gen {
+                return Err(Error::Stale);
+            }
             if target.id.is_empty()
                 || target.name.is_empty()
                 || target
@@ -2671,14 +2791,57 @@ pub mod current {
         });
     }
     pub fn start_run(config: &str, args: &[String], debug: bool) -> Result<String, Error> {
+        start_run_with_options(config, args, &crate::RunStartOptions { debug, output_mode: None })
+    }
+    pub fn start_run_with_options(
+        config: &str,
+        args: &[String],
+        options: &crate::RunStartOptions,
+    ) -> Result<String, Error> {
         with(|s| {
-            let c = s.run_configurations.get(config).ok_or_else(|| Error::NotFound(config.into()))?;
+            let c = s.run_configurations.get(config).ok_or_else(|| Error::NotFound(config.into()))?.clone();
             require(s, &format!("process:{}", c.program))?;
-            if debug {
+            let exec = s.execution_configurations.get(config);
+            let debug = options.debug;
+            let has_debugger = exec.is_some_and(|e| e.launch.debugger.is_some());
+            if debug && !has_debugger {
                 return Err(Error::Invalid("this configuration has no debugger".into()));
+            }
+            let has_target = s.run_remote_targets.contains(config);
+            if debug && has_target {
+                return Err(Error::Invalid("debugging this target is not supported".into()));
+            }
+            if debug && options.output_mode == Some(crate::OutputMode::Pty) {
+                return Err(Error::Invalid("terminal emulation cannot be used when debugging".into()));
+            }
+            let plugin_default = exec.map_or(crate::OutputMode::Pipes, |e| e.output_mode);
+            let effective_mode = if debug {
+                crate::OutputMode::Pipes
+            } else if let Some(&user_mode) = s.user_run_output_overrides.get(config) {
+                user_mode
+            } else if let Some(mode) = options.output_mode {
+                mode
+            } else {
+                plugin_default
+            };
+            let requested_pty =
+                effective_mode == crate::OutputMode::Pty || options.output_mode == Some(crate::OutputMode::Pty);
+            if !debug && requested_pty {
+                if c.test {
+                    return Err(Error::Invalid("terminal emulation cannot be used for test configurations".into()));
+                }
+                if s.run_stdin_files.contains(config) {
+                    return Err(Error::Invalid(
+                        "input cannot be redirected from a file when emulating a terminal".into(),
+                    ));
+                }
+                if has_target {
+                    return Err(Error::Invalid("terminal emulation on this target is not supported".into()));
+                }
             }
             let id = format!("mock-run-{}", s.configuration_runs.len());
             s.configuration_runs.push((id.clone(), config.into(), args.to_vec(), debug));
+            s.configuration_run_options.push((id.clone(), config.into(), args.to_vec(), *options, effective_mode));
             Ok(id)
         })
     }
@@ -2697,6 +2860,22 @@ pub mod current {
             s.terminal_sessions.insert(key.into(), (id.clone(), cmd.clone(), title.into()));
             Ok(id)
         })
+    }
+    pub fn open_terminal_session_in(
+        key: &str,
+        title: &str,
+        cmd: &crate::host::Command,
+        cwd: &str,
+    ) -> Result<String, Error> {
+        let path = std::path::Path::new(cwd);
+        if path.has_root() || path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+            return Err(Error::Invalid(format!("terminal directory {cwd:?}: outside the project")));
+        }
+        let id = open_terminal_session(key, title, cmd)?;
+        with(|s| {
+            s.terminal_cwds.entry(key.into()).or_insert_with(|| cwd.into());
+        });
+        Ok(id)
     }
     pub fn write_terminal(key: &str, text: &str) -> Result<(), Error> {
         with(|s| {

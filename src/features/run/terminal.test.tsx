@@ -146,4 +146,22 @@ describe("Emulate terminal in output console", () => {
     expect(terminalText({ kind: "stderr", text: "bad\n" })).toBe("\x1b[31mbad\r\n\x1b[0m");
     expect(terminalText({ kind: "stdout", text: "raw\r\n" })).toBe("raw\r\n");
   });
+
+  it("supports Emulate terminal in output console on detected plugin configurations", async () => {
+    const pluginCfg = config({
+      id: "plugin:go-task:dev",
+      name: "dev",
+      kind: "plugin",
+      command: "task",
+      args: ["dev"],
+      detected: true,
+      emulateTerminal: true,
+    });
+    expect(terminalApplies(pluginCfg)).toBe(true);
+    expect(terminalApplies({ ...pluginCfg, isTest: true })).toBe(false);
+
+    const session = (await startRun(pluginCfg))!;
+    expect(session.terminal).toBe(true);
+    expect(ipc.runStart.mock.calls[0]![0]).toMatchObject({ id: "plugin:go-task:dev", emulateTerminal: true });
+  });
 });

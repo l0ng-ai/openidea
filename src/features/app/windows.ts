@@ -22,10 +22,10 @@ import {
 } from "@/platform/project";
 import { confirmProjectTrust } from "@/platform/projectTrust";
 import { ask } from "@/workbench/messages";
-import { connectRemote, isRemoteWindow } from "@/platform/remote";
+import { connectRemote, isRemoteWindow, parseRemoteLocation } from "@/platform/remote";
 import { holdSplash } from "@/platform/splash";
 import { editorService, maybeEditorService, notifications } from "@/workbench/contributions";
-import { chooseProjectWindow, type ProjectWindowOverride } from "@/workbench/projectWindow";
+import { chooseProjectWindow, openRemoteProject, type ProjectWindowOverride } from "@/workbench/projectWindow";
 import { openTabColorPicker } from "@/workbench/TabColorPicker";
 import { cycleWindowTab, useWindowGroup } from "@/platform/windowGroups";
 import { editorSwitching } from "@/editor/api";
@@ -606,7 +606,15 @@ export function windowActions(): Action[] {
       hidden: true,
       run: async (c) => {
         const recent = recentProjectArg(c.arg);
-        if (recent) await openProjectWithPolicy(recent.path, [], recent.window);
+        if (!recent) return;
+        // Open Recent lists Remote Development projects by their location (`ssh://host/path`).
+        const remote = parseRemoteLocation(recent.path);
+        if (!remote) return openProjectWithPolicy(recent.path, [], recent.window);
+        try {
+          await openRemoteProject(remote.target, remote.path, undefined, recent.window);
+        } catch (e) {
+          openFailed(remote.path, e);
+        }
       },
     },
     {

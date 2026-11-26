@@ -132,7 +132,6 @@
   border: none;
   background: none;
   color: inherit;
-  cursor: pointer;
 }
 .branchLink {
   min-width: 0;
@@ -325,7 +324,6 @@
   border: 1px solid var(--border-checkbox);
   border-radius: 3px;
   background: var(--bg-checkbox);
-  cursor: pointer;
 }
 .viewedChecked {
   border-color: var(--accent);
@@ -334,7 +332,6 @@
 }
 .editSource {
   display: inline-flex;
-  cursor: pointer;
 }
 .onHover {
   display: none;
@@ -426,7 +423,6 @@
   border-bottom-right-radius: var(--radius-control);
   background: var(--bg-button);
   color: var(--fg);
-  cursor: pointer;
 }
 .optionArrow:hover {
   background: var(--bg-control-hover);

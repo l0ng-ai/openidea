@@ -187,7 +187,7 @@ async fn sqlserver_introspection_works_under_a_case_sensitive_collation() {
     let fk = ["dbo", "Child", "FK_Child_Parent", "ParentId", "dbo", "Parent", "Id"];
     assert_eq!(cells(pool.rows(&sql::table_foreign_keys(d, "dbo", "Child"), 100).await.unwrap()), [fk]);
     assert_eq!(cells(pool.rows(sql::foreign_keys(d), 100).await.unwrap()), [fk]);
-    assert_eq!(cells(pool.rows(sql::completion_columns(d), 100).await.unwrap()).len(), 4);
+    assert_eq!(cells(pool.rows(&sql::completion_columns(d, sql::CompletionScope::All), 100).await.unwrap()).len(), 4);
     assert_eq!(cells(pool.rows(&sql::routines(d, "dbo").unwrap(), 100).await.unwrap())[0][..2], ["Touch", "procedure"]);
     drop(pool);
     master

@@ -534,6 +534,7 @@ function FindInFilesDialog() {
 
   const summary = stale ? (s.pattern ? tx("Updating results…") : "") : statusText(state);
   const maskItems: MenuItem[] = recentMasks().map((m) => ({
+    verbatim: true,
     label: m,
     checked: m === s.mask ? true : undefined,
     run: () => set({ mask: m, maskEnabled: true }),
@@ -829,7 +830,9 @@ function FindInFilesDialog() {
                           ...customScopes.map((c) => ({
                             value: customScopeValue(c.name),
                             label: c.name,
+                            verbatim: true,
                             detail: c.pattern,
+                            verbatimDetail: true,
                           })),
                         ]
                       : []),
