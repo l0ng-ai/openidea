@@ -54,6 +54,7 @@ import { registerRunTabActions } from "./runTabs";
 import { invalidateGoModules } from "./goModules";
 import { invalidatePythonPackages } from "./pythonPackages";
 import { RunWidget } from "./RunWidget";
+import { packageBinsRunAnything, watchPackageBinsChanges } from "./packageBins";
 import { runConfigsRunAnything } from "./runAnything";
 import { runDirectory } from "./navigate";
 import {
@@ -466,6 +467,8 @@ export function activate(): () => void {
     }),
     registerTitleItem({ id: "run.widget", title: "Run Widget", align: "right", priority: 0, component: RunWidget }),
     registerRunAnythingProvider(runConfigsRunAnything),
+    registerRunAnythingProvider(packageBinsRunAnything),
+    watchPackageBinsChanges(),
     registerBuiltinTypes(),
     registerRunConfigType(junitType),
     registerGoActions(),
