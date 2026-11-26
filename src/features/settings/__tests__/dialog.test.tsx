@@ -28,7 +28,7 @@ import { useKeymap } from "@/platform/keymap";
 import { ContextMenuHost, hideContextMenu, useContextMenuStore } from "@/ui";
 import { PageContext, useSetting } from "../components/context";
 import { DEFAULT_SETTINGS, setAt, validateSettings } from "../model/schema";
-import { openSettings, stage, useSettingsDialog } from "../model/staging";
+import { closeSettings, openSettings, selectPage, stage, useSettingsDialog } from "../model/staging";
 import { SettingsDialog } from "../dialog/SettingsDialog";
 import { ProjectStructureDialog } from "../languages/ProjectStructurePage";
 import { SettingsWindow } from "../window/SettingsWindow";
@@ -648,6 +648,72 @@ describe("Settings dialog", () => {
     const dialog = await openDialog("appearance");
     const tree = within(dialog).getByRole("tree", { name: "Settings pages" });
     expect(within(tree).queryByText("Project Structure")).toBeNull();
+  });
+
+  it("navigates the page history from breadcrumb links and the Back / Forward buttons", async () => {
+    const dialog = await openDialog("editor.font");
+    // Font sits under the Editor group: its breadcrumb links back up.
+    fireEvent.click(within(dialog).getByRole("button", { name: "Editor" }));
+    expect(useSettingsDialog.getState().pageId).toBe("group:Editor");
+    expect(within(dialog).queryByRole("button", { name: "Editor" })).toBeNull();
+    // Back returns to Font; Forward becomes available again.
+    fireEvent.click(within(dialog).getByRole("button", { name: "Back" }));
+    expect(useSettingsDialog.getState().pageId).toBe("editor.font");
+    expect(within(dialog).getByRole("button", { name: "Forward" })).toBeEnabled();
+    // Forward walks to the Editor group; visiting a new page truncates ahead of it.
+    fireEvent.click(within(dialog).getByRole("button", { name: "Forward" }));
+    expect(useSettingsDialog.getState().pageId).toBe("group:Editor");
+    fireEvent.click(within(dialog).getByRole("button", { name: "General" }));
+    expect(useSettingsDialog.getState().pageId).toBe("editor.general");
+    expect(within(dialog).getByRole("button", { name: "Forward" })).toBeDisabled();
+  });
+
+  it("routes navigate.back / navigate.forward to the page history while Settings is open", async () => {
+    await openDialog("appearance");
+    selectPage("keymap");
+    expect(useSettingsDialog.getState().pageId).toBe("keymap");
+    await act(async () => {
+      await executeAction("navigate.back");
+    });
+    expect(useSettingsDialog.getState().pageId).toBe("appearance");
+    await act(async () => {
+      await executeAction("navigate.forward");
+    });
+    expect(useSettingsDialog.getState().pageId).toBe("keymap");
+    await act(async () => {
+      await executeAction("navigate.back");
+    });
+    expect(useSettingsDialog.getState().pageId).toBe("appearance");
+    // Closing hands the actions back: with the dialog shut there is nothing to navigate.
+    await act(async () => {
+      await closeSettings();
+    });
+  });
+
+  it("restores the previous navigate.back / navigate.forward actions on close", async () => {
+    const editorBack = vi.fn();
+    const editorForward = vi.fn();
+    const remove = registerAction({ id: "navigate.back", title: "Back", run: editorBack });
+    const removeForward = registerAction({ id: "navigate.forward", title: "Forward", run: editorForward });
+    try {
+      await openDialog("appearance");
+      selectPage("keymap");
+      await act(async () => {
+        await executeAction("navigate.back");
+      });
+      expect(useSettingsDialog.getState().pageId).toBe("appearance");
+      expect(editorBack).not.toHaveBeenCalled();
+      await act(async () => {
+        await closeSettings();
+      });
+      await act(async () => {
+        await executeAction("navigate.back");
+      });
+      expect(editorBack).toHaveBeenCalledOnce();
+    } finally {
+      remove();
+      removeForward();
+    }
   });
 
   it("opens Project Structure as its own standalone IDEA-style dialog instead of Settings", async () => {

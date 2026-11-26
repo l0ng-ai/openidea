@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   update: vi.fn(),
   updateCurrent: vi.fn(),
   head: vi.fn(),
+  checkout: vi.fn(),
   notify: vi.fn(),
   openWorktree: vi.fn(),
 }));
@@ -22,7 +23,7 @@ vi.mock("../ops", async (original) => ({
 vi.mock("../openWorktree", () => ({ openWorktree: mocks.openWorktree }));
 vi.mock("@/platform/ipc", async (original) => {
   const real = await original<typeof import("@/platform/ipc")>();
-  return { ...real, commands: { ...real.commands, vcsBranchInfo: mocks.head } };
+  return { ...real, commands: { ...real.commands, vcsBranchInfo: mocks.head, vcsCheckout: mocks.checkout } };
 });
 vi.mock("@/workbench/contributions", async (original) => ({
   ...(await original<typeof import("@/workbench/contributions")>()),
@@ -30,7 +31,7 @@ vi.mock("@/workbench/contributions", async (original) => ({
 }));
 
 import { branchMenu, commonBranchMenu } from "../branchMenu";
-import { branchUpdateSummary, updateBranches } from "../branchOps";
+import { branchUpdateSummary, checkoutAndUpdate, updateBranches } from "../branchOps";
 import { getAction } from "@/platform/actions";
 import { useProject } from "@/platform/project";
 import type { Settings } from "@/bindings";
@@ -207,5 +208,40 @@ describe("branch common to several repositories", () => {
       { repo: "/p", ref: "feature", branch: common },
       { repo: "/p/lib", ref: "feature", branch: common },
     ]);
+  });
+});
+
+describe("Checkout and Update", () => {
+  const item = (items: ReturnType<typeof branchMenu>) =>
+    items.find((i) => "label" in i && i.label === "Checkout and Update") as { disabled?: boolean } | undefined;
+
+  it("is offered for a local branch that is not checked out, and needs a tracked branch", () => {
+    expect(item(branchMenu(branch("topic"), "main"))?.disabled).toBe(false);
+    expect(item(branchMenu(branch("topic", { upstream: null }), "main"))?.disabled).toBe(true);
+    expect(item(branchMenu(branch("origin/topic", { remote: true, upstream: null }), "main"))).toBeUndefined();
+    expect(item(branchMenu(branch("main", { current: true }), "main"))).toBeUndefined();
+    const common = { name: "feature", remote: false, current: false, favorite: false, upstream: true };
+    expect(item(commonBranchMenu(common, ["/p", "/p/lib"], null))?.disabled).toBe(false);
+  });
+
+  it("checks the branch out, then pulls it with the configured method", async () => {
+    let head = "main";
+    mocks.checkout.mockImplementation(async () => {
+      head = "topic";
+      return { status: "ok", data: { kind: "done" } };
+    });
+    mocks.head.mockImplementation(async () => ({ status: "ok", data: { head, upstream: `origin/${head}` } }));
+    await checkoutAndUpdate(branch("topic"));
+    expect(mocks.checkout).toHaveBeenCalledTimes(1);
+    expect(mocks.updateCurrent).toHaveBeenCalledWith([
+      { repo: "/p", op: { op: "pull", expectedBranch: "topic", rebase: false } },
+    ]);
+  });
+
+  it("updates nothing when the checkout did not happen", async () => {
+    mocks.checkout.mockResolvedValue({ status: "error", error: { kind: "failed", message: "nope" } });
+    await checkoutAndUpdate(branch("topic"));
+    expect(mocks.updateCurrent).not.toHaveBeenCalled();
+    expect(mocks.update).not.toHaveBeenCalled();
   });
 });

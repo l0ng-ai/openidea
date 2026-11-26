@@ -19,11 +19,15 @@ pub(crate) fn detect(root: &Path, out: &mut Vec<RunConfig>) {
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().into_owned();
             if entry.file_type().is_ok_and(|t| t.is_dir()) {
-                if !name.starts_with('.')
+                // Case-insensitive: Unreal's generated trees (`Binaries`, `Intermediate`, …) hold
+                // tens of thousands of files and copies of the engine's own tool projects.
+                let lower = name.to_ascii_lowercase();
+                if !lower.starts_with('.')
                     && !matches!(
-                        name.as_str(),
+                        lower.as_str(),
                         "bin" | "obj" | "node_modules" | "target" | "build" | "dist" | "vendor" | "packages"
                     )
+                    && !ide_workspace::unreal::GENERATED_DIRS.iter().any(|dir| dir.eq_ignore_ascii_case(&lower))
                 {
                     dirs.push(path);
                 }

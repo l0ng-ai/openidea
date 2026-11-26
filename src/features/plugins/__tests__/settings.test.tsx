@@ -1,15 +1,19 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ComponentType } from "react";
+import { MessagesHost } from "@/workbench/messages";
 import { SettingsFormContext, useSettingsPages } from "@/workbench/contributions";
 import { useSettingsFormFor } from "@/features/settings/components/context";
 import {
+  applySettings,
   closeSettings,
   openSettings,
   resetPage,
   stagedValue,
   useSettingsDialog,
 } from "@/features/settings/model/staging";
+import { useI18n } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import { createMemoryPluginsBackend, setPluginsBackend } from "../backend";
 import { projectSettings, type SettingsDecl } from "../settings";
@@ -62,6 +66,11 @@ const declaration: SettingsDecl = {
         { key: "enabled", title: "Enabled", type: "boolean", default: false },
         { key: "name", title: "Name", type: "string", default: "" },
       ],
+    },
+    {
+      id: "server",
+      title: "Server",
+      properties: [{ key: "server", title: "Server", type: "string", default: "" }],
     },
   ],
 };
@@ -171,6 +180,151 @@ it("does not run a command when applying settings fails", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Test" }));
   await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Could not apply settings."));
   expect(run).not.toHaveBeenCalled();
+});
+
+it("refuses a host value that is not a host when it is staged", async () => {
+  const { usePlugins } = await import("../store");
+  act(() => {
+    usePlugins.setState({
+      plugins: [
+        {
+          id: "example.helper",
+          name: "Helper",
+          capabilities: [
+            { id: "net:setting:server", risk: "medium", description: "Connect", optional: true, granted: true },
+          ],
+        } as never,
+      ],
+    });
+  });
+  render(<Harness page="server" />);
+  const field = screen.getByRole("textbox", { name: "Server" });
+  fireEvent.change(field, { target: { value: "not a host!" } });
+  await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(/Enter a host/));
+  expect(stagedValue(useSettingsDialog.getState(), "global", "plugins")).toEqual({});
+  fireEvent.change(field, { target: { value: "jira.corp.example" } });
+  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  expect(stagedValue(useSettingsDialog.getState(), "global", "plugins")).toMatchObject({
+    "example.helper": { server: "jira.corp.example" },
+  });
+});
+
+it("asks about the host when a net:setting value is applied; deny leaves it unapproved", async () => {
+  const user = userEvent.setup();
+  const approveNetSetting = vi.fn(async () => ({}) as never);
+  setPluginsBackend({ ...createMemoryPluginsBackend([]), approveNetSetting });
+  const { usePlugins } = await import("../store");
+  const plugin = {
+    id: "example.helper",
+    name: "Helper",
+    version: "1.0.0",
+    description: "",
+    authors: [],
+    homepage: null,
+    changeNotes: null,
+    icon: null,
+    javaAgent: null,
+    source: "installed",
+    path: "/plugins/helper",
+    enabled: true,
+    status: "active",
+    error: null,
+    hasCode: true,
+    capabilities: [{ id: "net:setting:server", risk: "medium", description: "Connect", optional: true, granted: true }],
+    netHosts: [],
+    netSettings: [],
+    contributions: [],
+    activation: [],
+    warnings: [],
+    stats: {
+      activations: 0,
+      activationMs: 0,
+      calls: 0,
+      errors: 0,
+      maxCallMs: 0,
+      p95CallMs: 0,
+      slowCalls: 0,
+      crashes: 0,
+      reclaims: 0,
+    },
+    publisher: null,
+    previousVersion: null,
+    depends: [],
+    dependents: [],
+    extensionPoints: [],
+  };
+  act(() => {
+    usePlugins.setState({ plugins: [plugin as never] });
+  });
+  render(
+    <>
+      <MessagesHost />
+      <Harness page="server" />
+    </>,
+  );
+  fireEvent.change(screen.getByRole("textbox", { name: "Server" }), {
+    target: { value: "https://jira.corp.example/" },
+  });
+  await waitFor(() =>
+    expect(stagedValue(useSettingsDialog.getState(), "global", "plugins")).toMatchObject({
+      "example.helper": { server: "https://jira.corp.example/" },
+    }),
+  );
+  // Applying asks; the answer resolves the apply.
+  const applying = applySettings();
+  await user.click(await screen.findByRole("button", { name: "Deny" }));
+  await act(() => applying);
+  await waitFor(() => expect(approveNetSetting).not.toHaveBeenCalled());
+  // The value itself was saved; only the approval was withheld.
+  expect(useProject.getState().settings).toMatchObject({
+    plugins: { "example.helper": { server: "https://jira.corp.example/" } },
+  });
+});
+
+it("records the approval when the applied host is allowed, and forgets it when cleared", async () => {
+  const user = userEvent.setup();
+  const approveNetSetting = vi.fn(async () => ({}) as never);
+  const forgetNetSetting = vi.fn(async () => ({}) as never);
+  setPluginsBackend({ ...createMemoryPluginsBackend([]), approveNetSetting, forgetNetSetting });
+  const { usePlugins } = await import("../store");
+  const plugin = {
+    id: "example.helper",
+    name: "Helper",
+    netSettings: [],
+    capabilities: [{ id: "net:setting:server", risk: "medium", description: "Connect", optional: true, granted: true }],
+  };
+  act(() => {
+    usePlugins.setState({ plugins: [plugin as never] });
+  });
+  render(
+    <>
+      <MessagesHost />
+      <Harness page="server" />
+    </>,
+  );
+  fireEvent.change(screen.getByRole("textbox", { name: "Server" }), { target: { value: "jira.corp.example" } });
+  await waitFor(() =>
+    expect(stagedValue(useSettingsDialog.getState(), "global", "plugins")).toMatchObject({
+      "example.helper": { server: "jira.corp.example" },
+    }),
+  );
+  const applying = applySettings();
+  await user.click(await screen.findByRole("button", { name: "Allow" }));
+  await act(() => applying);
+  await waitFor(() =>
+    expect(approveNetSetting).toHaveBeenCalledWith("example.helper", "server", false, "jira.corp.example"),
+  );
+
+  // Clearing the value forgets the approval without a dialog.
+  fireEvent.change(screen.getByRole("textbox", { name: "Server" }), { target: { value: "" } });
+  await waitFor(() =>
+    expect(stagedValue(useSettingsDialog.getState(), "global", "plugins")).toMatchObject({
+      "example.helper": { server: "" },
+    }),
+  );
+  await act(() => applySettings());
+  await waitFor(() => expect(forgetNetSetting).toHaveBeenCalledWith("example.helper", "server", false));
+  expect(screen.queryByText(/Allow Helper to connect/)).toBeNull();
 });
 
 it("lists the plugin's declared secrets on its settings page", async () => {
@@ -316,4 +470,16 @@ it("keeps values that equal the setting's default instead of dropping them", () 
   expect(stagedValue(useSettingsDialog.getState(), "global", "plugins")).toMatchObject({
     "example.helper": { enabled: false, name: "" },
   });
+});
+
+it("shows the plugin's setting titles as the plugin wrote them, keeping the IDE's own words translated", () => {
+  const previous = useI18n.getState().texts;
+  useI18n.setState({ texts: { ...previous, Enabled: "已启用", "Move Up": "上移" } });
+  try {
+    render(<Harness page="defaults" />);
+    expect(screen.getByRole("checkbox", { name: "Enabled" })).toBeInTheDocument();
+    expect(screen.queryByText("已启用")).not.toBeInTheDocument();
+  } finally {
+    useI18n.setState({ texts: previous });
+  }
 });

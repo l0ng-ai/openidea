@@ -55,6 +55,8 @@ The editor follows IntelliJ IDEA's behaviour and default keymap. Shortcuts below
 
 **Move Caret Forward a Paragraph** / **Backward a Paragraph** jump each caret over a run of non-blank lines to the blank line after or before it (a line of only spaces or tabs counts as blank), or to the end or start of the file; their **with Selection** variants select up to there. They have no default shortcut.
 
+**Move Caret to Next Word** / **Previous Word in Different "CamelHumps" Mode** (and their **with Selection** variants), **Delete to Word Start** and **Delete to Word End in Different "CamelHumps" Mode** move or delete by word the other way from **Settings › Editor › General › Smart Keys › Use "CamelHumps" words**: by hump (`parse|HTML|Document`) while it is off, by whole word while it is on. They have no default shortcut.
+
 **Edit › Sort Lines** and **Edit › Reverse Lines** reorder the selected lines (the whole file without a selection); they have no default shortcut. Sort Lines orders by character code, so uppercase letters come before lowercase ones.
 
 **Cut up to Line End** cuts from each caret to the end of its line, together with the line break when only whitespace is left (or the caret is already at the line end), so pressing it again on the same caret cuts the next line too; those repeated cuts collect into one clipboard entry. **Delete to Line Start** and **Delete to Line End** delete the same way without copying (to the line start, or the line break before the caret at the line start), or delete the selection. They have no default shortcut except in the Eclipse keymaps (`⇧⌘⌦` / `Ctrl+Shift+Delete` for Delete to Line End).
@@ -108,7 +110,7 @@ All folding commands are also in **Code › Folding**. Fold regions come from th
 | **Auto-Indent Lines** | `⌃⌥I`  | `Ctrl+Alt+I`       |
 | **Optimize Imports**  | `⌃⌥O`  | `Ctrl+Alt+O`       |
 
-**Reformat Code** formats the selection, or the whole file when nothing is selected, as one undo step. The formatting comes from the file's language server or from the formatter the language is configured with (for example Ruff for Python, Prettier, oxfmt or Biome for web languages; find their commands as **Reformat with …** in Find Action). **Reformat File…** also lets you choose the scope and optimize imports.
+**Reformat Code** formats the selection, or the whole file when nothing is selected, as one undo step. The formatting comes from the file's language server or from the formatter the language is configured with (for example Ruff for Python, Prettier, oxfmt or Biome for web languages, dprint in dprint projects; find their commands as **Reformat with …** in Find Action). **Reformat File…** also lets you choose the scope and optimize imports.
 
 Indentation and other style options are under **Settings › Editor › Code Style**, with a page per language. `.editorconfig` files in the project are read too.
 
@@ -158,6 +160,7 @@ With tabs placed left or right, the tab column is as wide as its longest name, u
 - **View › Active Editor › Soft-Wrap** wraps long lines in the current editor. To wrap some file types by default, use **Settings › Editor › General**, section **Soft Wraps**.
 - **View › Reset Font Size** undoes font zoom in the active editor or focused surface (**View › Reset Font Size in All Editors** resets every open editor). Changing the font size with `⌘` / `Ctrl` + mouse wheel (scoped to **Active editor** by default, or **All editors**) can be turned on in **Settings › Editor › General**, section **Mouse Control**.
 - **View › Appearance › Enter Distraction Free Mode** hides tool windows, tabs, the status bar and the gutter and centres the text. Run the same command again to leave.
+- **View › Appearance › Enter Zen Mode** turns on Distraction Free Mode and full screen together; **Exit Zen Mode** turns both off.
 - **Show Line Numbers**, **Show Indent Guides**, **Show Sticky Lines** and **Show Whitespaces** turn these on or off in every editor. Run them from Find Action, or right-click the gutter and open **Appearance**.
 - Line numbers, whitespace, indent guides, caret style and the intention bulb are in **Settings › Editor › General › Appearance**. Breadcrumbs and sticky lines (the enclosing declarations pinned at the top while you scroll) have their own pages under **Settings › Editor › General**.
 

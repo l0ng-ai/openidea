@@ -906,6 +906,16 @@ impl workspace::Host for StoreData {
             .transpose()
     }
 
+    fn invoking_project(&mut self) -> wasmtime::Result<Option<Resource<ProjectRes>>> {
+        // Only a project that is still open: a closed window's root is no project any more.
+        let root = self.invocation.workspace_root.clone().filter(|root| self.host.projects().contains(root));
+        root.map(|root| {
+            let generation = self.host.project_generation(&root).unwrap_or(0);
+            self.push(ProjectRes { root, generation })
+        })
+        .transpose()
+    }
+
     fn projects(&mut self) -> Fallible<Vec<Resource<ProjectRes>>> {
         if let Err(e) = self.require(Capability::ProjectRead) {
             return Ok(Err(e));
@@ -1674,7 +1684,46 @@ impl events::Host for StoreData {
         self.host.unsubscribe(&kind);
         Ok(())
     }
+
+    fn watch_paths(&mut self, paths: Vec<String>) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::Events) {
+            return Ok(Err(e));
+        }
+        if let Err(e) = self.host.require_api("watch-paths", 18) {
+            return Ok(Err(to_wit(e)));
+        }
+        let project = self.invocation.workspace_root.clone().filter(|root| self.host.projects().contains(root));
+        let (Some(client), Some(project)) = (self.client().map(str::to_owned), project) else {
+            return Ok(Err(wit::Error::Invalid("watch-paths needs a call that serves a window's project".into())));
+        };
+        if paths.len() > MAX_WATCHED_PATHS {
+            return Ok(Err(wit::Error::Invalid(format!("at most {MAX_WATCHED_PATHS} watched paths"))));
+        }
+        let real_project = dunce::canonicalize(&project).unwrap_or_else(|_| project.clone());
+        let mut resolved = Vec::with_capacity(paths.len());
+        for path in &paths {
+            let real = match self.granted_file(path) {
+                Ok(real) => real,
+                Err(e) => return Ok(Err(e)),
+            };
+            if real.starts_with(&real_project) {
+                return Ok(Err(wit::Error::Invalid(format!(
+                    "{path} is inside the project: subscribe to files-changed for it"
+                ))));
+            }
+            if !resolved.contains(&real) {
+                resolved.push(real);
+            }
+        }
+        if !resolved.is_empty() {
+            self.host.subscribe(EventKind::WatchedFilesChanged);
+        }
+        Ok(self.host.watch_paths(&client, &project, resolved).map_err(to_wit))
+    }
 }
+
+/// The most paths one plugin watches outside one project (`events.watch-paths`).
+const MAX_WATCHED_PATHS: usize = 32;
 
 impl tasks::Host for StoreData {
     fn begin(&mut self, title: String, cancellable: bool) -> wasmtime::Result<Resource<TaskRes>> {
@@ -2144,8 +2193,14 @@ impl process::HostChild for StoreData {
     }
 }
 
-impl views::Host for StoreData {
-    fn open_terminal_session(&mut self, key: String, title: String, cmd: process::Command) -> Fallible<String> {
+impl StoreData {
+    fn open_keyed_terminal(
+        &mut self,
+        key: String,
+        title: String,
+        cmd: process::Command,
+        cwd: Option<String>,
+    ) -> Fallible<String> {
         if let Err(e) = self.require_window() {
             return Ok(Err(e));
         }
@@ -2160,10 +2215,29 @@ impl views::Host for StoreData {
                 key,
                 title,
                 cmd,
+                cwd,
                 &self.cancel.token(),
                 self.remaining(),
             )
             .map_err(to_wit))
+    }
+}
+
+impl views::Host for StoreData {
+    fn open_terminal_session(&mut self, key: String, title: String, cmd: process::Command) -> Fallible<String> {
+        self.open_keyed_terminal(key, title, cmd, None)
+    }
+    fn open_terminal_session_in(
+        &mut self,
+        key: String,
+        title: String,
+        cmd: process::Command,
+        cwd: String,
+    ) -> Fallible<String> {
+        if let Err(e) = self.host.require_api("views.open-terminal-session-in", 18) {
+            return Ok(Err(to_wit(e)));
+        }
+        self.open_keyed_terminal(key, title, cmd, Some(cwd))
     }
     fn write_terminal(&mut self, key: String, text: String) -> Fallible<()> {
         if let Err(e) = self.require_window() {
@@ -3247,6 +3321,19 @@ impl bindings::openidea::plugin::mcp::Host for StoreData {
     }
 }
 
+impl bindings::openidea::plugin::agents::Host for StoreData {
+    fn fork_session(&mut self, agent: String, session_id: String, cwd: String) -> Fallible<String> {
+        if let Err(e) = self.require(Capability::Agents) {
+            return Ok(Err(e));
+        }
+        if let Err(e) = self.require_window() {
+            return Ok(Err(e));
+        }
+        let client = self.invocation.client.clone().unwrap_or_default();
+        Ok(self.host.fork_agent_session(&client, &agent, &session_id, Path::new(&cwd)).map_err(to_wit))
+    }
+}
+
 pub(crate) mod mcp_bindings {
     wasmtime::component::bindgen!({ world: "mcp-tools", path: "../../wit",
         with: {
@@ -3257,6 +3344,16 @@ pub(crate) mod mcp_bindings {
 }
 
 /// Optional API 1.5 run-target launch validation.
+/// The optional `run-anything-provider` export (API 1.18), bound on its own when present.
+pub(crate) mod run_anything_bindings {
+    wasmtime::component::bindgen!({ world: "run-anything-exports", path: "../../wit" });
+}
+
+/// The optional `run-configuration-completion` export (API 1.18), bound on its own when present.
+pub(crate) mod run_config_completion_bindings {
+    wasmtime::component::bindgen!({ world: "run-configuration-completion-exports", path: "../../wit" });
+}
+
 pub(crate) mod run_target_validation_bindings {
     wasmtime::component::bindgen!({ world: "run-target-validator", path: "../../wit" });
 }

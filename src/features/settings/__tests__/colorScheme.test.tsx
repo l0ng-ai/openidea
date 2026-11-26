@@ -7,6 +7,7 @@ import { CLEAR_COLOR, _setSchemeSource, resolvedAttribute } from "@/platform/col
 import { setLocale } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import { DEFAULT_SETTINGS } from "../model/schema";
+import { languagePageId } from "../pages/editor/colorSchemeMeta";
 import { openSettings, stage, stagedValue, useSettingsDialog } from "../model/staging";
 import { PageContext } from "../components/context";
 import { COLOR_SCHEME_PAGES } from "../pages/editor/colorScheme";
@@ -194,6 +195,20 @@ describe("Julia scheme attributes", () => {
     expect(screen.getByRole("treeitem", { name: "Class name", selected: true })).toBeInTheDocument();
     act(() => fireEvent.click(within(preview).getByText("@show")));
     expect(screen.getByRole("treeitem", { name: "Metadata", selected: true })).toBeInTheDocument();
+  });
+});
+
+describe("C/C++ scheme attributes", () => {
+  it("previews C++ namespaces and standard-library symbols on their own page", () => {
+    expect(languagePageId("C/C++")).toBe("editor.colorScheme.c-cpp");
+    schemePage("editor.colorScheme.c-cpp");
+    const preview = screen.getByLabelText("Color scheme preview");
+    act(() => fireEvent.click(within(preview).getByText("app")));
+    expect(screen.getByRole("treeitem", { name: "Package reference", selected: true })).toBeInTheDocument();
+    act(() => fireEvent.click(within(preview).getByText("cout")));
+    expect(screen.getByRole("treeitem", { name: "Predefined symbol", selected: true })).toBeInTheDocument();
+    act(() => fireEvent.click(within(preview).getByText("size_t")));
+    expect(screen.getByRole("treeitem", { name: "Predefined type", selected: true })).toBeInTheDocument();
   });
 });
 

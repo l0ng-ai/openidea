@@ -33,6 +33,8 @@ pub(crate) struct ProviderSpec {
     pub driver: Driver,
     pub command: String,
     pub args: Vec<String>,
+    /// Number of trailing arguments added by the built-in agent's settings.
+    pub additional_args_len: usize,
     pub env: Vec<(String, String)>,
     /// How to sign in when the agent reports it needs authentication.
     pub login_hint: String,
@@ -96,6 +98,7 @@ fn builtins() -> Vec<ProviderSpec> {
             driver: *driver,
             command: cmd[0].into(),
             args: cmd[1..].iter().map(|a| (*a).to_owned()).collect(),
+            additional_args_len: 0,
             env: Vec::new(),
             login_hint: (*hint).into(),
             source: AgentSource::Builtin,
@@ -347,16 +350,28 @@ pub(crate) fn is_unlisted(spec: &ProviderSpec) -> bool {
     UNLISTED.contains(&spec.id.as_str()) && builtin_spec(&spec.id).as_ref() == Some(spec)
 }
 
+fn uses_package_runner(command: &str) -> bool {
+    matches!(command, "npx" | "bunx" | "uvx")
+}
+
+fn allows_additional_args(builtin: &ProviderSpec, driver: Driver) -> bool {
+    builtin.driver == Driver::Acp && driver == Driver::Acp && !uses_package_runner(&builtin.command)
+}
+
 /// Public launch metadata, keeping the built-in defaults separate from agent-file overrides.
 pub(crate) fn describe(spec: &ProviderSpec) -> AgentProvider {
     let builtin = builtin_spec(&spec.id);
     let reason = if matches!(spec.source, AgentSource::Registry { .. }) {
         Some(AgentCommandReadOnlyReason::Registry)
     } else if let Some(default) = &builtin {
-        matches!(default.command.as_str(), "npx" | "bunx" | "uvx").then_some(AgentCommandReadOnlyReason::PackageRunner)
+        uses_package_runner(&default.command).then_some(AgentCommandReadOnlyReason::PackageRunner)
     } else {
         Some(AgentCommandReadOnlyReason::CustomAgent)
     };
+    let additional_args = builtin
+        .as_ref()
+        .filter(|b| reason.is_none() && allows_additional_args(b, spec.driver))
+        .map(|_| spec.args[spec.args.len() - spec.additional_args_len..].to_vec());
     AgentProvider {
         id: spec.id.clone(),
         name: spec.name.clone(),
@@ -366,6 +381,7 @@ pub(crate) fn describe(spec: &ProviderSpec) -> AgentProvider {
             .join(" "),
         program: spec.command.clone(),
         args: spec.args.clone(),
+        additional_args,
         default_program: builtin.as_ref().map(|b| b.command.clone()),
         default_args: builtin.as_ref().map(|b| b.args.clone()).unwrap_or_default(),
         login_hint: Some(spec.login_hint(&ide_jsonrpc::resolve_spawn_program(&spec.command, &spec.env))),
@@ -391,7 +407,24 @@ pub(crate) fn set_builtin_command(
     command: Option<&str>,
 ) -> IdeResult<()> {
     update_builtin(custom_dir, secrets, id, |agent, builtin| {
-        agent.command = command.unwrap_or(&builtin.command).to_owned()
+        agent.command = command.unwrap_or(&builtin.command).to_owned();
+        Ok(())
+    })
+}
+
+/// Appends arguments to a directly launched built-in ACP agent; an empty list resets them.
+pub(crate) fn set_builtin_additional_args(
+    custom_dir: &Path,
+    secrets: Option<&dyn EnvSecrets>,
+    id: &str,
+    args: Vec<String>,
+) -> IdeResult<()> {
+    update_builtin(custom_dir, secrets, id, |agent, builtin| {
+        if !allows_additional_args(builtin, agent.driver) {
+            return Err(IdeError::invalid(format!("{id} does not support additional arguments")));
+        }
+        agent.additional_args = args;
+        Ok(())
     })
 }
 
@@ -427,7 +460,10 @@ pub(crate) fn set_builtin_env(
             return agent.write(&file).map_err(Into::into);
         }
     }
-    update_builtin(custom_dir, secrets, id, |agent, _| agent.env = env)
+    update_builtin(custom_dir, secrets, id, |agent, _| {
+        agent.env = env;
+        Ok(())
+    })
 }
 
 /// Changes built-in `id`'s agent file; a file left with only the built-in's values is removed.
@@ -435,7 +471,7 @@ fn update_builtin(
     custom_dir: &Path,
     secrets: Option<&dyn EnvSecrets>,
     id: &str,
-    change: impl FnOnce(&mut CustomAgent, &ProviderSpec),
+    change: impl FnOnce(&mut CustomAgent, &ProviderSpec) -> IdeResult<()>,
 ) -> IdeResult<()> {
     let Some(builtin) = builtin_spec(id) else {
         return Err(IdeError::invalid(format!("{id} is not a built-in agent")));
@@ -449,6 +485,7 @@ fn update_builtin(
             driver: builtin.driver,
             command: builtin.command.clone(),
             args: builtin.args.clone(),
+            additional_args: Vec::new(),
             env: BTreeMap::new(),
             registry: None,
         }
@@ -456,11 +493,12 @@ fn update_builtin(
     if agent.registry.is_some() {
         return Err(IdeError::invalid(format!("{id} is installed from the ACP Registry")));
     }
-    change(&mut agent, &builtin);
+    change(&mut agent, &builtin)?;
     if agent.command == builtin.command
         && agent.name.as_deref() == Some(builtin.name.as_str())
         && agent.driver == builtin.driver
         && agent.args == builtin.args
+        && agent.additional_args.is_empty()
         && agent.env.is_empty()
     {
         match std::fs::remove_file(&file) {
@@ -502,6 +540,7 @@ pub(crate) fn save_custom(
         driver: Driver::Acp,
         command: input.command.clone(),
         args: input.args.clone(),
+        additional_args: Vec::new(),
         env: input.env.clone(),
         registry: None,
     }
@@ -572,6 +611,7 @@ pub(crate) fn import_acp(
                 driver: Driver::Acp,
                 command: server.command,
                 args: server.args,
+                additional_args: Vec::new(),
                 env: server.env,
                 registry: None,
             }
@@ -615,6 +655,9 @@ pub(crate) struct CustomAgent {
     pub command: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
+    /// Kept separate from `args` so Settings reset does not erase a hand-written launch line.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_args: Vec<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
     /// Set when the agent was installed from the ACP Registry.
@@ -746,6 +789,7 @@ pub(crate) fn load(custom_dir: Option<&Path>, secrets: Option<&dyn EnvSecrets>) 
             driver: agent.driver,
             command: agent.command,
             args: agent.args,
+            additional_args_len: 0,
             env,
             login_hint: "Sign in with the agent's own command line first.".into(),
             source,
@@ -763,6 +807,10 @@ pub(crate) fn load(custom_dir: Option<&Path>, secrets: Option<&dyn EnvSecrets>) 
                     spec.args = crate::native::copilot::headless_args(&spec.args);
                 }
                 if spec.source == AgentSource::Custom {
+                    if allows_additional_args(existing, spec.driver) {
+                        spec.additional_args_len = agent.additional_args.len();
+                        spec.args.extend(agent.additional_args);
+                    }
                     spec.source = AgentSource::Builtin;
                 }
                 *existing = spec;
@@ -1044,6 +1092,53 @@ mod tests {
     }
 
     #[test]
+    fn additional_args_append_and_reset_without_replacing_agent_file_overrides() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let omp = || load(Some(root), None).into_iter().find(|spec| spec.id == "omp").unwrap();
+        assert_eq!(describe(&omp()).additional_args, Some(vec![]));
+        set_builtin_additional_args(root, None, "omp", vec!["--extra".into()]).unwrap();
+        assert_eq!(omp().args, ["acp", "--extra"]);
+        set_builtin_additional_args(root, None, "omp", vec![]).unwrap();
+        assert!(!root.join("omp.toml").exists());
+
+        let file = root.join("omp.toml");
+        std::fs::write(
+            &file,
+            "name = \"My OMP\"\ncommand = \"/opt/my tools/omp\"\nargs = [\"acp\", \"--manual\"]\n[env]\nKEEP = \"value\"\n",
+        )
+        .unwrap();
+        let original = omp();
+        let extra = vec!["--label".into(), "two words".into(), String::new()];
+        set_builtin_additional_args(root, None, "omp", extra.clone()).unwrap();
+        let configured = omp();
+        assert_eq!(configured.args, ["acp", "--manual", "--label", "two words", ""]);
+        assert_eq!(describe(&configured).additional_args, Some(extra));
+        set_builtin_additional_args(root, None, "omp", vec![]).unwrap();
+        assert_eq!(omp(), original);
+    }
+
+    #[test]
+    fn additional_args_cannot_modify_managed_or_non_acp_launches() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("gemini.toml"),
+            "command = \"gemini\"\nargs = [\"--experimental-acp\"]\n[registry]\nid = \"gemini\"\nversion = \"1\"\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("mine.toml"), "command = \"mine\"\n").unwrap();
+        std::fs::write(root.join("omp.toml"), "command = \"omp\"\ndriver = \"codex\"\n").unwrap();
+        let before = load(Some(root), None);
+        for id in ["gemini", "mine", "omp", "codex", "claude-acp"] {
+            let spec = before.iter().find(|spec| spec.id == id).unwrap();
+            assert!(describe(spec).additional_args.is_none());
+            assert!(set_builtin_additional_args(root, None, id, vec!["--extra".into()]).is_err());
+        }
+        assert_eq!(load(Some(root), None), before);
+    }
+
+    #[test]
     fn registry_copilot_allows_only_the_github_account_override() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("copilot.toml");
@@ -1052,6 +1147,7 @@ mod tests {
             driver: Driver::Acp,
             command: "/tools/copilot".into(),
             args: vec!["--acp".into()],
+            additional_args: Vec::new(),
             env: BTreeMap::from([("REGISTRY_SETTING".into(), "kept".into())]),
             registry: Some(RegistryRef { id: "copilot".into(), version: "1.0.0".into() }),
         }
@@ -1108,6 +1204,7 @@ mod tests {
             driver: Driver::Acp,
             command: "amp".into(),
             args: vec![],
+            additional_args: Vec::new(),
             env: BTreeMap::new(),
             registry: Some(RegistryRef { id: "amp-acp".into(), version: "1.0.0".into() }),
         }
@@ -1133,6 +1230,7 @@ mod tests {
                 driver: Driver::Claude,
                 command: "/old/claude".into(),
                 args: vec![],
+                additional_args: Vec::new(),
                 env: BTreeMap::new(),
                 registry: None,
             };
@@ -1186,6 +1284,7 @@ mod tests {
             driver: Driver::Acp,
             command: "/data/agents/tools/amp-acp/0.10.0/amp-acp".into(),
             args: vec!["acp".into()],
+            additional_args: Vec::new(),
             env: BTreeMap::from([("K".to_owned(), "v".to_owned())]),
             registry: Some(RegistryRef { id: "amp-acp".into(), version: "0.10.0".into() }),
         };

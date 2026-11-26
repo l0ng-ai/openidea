@@ -15,6 +15,7 @@ mod formatter;
 mod java_runtime;
 mod kotlin_bridge;
 pub mod mcp;
+pub mod menu;
 pub mod notebook;
 pub mod ops;
 mod phpstan;
@@ -26,6 +27,9 @@ mod requests;
 pub mod rpc;
 pub mod shell_env;
 pub mod trust;
+mod ts_code_style;
+mod tsc_watch;
+pub mod web_server;
 
 pub use project::{Project, history_retention};
 
@@ -423,6 +427,9 @@ impl Host {
         if let Some(phpstan) = &project.phpstan {
             phpstan.stop();
         }
+        if let Some(watch) = &project.tsc_watch {
+            watch.stop();
+        }
         project.documents.clear_workspace_edit_history();
         project.agents.detach_sinks();
         project.flutter.stop();
@@ -652,6 +659,9 @@ impl Host {
             if let Some(phpstan) = &project.phpstan {
                 phpstan.stop();
             }
+            if let Some(watch) = &project.tsc_watch {
+                watch.stop();
+            }
             project.documents.clear_workspace_edit_history();
             project.notebooks.stop_admission();
             project.agents.shutdown();
@@ -689,6 +699,12 @@ impl Host {
 
     pub fn begin_request(&self, id: RequestId) -> CancellationToken {
         self.requests.begin(id)
+    }
+
+    /// Settings › Tools › Download Mirrors › Use only the configured package registries: nothing
+    /// is fetched from public package registries the user's tools weren't pointed at.
+    pub fn configured_registries_only(&self) -> bool {
+        self.global_settings.effective().tool_downloads.configured_registries_only
     }
 
     pub fn begin_project_request(&self, window: &str, id: RequestId) -> CancellationToken {

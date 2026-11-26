@@ -94,12 +94,12 @@ pub(super) fn build_javac_step(
     Ok(step)
 }
 
-/// The resolved dependency classpath for one module and scope, tied to the same
-/// inputs as its launch build so POM, JDK, settings and profile changes invalidate it.
+/// The last resolved dependency classpath for one module and scope. A fingerprint
+/// permits reuse during a build; NoBuild also uses records without one.
 #[derive(Debug, Deserialize, Serialize)]
 struct CachedClasspath {
     version: u32,
-    fingerprint: LaunchFingerprint,
+    fingerprint: Option<LaunchFingerprint>,
     classpath: String,
 }
 
@@ -162,9 +162,6 @@ fn module_target(root: &Path, model: &BuildModel, module: &Path, test: bool) -> 
         .iter()
         .find(|p| root.join(&p.dir) == module)
         .ok_or_else(|| IdeError::not_found("no linked Maven project found for module"))?;
-    if project.packaging == "pom" {
-        return Err(IdeError::not_found("the launch module is a Maven aggregator without sources"));
-    }
     let top = maven_reactor(m, &project.dir)
         .ok_or_else(|| IdeError::not_found("no linked Maven reactor found for module"))?;
     let top_dir = subdir(root, &top.dir);
@@ -217,6 +214,30 @@ pub fn module_classpath(
     module_classpaths(root, model, &[module.to_path_buf()], test, local_repo, cache, cancel)
 }
 
+/// Uses the last launch classpath, or probes dependencies without invoking the compile lifecycle.
+pub fn module_classpath_without_build(
+    root: &Path,
+    model: &BuildModel,
+    module: &Path,
+    test: bool,
+    cache: &Path,
+    cancel: &CancellationToken,
+) -> IdeResult<String> {
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
+    let target = module_target(root, model, module, test)?;
+    if let Some(path) = classpath_cache_path(root, cache, module, test)
+        && let Ok(bytes) = fs::read(path)
+        && let Ok(cached) = serde_json::from_slice::<CachedClasspath>(&bytes)
+        && cached.version == CLASSPATH_CACHE_VERSION
+        && classpath_entries_exist(root, &cached.classpath)
+    {
+        return Ok(cached.classpath);
+    }
+    classpath(root, model, &target, if test { "test" } else { "runtime" }, false, cancel)
+}
+
 /// [`module_classpath`] of `modules[0]`. The other modules, launched together with it
 /// (#3971), share its Maven probe when they have no cached classpath, which leaves
 /// theirs cached for their own launches.
@@ -245,7 +266,7 @@ pub fn module_classpaths(
             && let Ok(bytes) = fs::read(path)
             && let Ok(cached) = serde_json::from_slice::<CachedClasspath>(&bytes)
             && cached.version == CLASSPATH_CACHE_VERSION
-            && cached.fingerprint == *fingerprint
+            && cached.fingerprint.as_ref() == Some(fingerprint)
             && classpath_entries_exist(root, &cached.classpath)
         {
             if i == 0 {
@@ -269,7 +290,7 @@ pub fn module_classpaths(
         return Err(IdeError::cancelled());
     }
     for (Probe(_, fingerprint, cache_path), classpath) in probes.into_iter().zip(&classpaths) {
-        if let (Some(fingerprint), Some(path)) = (fingerprint, cache_path) {
+        if let Some(path) = cache_path {
             let cached =
                 CachedClasspath { version: CLASSPATH_CACHE_VERSION, fingerprint, classpath: classpath.clone() };
             if let Err(error) = cache_classpath(&path, &cached) {
@@ -673,6 +694,81 @@ mod tests {
         assert!(single_file_target(root, &model, &root.join("app/src/main/java/demo/Missing.java")).is_err());
         write(root, "other/Main.java", "class Main {}");
         assert!(single_file_target(root, &model, &root.join("other/Main.java")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pom_launch_resolves_dependencies_without_compiling_for_no_build() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        fixture(&root);
+        let pom = fs::read_to_string(root.join("app/pom.xml")).unwrap();
+        write(
+            &root,
+            "app/pom.xml",
+            &pom.replace("<artifactId>app</artifactId>", "<artifactId>app</artifactId><packaging>pom</packaging>"),
+        );
+        let script = root.join("mvnw");
+        write(
+            &root,
+            "mvnw",
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > args.txt\nmkdir -p app/target\nprintf '/repo/runtime.jar' > app/target/ide-compile-cp.txt\n",
+        );
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let model = crate::load(&root, &root.join("cache"), None);
+        let cancel = CancellationToken::new();
+        let cp = module_classpath_without_build(&root, &model, &root.join("app"), false, &root.join("cache"), &cancel)
+            .unwrap();
+        let paths: Vec<_> = std::env::split_paths(&cp).collect();
+        assert!(paths.contains(&root.join("lib/target/classes")), "{cp}");
+        assert!(paths.contains(&root.join("shared/target/classes")), "{cp}");
+        assert!(paths.contains(&PathBuf::from("/repo/runtime.jar")), "{cp}");
+        assert!(!paths.contains(&root.join("app/target/classes")), "{cp}");
+        let args = fs::read_to_string(root.join("args.txt")).unwrap();
+        assert!(!args.lines().any(|a| matches!(a, "compile" | "package" | "test-compile")), "{args}");
+        assert!(args.lines().any(|a| a == "-Dmdep.includeScope=runtime"), "{args}");
+
+        module_classpath(&root, &model, &root.join("app"), false, None, &root.join("cache"), &cancel).unwrap();
+        let args = fs::read_to_string(root.join("args.txt")).unwrap();
+        assert!(args.lines().any(|a| a == "compile"), "{args}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn no_build_keeps_the_last_launch_classpath_after_a_pom_change() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        fixture(&root);
+        let pom = fs::read_to_string(root.join("app/pom.xml")).unwrap();
+        write(
+            &root,
+            "app/pom.xml",
+            &pom.replace("<artifactId>app</artifactId>", "<artifactId>app</artifactId><packaging>pom</packaging>"),
+        );
+        write(
+            &root,
+            "mvnw",
+            "#!/bin/sh\necho called >> calls.txt\nprintf '%s\\n' \"$@\" > args.txt\nmkdir -p app/target repo\ntouch repo/runtime.jar repo/runtime-v2.jar\nif grep -q changed app/pom.xml; then printf \"$PWD/repo/runtime-v2.jar\" > app/target/ide-compile-cp.txt; else printf \"$PWD/repo/runtime.jar\" > app/target/ide-compile-cp.txt; fi\n",
+        );
+        fs::set_permissions(root.join("mvnw"), fs::Permissions::from_mode(0o755)).unwrap();
+        let model = crate::load(&root, &root.join("cache"), None);
+        let cancel = CancellationToken::new();
+        let previous =
+            module_classpath(&root, &model, &root.join("app"), false, None, &root.join("cache"), &cancel).unwrap();
+        assert!(previous.contains("repo/runtime.jar"), "{previous}");
+
+        let pom = fs::read_to_string(root.join("app/pom.xml")).unwrap();
+        write(&root, "app/pom.xml", &pom.replace("</project>", "<description>changed</description></project>"));
+        let launch =
+            module_classpath_without_build(&root, &model, &root.join("app"), false, &root.join("cache"), &cancel)
+                .unwrap();
+        assert!(launch.contains("repo/runtime.jar"), "{launch}");
+        assert!(!launch.contains("runtime-v2.jar"), "{launch}");
+        assert_eq!(fs::read_to_string(root.join("calls.txt")).unwrap().lines().count(), 1);
     }
 
     #[test]

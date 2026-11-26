@@ -7,6 +7,7 @@ import { foldEffect, syntaxTree, toggleFold } from "@codemirror/language";
 import { acceptCompletion, completionStatus } from "@codemirror/autocomplete";
 import { executeAction, registerActions, type Action } from "@/platform/actions";
 import { getContext } from "@/platform/context";
+import { focusedCellEditor } from "@/editor/api";
 import { focusedSoftWrapSurface } from "@/workbench/softWrap";
 import { resetSurfaceFontZoom, stepFocusedSurfaceFontZoom, stepSurfaceFontZoomIn } from "@/workbench/contributions";
 import { editorController, useGotoLine, useTabs } from "./controller";
@@ -19,6 +20,7 @@ import {
   deleteLine,
   duplicateEntireLines,
   duplicateLineOrSelection,
+  inDifferentHumpsMode,
   joinLines,
   moveStatementDown,
   moveStatementUp,
@@ -68,7 +70,8 @@ import { customRegions } from "./cm/regions";
 import { toggleRenderedViewAtCaret } from "./cm/renderedDocs";
 import { enclosingHeaders } from "./cm/stickyScroll";
 import { moveElementLeft, moveElementRight } from "./cm/moveElement";
-import { caretAnchor, openPopup, updatePopup, useLspPopup, type LspPopup } from "@/editor/lsp/popupStore";
+import { caretAnchor, openPopup, updatePopup, useLspPopup } from "@/editor/lsp/popupStore";
+import { copyPathPopup } from "./copyPathChooser";
 import {
   cursorCodeBlockEnd,
   cursorCodeBlockStart,
@@ -109,7 +112,7 @@ import {
 import { useProject } from "@/platform/project";
 import { call, commands } from "@/platform/ipc";
 import { editorPrefs } from "@/platform/editorSettings";
-import { menuGroupItems, notifications } from "@/workbench/contributions";
+import { notifications } from "@/workbench/contributions";
 import { togglePinSelectedContent } from "@/workbench/toolwindows/content";
 import { useToolWindowLayout } from "@/workbench/toolwindows/store";
 import { toggleReadOnly } from "./fileAttributes";
@@ -165,8 +168,15 @@ function withTextView(run: (view: EditorView) => unknown, editable: boolean) {
   };
 }
 
-function withView(run: (view: EditorView, slot: EditorSlot) => unknown) {
+function withView(run: (view: EditorView, slot: EditorSlot | null) => unknown) {
   return () => {
+    // While a notebook cell editor has focus it is the editor the action runs in
+    // (the notebook publishes the editor context keys for it), never the last text tab.
+    const cell = focusedCellEditor();
+    if (cell) {
+      run(cell, null);
+      return;
+    }
     const slot = activeSlot();
     if (!slot?.view) return;
     run(slot.view, slot);
@@ -636,24 +646,10 @@ function pathWithLines(state: EditorState, path: string, kind: "relative" | "abs
   return `${pathToCopy(kind, path)}:${first}${last > first ? `-${last}` : ""}`;
 }
 
-function copyPathReferencePopup(view: EditorView, slot: EditorSlot) {
+function copyPathReferencePopup(view: EditorView, slot: EditorSlot | null) {
+  // The popup's items resolve against the open document; a notebook cell has none.
+  if (!slot) return;
   const path = slot.model.path;
-  const contributed = menuGroupItems("copyPath", {
-    paths: [path],
-    ...selectedLineContext(view.state),
-  }).flatMap((item) =>
-    (item.kind ?? "item") === "item" && "run" in item && item.id && item.run && item.preview
-      ? [
-          {
-            id: item.id,
-            label: item.verbatim ? item.label : tx(item.label),
-            preview: item.preview,
-            shortcut: shortcutLabel(item.id),
-            run: item.run,
-          },
-        ]
-      : [],
-  );
   const flavours = [
     { id: "project.copyAbsolutePath", label: "Absolute Path", value: pathToCopy("absolute", path) },
     {
@@ -670,26 +666,20 @@ function copyPathReferencePopup(view: EditorView, slot: EditorSlot) {
       value: pathWithLines(view.state, path),
     },
   ];
-  const popup: Extract<LspPopup, { kind: "list" }> = {
-    kind: "list",
-    title: tx("Copy Path/Reference…"),
-    layout: "copyPath",
-    anchor: caretAnchor(view, view.state.selection.main.head),
-    items: [
-      ...flavours
-        .filter((f) => f.value !== null)
-        .map((f) => ({
-          id: f.id,
-          label: tx(f.label),
-          preview: f.value!,
-          shortcut: shortcutLabel(f.id),
-          run: () => {
-            const lineNumbered =
-              f.id === "editor.copyPathWithLineNumber" || f.id === "editor.copyAbsolutePathWithLineNumber";
-            void executeAction(f.id, lineNumbered ? f.value : path);
-          },
-        })),
-      ...contributed,
+  const popup = copyPathPopup(
+    caretAnchor(view, view.state.selection.main.head),
+    flavours.map((f) => ({
+      id: f.id,
+      label: f.label,
+      preview: f.value,
+      run: () => {
+        const lineNumbered =
+          f.id === "editor.copyPathWithLineNumber" || f.id === "editor.copyAbsolutePathWithLineNumber";
+        void executeAction(f.id, lineNumbered ? f.value : path);
+      },
+    })),
+    { paths: [path], ...selectedLineContext(view.state) },
+    [
       {
         id: "editor.copyReference",
         label: tx("Reference"),
@@ -699,7 +689,7 @@ function copyPathReferencePopup(view: EditorView, slot: EditorSlot) {
         run: () => {},
       },
     ],
-  };
+  );
   openPopup(popup);
   void resolveReference(view, slot)
     .then((reference) => {
@@ -792,7 +782,7 @@ export function registerEditorActions(): () => void {
   const text = (
     id: string,
     title: string,
-    run: (view: EditorView, slot: EditorSlot) => unknown,
+    run: (view: EditorView, slot: EditorSlot | null) => unknown,
     extra: Partial<Action> = {},
   ): Action => ({
     id,
@@ -920,6 +910,18 @@ export function registerEditorActions(): () => void {
       category: "Editor Actions",
       keyWhen: "editorTextFocus || diffEditorFocus",
     }),
+    edit(
+      "code.deleteToWordStartInDifferentHumpsMode",
+      'Delete to Word Start in Different "CamelHumps" Mode',
+      (v) => inDifferentHumpsMode("deleteToStart", editorPrefs().smartKeys.camelHumps)(v),
+      { category: "Editor Actions", keyWhen: "editorTextFocus || diffEditorFocus" },
+    ),
+    edit(
+      "code.deleteToWordEndInDifferentHumpsMode",
+      'Delete to Word End in Different "CamelHumps" Mode',
+      (v) => inDifferentHumpsMode("deleteToEnd", editorPrefs().smartKeys.camelHumps)(v),
+      { category: "Editor Actions", keyWhen: "editorTextFocus || diffEditorFocus" },
+    ),
     edit("code.moveLineUp", "Move Line Up", (v) => moveLineUp(v)),
     edit("code.moveLineDown", "Move Line Down", (v) => moveLineDown(v)),
     edit("code.moveElementLeft", "Move Element Left", (v) => moveElementLeft(v), {
@@ -928,24 +930,38 @@ export function registerEditorActions(): () => void {
     edit("code.moveElementRight", "Move Element Right", (v) => moveElementRight(v), {
       keywords: ["swap argument", "move parameter"],
     }),
-    text("code.moveStatementUp", "Move Statement Up", (v, slot) => moveStatement(v, slot, true)),
-    text("code.moveStatementDown", "Move Statement Down", (v, slot) => moveStatement(v, slot, false)),
-    text("code.extendSelection", "Extend Selection", (_v, slot) => void queueSelection(slot, extend), {
-      category: "Edit",
-    }),
-    text("code.shrinkSelection", "Shrink Selection", (_v, slot) => void queueSelection(slot, shrink), {
-      category: "Edit",
-    }),
+    text("code.moveStatementUp", "Move Statement Up", (v, slot) => slot && moveStatement(v, slot, true)),
+    text("code.moveStatementDown", "Move Statement Down", (v, slot) => slot && moveStatement(v, slot, false)),
+    text(
+      "code.extendSelection",
+      "Extend Selection",
+      (_v, slot) => {
+        if (slot) void queueSelection(slot, extend);
+      },
+      {
+        category: "Edit",
+      },
+    ),
+    text(
+      "code.shrinkSelection",
+      "Shrink Selection",
+      (_v, slot) => {
+        if (slot) void queueSelection(slot, shrink);
+      },
+      {
+        category: "Edit",
+      },
+    ),
     text("code.fold", "Collapse", (v) => foldAtCaret(v), { category: "Folding", keywords: ["fold"] }),
     text("code.unfold", "Expand", (v) => unfoldAtCaret(v), { category: "Folding", keywords: ["unfold"] }),
     text("code.foldToggle", "Toggle Fold", (v) => toggleFold(v), { category: "Folding" }),
-    text("code.cyclicExpandWord", "Cyclic Expand Word", (v, slot) => expandWord(v, slot, "backward"), {
+    text("code.cyclicExpandWord", "Cyclic Expand Word", (v, slot) => slot && expandWord(v, slot, "backward"), {
       keywords: ["hippie", "complete word", "dabbrev"],
     }),
     text(
       "code.cyclicExpandWordBackward",
       "Cyclic Expand Word (Backward)",
-      (v, slot) => expandWord(v, slot, "forward"),
+      (v, slot) => slot && expandWord(v, slot, "forward"),
       {
         keywords: ["hippie", "complete word", "dabbrev"],
       },
@@ -956,7 +972,7 @@ export function registerEditorActions(): () => void {
       when: TEXT_WHEN,
       run: ({ arg }) => {
         if (typeof arg === "string") copyReference(Promise.resolve(arg));
-        else withView((v, slot) => copyReference(resolveReference(v, slot)))();
+        else withView((v, slot) => slot && copyReference(resolveReference(v, slot)))();
       },
       category: "Edit",
       keywords: ["fully qualified name", "fqn", "copy path"],
@@ -983,8 +999,13 @@ export function registerEditorActions(): () => void {
       icon: "soft-wrap",
       keywords: ["word wrap", "line wrap"],
       when: "textEditorActive || softWrapSurfaceFocus",
-      toggled: () => focusedSoftWrapSurface()?.enabled() ?? activeSlot()?.model.softWrapOn() ?? false,
+      // Cell editors wrap always; without the cell the setting is the active text tab's.
+      toggled: () =>
+        focusedSoftWrapSurface()?.enabled() ??
+        (focusedCellEditor() ? true : (activeSlot()?.model.softWrapOn() ?? false)),
       run: () => {
+        // Don't flip the last text tab's setting while a notebook cell has focus.
+        if (focusedCellEditor()) return;
         const surface = focusedSoftWrapSurface();
         if (surface) surface.toggle();
         else activeSlot()?.model.toggleSoftWrap();
@@ -996,8 +1017,12 @@ export function registerEditorActions(): () => void {
       category: "View",
       keywords: ["render documentation comments", "javadoc", "rendered doc", "comments"],
       when: "textEditorActive",
-      toggled: () => activeSlot()?.model.renderedDocsOn() ?? false,
-      run: () => activeSlot()?.model.toggleRenderedDocs(),
+      toggled: () => (focusedCellEditor() ? false : (activeSlot()?.model.renderedDocsOn() ?? false)),
+      run: () => {
+        // Notebook cells have no doc-comment rendering: leave it, don't toggle the last text tab's.
+        if (focusedCellEditor()) return;
+        activeSlot()?.model.toggleRenderedDocs();
+      },
     },
     text("editor.toggleRenderedView", "Toggle Rendered View", (v) => toggleRenderedViewAtCaret(v), {
       category: "View",
@@ -1005,11 +1030,11 @@ export function registerEditorActions(): () => void {
     }),
     text("code.foldAll", "Collapse All", (v) => collapseAll(v), { category: "Folding", icon: "collapse-all" }),
     text("code.unfoldAll", "Expand All", (v) => expandAll(v), { category: "Folding", icon: "expand-all" }),
-    text("code.expandDocComments", "Expand Doc Comments", (v, slot) => foldDocComments(v, slot, false), {
+    text("code.expandDocComments", "Expand Doc Comments", (v, slot) => slot && foldDocComments(v, slot, false), {
       category: "Folding",
       keywords: ["unfold", "documentation comments", "javadoc"],
     }),
-    text("code.collapseDocComments", "Collapse Doc Comments", (v, slot) => foldDocComments(v, slot, true), {
+    text("code.collapseDocComments", "Collapse Doc Comments", (v, slot) => slot && foldDocComments(v, slot, true), {
       category: "Folding",
       keywords: ["fold", "documentation comments", "javadoc"],
     }),
@@ -1023,7 +1048,11 @@ export function registerEditorActions(): () => void {
     }),
     occurrence("code.addCaretNextOccurrence", "Add Selection for Next Occurrence", addNextOccurrence),
     occurrence("code.selectAllOccurrences", "Select All Occurrences", selectAllOccurrences),
-    text("code.completeStatement", "Complete Current Statement", (v, slot) => completeCurrentStatement(v, slot)),
+    text(
+      "code.completeStatement",
+      "Complete Current Statement",
+      (v, slot) => slot && completeCurrentStatement(v, slot),
+    ),
     edit("code.startNewLine", "Start New Line", (v) => startNewLine(v)),
     edit("code.startNewLineBefore", "Start New Line Before Current", (v) => startNewLineBefore(v)),
     edit("code.splitLine", "Split Line", (v) => splitLine(v)),
@@ -1083,6 +1112,30 @@ export function registerEditorActions(): () => void {
       (v) => selectParagraphBackward(v),
       { category: "Editor Actions" },
     ),
+    caret(
+      "editor.nextWordInDifferentHumpsMode",
+      'Move Caret to Next Word in Different "CamelHumps" Mode',
+      (v) => inDifferentHumpsMode("right", editorPrefs().smartKeys.camelHumps)(v),
+      { category: "Editor Actions" },
+    ),
+    caret(
+      "editor.previousWordInDifferentHumpsMode",
+      'Move Caret to Previous Word in Different "CamelHumps" Mode',
+      (v) => inDifferentHumpsMode("left", editorPrefs().smartKeys.camelHumps)(v),
+      { category: "Editor Actions" },
+    ),
+    caret(
+      "editor.nextWordInDifferentHumpsModeWithSelection",
+      'Move Caret to Next Word in Different "CamelHumps" Mode with Selection',
+      (v) => inDifferentHumpsMode("selectRight", editorPrefs().smartKeys.camelHumps)(v),
+      { category: "Editor Actions" },
+    ),
+    caret(
+      "editor.previousWordInDifferentHumpsModeWithSelection",
+      'Move Caret to Previous Word in Different "CamelHumps" Mode with Selection',
+      (v) => inDifferentHumpsMode("selectLeft", editorPrefs().smartKeys.camelHumps)(v),
+      { category: "Editor Actions" },
+    ),
     text("editor.contextInfo", "Context Info", (v) => showContextInfo(v), {
       category: "View",
       keywords: ["enclosing method", "enclosing class", "where am I"],
@@ -1135,7 +1188,7 @@ export function registerEditorActions(): () => void {
       category: "Editor Actions",
       keywords: ["overwrite mode", "overtype"],
       toggled: () => {
-        const view = activeSlot()?.view;
+        const view = focusedCellEditor() ?? activeSlot()?.view;
         return view ? isOverwrite(view.state) : false;
       },
     }),
@@ -1162,7 +1215,7 @@ export function registerEditorActions(): () => void {
     text(
       "code.fillParagraph",
       "Fill Paragraph",
-      (v, slot) => fillParagraph(v, hardWrapAt(slot.model.settings(), slot.model.info)),
+      (v, slot) => slot && fillParagraph(v, hardWrapAt(slot.model.settings(), slot.model.info)),
       {
         category: "Edit",
         keywords: ["wrap", "reflow", "rewrap comment"],
@@ -1176,9 +1229,16 @@ export function registerEditorActions(): () => void {
       category: "Edit",
       keywords: ["spaces", "indentation"],
     }),
-    text("code.unwrap", "Unwrap/Remove…", (_v, slot) => void unwrapAtCaret(slot), {
-      keywords: ["unwrap", "remove if"],
-    }),
+    text(
+      "code.unwrap",
+      "Unwrap/Remove…",
+      (_v, slot) => {
+        if (slot) void unwrapAtCaret(slot);
+      },
+      {
+        keywords: ["unwrap", "remove if"],
+      },
+    ),
     text("code.foldSelection", "Fold Selection / Remove Region", (v) => foldSelection(v), { category: "Folding" }),
     {
       id: "editor.toggleColumnSelection",
@@ -1187,7 +1247,7 @@ export function registerEditorActions(): () => void {
       keywords: ["block selection", "rectangular selection"],
       when: "textEditorActive",
       toggled: () => {
-        const view = activeSlot()?.view;
+        const view = focusedCellEditor() ?? activeSlot()?.view;
         return view ? isColumnMode(view.state) : false;
       },
       run: withView((v) => toggleColumnMode(v)),
@@ -1265,7 +1325,8 @@ export function registerEditorActions(): () => void {
       when: "textEditorActive",
       run: () => {
         const slot = activeSlot();
-        if (slot) toggleReadOnly(slot.model);
+        // A notebook has no document model to toggle: leave it rather than the last text tab's file.
+        if (slot && !focusedCellEditor()) toggleReadOnly(slot.model);
       },
     },
     {
@@ -1564,7 +1625,7 @@ export function registerEditorActions(): () => void {
       when: TEXT_WHEN,
       run: ({ arg }) => {
         if (typeof arg === "string") copyEditorPath(arg);
-        else withView((view, slot) => copyEditorPath(pathWithLines(view.state, slot.model.path)))();
+        else withView((view, slot) => slot && copyEditorPath(pathWithLines(view.state, slot.model.path)))();
       },
     },
     {
@@ -1574,7 +1635,7 @@ export function registerEditorActions(): () => void {
       when: TEXT_WHEN,
       run: ({ arg }) => {
         if (typeof arg === "string") copyEditorPath(arg);
-        else withView((view, slot) => copyEditorPath(pathWithLines(view.state, slot.model.path, "absolute")))();
+        else withView((view, slot) => slot && copyEditorPath(pathWithLines(view.state, slot.model.path, "absolute")))();
       },
     },
     {

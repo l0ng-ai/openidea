@@ -336,6 +336,8 @@ macro_rules! register_plugin {
 #[macro_export]
 macro_rules! __optional_exports {
     (run_target_validation, $plugin:ty, $component:ident) => { $crate::__run_target_validation_exports!($plugin, $component); };
+    (run_anything, $plugin:ty, $component:ident) => { $crate::__run_anything_exports!($plugin, $component); };
+    (run_configuration_completion, $plugin:ty, $component:ident) => { $crate::__run_configuration_completion_exports!($plugin, $component); };
     (injections, $plugin:ty, $component:ident) => { $crate::__injections_exports!($plugin, $component); };
     (language_features, $plugin:ty, $component:ident) => { $crate::__language_features_exports!($plugin, $component); };
     (mcp, $plugin:ty, $component:ident) => { $crate::__mcp_exports!($plugin, $component); };
@@ -1249,6 +1251,43 @@ pub mod __rt {
         with::<T, _>(|p| p.call(tool, arguments, &ctx)).map_err(error_out)
     }
 
+    pub fn run_anything_suggest<T: Plugin + crate::RunAnything + Default>(
+        project: &str,
+        prefix: &str,
+        text: &str,
+    ) -> Vec<crate::run_anything_bindings::exports::openidea::plugin::run_anything_provider::RunAnythingItem> {
+        use crate::run_anything_bindings::exports::openidea::plugin::run_anything_provider::RunAnythingItem as I;
+        with::<T, _>(|p| p.suggest(project, prefix, text))
+            .into_iter()
+            .map(|i| I { label: i.label, detail: i.detail, line: i.line })
+            .collect()
+    }
+
+    pub fn run_anything_run<T: Plugin + crate::RunAnything + Default>(project: &str, prefix: &str, line: &str) -> bool {
+        with::<T, _>(|p| p.run(project, prefix, line))
+    }
+
+    pub fn run_configuration_complete<T: Plugin + crate::RunConfigurationCompletion + Default>(
+        project: &str,
+        config: &str,
+        field: &str,
+        text: &str,
+        caret: u32,
+    ) -> Vec<crate::run_configuration_completion_bindings::exports::openidea::plugin::run_configuration_completion::CompletionItem>
+{
+        use crate::run_configuration_completion_bindings::exports::openidea::plugin::run_configuration_completion::CompletionItem as I;
+        with::<T, _>(|p| p.complete(project, config, field, text, caret))
+            .into_iter()
+            .map(|i| I {
+                label: i.label,
+                detail: i.detail,
+                insert: i.insert,
+                replace_start: i.replace_start,
+                replace_end: i.replace_end,
+            })
+            .collect()
+    }
+
     pub fn validate_run_target<T: Plugin + crate::RunTargetValidation + Default>(
         root: &str,
         target: &str,
@@ -1311,7 +1350,7 @@ pub mod __rt {
     pub fn execution_configurations<T: Plugin + crate::ExecutionConfigurations + Default>(
         root: &str,
     ) -> Vec<crate::execution_configurations_bindings::exports::openidea::plugin::execution_configurations::ExecutionConfiguration>
-    {
+{
         use crate::bindings::openidea::plugin::run::OutputMode as WitMode;
         use crate::execution_configurations_bindings::exports::openidea::plugin::execution_configurations as w;
         use crate::execution_configurations_bindings::openidea::plugin::launch_configurations as w_launch;
@@ -1729,6 +1768,49 @@ macro_rules! __mcp_exports {
             }
         }
         $crate::mcp_bindings::__export_mcp_world!($component with_types_in $crate::mcp_bindings);
+    };
+}
+
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub mod run_anything_bindings {
+    wit_bindgen::generate!({ world: "run-anything-exports", path: "wit", pub_export_macro: true,
+        export_macro_name: "__export_run_anything_world",
+        default_bindings_module: "openidea_plugin::run_anything_bindings" });
+}
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub mod run_configuration_completion_bindings {
+    wit_bindgen::generate!({ world: "run-configuration-completion-exports", path: "wit", pub_export_macro: true,
+        export_macro_name: "__export_run_configuration_completion_world",
+        default_bindings_module: "openidea_plugin::run_configuration_completion_bindings" });
+}
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __run_configuration_completion_exports {
+    ($plugin:ty, $component:ident) => {
+        impl $crate::run_configuration_completion_bindings::exports::openidea::plugin::run_configuration_completion::Guest for $component {
+            fn complete(project: String, config: String, field: String, text: String, caret: u32) -> Vec<$crate::run_configuration_completion_bindings::exports::openidea::plugin::run_configuration_completion::CompletionItem> {
+                $crate::__rt::run_configuration_complete::<$plugin>(&project, &config, &field, &text, caret)
+            }
+        }
+        $crate::run_configuration_completion_bindings::__export_run_configuration_completion_world!($component with_types_in $crate::run_configuration_completion_bindings);
+    };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __run_anything_exports {
+    ($plugin:ty, $component:ident) => {
+        impl $crate::run_anything_bindings::exports::openidea::plugin::run_anything_provider::Guest for $component {
+            fn suggest(project: String, prefix: String, text: String) -> Vec<$crate::run_anything_bindings::exports::openidea::plugin::run_anything_provider::RunAnythingItem> {
+                $crate::__rt::run_anything_suggest::<$plugin>(&project, &prefix, &text)
+            }
+            fn run(project: String, prefix: String, line: String) -> bool {
+                $crate::__rt::run_anything_run::<$plugin>(&project, &prefix, &line)
+            }
+        }
+        $crate::run_anything_bindings::__export_run_anything_world!($component with_types_in $crate::run_anything_bindings);
     };
 }
 

@@ -10,6 +10,7 @@
 import { executeAction, type Action } from "@/platform/actions";
 import { t, tx } from "@/platform/i18n";
 import { call, commands, isCancelled, isTauri } from "@/platform/ipc";
+import { isWebMode } from "@/platform/webBridge";
 import {
   basename,
   confirmLeaveProject,
@@ -127,14 +128,19 @@ export async function openFiles(files: readonly string[]): Promise<void> {
 
 const pathIsDir = (path: string) => call(commands.fsReadDir(path)).then(() => true);
 
+/** A file that names the project around it: dropping it opens that folder, as a double-click would. */
+const projectMarker = /\.uproject$/i;
+
 /** Opens dropped paths: files as loose files ({@link openFiles}), the first folder as a project. */
 export async function openPaths(
   paths: readonly string[],
   isDir: (path: string) => Promise<boolean> = pathIsDir,
 ): Promise<void> {
   const kinds = await Promise.all(paths.map((p) => isDir(p).catch(() => false)));
-  const files = paths.filter((_, i) => !kinds[i]);
-  const dir = paths.find((_, i) => kinds[i]);
+  // An Unreal project is dragged in as its `.uproject`, which names the folder to open.
+  const marker = paths.find((p, i) => !kinds[i] && projectMarker.test(p));
+  const files = paths.filter((p, i) => !kinds[i] && p !== marker);
+  const dir = paths.find((_, i) => kinds[i]) ?? (marker ? dirname(marker) : undefined);
   await openFiles(files);
   if (dir) await openProjectWithPolicy(dir);
 }
@@ -159,6 +165,13 @@ export async function openProjectInWindow(path: string, newWindow: boolean, file
   if (desktopOnly()) return;
   const s = useProject.getState();
   const inNew = newWindow || s.project !== null || s.lightEdit;
+  if (inNew && isWebMode()) {
+    const url = new URL(window.location.href);
+    url.searchParams.set("project", path);
+    url.searchParams.set("newWindow", "1");
+    const opened = window.open(url.toString(), "_blank", "noopener");
+    if (opened) return;
+  }
   try {
     const outcome = await openProjectWindow(path, inNew, files);
     if (outcome.kind === "current" && (await openHere(path))) await openInEditor(files);

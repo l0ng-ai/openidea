@@ -108,7 +108,7 @@ jupyter-zmq-client = { version = "=2.0.0", default-features = false, features = 
 jupyter-protocol = "=2.0.3"
 zeromq = { version = "0.6", default-features = false, features = ["tokio-runtime", "tcp-transport"] }
 lsp-types = "0.97"
-gix = { version = "0.89", default-features = false }
+gix = { version = "0.90", default-features = false }
 portable-pty = "0.9"
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "http2", "charset", "socks", "gzip", "deflate", "brotli"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }

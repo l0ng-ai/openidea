@@ -41,6 +41,8 @@ fn components() -> Vec<PathBuf> {
         repo().join("crates/ide-plugin/tests/fixtures/execution-output/dist/plugin.wasm"),
         repo().join("crates/ide-plugin/tests/fixtures/decorations/dist/plugin.wasm"),
         repo().join("crates/ide-plugin/tests/fixtures/search/dist/plugin.wasm"),
+        repo().join("crates/ide-plugin/tests/fixtures/run-anything/dist/plugin.wasm"),
+        repo().join("crates/ide-plugin/tests/fixtures/watch-paths/dist/plugin.wasm"),
     ];
     let official = repo().join("plugins/official");
     let mut dirs: Vec<_> = std::fs::read_dir(&official).unwrap().map(|e| e.unwrap().path()).collect();

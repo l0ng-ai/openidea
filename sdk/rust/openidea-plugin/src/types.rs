@@ -382,6 +382,8 @@ pub enum EventKind {
     Scheduled,
     /// A project was closed (or its window closed): the project root path (`Event::ProjectClosed`).
     ProjectClosed,
+    /// Paths watched with [`crate::host::watch_paths`] changed (`Event::WatchedFilesChanged`, API 1.18).
+    WatchedFilesChanged,
 }
 
 impl EventKind {
@@ -406,6 +408,7 @@ impl EventKind {
             Self::VcsChanged => "vcs-changed",
             Self::ProblemsChanged => "problems-changed",
             Self::ProjectClosed => "project-closed",
+            Self::WatchedFilesChanged => "watched-files-changed",
             Self::Scheduled => "scheduled",
         }
     }
@@ -521,10 +524,7 @@ pub struct SubscriptionOptions {
 
 impl SubscriptionOptions {
     pub fn new(globs: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        Self {
-            globs: globs.into_iter().map(Into::into).collect(),
-            debounce_ms: None,
-        }
+        Self { globs: globs.into_iter().map(Into::into).collect(), debounce_ms: None }
     }
 
     pub fn with_debounce_ms(mut self, debounce_ms: u32) -> Self {
@@ -550,6 +550,9 @@ pub enum Event {
     Scheduled,
     /// A project was closed (or its window closed): the project root path.
     ProjectClosed(String),
+    /// Paths watched with [`crate::host::watch_paths`] changed (API 1.18): absolute
+    /// paths, and `project` is the project the watch belongs to.
+    WatchedFilesChanged(FilesChanged),
     /// A kind this SDK doesn't know: its name and JSON data.
     Other {
         kind: String,
@@ -826,6 +829,11 @@ impl Event {
             && let Ok(root) = serde_json::from_str(&data)
         {
             return Self::ProjectClosed(root);
+        }
+        if kind == "watched-files-changed"
+            && let Ok(batch) = serde_json::from_str(&data)
+        {
+            return Self::WatchedFilesChanged(batch);
         }
         Self::Other { kind, data }
     }

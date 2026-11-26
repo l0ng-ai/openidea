@@ -80,6 +80,7 @@ function plugin(partial: Partial<PluginInfo> & Pick<PluginInfo, "id">): PluginIn
     hasCode: true,
     capabilities: [],
     netHosts: [],
+    netSettings: [],
     contributions: [],
     activation: [],
     warnings: [],
@@ -1783,6 +1784,42 @@ describe("marketplace", () => {
       expect(screen.getByText("net:relay.example.org")).toBeInTheDocument();
     },
   );
+
+  it("lists the host of a net:setting grant with revoke and a pending one with approve", async () => {
+    const user = userEvent.setup();
+    const base = createMemoryPluginsBackend([
+      plugin({
+        id: "p",
+        name: "GitLab bridge",
+        netSettings: [
+          { setting: "server", http: false, host: "jira.corp.example", pending: null },
+          { setting: "server", http: true, host: null, pending: "intra.example" },
+        ],
+        capabilities: [
+          { id: "net:setting:server", risk: "medium", description: "Connect", optional: true, granted: true },
+          { id: "net.http:setting:server", risk: "medium", description: "Connect", optional: true, granted: true },
+        ],
+      }),
+    ]);
+    const approveNetSetting = vi.fn((id: string, setting: string, http: boolean, host: string) =>
+      base.approveNetSetting(id, setting, http, host),
+    );
+    const forgetNetSetting = vi.fn((id: string, setting: string, http: boolean) =>
+      base.forgetNetSetting(id, setting, http),
+    );
+    setPluginsBackend({ ...base, approveNetSetting, forgetNetSetting });
+    render(<PluginsPage initialTab="installed" />);
+
+    await screen.findAllByText("net:setting:server");
+    expect(screen.getByText(/The host set in the “server” setting, on any port\./)).toBeInTheDocument();
+    expect(screen.getByText(/The “server” setting now holds intra\.example\./)).toBeInTheDocument();
+    expect(screen.getByText(/Approving connects over unencrypted HTTP\./)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(approveNetSetting).toHaveBeenCalledWith("p", "server", true, "intra.example"));
+    // Both transports are approved now; the HTTPS row comes first.
+    await user.click((await screen.findAllByRole("button", { name: "Remove" }))[0]!);
+    await waitFor(() => expect(forgetNetSetting).toHaveBeenCalledWith("p", "server", false));
+  });
 
   it("shows the Java agent next to the java.agent permission", async () => {
     setPluginsBackend(

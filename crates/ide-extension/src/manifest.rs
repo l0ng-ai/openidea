@@ -169,6 +169,7 @@ pub const EVENT_KINDS: &[&str] = &[
     "vcs-changed",
     "problems-changed",
     "project-closed",
+    "watched-files-changed",
 ];
 
 impl std::fmt::Display for ActivationEvent {
@@ -368,6 +369,12 @@ impl Manifest {
             if matches!(cap, Capability::ClipboardRead) {
                 self.needs_api(&format!("capability `{cap}`"), 11)?;
             }
+            if matches!(cap, Capability::Agents) {
+                self.needs_api(&format!("capability `{cap}`"), 18)?;
+            }
+            if matches!(cap, Capability::NetSetting { .. }) {
+                self.needs_api(&format!("capability `{cap}`"), 18)?;
+            }
             if matches!(cap, Capability::JavaAgent) {
                 return Err(
                     "`java.agent` comes from `[[contributes.javaAgents]]`: remove it from [capabilities]".into()
@@ -404,8 +411,9 @@ impl Manifest {
             if matches!(event, ActivationEvent::Event(kind) if kind == "files-changed") {
                 self.needs_api("`on-event:files-changed`", 3)?;
             }
-            if matches!(event, ActivationEvent::Event(kind) if kind == "project-closed") {
-                self.needs_api("`on-event:project-closed`", 18)?;
+            if matches!(event, ActivationEvent::Event(kind) if kind == "project-closed" || kind == "watched-files-changed")
+            {
+                self.needs_api(&format!("`{event}`"), 18)?;
             }
             if !seen.insert(event) {
                 return Err(format!("duplicate activation event {event}"));
@@ -763,6 +771,20 @@ required = [\"lsp:phoxite\"]
     }
 
     #[test]
+    fn setting_derived_net_capabilities_need_the_current_api_minor() {
+        for cap in ["net:setting:server", "net.http:setting:server"] {
+            let caps = format!("[capabilities]\noptional = [\"{cap}\"]\n");
+            assert!(
+                err(&format!("{}{caps}", BASE.replace("^1.2", "^1.17"))).contains("new in plugin API 1.18"),
+                "{cap}"
+            );
+            let m = Manifest::parse(&format!("{}{caps}", BASE.replace("^1.2", "^1.18"))).unwrap();
+            assert_eq!(m.capabilities.optional.len(), 1, "{cap}");
+            assert_eq!(m.capabilities.optional[0].to_string(), cap);
+        }
+    }
+
+    #[test]
     fn java_agent_capability_is_not_declared() {
         for list in ["required", "optional"] {
             let caps = format!("[capabilities]\n{list} = [\"java.agent\"]\n");
@@ -968,16 +990,18 @@ mod net_ask_api_tests {
     }
 
     #[test]
-    fn project_closed_event_requires_api_1_18() {
-        for engine in ["^1.17", "^1.18"] {
-            let manifest = format!(
-                "id = 'test'\nname = 'Test'\nversion = '0.1.0'\nwasm = 'plugin.wasm'\nengines.openidea = '{engine}'\nactivation = [\"on-event:project-closed\"]\n"
-            );
-            let parsed = Manifest::parse(&manifest);
-            if engine == "^1.18" {
-                parsed.unwrap();
-            } else {
-                assert!(parsed.unwrap_err().contains("new in plugin API 1.18"), "{engine}");
+    fn project_closed_and_watched_files_events_require_api_1_18() {
+        for kind in ["project-closed", "watched-files-changed"] {
+            for engine in ["^1.17", "^1.18"] {
+                let manifest = format!(
+                    "id = 'test'\nname = 'Test'\nversion = '0.1.0'\nwasm = 'plugin.wasm'\nengines.openidea = '{engine}'\nactivation = [\"on-event:{kind}\"]\n"
+                );
+                let parsed = Manifest::parse(&manifest);
+                if engine == "^1.18" {
+                    parsed.unwrap();
+                } else {
+                    assert!(parsed.unwrap_err().contains("new in plugin API 1.18"), "{kind} {engine}");
+                }
             }
         }
     }

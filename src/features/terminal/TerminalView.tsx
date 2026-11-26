@@ -359,6 +359,7 @@ export function shellItems(paths: string[]): MenuItem[] {
     action: "terminal.newPredefinedSession",
     arg: p,
     label: paths.filter((q) => name(q) === name(p)).length > 1 ? `${name(p)} (${p})` : name(p),
+    verbatim: true,
     icon: "",
   }));
 }
@@ -414,6 +415,8 @@ function GroupTabs({ group }: { group: string }) {
     return {
       id: t.id,
       label: tabTitle(t, sessions),
+      // A renamed tab or the running program's title; the default name stays localized.
+      verbatim: tabTitle(t, sessions) !== t.name,
       closable: true,
       italic: dead,
       color: dead ? "var(--fg-subtle)" : undefined,

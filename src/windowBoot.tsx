@@ -11,6 +11,7 @@ import { guessOs } from "./platform/platformInfo";
 import { installPointerFocus } from "./platform/pointerFocus";
 import { installReorderedTapClick } from "./platform/reordered-tap-click";
 import { hideSplash } from "./platform/splash";
+import { isWebMode } from "./platform/webBridge";
 import { installMiddleClickPasteGuard, installWebKitClipboardGuard } from "./platform/webkitClipboard";
 import { prefetchLazyComponents } from "./ui";
 import { installFullscreenDragGuard, installWindowDrag, trackFullscreen } from "./workbench/window-drag";
@@ -33,7 +34,8 @@ export function activateList(what: string, list: ReadonlyArray<readonly [string,
 export async function installCommonWindowBoot(): Promise<void> {
   const os = guessOs();
   document.documentElement.dataset.os = os;
-  if (import.meta.env.DEV && isTauri()) {
+  const desktop = isTauri() && !isWebMode();
+  if (import.meta.env.DEV && desktop) {
     // The Tauri MCP bridge returns eval results via `window.__TAURI__` on Windows/Linux
     // (macOS evaluates natively). Dev only, so release builds keep withGlobalTauri off.
     const [{ invoke }, { emit }] = await Promise.all([import("@tauri-apps/api/core"), import("@tauri-apps/api/event")]);
@@ -45,16 +47,18 @@ export async function installCommonWindowBoot(): Promise<void> {
   // second press like the release before it, which the shim would take for a reordered tap and
   // click twice.
   if (os === "macos" && !/Chrome|Firefox/.test(navigator.userAgent)) installReorderedTapClick();
-  if (os === "linux" && isTauri()) {
+  if (os === "linux" && desktop) {
     installWebKitClipboardGuard();
     installMiddleClickPasteGuard();
   }
-  // A double click on the title bar fills the work area; the backend steps the frame once per
-  // presented webview frame, because AppKit's own zoom hides the page until the resize ends.
-  installWindowDrag({
-    toggleMaximize: () => call(commands.windowToggleZoom()).catch((e) => console.warn("cannot zoom the window", e)),
-  });
-  if (os !== "macos" && isTauri()) installFullscreenDragGuard(trackFullscreen());
+  if (desktop) {
+    // A double click on the title bar fills the work area; the backend steps the frame once per
+    // presented webview frame, because AppKit's own zoom hides the page until the resize ends.
+    installWindowDrag({
+      toggleMaximize: () => call(commands.windowToggleZoom()).catch((e) => console.warn("cannot zoom the window", e)),
+    });
+  }
+  if (os !== "macos" && desktop) installFullscreenDragGuard(trackFullscreen());
   installPointerFocus();
   installMiddleClickLinks();
   installImeKeyGuard();

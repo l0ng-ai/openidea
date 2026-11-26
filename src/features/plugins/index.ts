@@ -23,6 +23,7 @@ import { providePluginThemePreviews, startPluginBridge } from "./bridge";
 import { ConsentDialogHost, provideConsentDialog } from "./consent";
 import { pluginLineMarkerGutter } from "./lineMarkerGutter";
 import { startViewUi } from "./uiPoints";
+import { syncPluginExecutors } from "./executors";
 import { showInstalledIntellijThemes } from "./intellijThemesDialogStore";
 import { startWorkspaceContains } from "./workspaceContains";
 import { startPluginDecorations } from "./decorations";
@@ -119,6 +120,8 @@ export function activate(): () => void {
     startPluginConsoleRules(),
     // Plugin custom editors (tab kind) and context menu entries.
     startViewUi((input) => void editorService().openInput(input)),
+    // "Run/Debug with <title>" of plugins whose Java agent is bound to an executor.
+    syncPluginExecutors(),
     startWorkspaceContains(),
     // Gutter icons from plugins' `line-markers` providers (next to the LSP ones).
     registerEditorContribution({ id: "plugins.languageFeatures", order: 58, extensions: pluginLanguageVisuals }),

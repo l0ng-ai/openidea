@@ -5,6 +5,7 @@ import { BUNDLED_MONO_FAMILY, BUNDLED_UI_FAMILY, discoverNerdFonts, noteInstalle
 import { create } from "zustand";
 import { isTauri } from "@tauri-apps/api/core";
 import { call, commands, type FontFamily } from "@/platform/ipc";
+import { isWebMode } from "./webBridge";
 
 export type FontStatus = "idle" | "loading" | "ready" | "empty" | "error" | "browser";
 export const bundledFonts: FontFamily[] = [
@@ -43,7 +44,7 @@ function fallback(status: "error" | "browser") {
 export function loadSystemFonts(refresh = false): Promise<void> {
   if (pending) return pending;
   if (!refresh && useSystemFontStore.getState().status !== "idle") return Promise.resolve();
-  if (!isTauri()) {
+  if (!isTauri() || isWebMode()) {
     fallback("browser");
     return Promise.resolve();
   }

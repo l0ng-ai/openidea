@@ -10,6 +10,7 @@ import {
   pythonDescendants,
   pythonHierarchy,
   pythonImplementationTargets,
+  pythonOverriddenMethods,
   pythonSuperDeps,
   pythonSupertypes,
 } from "./pythonHierarchy";
@@ -53,7 +54,7 @@ const OUTLINES: Record<string, OutlineItem[]> = {
   "/p/dog.py": [item("Dog", "class", 2, 6, [item("bark", "method", 3, 4)])],
   "/p/animal.py": [item("Base", "class", 0, 5, [item("bark", "method", 1, 2), item("eat", "method", 3, 4)])],
   "/p/living.py": [item("Living", "class", 0, 5, [item("age", "field", 1, 2)])],
-  "/p/puppy.py": [item("Puppy", "class", 4, 9, [item("bark", "method", 5, 6)])],
+  "/p/puppy.py": [item("Puppy", "class", 4, 9, [item("bark", "method", 5, 6), item("wag", "method", 7, 8)])],
 };
 const outlineOf = async (path: string) => OUTLINES[path] ?? [];
 
@@ -121,6 +122,77 @@ describe("Python Go to Implementation", () => {
     // The graph's own answer: a class without descendants has no implementation.
     const targets = await pythonImplementationTargets(hierarchy, "/p/puppy.py", { line: 4, col: 6 }, outlineOf);
     expect(targets).toEqual([]);
+  });
+});
+
+describe("Python overridden methods (usages through a base)", () => {
+  const at = (locs: { path: string; range: { start: { line: number } } }[]) =>
+    locs.map((l) => `${l.path}:${l.range.start.line}`);
+
+  it("lists the method of every ancestor declaring it, nearest first", async () => {
+    const locs = await pythonOverriddenMethods(hierarchy, "/p/puppy.py", { line: 5, col: 8 }, outlineOf);
+    expect(at(locs)).toEqual(["/p/dog.py:3", "/p/animal.py:1"]);
+  });
+
+  it("answers only on the method's name, where a references search starts", async () => {
+    expect(await pythonOverriddenMethods(hierarchy, "/p/dog.py", { line: 4, col: 8 }, outlineOf)).toEqual([]);
+    expect(await pythonOverriddenMethods(hierarchy, "/p/dog.py", { line: 2, col: 6 }, outlineOf)).toEqual([]);
+  });
+
+  it("finds nothing for a method no ancestor declares", async () => {
+    // Puppy has two ancestors; neither declares wag.
+    expect(await pythonOverriddenMethods(hierarchy, "/p/puppy.py", { line: 7, col: 8 }, outlineOf)).toEqual([]);
+  });
+
+  it("leaves a function nested in a method alone", async () => {
+    const outlines: Record<string, OutlineItem[]> = {
+      ...OUTLINES,
+      "/p/dog.py": [item("Dog", "class", 2, 6, [item("eat", "method", 3, 6, [item("bark", "function", 4, 5)])])],
+    };
+    const outline = async (path: string) => outlines[path] ?? [];
+    expect(await pythonOverriddenMethods(hierarchy, "/p/dog.py", { line: 4, col: 8 }, outline)).toEqual([]);
+  });
+
+  it("answers nothing while an unsaved edit has put another class on a line the graph knows", async () => {
+    const outlines: Record<string, OutlineItem[]> = {
+      ...OUTLINES,
+      "/p/dog.py": [item("Cat", "class", 2, 6, [item("bark", "method", 3, 4)])],
+    };
+    const outline = async (path: string) => outlines[path] ?? [];
+    expect(await pythonOverriddenMethods(hierarchy, "/p/dog.py", { line: 3, col: 8 }, outline)).toEqual([]);
+  });
+
+  it("does not list a class's own method when its base has the same name", async () => {
+    // `class TestCase(django.test.TestCase)`: the graph keeps the base's last segment.
+    const graph = [cls("/p/case.py", 0, "TestCase", ["TestCase"])];
+    const own = pythonHierarchy(graph, { readFiles: async (paths) => new Map(paths.map((p) => [p, null])) });
+    const outline = async () => [item("TestCase", "class", 0, 3, [item("setUp", "method", 1, 2)])];
+    expect(await pythonOverriddenMethods(own, "/p/case.py", { line: 1, col: 8 }, outline)).toEqual([]);
+  });
+
+  it("lists the method of each base a class inherits from", async () => {
+    const graph = [
+      cls("/p/a.py", 0, "Saver"),
+      cls("/p/b.py", 0, "Loader"),
+      cls("/p/c.py", 0, "Repo", ["Saver", "Loader"]),
+    ];
+    const both = pythonHierarchy(graph, { readFiles: async (paths) => new Map(paths.map((p) => [p, null])) });
+    const outlines: Record<string, OutlineItem[]> = {
+      "/p/a.py": [item("Saver", "class", 0, 3, [item("close", "method", 1, 2)])],
+      "/p/b.py": [item("Loader", "class", 0, 3, [item("close", "method", 1, 2)])],
+      "/p/c.py": [item("Repo", "class", 0, 3, [item("close", "method", 1, 2)])],
+    };
+    const locs = await pythonOverriddenMethods(both, "/p/c.py", { line: 1, col: 8 }, async (p) => outlines[p] ?? []);
+    expect(at(locs)).toEqual(["/p/a.py:1", "/p/b.py:1"]);
+  });
+
+  it("leaves constructors out: a base's construction never runs a subclass's", async () => {
+    const outlines: Record<string, OutlineItem[]> = {
+      "/p/dog.py": [item("Dog", "class", 2, 6, [item("__init__", "method", 3, 4)])],
+      "/p/animal.py": [item("Base", "class", 0, 5, [item("__init__", "method", 1, 2)])],
+    };
+    const outline = async (path: string) => outlines[path] ?? [];
+    expect(await pythonOverriddenMethods(hierarchy, "/p/dog.py", { line: 3, col: 8 }, outline)).toEqual([]);
   });
 });
 

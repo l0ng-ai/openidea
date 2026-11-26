@@ -46,6 +46,13 @@ pub enum Capability {
     /// the manifest does not list; each answer applies to one host. Plain
     /// HTTP elsewhere always needs `net.http:<host>`.
     NetAsk,
+    /// The host of the `string` setting `key`, approved when the user applies
+    /// its value in Settings (`net:setting:server`, `net.http:setting:server`).
+    /// HTTPS (and loopback HTTP) unless `http`.
+    NetSetting {
+        http: bool,
+        key: String,
+    },
     /// Unencrypted HTTP to one host.
     NetHttp(String),
     /// A local socket or named pipe on the project machine.
@@ -62,6 +69,8 @@ pub enum Capability {
     /// Load the plugin's Java agent into the JVMs of Java run configurations. Never
     /// declared: it comes from `[[contributes.javaAgents]]`.
     JavaAgent,
+    /// Fork a recorded native agent session into a new task in the open project (API 1.18).
+    Agents,
 }
 
 /// How a grant is presented (plan 4.2).
@@ -87,11 +96,13 @@ impl Capability {
             | Self::VcsWrite
             | Self::Net(_)
             | Self::NetAsk
+            | Self::NetSetting { .. }
             | Self::NetHttp(_)
             | Self::Secrets
             | Self::InputEvents
             | Self::Clipboard
-            | Self::ClipboardRead => Risk::Medium,
+            | Self::ClipboardRead
+            | Self::Agents => Risk::Medium,
             // A trusted project's own files name the programs the IDE starts (its settings, its
             // build scripts), so writing them is running code.
             Self::ProjectWrite
@@ -136,6 +147,12 @@ impl Capability {
                 "Ask to connect to a host that is not on the list the first time it tries; you allow or refuse each host, and can revoke the allowed ones"
                     .into()
             }
+            Self::NetSetting { http, key } if *http => {
+                format!("Connect to the host set in the `{key}` setting over unencrypted HTTP (from the machine the project is on)")
+            }
+            Self::NetSetting { http: _, key } => {
+                format!("Connect to the host set in the `{key}` setting (from the machine the project is on)")
+            }
             Self::NetHttp(host) => {
                 format!("Connect to {host} over unencrypted HTTP (from the machine the project is on)")
             }
@@ -149,6 +166,7 @@ impl Capability {
             Self::FsRead(path) => format!("Read files under {path}, outside the project"),
             Self::FsWrite(path) => format!("Change files under {path}, outside the project"),
             Self::JavaAgent => "Run code inside the Java applications you start".into(),
+            Self::Agents => "Fork a recorded agent session into a new task in the open project".into(),
         }
     }
 
@@ -178,6 +196,19 @@ pub fn host_matches(pattern: &str, host: &str) -> bool {
         Some(suffix) => host.len() > suffix.len() + 1 && host.ends_with(&format!(".{suffix}")),
         None => host == pattern,
     }
+}
+
+/// Validates a manifest-style host (letters, digits and `-` labels, at most 253
+/// bytes) and returns it lowercased. A `*` is never valid here — only a
+/// `net:`/`net.http:` grant itself may carry the `*.` subdomain pattern, and a
+/// host taken from a setting value never does.
+pub fn manifest_host(host: &str) -> Result<String, String> {
+    let valid = !host.is_empty()
+        && host.len() <= 253
+        && host.split('.').all(|label| {
+            !label.is_empty() && label.len() <= 63 && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        });
+    valid.then(|| host.to_ascii_lowercase()).ok_or_else(|| "invalid host".into())
 }
 
 /// Validates a socket path; a grant may use `*` in its last segment only.
@@ -269,6 +300,8 @@ impl fmt::Display for Capability {
             Self::ClipboardRead => f.write_str("clipboard.read"),
             Self::Net(h) => write!(f, "net:{h}"),
             Self::NetAsk => f.write_str("net:ask"),
+            Self::NetSetting { http, key } if *http => write!(f, "net.http:setting:{key}"),
+            Self::NetSetting { http: _, key } => write!(f, "net:setting:{key}"),
             Self::NetHttp(h) => write!(f, "net.http:{h}"),
             Self::Ipc(p) => write!(f, "ipc:{p}"),
             Self::Process(b) => write!(f, "process:{b}"),
@@ -276,6 +309,7 @@ impl fmt::Display for Capability {
             Self::FsRead(p) => write!(f, "fs.read:{p}"),
             Self::FsWrite(p) => write!(f, "fs.write:{p}"),
             Self::JavaAgent => f.write_str("java.agent"),
+            Self::Agents => f.write_str("agents"),
         }
     }
 }
@@ -295,23 +329,27 @@ impl FromStr for Capability {
                     if kind == "net" && arg == "ask" {
                         return Ok(Self::NetAsk);
                     }
-                    let host = arg.strip_prefix("*.").unwrap_or(arg);
-                    let valid = !host.is_empty()
-                        && host.len() <= 253
-                        && host.split('.').all(|label| {
-                            !label.is_empty()
-                                && label.len() <= 63
-                                && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-                        });
-                    if valid {
-                        Ok(if kind == "net" {
-                            Self::Net(arg.to_ascii_lowercase())
+                    // `net:setting:<key>` names the plugin's `string` setting the
+                    // host comes from; the same key rule as a settings schema.
+                    if let Some(key) = arg.strip_prefix("setting:") {
+                        let valid_key = !key.is_empty()
+                            && key.len() <= 64
+                            && key.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c));
+                        return if valid_key {
+                            Ok(Self::NetSetting { http: kind == "net.http", key: key.to_owned() })
                         } else {
-                            Self::NetHttp(arg.to_ascii_lowercase())
-                        })
-                    } else {
-                        Err(format!("invalid host in {s:?}"))
+                            Err(format!("invalid setting key in {s:?}"))
+                        };
                     }
+                    manifest_host(arg.strip_prefix("*.").unwrap_or(arg))
+                        .map(|_| {
+                            if kind == "net" {
+                                Self::Net(arg.to_ascii_lowercase())
+                            } else {
+                                Self::NetHttp(arg.to_ascii_lowercase())
+                            }
+                        })
+                        .map_err(|_| format!("invalid host in {s:?}"))
                 }
                 "ipc" => {
                     validate_ipc_name(arg, true)?;
@@ -355,6 +393,7 @@ impl FromStr for Capability {
             "clipboard" => Self::Clipboard,
             "clipboard.read" => Self::ClipboardRead,
             "java.agent" => Self::JavaAgent,
+            "agents" => Self::Agents,
             _ => return Err(format!("unknown capability {s:?}")),
         })
     }
@@ -546,6 +585,77 @@ mod net_ask_tests {
         assert!(!"net:api.example.com".parse::<Capability>().unwrap().covers(&cap));
         assert_ne!("net:ask.com".parse::<Capability>().unwrap(), Capability::NetAsk);
         assert!("net:ask".parse::<Capability>().unwrap().describe().contains("host"));
+    }
+}
+
+#[cfg(test)]
+mod net_setting_tests {
+    use super::*;
+
+    /// `net:setting:<key>` names a settings key instead of a host: the host
+    /// comes from the setting's value and is approved when the user sets it
+    /// (#3809).
+    #[test]
+    fn setting_derived_grants_parse_and_print() {
+        for s in ["net:setting:server", "net.http:setting:server"] {
+            let cap: Capability = s.parse().unwrap();
+            assert_eq!(cap.to_string(), s, "{s}");
+            assert_eq!(cap.risk(), Risk::Medium, "{s}");
+        }
+        assert_eq!(
+            "net:setting:server".parse::<Capability>().unwrap(),
+            Capability::NetSetting { http: false, key: "server".into() }
+        );
+        assert_eq!(
+            "net.http:setting:server".parse::<Capability>().unwrap(),
+            Capability::NetSetting { http: true, key: "server".into() }
+        );
+        assert!(!"net:setting:server".parse::<Capability>().unwrap().auto_migrates());
+        let derived = "net:setting:server".parse::<Capability>().unwrap();
+        assert!(derived.describe().contains("`server`"));
+        assert!("net.http:setting:server".parse::<Capability>().unwrap().describe().contains("unencrypted"));
+    }
+
+    #[test]
+    fn setting_derived_grants_stay_strict() {
+        for s in ["net:setting:", "net:setting:a b", "net:setting:a:b", "net.http:setting:"] {
+            assert!(s.parse::<Capability>().is_err(), "{s}");
+        }
+    }
+
+    /// The derivation covers nothing by itself: a literal-host grant and a
+    /// setting-derived grant are different grants, and the host materializes
+    /// only after the user approves the setting's value.
+    #[test]
+    fn derived_grants_do_not_cover_literal_hosts() {
+        let derived: Capability = "net:setting:server".parse().unwrap();
+        let literal: Capability = "net:gitlab.intranet.example".parse().unwrap();
+        assert!(!derived.covers(&literal));
+        assert!(!literal.covers(&derived));
+        assert!(!derived.covers(&"net.http:gitlab.intranet.example".parse().unwrap()));
+        assert!(!derived.covers(&"net:setting:other".parse().unwrap()));
+    }
+
+    /// The host of a setting value passes the same rules as a manifest host,
+    /// and a `*` is refused (`net:*` stays impossible).
+    #[test]
+    fn value_hosts_follow_the_manifest_host_rules() {
+        assert_eq!(manifest_host("GitLab.Intranet.Example").unwrap(), "gitlab.intranet.example");
+        for bad in
+            ["", "*", "*.example.com", "a b", "under_score.example", "gitlab.intranet.example.", &"a".repeat(254)]
+        {
+            assert!(manifest_host(bad).is_err(), "{bad}");
+        }
+        let long = ["a".repeat(61), "b".repeat(61), "c".repeat(61), "d".repeat(61)].join(".");
+        assert_eq!(long.len(), 247);
+        assert!(manifest_host(&long).is_ok());
+        assert!(
+            manifest_host(&["a".repeat(63), "b".repeat(63), "c".repeat(63), "d".repeat(63)].join(".")).is_err(),
+            "over 253 bytes"
+        );
+        assert!(manifest_host(&"a".repeat(64)).is_err(), "over 63 bytes per label");
+        // Pattern grants keep working: only a value (and a bare host) refuses `*`.
+        assert!("net:*.github.com".parse::<Capability>().is_ok());
     }
 }
 

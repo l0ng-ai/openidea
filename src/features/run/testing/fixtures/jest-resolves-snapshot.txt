@@ -1,0 +1,39 @@
+FAIL ./a.test.js
+  ✕ async snap (3 ms)
+  ○ skipped file snap
+  ○ skipped other snap
+
+  ● async snap
+
+    expect(received).resolves.toMatchSnapshot()
+
+    Snapshot name: `async snap 1`
+
+    - Snapshot  - 1
+    + Received  + 1
+
+      {
+    -   "a": "one",
+    +   "a": "four",
+      }
+
+      2 | test("file snap", () => { expect({ v }).toMatchSnapshot(); });
+      3 | test("other snap", () => { expect({ o: v }).toMatchSnapshot(); });
+    > 4 | test("async snap", async () => { await expect(Promise.resolve({ a: v })).resolves.toMatchSnapshot(); });
+        |                                                                                   ^
+      5 |
+
+      at Object.toMatchSnapshot (../node_modules/expect/build/index.js:174:22)
+      at Object.toMatchSnapshot (a.test.js:4:83)
+
+ › 1 snapshot failed.
+Snapshot Summary
+ › 1 snapshot failed from 1 test suite. Inspect your code changes or re-run jest with `-u` to update them.
+ › 1 snapshot file obsolete from 1 test suite. To remove it, re-run jest with `-u`.
+   ↳   • __snapshots__/deleted.test.js.snap
+
+Test Suites: 1 failed, 1 total
+Tests:       1 failed, 2 skipped, 3 total
+Snapshots:   1 failed, 1 file obsolete, 1 total
+Time:        0.134 s, estimated 1 s
+Ran all test suites with tests matching "async snap".

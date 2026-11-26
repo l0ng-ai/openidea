@@ -54,6 +54,63 @@ pub(crate) struct Hop {
     pub host_key_policy: HostKeyPolicy,
     pub known_hosts: Option<PathBuf>,
     pub agent: Agent,
+    /// `LocalForward` / `RemoteForward` of the config (the target's; jump hosts forward nothing).
+    pub forwards: Vec<PortForward>,
+}
+
+/// A `LocalForward` or `RemoteForward` of `~/.ssh/config`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortForward {
+    pub direction: ForwardDirection,
+    /// Address the listening side binds: empty for every address, `localhost` by default.
+    pub bind: String,
+    pub port: u16,
+    /// Where each connection goes, as the other side sees it.
+    pub host: String,
+    pub host_port: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForwardDirection {
+    /// `LocalForward`: this machine listens, connections go to `host:host_port` from the SSH host.
+    Local,
+    /// `RemoteForward`: the SSH host listens, connections go to `host:host_port` from this machine.
+    Remote,
+}
+
+/// `[bind_address:]port host:hostport` (or the one-argument `-L` / `-R` form with colons); IPv6
+/// addresses in brackets. `None` for what isn't a TCP forward: a Unix socket, or `RemoteForward`'s
+/// dynamic (SOCKS) form.
+pub(crate) fn parse_forward(direction: ForwardDirection, value: &str) -> Option<PortForward> {
+    let spec = split_args(value).join(":");
+    let mut parts: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut bracket = false;
+    for ch in spec.chars() {
+        match ch {
+            '[' if cur.is_empty() => bracket = true,
+            ']' if bracket => bracket = false,
+            ':' if !bracket => parts.push(std::mem::take(&mut cur)),
+            '/' => return None,
+            _ => cur.push(ch),
+        }
+    }
+    parts.push(cur);
+    let (bind, port, host, host_port) = match parts.as_slice() {
+        [port, host, host_port] => (None, port, host, host_port),
+        [bind, port, host, host_port] => (Some(bind.as_str()), port, host, host_port),
+        _ => return None,
+    };
+    let bind = match bind {
+        None => "localhost".to_owned(),
+        Some("*") | Some("") => String::new(),
+        Some(b) => b.to_owned(),
+    };
+    let (port, host_port) = (port.parse().ok()?, host_port.parse().ok()?);
+    if host.is_empty() || host_port == 0 {
+        return None;
+    }
+    Some(PortForward { direction, bind, port, host: host.clone(), host_port })
 }
 
 /// Where the SSH agent of a hop listens (`IdentityAgent`).
@@ -158,6 +215,8 @@ struct RawConfig {
     host_key_policy: Option<HostKeyPolicy>,
     user_known_hosts_file: Option<String>,
     identity_agent: Option<String>,
+    forwards: Vec<PortForward>,
+    clear_forwardings: bool,
 }
 
 fn strip_quotes(s: &str) -> &str {
@@ -516,6 +575,23 @@ fn parse_config_file(
                     out.user_known_hosts_file = Some(first);
                 }
             }
+            "localforward" | "remoteforward" => {
+                let direction = if key.eq_ignore_ascii_case("localforward") {
+                    ForwardDirection::Local
+                } else {
+                    ForwardDirection::Remote
+                };
+                match parse_forward(direction, value) {
+                    Some(f) if !out.forwards.contains(&f) => out.forwards.push(f),
+                    Some(_) => {}
+                    None => tracing::debug!("ssh config: {key} {value} is not a TCP port forward; skipped"),
+                }
+            }
+            "clearallforwardings" => {
+                if matches!(strip_quotes(value).to_ascii_lowercase().as_str(), "yes" | "true") {
+                    out.clear_forwardings = true;
+                }
+            }
             _ => {}
         }
     }
@@ -559,7 +635,8 @@ fn config_hop(
         if null_known_hosts { HostKeyPolicy::Off } else { raw.host_key_policy.unwrap_or(HostKeyPolicy::Ask) };
     let agent =
         identity_agent(raw.identity_agent.as_deref(), |p| expand(&expand_tokens(p, alias, &host, port, &user, &local)));
-    let hop = Hop { host, port, user, identity_files, proxy_command, host_key_policy, known_hosts, agent };
+    let forwards = if raw.clear_forwardings { Vec::new() } else { raw.forwards };
+    let hop = Hop { host, port, user, identity_files, proxy_command, host_key_policy, known_hosts, agent, forwards };
     (hop, proxy_jump)
 }
 
@@ -574,7 +651,7 @@ fn jump_hop(config: Option<&Path>, spec: &str) -> Hop {
         _ => (rest, None),
     };
     let (hop, _) = config_hop(config, host, port, user);
-    hop
+    Hop { forwards: Vec::new(), ..hop }
 }
 
 /// The SSH hosts to go through, the target last.
@@ -597,6 +674,7 @@ pub(crate) fn resolve_hops(target: &SshTarget, config: Option<&Path>) -> IdeResu
                 host_key_policy: HostKeyPolicy::Ask,
                 known_hosts: None,
                 agent: Agent::Default,
+                forwards: Vec::new(),
             },
             None,
         )
@@ -635,6 +713,40 @@ pub fn openssh_args(target: &SshTarget) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_port_forwards_like_openssh() {
+        let f = |d, v: &str| parse_forward(d, v).map(|f| (f.bind, f.port, f.host, f.host_port));
+        let remote = ForwardDirection::Remote;
+        assert_eq!(f(remote, "9222 127.0.0.1:9222"), Some(("localhost".into(), 9222, "127.0.0.1".into(), 9222)));
+        assert_eq!(f(remote, "0.0.0.0:8080 web:80"), Some(("0.0.0.0".into(), 8080, "web".into(), 80)));
+        assert_eq!(f(remote, "*:8080 web:80"), Some((String::new(), 8080, "web".into(), 80)));
+        assert_eq!(f(remote, "[::1]:8080 [::1]:80"), Some(("::1".into(), 8080, "::1".into(), 80)));
+        assert_eq!(f(ForwardDirection::Local, "5432:db:5432"), Some(("localhost".into(), 5432, "db".into(), 5432)));
+        // Dynamic (SOCKS) and Unix socket forwards aren't TCP port forwards.
+        assert_eq!(f(remote, "1080"), None);
+        assert_eq!(f(remote, "/tmp/a.sock /tmp/b.sock"), None);
+        assert_eq!(f(remote, "8080 web:http"), None);
+    }
+
+    #[test]
+    fn config_forwards_belong_to_the_target_and_clear_all_forwardings_drops_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config");
+        std::fs::write(
+            &config,
+            "Host box\n  RemoteForward 9222 127.0.0.1:9222\n  LocalForward 5432 db:5432\n  ProxyJump gate\n\
+             Host gate\n  LocalForward 1 a:1\nHost quiet\n  RemoteForward 9222 127.0.0.1:9222\n  ClearAllForwardings yes\n",
+        )
+        .unwrap();
+        let target = |host: &str| SshTarget { host: host.into(), auth: SshAuth::OpenSsh, ..Default::default() };
+        let hops = resolve_hops(&target("box"), Some(&config)).unwrap();
+        assert_eq!(hops.len(), 2);
+        assert!(hops[0].forwards.is_empty(), "jump hosts forward nothing");
+        let dirs: Vec<_> = hops[1].forwards.iter().map(|f| (f.direction, f.port)).collect();
+        assert_eq!(dirs, [(ForwardDirection::Remote, 9222), (ForwardDirection::Local, 5432)]);
+        assert!(resolve_hops(&target("quiet"), Some(&config)).unwrap()[0].forwards.is_empty());
+    }
 
     #[test]
     fn resolves_aliases_and_proxy_jumps_from_ssh_config() {

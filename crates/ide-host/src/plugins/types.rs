@@ -70,6 +70,24 @@ pub struct PluginJavaAgent {
     pub jdk: Option<String>,
     /// The jar still has the hash recorded when `java.agent` was granted.
     pub approved: bool,
+    /// The title of the executor the agent is bound to (API 1.18): "Run with <title>" and
+    /// "Debug with <title>" launch with it; other launches leave it out.
+    #[serde(default)]
+    pub executor: Option<String>,
+}
+
+/// A `net:setting:` grant's host for Settings › Plugins: the approved one while the setting holds it, else the pending one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginNetSetting {
+    /// The setting key the host comes from (`server` of `net:setting:server`).
+    pub setting: String,
+    /// Plain HTTP (`net.http:setting:`) instead of HTTPS (and loopback HTTP).
+    pub http: bool,
+    /// The approved host, while the setting still holds it.
+    pub host: Option<String>,
+    /// The host the setting holds now when it is not the approved one.
+    pub pending: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
@@ -97,6 +115,8 @@ pub struct PluginInfo {
     /// HTTPS hosts the user allowed through `net:ask` ("always allow"),
     /// none of them declared by the manifest; each can be revoked.
     pub net_hosts: Vec<String>,
+    /// Setting-derived hosts (`net:setting:`), approved in Settings, listed next to the `net:ask` ones.
+    pub net_settings: Vec<PluginNetSetting>,
     /// What it contributes while live (point + label).
     pub contributions: Vec<ContributionInfo>,
     /// `activation` events of the manifest.

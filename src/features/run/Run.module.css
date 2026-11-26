@@ -139,6 +139,9 @@
   color: var(--link-hover);
   text-decoration: underline;
 }
+.noticeLink + .noticeLink {
+  margin-left: var(--space-3);
+}
 
 /* Console */
 
@@ -1764,4 +1767,44 @@
 .addServerErrorIcon {
   color: var(--danger);
   flex: none;
+}
+
+/* Completion popup of a plugin run configuration's Arguments field. */
+.argsPopup {
+  min-width: 260px;
+  max-width: min(640px, 70vw);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.argsListWrap {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 4px 0;
+  box-sizing: content-box;
+}
+.argsList {
+  flex: 1;
+}
+.argsRow {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.argsLabel {
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.argsDetail {
+  margin-left: auto;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
