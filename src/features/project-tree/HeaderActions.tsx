@@ -34,6 +34,7 @@ export function useProjectTitleMenu(): { label: string; items: MenuItem[] } {
     for (const s of scopes)
       items.push({
         id: `scope:${s.name}`,
+        verbatim: true,
         label: s.name,
         checked: mode === "scope" && scope === s.name,
         run: () => setScopeView(s.name),

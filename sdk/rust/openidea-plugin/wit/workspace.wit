@@ -1,4 +1,4 @@
-package openidea:plugin@1.17.0;
+package openidea:plugin@1.18.0;
 
 interface workspace {
     use types.{error, location};
@@ -103,6 +103,10 @@ interface workspace {
         /// the current call's deadline fails. A closed project is not-found.
         /// Requires `project.read`.
         symbols: func(query: string, limit: u32) -> result<list<symbol-info>, error>;
+        /// Monotonically increasing project state generation (API 1.18).
+        /// Increments on project file changes. Fails with `not-found` when closed.
+        /// Requires `project.read`.
+        generation: func() -> result<u64, error>;
     }
 
     /// Projects open in any window. Requires `project.read`.

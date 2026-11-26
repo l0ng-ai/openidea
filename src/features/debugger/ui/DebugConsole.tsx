@@ -316,6 +316,7 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
     const items: MenuItem[] = history.current.length
       ? history.current.slice(0, 30).map((h, i) => ({
           id: String(i),
+          verbatim: true,
           label: h.length > 120 ? `${h.slice(0, 120)}…` : h,
           run: () => {
             setInput(h);

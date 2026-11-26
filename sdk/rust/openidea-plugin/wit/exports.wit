@@ -1,4 +1,4 @@
-package openidea:plugin@1.17.0;
+package openidea:plugin@1.18.0;
 
 interface lifecycle {
     use types.{context, error};
@@ -72,6 +72,30 @@ interface syntax-provider {
     highlights: func(language: string, text: string) -> list<token>;
     outline: func(language: string, text: string) -> list<symbol>;
     folding: func(language: string, text: string) -> list<fold>;
+}
+
+/// Optional Run Anything (Ctrl Ctrl) entries and command lines for the prefixes
+/// the plugin declares under `[[contributes.runAnything]]` (API 1.18).
+interface run-anything-provider {
+    record run-anything-item {
+        /// What the list shows, such as `task build`.
+        label: string,
+        /// Grey text after the label.
+        detail: option<string>,
+        /// The line Tab completes in the field and Enter runs (default: `label`).
+        line: option<string>,
+    }
+    /// Entries for `text`, the field's text, which starts with the declared `prefix`
+    /// (or is the start of it). Answer from what the plugin already knows: the IDE
+    /// asks while the user types, keeps the first 100 entries, and drops an answer
+    /// that comes after the text changed or takes longer than 300 ms.
+    suggest: func(project: string, prefix: string, text: string) -> list<run-anything-item>;
+    /// Runs `line`, whose first word is `prefix`, from the invoking window: the
+    /// plugin starts it through its own host calls (`run.start`, terminals), with
+    /// their trust and grant checks. True claims the line; false leaves it to the
+    /// IDE's other entries and finally the shell. A failed call claims the line
+    /// too, so it never runs in the shell instead.
+    run: func(project: string, prefix: string, line: string) -> bool;
 }
 
 /// Optional pre-launch gate for targets owned by this plugin (API 1.5).
