@@ -4,7 +4,7 @@ use ide_core::{IdeError, IdeResult, RequestId};
 use ide_host::ops::project::ProjectInfo;
 use ide_workspace::workspace::Workspace;
 use std::path::PathBuf;
-use tauri::{Manager, State, Window};
+use tauri::{Manager, State, WebviewWindow};
 
 #[desktop_command(trust = always)]
 #[tauri::command]
@@ -38,7 +38,7 @@ pub async fn workspace_create(path: PathBuf, name: String, projects: Vec<PathBuf
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub async fn workspace_update(window: Window, name: String, projects: Vec<PathBuf>) -> IdeResult<ProjectInfo> {
+pub async fn workspace_update(window: WebviewWindow, name: String, projects: Vec<PathBuf>) -> IdeResult<ProjectInfo> {
     let host = window.state::<AppState>().host.clone();
     let label = window.label().to_owned();
     let info = tauri::async_runtime::spawn_blocking(move || {
@@ -57,7 +57,7 @@ pub async fn workspace_update(window: Window, name: String, projects: Vec<PathBu
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub async fn workspace_attach(window: Window, path: PathBuf) -> IdeResult<ide_core::IpcPath> {
+pub async fn workspace_attach(window: WebviewWindow, path: PathBuf) -> IdeResult<ide_core::IpcPath> {
     let host = window.state::<AppState>().host.clone();
     let label = window.label().to_owned();
     let root =
