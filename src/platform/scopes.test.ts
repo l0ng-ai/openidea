@@ -8,6 +8,7 @@ import {
   withOwnFileColor,
 } from "./fileColors";
 import { useProject } from "./project";
+import { projectModules } from "./projectRoots";
 import { filePatternRegExp, inScope, parseScope, scopeError, type ScopeContext } from "./scopes";
 
 const ctx = (scopes: ScopeContext["scopes"] = [], extra: Partial<ScopeContext> = {}): ScopeContext => ({
@@ -59,6 +60,77 @@ describe("scope expressions", () => {
     const c = ctx([{ name: "Web", pattern: "file[web]:*.ts" }]);
     expect(inScope("Web", "/p/web/app.ts", c)).toBe(true);
     expect(inScope("Web", "/p/src/app.ts", c)).toBe(false);
+  });
+
+  it("matches absolute module paths on POSIX and Windows drives", () => {
+    useProject.setState({
+      project: {
+        name: "ws",
+        root: "/ws",
+        trusted: true,
+        settings: {},
+        workspace: { version: 1, name: "ws", projects: ["/ws/app", "/ws/svc"] },
+      } as never,
+    });
+    const posix = ctx([{ name: "Svc", pattern: "file[svc]:*.java" }], {
+      modules: [
+        { name: "app", path: "/ws/app" },
+        { name: "svc", path: "/ws/svc" },
+      ],
+    });
+    expect(inScope("Svc", "/ws/svc/src/App.java", posix)).toBe(true);
+    expect(inScope("Svc", "/ws/app/src/App.java", posix)).toBe(false);
+
+    useProject.setState({
+      project: {
+        name: "ws",
+        root: "C:/ws",
+        trusted: true,
+        settings: {},
+        workspace: { version: 1, name: "ws", projects: ["C:/ws/app", "C:/ws/svc"] },
+      } as never,
+    });
+    const win = ctx([{ name: "Svc", pattern: "file[svc]:*.java" }], {
+      modules: [
+        { name: "app", path: "C:/ws/app" },
+        { name: "svc", path: "C:/ws/svc" },
+      ],
+    });
+    expect(inScope("Svc", "C:/ws/svc/src/App.java", win)).toBe(true);
+    expect(inScope("Svc", "C:/ws/app/src/App.java", win)).toBe(false);
+  });
+
+  it("keeps subproject and root module scopes matching when synced from a subproject folder", () => {
+    // Opened at `/checkout/composite/app` while Gradle reports ancestor `composite` as plain `Gradle`,
+    // in-project `app` as `Gradle`, child `app:lib` as `lib/Gradle`, and sibling included build `svc`.
+    useProject.setState({
+      project: { name: "app", root: "/checkout/composite/app", trusted: true, settings: {} } as never,
+    });
+    const modules = projectModules(
+      [
+        { path: "checkout/composite/src/main/java", kind: "source", detectedFrom: "Gradle" },
+        { path: "src/main/java", kind: "source", detectedFrom: "Gradle" },
+        { path: "lib/src/main/java", kind: "source", detectedFrom: "lib/Gradle" },
+        { path: "checkout/svc/src/main/java", kind: "source", detectedFrom: "/checkout/svc/Gradle" },
+      ],
+      "app",
+    );
+    expect(modules).toEqual([
+      { path: "", name: "app" },
+      { path: "/checkout/svc", name: "svc" },
+      { path: "lib", name: "lib" },
+    ]);
+    const c = ctx(
+      [
+        { name: "App", pattern: "file[app]:*.java" },
+        { name: "Lib", pattern: "file[lib]:*.java" },
+      ],
+      { modules },
+    );
+    expect(inScope("Lib", "/checkout/composite/app/lib/src/main/java/A.java", c)).toBe(true);
+    expect(inScope("App", "/checkout/composite/app/src/main/java/B.java", c)).toBe(true);
+    expect(inScope("Lib", "/checkout/composite/app/src/main/java/B.java", c)).toBe(false);
+    expect(inScope("App", "/checkout/composite/app/lib/src/main/java/A.java", c)).toBe(false);
   });
 
   it("reports where a pattern goes wrong", () => {
