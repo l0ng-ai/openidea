@@ -19,40 +19,45 @@ const BIOME_MARKERS: [&str; 3] = ["biome.json", "biome.jsonc", "node_modules/@bi
 const DPRINT_MARKERS: [&str; 5] =
     ["dprint.json", ".dprint.json", "dprint.jsonc", ".dprint.jsonc", "node_modules/dprint/package.json"];
 
-fn dprint_project(file: &Path) -> bool {
-    DPRINT_MARKERS.iter().any(|name| formatter::find_up(file, Path::new(name)).is_some())
+/// The nearest of `names` in `file`'s folder or above, up to the project `root` (none outside it).
+fn find_in_project(file: &Path, root: &Path, names: &[&str]) -> Option<PathBuf> {
+    file.parent()?
+        .ancestors()
+        .take_while(|dir| dir.starts_with(root))
+        .find_map(|dir| names.iter().map(|name| dir.join(name)).find(|p| p.is_file()))
 }
 
-/// `dprint editor-info` output by configuration file and its modification time.
-// ponytail: a configuration's `extends` files are not watched; editing one needs a change of the main file.
-type EditorInfoCache = std::sync::Mutex<std::collections::HashMap<PathBuf, (std::time::SystemTime, String)>>;
-static DPRINT_EDITOR_INFO: std::sync::LazyLock<EditorInfoCache> = std::sync::LazyLock::new(Default::default);
+fn dprint_project(file: &Path, root: &Path) -> bool {
+    find_in_project(file, root, &DPRINT_MARKERS).is_some()
+}
+
+/// `dprint editor-info` results by configuration file (the project root without one) and the
+/// configuration's modification time. Failures are kept too: an offline plugin download would
+/// otherwise time out again on every format.
+// ponytail: `extends` files and a configuration outside the project are not watched; editing one needs a change of the project's file (or a restart).
+type EditorInfo = (Option<std::time::SystemTime>, IdeResult<String>);
+static DPRINT_EDITOR_INFO: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<PathBuf, EditorInfo>>> =
+    std::sync::LazyLock::new(Default::default);
 
 /// Whether the dprint configuration found for `file` (from its folder, as dprint finds it) has a
-/// plugin for it.
-fn dprint_covers(tools: &Tools, custom: Option<&Path>, file: &Path) -> IdeResult<bool> {
+/// plugin for it. `retry` runs `editor-info` again after a remembered failure.
+fn dprint_covers(tools: &Tools, custom: Option<&Path>, file: &Path, root: &Path, retry: bool) -> IdeResult<bool> {
     let dir = file.parent().ok_or_else(|| IdeError::invalid("dprint: file has no directory"))?;
-    let config = DPRINT_MARKERS[..4]
-        .iter()
-        .filter_map(|name| formatter::find_up(file, Path::new(name)))
-        .max_by_key(|path| path.components().count());
+    let config = find_in_project(file, root, &DPRINT_MARKERS[..4]);
     let modified = config.as_ref().and_then(|c| std::fs::metadata(c).and_then(|m| m.modified()).ok());
-    let cached = config.as_ref().zip(modified).and_then(|(config, modified)| {
+    let key = config.unwrap_or_else(|| root.to_path_buf());
+    let cached = {
         let cache = DPRINT_EDITOR_INFO.lock().unwrap_or_else(|e| e.into_inner());
-        cache.get(config).filter(|(at, _)| *at == modified).map(|(_, info)| info.clone())
-    });
-    let info = match cached {
-        Some(info) => info,
-        None => {
-            let mut command = tools.formatter_command("dprint", file, custom)?;
-            command.current_dir(dir);
-            let info = formatter::dprint_editor_info(command)?;
-            if let (Some(config), Some(modified)) = (config, modified) {
-                DPRINT_EDITOR_INFO.lock().unwrap_or_else(|e| e.into_inner()).insert(config, (modified, info.clone()));
-            }
-            info
-        }
+        cache.get(&key).filter(|(at, info)| *at == modified && !(retry && info.is_err())).map(|(_, info)| info.clone())
     };
+    let info = cached.unwrap_or_else(|| {
+        let info = tools.formatter_command("dprint", file, custom).and_then(|mut command| {
+            command.current_dir(dir);
+            formatter::dprint_editor_info(command)
+        });
+        DPRINT_EDITOR_INFO.lock().unwrap_or_else(|e| e.into_inner()).insert(key, (modified, info.clone()));
+        info
+    })?;
     formatter::dprint_covers(&info, file)
 }
 
@@ -536,17 +541,19 @@ async fn provider_edits(
     // dprint formats what its configuration covers, before the language's own formatters.
     let dprint = &settings.languages.dprint;
     let forced_dprint = options.tool == Some(ExternalFormatter::Dprint);
-    let auto_dprint =
-        options.tool.is_none() && (dprint.prefer || dprint_project(&snap.path)) && project.require_trust().is_ok();
+    let auto_dprint = options.tool.is_none()
+        && (dprint.prefer || dprint_project(&snap.path, &project.root))
+        && project.require_trust().is_ok();
     let mut selected = None;
     if forced_dprint || auto_dprint {
         host.require_trust(window)?;
         let tools = Tools::new(&host.local_data_dir);
         let custom = ide_sdk::apply::setting_path(&project.root, &dprint.path);
-        let path = snap.path.clone();
-        let covers = tokio::task::spawn_blocking(move || dprint_covers(&tools, custom.as_deref(), &path))
-            .await
-            .map_err(|e| IdeError::internal(e.to_string()))?;
+        let (path, root) = (snap.path.clone(), project.root.clone());
+        let covers =
+            tokio::task::spawn_blocking(move || dprint_covers(&tools, custom.as_deref(), &path, &root, forced_dprint))
+                .await
+                .map_err(|e| IdeError::internal(e.to_string()))?;
         match covers {
             Ok(true) => selected = Some(ExternalFormatter::Dprint),
             Ok(false) if forced_dprint => {
@@ -555,7 +562,9 @@ async fn provider_edits(
                 );
             }
             Ok(false) => {}
-            Err(e) => return Err(e.with_tool("dprint")),
+            Err(e) if forced_dprint => return Err(e.with_tool("dprint")),
+            // Not installed, no configuration, plugins not downloadable: the usual formatter.
+            Err(e) => tracing::warn!("dprint editor-info failed, using the usual formatter: {}", e.message),
         }
     }
     if selected.is_none() {
@@ -977,18 +986,27 @@ mod tests {
     }
 
     #[test]
-    fn a_dprint_configuration_or_dependency_marks_a_dprint_project() {
+    fn a_dprint_configuration_or_dependency_in_the_project_marks_a_dprint_project() {
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("web/src/app.ts");
-        assert!(!dprint_project(&file));
+        let root = dir.path().join("home/project");
+        let file = root.join("web/src/app.ts");
+        assert!(!dprint_project(&file, &root));
         for marker in DPRINT_MARKERS {
-            let path = dir.path().join("web").join(marker);
+            let path = root.join("web").join(marker);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, "{}").unwrap();
-            assert!(dprint_project(&file), "{marker}");
-            assert!(!dprint_project(&dir.path().join("api/main.ts")), "{marker}");
+            assert!(dprint_project(&file, &root), "{marker}");
+            assert!(!dprint_project(&root.join("api/main.ts"), &root), "{marker}");
+            // A file outside the project is not below the project's dprint.
+            assert!(!dprint_project(&dir.path().join("elsewhere/web/src/app.ts"), &root), "{marker}");
             std::fs::remove_file(&path).unwrap();
         }
+        // dprint installed above the project (a stray `~/node_modules/dprint`) doesn't count.
+        let stray = dir.path().join("home/node_modules/dprint/package.json");
+        std::fs::create_dir_all(stray.parent().unwrap()).unwrap();
+        std::fs::write(&stray, "{}").unwrap();
+        std::fs::write(dir.path().join("home/dprint.json"), "{}").unwrap();
+        assert!(!dprint_project(&file, &root));
     }
 
     #[cfg(unix)]
@@ -1010,21 +1028,45 @@ mod tests {
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
         let tools = Tools::with_paths(root.join("tools"), Default::default(), ide_tools::platform::Platform::current());
         let runs = || std::fs::read_to_string(root.join("fake-dprint.runs")).unwrap_or_default().lines().count();
+        let covers = |file: &str, retry| dprint_covers(&tools, Some(&fake), &root.join(file), root, retry);
 
-        assert!(dprint_covers(&tools, Some(&fake), &root.join("src/app.ts")).unwrap());
-        assert!(dprint_covers(&tools, Some(&fake), &root.join("src/Dockerfile")).unwrap());
+        assert!(covers("src/app.ts", false).unwrap());
+        assert!(covers("src/Dockerfile", false).unwrap());
         // Not covered: the usual formatter takes the file.
-        assert!(!dprint_covers(&tools, Some(&fake), &root.join("src/main.py")).unwrap());
+        assert!(!covers("src/main.py", false).unwrap());
         assert_eq!(runs(), 1);
 
         // A changed configuration is read again, and its error is dprint's.
         std::fs::write(root.join("src/fail"), "").unwrap();
         let later = std::fs::metadata(&config).unwrap().modified().unwrap() + std::time::Duration::from_secs(5);
         std::fs::File::options().write(true).open(&config).unwrap().set_modified(later).unwrap();
-        let error = dprint_covers(&tools, Some(&fake), &root.join("src/app.ts")).unwrap_err();
+        let error = covers("src/app.ts", false).unwrap_err();
         assert!(error.message.contains("bad config"), "{}", error.message);
         assert_eq!(error.data, Some(ide_core::error::ErrorData::Tool { tool: "dprint".into(), missing: false }));
         assert_eq!(runs(), 2);
+        // The failure is remembered (an offline download would time out again), unless retried.
+        assert!(covers("src/app.ts", false).is_err());
+        assert_eq!(runs(), 2);
+        std::fs::remove_file(root.join("src/fail")).unwrap();
+        assert!(covers("src/app.ts", true).unwrap());
+        assert_eq!(runs(), 3);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dprint_without_a_project_configuration_runs_once_per_project() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("a/b")).unwrap();
+        let fake = root.join("fake-dprint");
+        std::fs::write(&fake, "#!/bin/sh\necho run >> \"$0.runs\"\nprintf '%s' '{\"plugins\":[]}'\n").unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let tools = Tools::with_paths(root.join("tools"), Default::default(), ide_tools::platform::Platform::current());
+        for file in ["a/x.ts", "a/b/y.ts", "z.ts"] {
+            assert!(!dprint_covers(&tools, Some(&fake), &root.join(file), root, false).unwrap());
+        }
+        assert_eq!(std::fs::read_to_string(root.join("fake-dprint.runs")).unwrap().lines().count(), 1);
     }
 
     #[test]
