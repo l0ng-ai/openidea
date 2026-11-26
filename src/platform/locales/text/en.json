@@ -4082,6 +4082,6 @@
   "Use a wildcard import once this many classes of one package are used (5 by default; 999 keeps single-class imports).": "Use a wildcard import once this many classes of one package are used (5 by default; 999 keeps single-class imports).",
   "Class count to use import with *": "Class count to use import with *",
   "Names count to use static import with '*'": "Names count to use static import with '*'",
-  "Use a wildcard static import once this many names are imported statically; 999 keeps single imports.": "Use a wildcard static import once this many names are imported statically; 999 keeps single imports.",
+  "Use a wildcard static import once this many names are imported statically (3 by default; 999 keeps single imports).": "Use a wildcard static import once this many names are imported statically; 999 keeps single imports.",
   "Names count to use static import with *": "Names count to use static import with *"
 }
