@@ -826,6 +826,7 @@ vcs_worktree_include                         always             project_host bin
 vcs_worktrees                                always             project_host bindings async
 vcs_write_patch                              always             project_host bindings async
 web_browsers                                 always             desktop      bindings async
+web_css_variables                            always             project_host bindings async
 web_goto                                     always             project_host bindings async
 web_open                                     always             desktop      bindings async
 web_serves_page                              trusted            desktop      bindings async
