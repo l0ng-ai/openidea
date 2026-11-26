@@ -301,6 +301,7 @@
   "menu.refactor.extractConstant": "Sabit Tanımla…",
   "menu.refactor.extractField": "Alan Tanımla…",
   "menu.refactor.extractInterface": "Arayüz Çıkar…",
+  "menu.refactor.extractTypeAlias": "Tür Takma Adı Çıkar…",
   "menu.refactor.extractMethod": "Metot Çıkar…",
   "menu.refactor.extractParameter": "Parametre Tanımla…",
   "menu.refactor.extractVariable": "Değişken Tanımla…",

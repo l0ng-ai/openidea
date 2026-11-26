@@ -48,9 +48,13 @@ const QUERY_TIMEOUT: Duration = Duration::from_secs(10);
 /// `cargo metadata` / `go list` load the whole dependency graph.
 const GRAPH_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Prints the interpreter's library folders as JSON: `[stdlib, platstdlib, purelib, platlib]`.
-const PYTHON_PATHS: &str = "import json,sysconfig;p=sysconfig.get_paths();\
-print(json.dumps([p.get(k) for k in ('stdlib','platstdlib','purelib','platlib')]))";
+/// Prints the interpreter's library folders as two JSON lines: `[stdlib, platstdlib, purelib,
+/// platlib]`, then `sys.path`. On Debian and Ubuntu the system interpreter's `purelib` is the
+/// usually empty `/usr/local/lib/python3.X/dist-packages`; the packages apt installs, and the
+/// user's site-packages, are only on `sys.path` (#6042).
+const PYTHON_PATHS: &str = "import json,sys,sysconfig;p=sysconfig.get_paths();\
+print(json.dumps([p.get(k) for k in ('stdlib','platstdlib','purelib','platlib')]));\
+print(json.dumps([x for x in sys.path if isinstance(x,str) and x]))";
 
 const JAVA_MANIFESTS: &[&str] =
     &["pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"];
@@ -397,7 +401,7 @@ fn python_groups(root: &Path, project: &Path, s: &Settings, cancel: &Cancellatio
     let user = outside_folders(crate::apply::interpreter_user_paths(&python, s), &folders);
     let key = std::iter::once(&python).chain(&user).map(|p| p.display().to_string()).collect::<Vec<_>>().join("\n");
     cached_cancellable(root, "python", key, &files, cancel, || {
-        let mut group = python_libraries(&python, Some(root));
+        let mut group = python_libraries(&python, Some(root), &folders);
         if let Some(group) = &mut group {
             group.roots.extend(library_roots(user));
         }
@@ -411,13 +415,24 @@ fn outside_folders(paths: Vec<PathBuf>, folders: &[PathBuf]) -> Vec<PathBuf> {
     paths.into_iter().filter(|p| !folders.iter().any(|f| p.starts_with(f) || f.starts_with(p))).collect()
 }
 
-/// Standard library and site-packages folders of a Python interpreter.
-pub fn python_libraries(python: &Path, root: Option<&Path>) -> Option<LibraryGroup> {
-    // In a neutral directory: the working directory comes first on `sys.path` for `-c`.
+/// Standard library and site-packages folders of a Python interpreter, then the other folders on
+/// its `sys.path` (other site dirs, `lib-dynload`, `.pth` entries) outside the project's `folders`.
+pub fn python_libraries(python: &Path, root: Option<&Path>, folders: &[PathBuf]) -> Option<LibraryGroup> {
+    // In a neutral directory and without the IDE's own `PYTHONPATH`: the working directory comes
+    // first on `sys.path` for `-c`, and neither belongs to the interpreter.
     let dir = crate::python::neutral_dir();
-    let out = query_in(python, &["-c", PYTHON_PATHS], dir.as_ref().map(|d| d.path()), &[], QUERY_TIMEOUT)?;
+    let out =
+        query_in(python, &["-c", PYTHON_PATHS], dir.as_ref().map(|d| d.path()), &[("PYTHONPATH", "")], QUERY_TIMEOUT)?;
     let name = crate::discover::python_sdk(python, "system", root).map(|s| s.name).unwrap_or_else(|| "Python".into());
-    group(name, "python", library_roots(parse_python_paths(&out)))
+    group(name, "python", library_roots(python_library_paths(&out, folders)))
+}
+
+/// The paths [`PYTHON_PATHS`] printed: the `sysconfig` folders, then the `sys.path` ones outside
+/// `folders` (an editable install's `.pth` puts the project's own sources there).
+pub(crate) fn python_library_paths(out: &str, folders: &[PathBuf]) -> Vec<PathBuf> {
+    let mut lists = out.lines().filter(|l| l.trim_start().starts_with('[')).rev().take(2).map(parse_python_paths);
+    let (sys_path, sysconfig) = (lists.next().unwrap_or_default(), lists.next().unwrap_or_default());
+    sysconfig.into_iter().chain(outside_folders(sys_path, folders)).collect()
 }
 
 /// `sys.path` of `python` started on its own; `None` when it cannot run or was cancelled.

@@ -246,7 +246,6 @@ export const mergeTheme = EditorView.baseTheme({
     borderRadius: "var(--radius-small)",
     color: "var(--fg-secondary)",
     background: "transparent",
-    cursor: "pointer",
   },
   ".cm-merge-op:hover": { color: "var(--fg-strong)", background: "var(--bg-control-hover)" },
   ".cm-merge-conflict": { backgroundColor: "color-mix(in srgb, var(--vcs-conflict) 14%, transparent)" },

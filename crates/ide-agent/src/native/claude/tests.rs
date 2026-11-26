@@ -652,6 +652,84 @@ async fn replay_resume() {
     assert!(args.windows(2).any(|w| w == ["--resume", r.session.as_str()]), "{args:?}");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn fork_session_can_start_a_recorded_session_under_the_hosts_id() {
+    /// Registering a fork must not start a process: its first prompt does.
+    struct NoLaunch;
+    impl Cli for NoLaunch {
+        fn launch(&self, _: &Launch, _: OnStderr) -> std::io::Result<cli::CliIo> {
+            panic!("session/fork must not launch the CLI")
+        }
+    }
+
+    let config = tempfile::tempdir().unwrap();
+    let pending = tempfile::tempdir().unwrap();
+    let h = Harness::connect(
+        Arc::new(NoLaunch),
+        config.path().to_path_buf(),
+        pending.path().to_path_buf(),
+        std::env::temp_dir(),
+        Vec::new(),
+    )
+    .await;
+    let source = "11111111-1111-4111-8111-111111111111";
+    let target = "22222222-2222-4222-8222-222222222222";
+    let reply = h
+        .request(
+            "session/fork",
+            json!({
+                "sessionId": source,
+                "cwd": h.cwd,
+                "mcpServers": [],
+                "_meta": { "openidea": { "forkSessionId": target } }
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reply["sessionId"], target);
+    // The host chose this id for the fork: the next process must fork the recorded
+    // session under exactly it.
+    let saved: Value =
+        serde_json::from_slice(&std::fs::read(pending.path().join(format!("{target}.json"))).unwrap()).unwrap();
+    assert_eq!(saved, json!({ "fork": source, "id": target, "at": null }));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fork_session_rejects_a_requested_id_that_is_not_canonical() {
+    struct NoLaunch;
+    impl Cli for NoLaunch {
+        fn launch(&self, _: &Launch, _: OnStderr) -> std::io::Result<cli::CliIo> {
+            panic!("no process")
+        }
+    }
+
+    let config = tempfile::tempdir().unwrap();
+    let pending = tempfile::tempdir().unwrap();
+    let h = Harness::connect(
+        Arc::new(NoLaunch),
+        config.path().to_path_buf(),
+        pending.path().to_path_buf(),
+        std::env::temp_dir(),
+        Vec::new(),
+    )
+    .await;
+    for rejected in ["../../x", "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA", ""] {
+        let error = h
+            .request(
+                "session/fork",
+                json!({
+                    "sessionId": "11111111-1111-4111-8111-111111111111",
+                    "cwd": h.cwd,
+                    "mcpServers": [],
+                    "_meta": { "openidea": { "forkSessionId": rejected } }
+                }),
+            )
+            .await
+            .expect_err("only a canonical id may name the fork");
+        assert!(error.to_string().contains("canonical"), "{rejected}: {error}");
+    }
+}
+
 // ---------- recording ----------
 
 /// Passes the real CLI's stdio through, keeping what went over it.

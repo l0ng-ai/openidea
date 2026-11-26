@@ -344,6 +344,47 @@ fn minimal_edits(text: &str, edits: Vec<TextEdit>) -> Vec<TextEdit> {
         .collect()
 }
 
+/// The edits on the lines of `range`. Some servers (Intelephense, #6055) answer a range request
+/// with edits across the whole file; Reformat Code with a selection changes only the selected
+/// lines. An edit that reaches past them and keeps its line count is split into one per line.
+fn within_lines(text: &str, edits: Vec<TextEdit>, range: Range) -> Vec<TextEdit> {
+    let from = Pos::new(range.start.line, 0);
+    // A selection ending at a line start leaves that line out.
+    let to = if range.end.col == 0 && range.end.line > range.start.line {
+        range.end
+    } else {
+        Pos::new(range.end.line + 1, 0)
+    };
+    let doc = ide_text::Document::new(text);
+    edits
+        .into_iter()
+        .flat_map(|e| if e.range.start >= from && e.range.end <= to { vec![e] } else { per_line(&doc, e) })
+        .filter(|e| e.range.start >= from && e.range.end <= to)
+        .collect()
+}
+
+/// `edit` as one edit per line when it replaces as many lines as it inserts, else nothing.
+fn per_line(doc: &ide_text::Document, edit: TextEdit) -> Vec<TextEdit> {
+    let Range { start, end } = edit.range;
+    let lines: Vec<&str> = edit.new_text.split('\n').collect();
+    if lines.len() as u32 != end.line - start.line + 1 {
+        return Vec::new();
+    }
+    let width = |line: u32| doc.line(line).map_or(0, |l| l.encode_utf16().count() as u32);
+    lines
+        .into_iter()
+        .zip(start.line..=end.line)
+        .map(|(new_text, line)| TextEdit {
+            range: Range::new(
+                Pos::new(line, if line == start.line { start.col } else { 0 }),
+                Pos::new(line, if line == end.line { end.col } else { width(line) }),
+            ),
+            new_text: new_text.to_owned(),
+        })
+        .filter(|e| doc.slice(doc.pos_to_offset(e.range.start), doc.pos_to_offset(e.range.end)) != e.new_text)
+        .collect()
+}
+
 pub async fn format(
     host: &Host,
     window: &str,
@@ -583,9 +624,15 @@ async fn provider_edits(
             None => project.lsp.format_text(&snap.path, &snap.language, &snap.text, options).await?,
         };
         let text = snap.text;
-        return tokio::task::spawn_blocking(move || Some(minimal_edits(&text, edits)))
-            .await
-            .map_err(|e| IdeError::internal(e.to_string()));
+        return tokio::task::spawn_blocking(move || {
+            let edits = minimal_edits(&text, edits);
+            Some(match range {
+                Some(range) => within_lines(&text, edits, range),
+                None => edits,
+            })
+        })
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()));
     };
     let tool_settings = settings.languages.formatter(selected);
     if options.on_save && !runs_on_save(selected, tool_settings.run_on_save, takes_over, settings.editor.format_on_save)
@@ -1164,6 +1211,26 @@ mod tests {
     }
 
     const ALIGN: PhpAlignment = PhpAlignment { key_value_pairs: true, assignments: true };
+
+    #[test]
+    fn range_formatting_changes_only_the_selected_lines() {
+        // Intelephense answers a range request for lines 2-3 with edits across the file (#6055).
+        let text = "<?php\nf(\"a\");\n$x  = 1;\n$y  = 2;\nf(\"b\");\n";
+        let formatted = "<?php\nf('a');\n$x = 1;\n$y = 2;\nf('b');\n";
+        let whole = vec![TextEdit { range: Range::new(Pos::new(0, 0), Pos::new(5, 0)), new_text: formatted.into() }];
+        let edits = minimal_edits(text, whole);
+        let selected = Range::new(Pos::new(2, 0), Pos::new(3, 8));
+        assert_eq!(
+            after(text, &within_lines(text, edits.clone(), selected)),
+            "<?php\nf(\"a\");\n$x = 1;\n$y = 2;\nf(\"b\");\n"
+        );
+        // Selected up to the start of line 4: line 4 stays as it is.
+        let to_line_start = Range::new(Pos::new(2, 3), Pos::new(3, 0));
+        assert_eq!(
+            after(text, &within_lines(text, edits, to_line_start)),
+            "<?php\nf(\"a\");\n$x = 1;\n$y  = 2;\nf(\"b\");\n"
+        );
+    }
 
     #[test]
     fn a_whole_file_edit_becomes_one_edit_per_changed_region() {

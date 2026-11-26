@@ -167,15 +167,7 @@ impl AppState {
     }
 
     pub fn record_project(&self, project: &Project) -> IdeResult<()> {
-        let info = ide_host::ops::project::info(project);
-        let attached = info.workspace.as_ref().is_some_and(|w| !w.is_container(&project.root));
-        let branch = if attached {
-            None
-        } else {
-            project.repos.read().primary().and_then(|r| r.branch_info().ok()).and_then(|b| b.head)
-        };
-        self.recent.touch(&project.root, branch)?;
-        self.recent.rename(&project.root, Some(&info.display_name))?;
+        ide_host::ops::project::record_recent(&self.recent, project)?;
         crate::jump_list::refresh(&self.app, self.recent.list());
         Ok(())
     }

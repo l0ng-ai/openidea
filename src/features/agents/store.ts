@@ -42,7 +42,6 @@ import {
   cursorModelDefaults,
   emptyDraft,
   hasMention,
-  fenced,
   isMentioned,
   isPerModelOption,
   mentionOf,
@@ -56,8 +55,14 @@ import {
 import { withQuote } from "./conversation";
 import {
   EMPTY_ORGANIZE,
+  PINNED_SECTION,
+  compactOrder,
+  customSection,
   loadOrganize,
   pruneOrganize,
+  removeFromOrder,
+  reorderGroupsInOrganize,
+  reorderTaskInOrganize,
   saveOrganize,
   type OrganizeGroup,
   type TaskOrganize,
@@ -1360,10 +1365,8 @@ function markImporting(keys: readonly string[], on: boolean) {
   });
 }
 
-async function importOne(provider: string, sessionId: string, open: boolean) {
-  const started = generation;
-  const task = await call(commands.agentImportSession(provider, sessionId));
-  if (generation !== started) return task;
+/** Records the task an external session became and opens it when asked; shared by import and fork. */
+function adoptSessionTask(provider: string, sessionId: string, task: AgentTask, open: boolean) {
   useAgents.setState((s) => ({
     tasks: s.tasks.has(task.id) ? s.tasks : new Map(s.tasks).set(task.id, task),
     external: s.external.filter((e) => !(e.provider === provider && e.sessionId === sessionId)),
@@ -1372,26 +1375,52 @@ async function importOne(provider: string, sessionId: string, open: boolean) {
   return task;
 }
 
-/** Imports an external session as a task and opens it: its first turn loads it (#312). */
-export async function importExternalSession(provider: string, sessionId: string) {
+async function importOne(provider: string, sessionId: string, open: boolean) {
+  const started = generation;
+  const task = await call(commands.agentImportSession(provider, sessionId));
+  if (generation !== started) return task;
+  return adoptSessionTask(provider, sessionId, task, open);
+}
+
+async function forkOne(provider: string, sessionId: string, cwd: string, open: boolean) {
+  const started = generation;
+  const task = await call(commands.agentForkSession(provider, sessionId, cwd));
+  if (generation !== started) return task;
+  return adoptSessionTask(provider, sessionId, task, open);
+}
+
+/** Guards a single external-session operation against a concurrent one on the same session. */
+async function runExternalOne(provider: string, sessionId: string, run: () => Promise<AgentTask>) {
   const key = externalKey(provider, sessionId);
   if (useAgents.getState().importing.has(key)) throw new Error(tx("Already importing"));
   markImporting([key], true);
   try {
-    return await importOne(provider, sessionId, true);
+    return await run();
   } finally {
     markImporting([key], false);
   }
 }
 
+/** Imports an external session as a task and opens it: its first turn loads it (#312). */
+export async function importExternalSession(provider: string, sessionId: string) {
+  return runExternalOne(provider, sessionId, () => importOne(provider, sessionId, true));
+}
+
+/** Forks a recorded session into a new task and opens it: its first turn continues the recording. */
+export async function forkExternalSession(provider: string, sessionId: string, cwd: string) {
+  return runExternalOne(provider, sessionId, () => forkOne(provider, sessionId, cwd, true));
+}
+
 /**
- * Imports sessions one after another, all marked pending from the start; only a single one opens.
- * Sessions already being imported are skipped. Failures don't stop the rest and are reported
- * together at the end. A project switch ends the batch; an abort ends it after the import in
- * flight and frees the sessions it didn't reach.
+ * Runs external-session operations one after another, all marked pending from the start; only a
+ * single one opens. Sessions already pending are skipped. Failures don't stop the rest and are
+ * reported together at the end. A project switch ends the batch; an abort ends it after the
+ * operation in flight and frees the sessions it didn't reach. Shared by import and fork.
  */
-export async function importExternalSessions(
-  sessions: readonly { provider: string; sessionId: string; title: string }[],
+async function runExternalBatch<T extends { provider: string; sessionId: string; title: string }>(
+  sessions: readonly T[],
+  runOne: (session: T, open: boolean) => Promise<unknown>,
+  failed: { one: string; many: string },
   onProgress?: (done: number) => void,
   signal?: AbortSignal,
 ) {
@@ -1409,8 +1438,8 @@ export async function importExternalSessions(
       break;
     }
     try {
-      // oxlint-disable-next-line no-await-in-loop -- imports are documented sequential: abort, generation and progress are checked between sessions
-      await importOne(s.provider, s.sessionId, batch.length === 1);
+      // oxlint-disable-next-line no-await-in-loop -- operations are documented sequential: abort, generation and progress are checked between sessions
+      await runOne(s, batch.length === 1);
     } catch (e) {
       failures.push(`${s.title}: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -1420,9 +1449,37 @@ export async function importExternalSessions(
   }
   if (generation !== started || !failures.length) return;
   // Not awaited, so the caller's dialog closes instead of waiting behind the message.
-  const title =
-    failures.length === 1 ? tx("A session could not be imported") : tx("Some sessions could not be imported");
-  void showError(title, failures.join("\n"));
+  void showError(failures.length === 1 ? failed.one : failed.many, failures.join("\n"));
+}
+
+/** Imports sessions one after another; the batch rules are {@link runExternalBatch}'s. */
+export async function importExternalSessions(
+  sessions: readonly { provider: string; sessionId: string; title: string }[],
+  onProgress?: (done: number) => void,
+  signal?: AbortSignal,
+) {
+  await runExternalBatch(
+    sessions,
+    (s, open) => importOne(s.provider, s.sessionId, open),
+    { one: tx("A session could not be imported"), many: tx("Some sessions could not be imported") },
+    onProgress,
+    signal,
+  );
+}
+
+/** Forks sessions one after another; the batch rules are {@link runExternalBatch}'s. */
+export async function forkExternalSessions(
+  sessions: readonly { provider: string; sessionId: string; cwd: string; title: string }[],
+  onProgress?: (done: number) => void,
+  signal?: AbortSignal,
+) {
+  await runExternalBatch(
+    sessions,
+    (s, open) => forkOne(s.provider, s.sessionId, s.cwd, open),
+    { one: tx("A session could not be forked"), many: tx("Some sessions could not be forked") },
+    onProgress,
+    signal,
+  );
 }
 
 export function setIdeContext(on: boolean) {
@@ -1697,19 +1754,6 @@ export async function setTaskSkillOverrides(task: string, overrides: Record<stri
   }));
 }
 
-/** Attach a reviewed block without submitting, changing providers, or replacing draft attachments. */
-export function appendContextBlock({ text, info }: { text: string; info: string }) {
-  const selected = activeComposerKey();
-  const task = useAgents.getState().tasks.get(selected);
-  const key = task && task.status !== "archived" ? task.id : HOME;
-  const existing = composerDraft(key).text.trimEnd();
-  // End with a trailing newline so the composer caret lands after the fence and folds it into a card.
-  const block = `${fenced(text, info)}\n`;
-  updateComposer(key, { text: existing ? `${existing}\n\n${block}` : block });
-  if (key === HOME) openHome();
-  else openTask(key);
-}
-
 /** The composer the user is looking at: the Agents surface on show, else the one typed in last. */
 function activeComposerKey(): string {
   const s = useAgents.getState();
@@ -1838,10 +1882,15 @@ export const renameTask = (task: string, title: string) => call(commands.agentRe
 export const archiveTask = (task: string) => call(commands.agentArchive(task));
 export const deleteTask = (task: string, removeWorktree: boolean) => call(commands.agentDelete(task, removeWorktree));
 
+function withOrder(base: Omit<TaskOrganize, "order">, order: Record<string, string[]> | undefined): TaskOrganize {
+  return order ? { ...base, order } : base;
+}
+
 /** Applies `change` to the saved arrange state of the project the tasks belong to. */
 function changeOrganize(change: (organize: TaskOrganize) => TaskOrganize) {
   const s = useAgents.getState();
   const organize = change(s.organize);
+  if (organize === s.organize) return;
   useAgents.setState({ organize });
   saveOrganize(s.organizeRoot, organize);
 }
@@ -1854,7 +1903,8 @@ export function pinTasks(tasks: readonly string[], pinned: boolean) {
       if (pinned) next.add(task);
       else next.delete(task);
     }
-    return { ...organize, pinned: [...next] };
+    const order = pinned ? organize.order : removeFromOrder(organize.order, [PINNED_SECTION], new Set(tasks));
+    return withOrder({ groups: organize.groups, groupOf: organize.groupOf, pinned: [...next] }, order);
   });
 }
 
@@ -1886,22 +1936,80 @@ export function renameTaskGroup(group: string, name: string) {
 
 /** Removes a group; its tasks go back to the status groups. */
 export function deleteTaskGroup(group: string) {
-  changeOrganize((organize) => ({
-    ...organize,
-    groups: organize.groups.filter((g) => g.id !== group),
-    groupOf: Object.fromEntries(Object.entries(organize.groupOf).filter(([, g]) => g !== group)),
-  }));
+  changeOrganize((organize) => {
+    const section = customSection(group);
+    let order = organize.order;
+    if (order && section in order) {
+      const rest = { ...order };
+      delete rest[section];
+      order = compactOrder(rest);
+    }
+    return withOrder(
+      {
+        groups: organize.groups.filter((g) => g.id !== group),
+        groupOf: Object.fromEntries(Object.entries(organize.groupOf).filter(([, g]) => g !== group)),
+        pinned: organize.pinned,
+      },
+      order,
+    );
+  });
 }
 
 /** Moves the tasks into `group`, out of the pinned section; `null` puts them back among the status groups. */
 export function moveTasksToGroup(tasks: readonly string[], group: string | null) {
   changeOrganize((organize) => {
     const groupOf = { ...organize.groupOf };
+    const leftSections = new Set<string>();
     for (const task of tasks) {
+      const prev = organize.groupOf[task];
+      if (prev && prev !== group) leftSections.add(customSection(prev));
       if (group) groupOf[task] = group;
       else delete groupOf[task];
     }
+    if (group) leftSections.add(PINNED_SECTION);
     const moved = new Set(tasks);
-    return { ...organize, groupOf, pinned: group ? organize.pinned.filter((id) => !moved.has(id)) : organize.pinned };
+    const order = removeFromOrder(organize.order, leftSections, moved);
+    return withOrder(
+      {
+        groups: organize.groups,
+        groupOf,
+        pinned: group ? organize.pinned.filter((id) => !moved.has(id)) : organize.pinned,
+      },
+      order,
+    );
   });
+}
+
+/** Returns tasks to their status group (unpinned and out of any custom group). */
+export function moveTasksToStatusGroup(tasks: readonly string[]) {
+  changeOrganize((organize) => {
+    const moved = new Set(tasks);
+    const groupOf = { ...organize.groupOf };
+    const leftSections = new Set<string>([PINNED_SECTION]);
+    for (const task of tasks) {
+      const prev = organize.groupOf[task];
+      if (prev) leftSections.add(customSection(prev));
+      delete groupOf[task];
+    }
+    const order = removeFromOrder(organize.order, leftSections, moved);
+    return withOrder(
+      {
+        groups: organize.groups,
+        groupOf,
+        pinned: organize.pinned.filter((id) => !moved.has(id)),
+      },
+      order,
+    );
+  });
+}
+
+/** Places `sourceId` before or after `targetId` (moving it into the target's section when needed). */
+export function reorderTask(sourceId: string, targetId: string, position: "before" | "after") {
+  const tasks = useAgents.getState().tasks.values();
+  changeOrganize((organize) => reorderTaskInOrganize(organize, tasks, sourceId, targetId, position));
+}
+
+/** Reorders a custom group before or after another custom group. */
+export function reorderTaskGroup(sourceId: string, targetId: string, position: "before" | "after") {
+  changeOrganize((organize) => reorderGroupsInOrganize(organize, sourceId, targetId, position));
 }

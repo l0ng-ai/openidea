@@ -76,6 +76,8 @@ fn follows_the_block_through_edits_and_a_rename() {
     let fx = renamed_history();
     let h = history(&fx.repo(), &fx.path("b.txt"), None, (1, 2));
     assert_eq!(h.head_lines, Some((1, 2)));
+    // Without a merge on top, HEAD's block is the newest row's.
+    assert_eq!(h.head.as_deref(), Some(h.revisions[0].after.as_str()));
     let shown: Vec<_> = h.revisions.iter().map(|r| (r.summary.as_str(), r.path.as_str())).collect();
     // Edits outside the block and the pure rename are left out.
     assert_eq!(shown, [("Shout three", "b.txt"), ("Shout two", "a.txt"), ("Add a", "a.txt")]);
@@ -87,13 +89,33 @@ fn follows_the_block_through_edits_and_a_rename() {
 }
 
 #[test]
+fn newest_row_a_merge_without_a_diff() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "a\nb\nc\nd\n");
+    fx.commit("Add a");
+    fx.git(&["switch", "-q", "-c", "side"]);
+    fx.write("a.txt", "A\nb\nc\nd\n");
+    fx.commit("Side edit");
+    fx.git(&["switch", "-q", "main"]);
+    fx.write("a.txt", "a\nb\nc\nD\n");
+    fx.commit("Main edit");
+    fx.git(&["merge", "-q", "--no-edit", "side"]);
+    let h = history(&fx.repo(), &fx.path("a.txt"), None, (0, 3));
+    let newest = &h.revisions[0];
+    assert!(newest.summary.starts_with("Merge"), "{newest:?}");
+    // Git prints no patch for the merge, so its block says nothing about HEAD.
+    assert_eq!((newest.before.as_str(), newest.after.as_str()), ("", ""));
+    assert_eq!(h.head.as_deref(), Some("A\nb\nc\nD\n"));
+}
+
+#[test]
 fn maps_an_edited_selection_to_head_lines() {
     let fx = renamed_history();
     let repo = fx.repo();
     // Two unsaved lines inserted at the top: lines 3..=4 are HEAD's 1..=2.
     let edited = "new\nnew\none\nTWO\nTHREE\nfour\nFIVE\n";
     let h = history(&repo, &fx.path("b.txt"), Some(edited), (3, 4));
-    assert_eq!(h.head_lines, Some((1, 2)));
+    assert_eq!((h.head_lines, h.head.as_deref()), (Some((1, 2)), Some("TWO\nTHREE\n")));
     assert_eq!(h.revisions.len(), 3);
     // Only new lines selected, or a file Git does not know: nothing committed to show.
     let h = history(&repo, &fx.path("b.txt"), Some(edited), (0, 1));

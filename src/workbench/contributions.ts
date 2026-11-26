@@ -305,6 +305,8 @@ export interface ServiceProviderContribution {
   /** Toolbar buttons for a selected node of this provider. */
   actions?(item: ServiceTreeItem): ServiceItemAction[];
   menu?(item: ServiceTreeItem): MenuItem[];
+  /** The service a node stands for, as other contributors see it (plugins' Services menus); null for groups. */
+  context?(item: ServiceTreeItem): ServiceContext | null;
   /** Double click / Enter. */
   activate?(item: ServiceTreeItem): void;
   /** Jump to Source (F4 / ⌘↓); a provider without it activates the node instead. */
@@ -321,6 +323,43 @@ export interface ServiceProviderContribution {
   addMenu?(): MenuItem[];
   /** Optional sibling display ordering; does not move services between groups. */
   reorder?: TreeReorder<ServiceTreeItem>;
+}
+
+/** A selected Services node as contributors outside its provider see it. */
+export interface ServiceContext {
+  /** The provider's id: `run`, `docker`. */
+  provider: string;
+  /** Stable within the provider: a run configuration's id, a container's id. */
+  id: string;
+  /** `spring-boot`, `application`, … (a run configuration's kind), `docker-container`. */
+  kind: string;
+  name: string;
+  running: boolean;
+  /** When a run configuration backs the service. */
+  runConfigurationId?: string;
+}
+
+/**
+ * Entries other features add to the Services tree's context menu and toolbar for the
+ * selected services (all of which have a {@link ServiceContext}).
+ */
+export interface ServiceSelectionContribution {
+  id: string;
+  menu?(services: ServiceContext[]): MenuItem[];
+  actions?(services: ServiceContext[]): ServiceItemAction[];
+}
+
+const serviceSelectionItems = new Map<string, ServiceSelectionContribution>();
+
+export function registerServiceSelectionItems(c: ServiceSelectionContribution): () => void {
+  serviceSelectionItems.set(c.id, c);
+  return () => {
+    if (serviceSelectionItems.get(c.id) === c) serviceSelectionItems.delete(c.id);
+  };
+}
+
+export function serviceSelectionContributions(): ServiceSelectionContribution[] {
+  return [...serviceSelectionItems.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
 
 export const useServiceProviders = create<{ providers: Map<string, ServiceProviderContribution> }>(() => ({
@@ -1028,22 +1067,6 @@ export const maybeCommitService = (): CommitService | undefined => commitService
  * or references to files.
  */
 export type AgentContext = { kind: "block"; info: string; text: string } | { kind: "files"; paths: string[] };
-
-type DraftBlock = Extract<AgentContext, { kind: "block" }>;
-let appendDraftBlock: ((block: DraftBlock) => void) | undefined;
-
-/** Shows the current composer after appending context requested in another tool window. */
-export function provideAgentDraftAppender(append: (block: DraftBlock) => void): () => void {
-  appendDraftBlock = append;
-  return () => {
-    if (appendDraftBlock === append) appendDraftBlock = undefined;
-  };
-}
-export function appendAgentDraftBlock(block: DraftBlock): boolean {
-  if (!appendDraftBlock) return false;
-  appendDraftBlock(block);
-  return true;
-}
 
 export interface AgentContextSource {
   /** Typed after `@`. */
@@ -1759,6 +1782,13 @@ export interface RunExecutorContribution {
   supports(config: RunConfig): boolean;
   /** Plans the launch; null when it can't run (the executor has said why). */
   prepare(config: RunConfig): Promise<ExecutorLaunch | null>;
+  /**
+   * The launch starts under the debugger (a plugin's "Debug with …"): no Run before-launch
+   * pass of its own, and `finished` / `beforeStop` are not called.
+   */
+  debug?: boolean;
+  /** `prepare` handles a configuration on a run target itself (no container check before it). */
+  checksTarget?: boolean;
 }
 
 export const useRunExecutors = create<{ executors: Map<string, RunExecutorContribution> }>(() => ({
@@ -1925,14 +1955,17 @@ export function runUndoHandlers(command: "undo" | "redo", focused: Element): boo
   return [...undoHandlers].reverse().some((h) => h(command, focused));
 }
 
-/** Registers `nav` (the latest render's) for `toolWindow` while the calling view is mounted. */
-export function useOccurrenceNavigator(toolWindow: string, nav: OccurrenceNavigator["go"]) {
+/** Registers `nav` (the latest render's) for `toolWindow` (none when `null`) while the calling view is mounted. */
+export function useOccurrenceNavigator(toolWindow: string | null, nav: OccurrenceNavigator["go"]) {
   const latest = useRef(nav);
   useEffect(() => {
     latest.current = nav;
   });
   useEffect(
-    () => registerOccurrenceNavigator(toolWindow, { go: (dir, focus) => latest.current(dir, focus) }),
+    () =>
+      toolWindow
+        ? registerOccurrenceNavigator(toolWindow, { go: (dir, focus) => latest.current(dir, focus) })
+        : undefined,
     [toolWindow],
   );
 }
@@ -2053,6 +2086,11 @@ export interface RunAnythingProvider {
    * synchronous): Markdown offers run icons for such lines in code blocks.
    */
   accepts?(line: string): boolean;
+  /**
+   * For providers whose entries arrive later (a plugin's answer): `listener` is called when
+   * `items` would return something new, so the open popup asks again. Returns the unsubscribe.
+   */
+  subscribe?(listener: () => void): () => void;
 }
 
 const runAnythingProviders = new Map<string, RunAnythingProvider>();

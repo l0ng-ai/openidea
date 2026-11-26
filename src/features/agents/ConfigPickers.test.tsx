@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentConfigOption } from "@/bindings";
+import { useI18n } from "@/platform/i18n";
 import { ConfigPickers, computeOverflowLayout, configPickerOptions } from "./ConfigPickers";
 import { useAgents } from "./store";
 
@@ -22,8 +23,15 @@ const value = (id: string, name = id, description: string | null = null) => ({ v
 describe("configPickerOptions", () => {
   it("groups nested paths by their first provider and preserves the full value and description", () => {
     expect(configPickerOptions(config([value("9router/cmc/Beam", "Beam display", "Fast")]))).toEqual([
-      { value: "9router", label: "9router", section: true },
-      { value: "9router/cmc/Beam", label: "Beam display", detail: "cmc/Beam · Fast", keywords: "9router" },
+      { value: "9router", label: "9router", verbatim: true, section: true },
+      {
+        value: "9router/cmc/Beam",
+        label: "Beam display",
+        verbatim: true,
+        detail: "cmc/Beam · Fast",
+        verbatimDetail: true,
+        keywords: "9router",
+      },
     ]);
   });
   it("shows the agent-reported model name without the repeated provider prefix and keeps the id as the detail", () => {
@@ -36,21 +44,49 @@ describe("configPickerOptions", () => {
         ]),
       ),
     ).toEqual([
-      { value: "opencode", label: "opencode", section: true },
-      { value: "opencode/beam-free", label: "Beam Free", detail: "beam-free", keywords: "opencode" },
-      { value: "opencode/big-pickle", label: "Big Pickle", detail: "big-pickle", keywords: "opencode" },
-      { value: "opencode/hy4-flash-free", label: "hy4 flash Free", detail: "hy4-flash-free", keywords: "opencode" },
+      { value: "opencode", label: "opencode", verbatim: true, section: true },
+      {
+        value: "opencode/beam-free",
+        label: "Beam Free",
+        verbatim: true,
+        detail: "beam-free",
+        verbatimDetail: true,
+        keywords: "opencode",
+      },
+      {
+        value: "opencode/big-pickle",
+        label: "Big Pickle",
+        verbatim: true,
+        detail: "big-pickle",
+        verbatimDetail: true,
+        keywords: "opencode",
+      },
+      {
+        value: "opencode/hy4-flash-free",
+        label: "hy4 flash Free",
+        verbatim: true,
+        detail: "hy4-flash-free",
+        verbatimDetail: true,
+        keywords: "opencode",
+      },
     ]);
   });
   it("falls back to the compact id tail when the agent echoes the id as its name", () => {
     expect(configPickerOptions(config([value("acme/ctx/big")]))).toEqual([
-      { value: "acme", label: "acme", section: true },
-      { value: "acme/ctx/big", label: "big", detail: "ctx/big", keywords: "acme" },
+      { value: "acme", label: "acme", verbatim: true, section: true },
+      {
+        value: "acme/ctx/big",
+        label: "big",
+        verbatim: true,
+        detail: "ctx/big",
+        verbatimDetail: true,
+        keywords: "acme",
+      },
     ]);
   });
   it("keeps plain ids ungrouped even when the display name contains a slash", () => {
     expect(configPickerOptions(config([value("plain", "Local / Beam", "Offline")]))).toEqual([
-      { value: "plain", label: "Local / Beam", detail: "Offline", keywords: "" },
+      { value: "plain", label: "Local / Beam", verbatim: true, detail: "Offline", verbatimDetail: true, keywords: "" },
     ]);
   });
   it("collects several providers in encounter order and preserves order inside each group", () => {
@@ -70,7 +106,7 @@ describe("configPickerOptions", () => {
   });
   it("leaves non-model option labels and descriptions intact", () => {
     expect(configPickerOptions(config([value("a/One", "Custom", "Description")], "mode"))).toEqual([
-      { value: "a/One", label: "Custom", detail: "Description" },
+      { value: "a/One", label: "Custom", verbatim: true, detail: "Description", verbatimDetail: true },
     ]);
   });
   it("places pinned models in a top Pinned section and prepends usageMultiplier to detail", () => {
@@ -88,9 +124,23 @@ describe("configPickerOptions", () => {
     );
     expect(options).toEqual([
       { value: "__pinned__", label: "Pinned", section: true },
-      { value: "gemini-4-carbon", label: "Gemini 4 Carbon", detail: "1x · Powerful · Medium cost", keywords: "" },
+      {
+        value: "gemini-4-carbon",
+        label: "Gemini 4 Carbon",
+        verbatim: true,
+        detail: "1x · Powerful · Medium cost",
+        verbatimDetail: true,
+        keywords: "",
+      },
       { value: "__models__", label: "Models", section: true },
-      { value: "gpt-6-sol", label: "GPT-6 Sol", detail: "1x · Medium cost", keywords: "" },
+      {
+        value: "gpt-6-sol",
+        label: "GPT-6 Sol",
+        verbatim: true,
+        detail: "1x · Medium cost",
+        verbatimDetail: true,
+        keywords: "",
+      },
     ]);
   });
 });
@@ -383,6 +433,33 @@ describe("model settings", () => {
     expect(onChange).toHaveBeenCalledExactlyOnceWith("reasoning_effort", "extra-high");
     // The only setting: choosing it is done.
     expect(screen.queryByRole("dialog", { name: "Model settings" })).not.toBeInTheDocument();
+  });
+
+  it("keeps agent effort labels as written in every UI language", () => {
+    const previous = useI18n.getState().texts;
+    useI18n.setState({ texts: { ...previous, Low: "低", High: "高", Max: "最大值", "Effort Level": "推理强度" } });
+    try {
+      const config = copilotConfig().map((o) =>
+        o.category === "thought_level"
+          ? {
+              ...o,
+              values: ["Low", "Medium", "High", "Extra high", "Max", "Ultra"].map((name) =>
+                value(name.toLowerCase().replace(" ", "-"), name),
+              ),
+              current: "high",
+            }
+          : o,
+      );
+      render(<ConfigPickers config={config} onChange={vi.fn()} />);
+      fireEvent.click(screen.getByRole("button", { name: /: High$/ }));
+      const levels = within(screen.getByRole("dialog")).getByRole("listbox", { name: "推理强度" });
+      expect(within(levels).getByRole("option", { name: "High" })).toHaveAttribute("aria-selected", "true");
+      for (const name of ["Low", "Medium", "Extra high", "Max", "Ultra"])
+        expect(within(levels).getByRole("option", { name })).toBeInTheDocument();
+      expect(within(levels).queryByText(/低|高|最大值/)).not.toBeInTheDocument();
+    } finally {
+      useI18n.setState({ texts: previous });
+    }
   });
 
   it("tucks Fast into the model popup", () => {

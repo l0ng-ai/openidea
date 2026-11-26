@@ -159,7 +159,6 @@
   color: var(--fg-muted);
   background: transparent;
   font-size: 19px;
-  cursor: pointer;
 }
 .filterButton[aria-pressed="true"] {
   background: var(--bg-tree-hover);

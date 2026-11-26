@@ -1,4 +1,5 @@
 import { isTauri } from "./ipc";
+import { isWebMode } from "./webBridge";
 
 const OPENABLE_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
 
@@ -15,7 +16,7 @@ export function isOpenable(url: string): boolean {
 /** Opens a web or `mailto:` URL with the system handler (the default browser); other schemes are ignored. */
 export async function openExternalUrl(url: string): Promise<void> {
   if (!isOpenable(url)) return;
-  if (!isTauri()) {
+  if (!isTauri() || isWebMode()) {
     window.open(url, "_blank", "noopener");
     return;
   }

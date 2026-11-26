@@ -6,6 +6,7 @@ import {
   createMarkdownRenderer,
   frontMatter,
   headingLine,
+  isRenderedFence,
   joinPath,
   previewLineAtOffset,
   previewOffsetForLine,
@@ -13,6 +14,34 @@ import {
   resolveLink,
   slugify,
 } from "./render";
+
+it("marks only rendered Markdown fences for copying", () => {
+  const source = [
+    "```bash args\nprintf '%s' '<>&'\n```",
+    "- Example\n\n  ~~~python\n  if True:\n      print(1)\n  ~~~",
+    "> ```\n> Plain\n> ```",
+    "    indented",
+    '<pre DATA-MARKDOWN-FENCE><code class="language-bash">raw HTML</code></pre>',
+    '<pre data-markdown-fence="arbitrary"><code>raw marker</code></pre>',
+    "```mermaid\ngraph TD\n```",
+  ].join("\n\n");
+  const render = createMarkdownRenderer();
+  const expected = renderMarkdown(source);
+  expect(render(source)).toBe(expected);
+  expect(render(source + "\n\nNext paragraph")).toBe(renderMarkdown(source + "\n\nNext paragraph"));
+
+  const root = document.createElement("div");
+  root.innerHTML = expected;
+  expect([...root.querySelectorAll("pre")].map((pre) => [isRenderedFence(pre), pre.textContent?.trim()])).toEqual([
+    [true, "printf '%s' '<>&'"],
+    [true, "if True:\n    print(1)"],
+    [true, "Plain"],
+    [false, "indented"],
+    [false, "raw HTML"],
+    [false, "raw marker"],
+    [true, "graph TD"],
+  ]);
+});
 
 describe("front matter", () => {
   const skill =
