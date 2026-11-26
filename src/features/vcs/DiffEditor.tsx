@@ -2052,15 +2052,25 @@ function TwoPaneDiff({
           </span>
         </div>
       ) : (
+        // A deleted file's swapped viewer still reads in the request's order: revision → (deleted).
         <div className={labels}>
-          <span className={styles.label} title={sourceLabels ? `${captionA} → ${captionB}` : undefined}>
-            <span className={styles.labelText}>{sideLabel(left)}</span>
-            {sourceLabels && <PaneTitleDetail {...titleA} />}
+          <span
+            className={styles.label}
+            title={
+              sourceLabels ? (deletedOneSided ? `${captionB} → ${captionA}` : `${captionA} → ${captionB}`) : undefined
+            }
+          >
+            <span className={styles.labelText}>{sideLabel(deletedOneSided ? right : left)}</span>
+            {sourceLabels && <PaneTitleDetail {...(deletedOneSided ? titleB : titleA)} />}
             {unifiedOnLeft && <span className={styles.badge}>{tx("editable")}</span>}
-            {eolDiffers && eolA && <span className={styles.badge}>{badgeA}</span>} →
-            <span className={styles.labelText}>{sideLabel(right)}</span>
-            {sourceLabels && <PaneTitleDetail {...titleB} />}
-            {eolDiffers && eolB && <span className={styles.badge}>{badgeB}</span>}
+            {eolDiffers && (deletedOneSided ? eolB : eolA) && (
+              <span className={styles.badge}>{deletedOneSided ? badgeB : badgeA}</span>
+            )}{" "}
+            →<span className={styles.labelText}>{sideLabel(deletedOneSided ? left : right)}</span>
+            {sourceLabels && <PaneTitleDetail {...(deletedOneSided ? titleA : titleB)} />}
+            {eolDiffers && (deletedOneSided ? eolA : eolB) && (
+              <span className={styles.badge}>{deletedOneSided ? badgeA : badgeB}</span>
+            )}
           </span>
         </div>
       )}
