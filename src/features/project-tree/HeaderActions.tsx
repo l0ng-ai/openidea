@@ -71,6 +71,7 @@ const APPEARANCE_OPTIONS: Array<[ToggleOption, string]> = [
   ["showHidden", "Show Hidden Files"],
   ["showExcluded", "Show Excluded Files"],
   ["showMembers", "Show Members"],
+  ["showScratches", "Show Scratches and Consoles"],
   ["showRootPaths", "Show Root Paths"],
   ["horizontalScroll", "Horizontal Scrolling"],
   ["compact", "Compact Middle Packages"],

@@ -10629,5 +10629,6 @@
   "Resize SVG preview": "调整 SVG 预览大小",
   "The SVG source is not valid.": "SVG 源代码无效。",
   "Install GitHub CLI": "安装 GitHub CLI",
-  "Download manually…": "手动下载…"
+  "Download manually…": "手动下载…",
+  "Show Scratches and Consoles": "显示临时文件和控制台"
 }

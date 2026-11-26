@@ -113,7 +113,9 @@ function showProjectView(focus: boolean) {
 export function selectInProjectView(path?: string | null, focus = true, expand = false) {
   const target = path ?? maybeEditorService()?.activePath() ?? null;
   if (!target) return false;
-  if (!modeShows(target)) setViewMode("project");
+  // Hidden from the Project pane (Show Scratches and Consoles off), a scratch shows in its own pane.
+  if (!modeShows(target))
+    setViewMode(modeShows(target, "project") || !modeShows(target, "scratches") ? "project" : "scratches");
   showProjectView(focus);
   return revealPath(target, focus, true, expand);
 }

@@ -186,6 +186,47 @@ describe("project view modes", () => {
     expect(localStorage.getItem("openidea.projectTree.mode")).toBe(JSON.stringify("scratches"));
   });
 
+  it("hides Scratches and Consoles from the Project pane only when the option is off", () => {
+    store.setViewOption("showScratches", false);
+    expect(labels()).toEqual(["proj", "External Libraries"]);
+    expect(modeShows("/data/scratches/s.py")).toBe(false);
+    expect(modeShows("/data/scratches/s.py", "scratches")).toBe(true);
+    expect(modeShows("/p/src/App.kt")).toBe(true);
+    // A scratches folder inside the project stays under the project root.
+    const inner = registerProjectViewRoot({
+      id: "inner",
+      label: "Inner",
+      icon: "scratches",
+      path: "/p/tmp",
+      scope: "scratches",
+    });
+    expect(modeShows("/p/tmp/a.txt")).toBe(true);
+    inner();
+    // The Scratches and Consoles pane and the Open Files pane still list them.
+    setViewMode("scratches");
+    expect(labels()).toEqual(["Scratches"]);
+    setOpenFiles(["/data/scratches/s.py"]);
+    setViewMode("openFiles");
+    expect(labels()).toEqual(["Scratches"]);
+    setViewMode("project");
+    store.setViewOption("showScratches", true);
+    expect(labels()).toEqual(["proj", "External Libraries", "Scratches"]);
+    expect(modeShows("/data/scratches/s.py")).toBe(true);
+  });
+
+  it("selects a hidden scratch in the Scratches and Consoles pane", async () => {
+    const { selectInProjectView } = await import("./actions");
+    store.setViewOption("showScratches", false);
+    expect(selectInProjectView("/data/scratches/s.py", false)).toBe(true);
+    expect(useProjectTree.getState().mode).toBe("scratches");
+    // Project files go back to the Project pane.
+    expect(selectInProjectView("/p/src/App.kt", false)).toBe(true);
+    expect(useProjectTree.getState().mode).toBe("project");
+    store.setViewOption("showScratches", true);
+    expect(selectInProjectView("/data/scratches/s.py", false)).toBe(true);
+    expect(useProjectTree.getState().mode).toBe("project");
+  });
+
   it("keeps each pane's expansion", () => {
     store.setExpanded(new Set(["/p", "/p/src"]));
     setViewMode("projectFiles");
