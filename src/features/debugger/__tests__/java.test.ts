@@ -273,6 +273,16 @@ describe("naming the Java project jdtls imported", () => {
     expect(await javaProjectName("/p")).toBe("taihe");
   });
 
+  it("lets java-debug resolve the main class instead of naming a POM-only project", async () => {
+    files["/p/pom.xml"] = "<project><artifactId>assembly</artifactId><packaging>pom</packaging></project>";
+    files["/p/.project"] = "<projectDescription><name>assembly</name></projectDescription>";
+    kotlinFiles = false;
+    debugAdapter = "java-debug";
+    const launch = await javaLaunchConfig({ ...app, module: "assembly" }, "/p");
+    expect(JSON.parse(launch.extraJson!)).not.toHaveProperty("projectName");
+    expect(JSON.parse(launch.extraJson!).classPaths).toEqual(["/p/target/classes", "/m2/a.jar"]);
+  });
+
   it("falls back to the folder name when the project says nothing, including unresolved properties", async () => {
     expect(await javaProjectName("/p/api")).toBe("api");
     files["/p/pom.xml"] = "<project><artifactId>${revision}</artifactId></project>";
