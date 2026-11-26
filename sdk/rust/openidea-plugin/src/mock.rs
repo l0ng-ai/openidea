@@ -2867,7 +2867,9 @@ pub mod current {
             return Err(Error::Invalid(format!("terminal directory {cwd:?}: outside the project")));
         }
         let id = open_terminal_session(key, title, cmd)?;
-        with(|s| s.terminal_cwds.entry(key.into()).or_insert_with(|| cwd.into()));
+        with(|s| {
+            s.terminal_cwds.entry(key.into()).or_insert_with(|| cwd.into());
+        });
         Ok(id)
     }
     pub fn write_terminal(key: &str, text: &str) -> Result<(), Error> {

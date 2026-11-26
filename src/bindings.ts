@@ -1242,8 +1242,6 @@ export const commands = {
 	pluginContentTabAction: (pluginId: string, action: ContentTabAction) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_content_tab_action", { pluginId, action })),
 	/**  Plugin context keys in effect for this window (later changes arrive as `contextChanged`). */
 	pluginContextKeys: () => __TAURI_INVOKE<PluginContextKey[]>("plugin_context_keys"),
-	pluginRunAnythingSuggest: (pluginId: string, prefix: string, text: string) => typedError<RunAnythingItem[], IdeError>(__TAURI_INVOKE("plugin_run_anything_suggest", { pluginId, prefix, text })),
-	pluginRunAnythingRun: (pluginId: string, prefix: string, line: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("plugin_run_anything_run", { pluginId, prefix, line })),
 	/**  Waits for the process an `attach-child` plugin configuration's debugger attaches to. */
 	pluginDebugAttachTarget: (config: string, run: RunId) => typedError<AttachableProcess, IdeError>(__TAURI_INVOKE("plugin_debug_attach_target", { config, run })),
 	/**  Project-scoped decoration snapshots; the window filters to its current root. */
@@ -1314,6 +1312,13 @@ export const commands = {
 	pluginRevokeNetHost: (id: string, host: string) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_revoke_net_host", { id, host })),
 	/**  Goes back to the version the last update of `id` replaced. */
 	pluginRollBack: (id: string) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_roll_back", { id })),
+	/**
+	 *  Runs a Run Anything line starting with the plugin's `prefix` (API 1.18): whether
+	 *  the plugin claimed it.
+	 */
+	pluginRunAnythingRun: (pluginId: string, prefix: string, line: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("plugin_run_anything_run", { pluginId, prefix, line })),
+	/**  Run Anything entries of the plugin declaring `prefix` for the field's `text` (API 1.18). */
+	pluginRunAnythingSuggest: (pluginId: string, prefix: string, text: string) => typedError<RunAnythingItem[], IdeError>(__TAURI_INVOKE("plugin_run_anything_suggest", { pluginId, prefix, text })),
 	/**  Runs a plugin command in the context of this window's project and focused editor. */
 	pluginRunCommand: (pluginId: string, commandId: string, arg: string | null, editor: {
 	path: string,
@@ -12389,6 +12394,14 @@ export type RubySettings = {
 	interpreter?: string,
 };
 
+/**  A Run Anything entry from a plugin's `run-anything-provider` export (API 1.18). */
+export type RunAnythingItem = {
+	label: string,
+	detail: string | null,
+	/**  The line Tab completes and Enter runs; `label` when absent. */
+	line: string | null,
+};
+
 /**  Snapshot and live output binding returned when reattaching to a running process. */
 export type RunAttach = RunAttach_Serialize | RunAttach_Deserialize;
 
@@ -14373,15 +14386,6 @@ export type ViewButton = {
 };
 
 /**  A user action in a view. */
-/**
- * A Run Anything entry from a plugin's `run-anything-provider` export (API 1.18).
- */
-export type RunAnythingItem = { label: string; detail: string | null; 
-/**
- * The line Tab completes and Enter runs; `label` when absent.
- */
-line: string | null };
-
 export type ViewEvent = { kind: "button"; id: string } | { kind: "activate"; key: string } | { kind: "select"; key: string } | { kind: "expand"; key: string } | { kind: "collapse"; key: string } | { kind: "field"; key: string; value: string } | { kind: "cell"; row: number; column: number; value: string } | { kind: "insertRow"; before: number } | { kind: "deleteRows"; rows: number[] } | { kind: "message"; text: string } | { kind: "sort"; column: number; descending: boolean } | { kind: "tableSelect"; row: number } | { kind: "tableActivate"; row: number } | { kind: "closed" };
 
 export type ViewField = {
