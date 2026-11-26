@@ -6131,5 +6131,6 @@
   "Search NuGet packages": "Buscar paquetes NuGet",
   "Install / Update": "Instalar / actualizar",
   "Versions": "Versiones",
-  "Transitive": "Transitivo"
+  "Transitive": "Transitivo",
+  "Allow all optional permissions": "Permitir todos los permisos opcionales"
 }

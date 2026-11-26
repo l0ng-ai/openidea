@@ -10410,5 +10410,6 @@
   "Recent Find Usages": "最近的查找用法",
   "The backend of another OpenIDEA build, for example the one from before an upgrade, still has this project open, so this build can't open it. Stop that backend and open the project? Its terminals, runs and agent sessions end, and changes it hasn't saved are lost.": "另一个 OpenIDEA 版本（例如升级前的版本）的后端仍打开着这个项目，当前版本无法打开它。要停止那个后端并打开项目吗？它的终端、运行和智能体会话会结束，未保存的修改会丢失。",
   "Stop Backend and Open": "停止后端并打开",
-  "Could not load the frames: {0}": "无法加载栈帧：{0}"
+  "Could not load the frames: {0}": "无法加载栈帧：{0}",
+  "Allow all optional permissions": "允许全部可选权限"
 }
