@@ -136,7 +136,7 @@ register_plugin!(TodoFinder, views);
 双击和回车用 `event.table_activate()`（API 1.3，从 0 开始的绝对行号）。
 
 后续 API 新增的主体、字段和事件以 `Other { kind, data }` 传递：IDE 不认识某种主体时会提示需要更新，
-不认识的字段类型则直接省略。条目右键菜单使用 `viewItem.context`（见 [命令与动作](/zh/plugins/guides/commands) 中的“菜单”一节）。
+不认识的字段类型则直接省略。条目右键菜单使用 `viewItem.context`（见 [命令与动作](/zh/plugins/guides/commands) 中的“菜单”一节）。视图有键盘焦点时，用快捷键（或查找动作）运行选中条目的右键菜单里有的命令，命令参数是该条目的 key，与从菜单运行相同；未选中条目时没有参数。
 
 ## 自定义编辑器
 

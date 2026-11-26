@@ -157,6 +157,14 @@ describe("Java debugging (java-debug through jdtls)", () => {
     });
   });
 
+  it("asks the host for enhanced class redefinition when the configuration turns it on", async () => {
+    const on = { ...app, params: { enhancedClassRedefinition: "true" } };
+    expect(JSON.parse((await javaLaunchConfig(on, "/p")).extraJson!).enhancedClassRedefinition).toBe(true);
+    expect(JSON.parse((await javaLaunchConfig(app, "/p")).extraJson!)).not.toHaveProperty("enhancedClassRedefinition");
+    const kotlin = { ...on, debugAdapter: "kotlin-debug-adapter" };
+    expect(JSON.parse((await javaLaunchConfig(kotlin, "/p")).extraJson!).enhancedClassRedefinition).toBe(true);
+  });
+
   it("lets java-debug shorten a classpath too long for the OS, as Run does", async () => {
     for (const how of ["jarmanifest", "argfile"]) {
       shortenCommandLine = how;

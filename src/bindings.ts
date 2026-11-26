@@ -227,6 +227,8 @@ export const commands = {
 	 *  can show the UI's language and fall back to English. An install records the
 	 *  notes it saw, so this is only for an update installed outside the app.
 	 *  `Ok(None)` when the manifest covers another version or carries no notes.
+	 *  Reads only the public manifest, like the update check: the page usually opens
+	 *  in a window without a project.
 	 */
 	appReleaseNotes: (version: string, source: UpdateSource) => typedError<{ [key in string]: string } | null, IdeError>(__TAURI_INVOKE("app_release_notes", { version, source })),
 	/**  Quits through every window's unsaved-changes check, then starts again. */
@@ -478,6 +480,8 @@ export const commands = {
 	debugPause: (session: DebugSessionId, threadId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_pause", { session, threadId })),
 	/**  HotSwap (Reload Changed Classes) in a java-debug session. */
 	debugRedefineClasses: (session: DebugSessionId) => typedError<HotSwapResult, IdeError>(__TAURI_INVOKE("debug_redefine_classes", { session })),
+	/**  Replaces all of this window's line breakpoints with `files`. */
+	debugReplaceBreakpoints: (files: { [key in string]: Breakpoint[] }) => typedError<null, IdeError>(__TAURI_INVOKE("debug_replace_breakpoints", { files })),
 	debugResolveVariable: (session: DebugSessionId, variable: Variable_Deserialize) => typedError<Variable_Serialize, IdeError>(__TAURI_INVOKE("debug_resolve_variable", { session, variable })),
 	/**  Reset Frame (Drop Frame). */
 	debugRestartFrame: (session: DebugSessionId, frameId: number) => typedError<null, IdeError>(__TAURI_INVOKE("debug_restart_frame", { session, frameId })),
@@ -488,6 +492,7 @@ export const commands = {
 	debugSendInput: (session: DebugSessionId, text: string) => typedError<null, IdeError>(__TAURI_INVOKE("debug_send_input", { session, text })),
 	/**  This window's live sessions, including adapter-started child sessions. */
 	debugSessions: () => typedError<SessionInfo[], IdeError>(__TAURI_INVOKE("debug_sessions")),
+	/**  This window's breakpoints of `path`. */
 	debugSetBreakpoints: (path: string, breakpoints: Breakpoint[]) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_set_breakpoints", { path, breakpoints })),
 	/**  Field watchpoints; states aligned with `breakpoints`. */
 	debugSetDataBreakpoints: (breakpoints: DataBreakpoint[]) => typedError<BreakpointState[], IdeError>(__TAURI_INVOKE("debug_set_data_breakpoints", { breakpoints })),
@@ -1157,6 +1162,8 @@ export const commands = {
 	 *  disabled in place (no rebuild).
 	 */
 	menuSetDisabled: (ids: string[]) => __TAURI_INVOKE<void>("menu_set_disabled", { ids }),
+	/**  The Remote Development projects of the frontend's recent list, for Open Recent. */
+	menuSetRemoteRecent: (projects: RemoteRecent[]) => __TAURI_INVOKE<void>("menu_set_remote_recent", { projects }),
 	/**
 	 *  Index definitions named `name` within the roots `from` may navigate into (its own root
 	 *  plus its configured dependencies).
@@ -1512,7 +1519,7 @@ export const commands = {
 	 *  dev container, whose project folder is the container's own) in this window (installs /
 	 *  starts the server as needed).
 	 */
-	remoteConnect: (target: RemoteTarget, path: string, onProgress: Channel<RemoteProgress>) => typedError<RemoteProject_Serialize, IdeError>(__TAURI_INVOKE("remote_connect", { target, path, onProgress })),
+	remoteConnect: (target: RemoteTarget, path: string, replace: boolean, onProgress: Channel<RemoteProgress>) => typedError<RemoteProject_Serialize, IdeError>(__TAURI_INVOKE("remote_connect", { target, path, replace, onProgress })),
 	/**  The remote session of this window (a settings window: its parent's), if any. */
 	remoteCurrent: () => __TAURI_INVOKE<{
 	target: RemoteTarget,
@@ -3780,6 +3787,8 @@ export type BlameLine_Serialize = {
 export type BlockHistory = {
 	/**  The selected lines in HEAD (0-based, inclusive); None when none of them is committed. */
 	headLines: [number, number] | null,
+	/**  Those lines as HEAD has them, each ending with `\n`; None from servers that predate it. */
+	head?: string | null,
 	revisions: BlockRevision[],
 };
 
@@ -6848,7 +6857,9 @@ report?: PushReport | null } |
  *  jdtls could not set a module up as a Java project: the errors on its build files and
  *  the builds enclosing it (`path: message`, the path relative to the project), nearest first.
  */
-{ type: "javaBuildProblems"; problems: string[] };
+{ type: "javaBuildProblems"; problems: string[] } | 
+/**  A remote backend of another OpenIDEA build still serves the project and refused to retire. */
+{ type: "remoteBackendBusy" };
 
 export type ErrorKind = "notFound" | "alreadyExists" | "permissionDenied" | "invalidInput" | 
 /**  The requested state is stale; the UI must use the current snapshot. */
@@ -12155,6 +12166,19 @@ export type RemoteProject_Serialize = {
 	/**  Commands routed to the server (the rest run locally). */
 	commands: string[],
 	project: ProjectInfo_Serialize,
+};
+
+/**
+ *  A recent Remote Development project (SSH, WSL, Dev Container), kept by the frontend: Open
+ *  Recent lists it among the local projects, as Manage Projects does.
+ */
+export type RemoteRecent = {
+	/**  `ssh://host/path`, `wsl://Ubuntu/path`…: what `file.openRecentProject` gets back. */
+	location: string,
+	name: string,
+	/**  Where it lives, as shown after the name (`me@host:/srv/app`). */
+	detail: string,
+	openedAtMs: number | null,
 };
 
 export type RemoteSession = RemoteSession_Serialize | RemoteSession_Deserialize;

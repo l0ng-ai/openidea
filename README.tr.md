@@ -33,6 +33,12 @@ her şeyi arama alışkanlığını) çekirdeği Rust ile yazılmış yerel bir 
 Editör, kod analizi, hata ayıklayıcı (debugger), Git, terminal, veritabanı ve HTTP istemcileri;
 60'tan fazla dil için. macOS, Windows ve Linux sürümleri var.
 
+macOS'ta Homebrew ile de kurabilirsiniz:
+
+```bash
+brew install --cask l0ng-ai/tap/openidea
+```
+
 ## Performans karşılaştırması
 
 [freqtrade](https://github.com/freqtrade/freqtrade) projesini (Python, ~770 dosya)
