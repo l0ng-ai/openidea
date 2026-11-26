@@ -1069,7 +1069,9 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
         (config.min_width, config.min_height) = (Some(min.0), Some(min.1));
     }
     let window = WebviewWindowBuilder::from_config(app, &config)
-        .and_then(|b| macos_webview_configuration(webview_profile(app, b)).on_new_window(open_popup_in_browser).build())
+        .and_then(|b| {
+            macos_webview_configuration(app, webview_profile(app, b)).on_new_window(open_popup_in_browser).build()
+        })
         .map_err(|e| IdeError::internal(format!("cannot create window: {e}")))?;
     #[cfg(target_os = "linux")]
     decorate_csd(&window);
@@ -1907,10 +1909,11 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
     // display's Space, so macOS keeps it too.
     #[cfg(target_os = "linux")]
     let builder = builder.and_then(|b| b.parent(&parent));
-    let window = builder.and_then(|b| macos_webview_configuration(webview_profile(app, b)).build()).map_err(|e| {
-        windows.forget(&label);
-        IdeError::internal(format!("cannot create {} window: {e}", aux.kind.name()))
-    })?;
+    let window =
+        builder.and_then(|b| macos_webview_configuration(app, webview_profile(app, b)).build()).map_err(|e| {
+            windows.forget(&label);
+            IdeError::internal(format!("cannot create {} window: {e}", aux.kind.name()))
+        })?;
     #[cfg(target_os = "linux")]
     decorate_csd(&window);
     #[cfg(target_os = "macos")]
@@ -2449,18 +2452,56 @@ fn webview_profile<'a>(
 /// - In debug builds, optionally reproduce WKWebView's user-font restriction when
 ///   `OPENIDEA_DEV_DISALLOW_USER_FONTS=1` is set (absent from release builds).
 #[cfg(target_os = "macos")]
-fn macos_webview_configuration(
-    builder: WebviewWindowBuilder<'_, tauri::Wry, AppHandle>,
-) -> WebviewWindowBuilder<'_, tauri::Wry, AppHandle> {
-    let config = unsafe {
-        objc2_web_kit::WKWebViewConfiguration::new(
-            objc2::MainThreadMarker::new().expect("window creation on main thread"),
-        )
-    };
-    if configure_macos_webview_configuration(&config) {
-        return builder.with_webview_configuration(config);
+fn macos_webview_configuration<'a>(
+    app: &AppHandle,
+    builder: WebviewWindowBuilder<'a, tauri::Wry, AppHandle>,
+) -> WebviewWindowBuilder<'a, tauri::Wry, AppHandle> {
+    match build_macos_webview_configuration(app) {
+        Some(config) => builder.with_webview_configuration(config),
+        None => builder,
     }
-    builder
+}
+
+#[cfg(target_os = "macos")]
+fn build_macos_webview_configuration(
+    app: &AppHandle,
+) -> Option<objc2::rc::Retained<objc2_web_kit::WKWebViewConfiguration>> {
+    const ON_MAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+    struct SendConfig(objc2::rc::Retained<objc2_web_kit::WKWebViewConfiguration>);
+    // SAFETY: Created and configured exclusively on the main thread, then moved untouched into
+    // `WebviewWindowBuilder::with_webview_configuration`, which transfers it back to the main
+    // thread when Wry constructs the WKWebView.
+    unsafe impl Send for SendConfig {}
+
+    let make = |mtm: objc2::MainThreadMarker| {
+        let config = unsafe { objc2_web_kit::WKWebViewConfiguration::new(mtm) };
+        configure_macos_webview_configuration(&config).then_some(SendConfig(config))
+    };
+
+    if let Some(mtm) = objc2::MainThreadMarker::new() {
+        return make(mtm).map(|c| c.0);
+    }
+
+    // Secondary project windows (`spawn_window`) and auxiliary windows (`open_auxiliary_window`)
+    // build off the main thread; create the configuration on the AppKit main thread and fall back
+    // to the default builder if the event loop cannot service it.
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    if let Err(err) = app.run_on_main_thread(move || {
+        let result = objc2::MainThreadMarker::new().and_then(make);
+        let _ = tx.send(result);
+    }) {
+        tracing::warn!("could not schedule macOS WKWebViewConfiguration on main thread: {err}");
+        return None;
+    }
+    match rx.recv_timeout(ON_MAIN_TIMEOUT) {
+        Ok(Some(config)) => Some(config.0),
+        Ok(None) => None,
+        Err(err) => {
+            tracing::warn!("timed out waiting for macOS WKWebViewConfiguration on main thread: {err}");
+            None
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -2494,9 +2535,10 @@ fn configure_macos_webview_configuration(config: &objc2_web_kit::WKWebViewConfig
 }
 
 #[cfg(not(target_os = "macos"))]
-fn macos_webview_configuration(
-    builder: WebviewWindowBuilder<'_, tauri::Wry, AppHandle>,
-) -> WebviewWindowBuilder<'_, tauri::Wry, AppHandle> {
+fn macos_webview_configuration<'a>(
+    _app: &AppHandle,
+    builder: WebviewWindowBuilder<'a, tauri::Wry, AppHandle>,
+) -> WebviewWindowBuilder<'a, tauri::Wry, AppHandle> {
     builder
 }
 
