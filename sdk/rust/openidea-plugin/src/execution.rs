@@ -345,6 +345,30 @@ pub struct RunTargetLaunch {
     pub cwd: String,
 }
 
+/// A Run Anything entry (API 1.18).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RunAnythingItem {
+    /// What the list shows, such as `task build`.
+    pub label: String,
+    /// Grey text after the label.
+    pub detail: Option<String>,
+    /// The line Tab completes and Enter runs; `label` when `None`.
+    pub line: Option<String>,
+}
+
+/// Run Anything (Ctrl Ctrl) for the prefixes declared under `[[contributes.runAnything]]`
+/// (API 1.18); register with `register_plugin!(T, …, run_anything)`.
+pub trait RunAnything {
+    /// Entries for the field's `text`, which starts with `prefix` or is the start of it.
+    /// Called while the user types: answer from what the plugin already knows (no process
+    /// per keystroke). The IDE keeps the first 100 and drops answers slower than 300 ms.
+    fn suggest(&mut self, project: &str, prefix: &str, text: &str) -> Vec<RunAnythingItem>;
+    /// Runs `line` (its first word is `prefix`) from the invoking window, through the
+    /// plugin's host calls such as [`crate::host::start_run`] or terminals. `true` claims
+    /// the line; `false` leaves it to the IDE's other entries and finally the shell.
+    fn run(&mut self, project: &str, prefix: &str, line: &str) -> bool;
+}
+
 /// Optional pre-launch validation; register with `run_target_validation`.
 pub trait RunTargetValidation {
     /// Refuse with a user-facing explanation, or allow with `Ok(())`.

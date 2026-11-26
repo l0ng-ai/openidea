@@ -1436,6 +1436,63 @@ impl PluginHost {
         })
     }
 
+    /// Run Anything entries (API 1.18) of the plugin that declares `prefix`, for the
+    /// field's `text` in `window`'s project: from what it already knows, within 300 ms.
+    pub fn run_anything_suggest(
+        &self,
+        id: &str,
+        window: &str,
+        root: Option<PathBuf>,
+        prefix: &str,
+        text: &str,
+    ) -> IdeResult<Vec<ide_plugin::RunAnythingItem>> {
+        self.declared_run_anything(id, prefix)?;
+        if text.len() > 4096 || !(prefix.starts_with(text) || text.starts_with(prefix)) {
+            return Err(IdeError::invalid("the text doesn't start with the plugin's prefix"));
+        }
+        let invocation = Invocation { client: Some(window.to_owned()), workspace_root: root, ..Default::default() };
+        let (prefix, text) = (prefix.to_owned(), text.to_owned());
+        let budget = Duration::from_millis(300);
+        self.code_call_with_budget(
+            id,
+            invocation,
+            "suggesting Run Anything entries",
+            None,
+            Some(budget),
+            move |rt, inv| rt.run_anything_suggest(&prefix, &text, inv, budget),
+        )
+    }
+
+    /// Runs a Run Anything line whose first word is `prefix` (API 1.18): whether the
+    /// plugin claimed it. A failed call is an error, which the caller treats as claimed.
+    pub fn run_anything_run(
+        &self,
+        id: &str,
+        window: &str,
+        root: Option<PathBuf>,
+        prefix: &str,
+        line: &str,
+    ) -> IdeResult<bool> {
+        self.declared_run_anything(id, prefix)?;
+        if line.len() > 4096 || line.split_whitespace().next() != Some(prefix) {
+            return Err(IdeError::invalid("the line doesn't start with the plugin's prefix"));
+        }
+        let invocation = Invocation { client: Some(window.to_owned()), workspace_root: root, ..Default::default() };
+        let (prefix, line) = (prefix.to_owned(), line.to_owned());
+        let timeout = self.limits.timeout;
+        self.code_call(id, invocation, "running a Run Anything line", move |rt, inv| {
+            rt.run_anything_run(&prefix, &line, inv, timeout)
+        })
+    }
+
+    fn declared_run_anything(&self, id: &str, prefix: &str) -> IdeResult<()> {
+        if self.ui.items(ui_points::RUN_ANYTHING, Some(id)).iter().any(|d| d.key == prefix) {
+            Ok(())
+        } else {
+            Err(IdeError::invalid(format!("plugin {id:?} declares no Run Anything prefix {prefix:?}")))
+        }
+    }
+
     /// Content of a declared view, or of a custom editor (`invocation.editor`
     /// is its document). Activates the plugin (`on-view`).
     pub fn render_view(
