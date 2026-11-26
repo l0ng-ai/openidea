@@ -1045,6 +1045,7 @@
   "Scroll here, click with Ctrl, Alt or Command held, or use a middle or side mouse button": "在此滚动鼠标滚轮，按住 Ctrl、Alt 或 Command 点击，或使用鼠标中键或侧键",
   "On Linux, middle-button rectangular selection conflicts with primary selection paste.": "在 Linux 上，中键矩形拖选会与主选区粘贴冲突。",
   "Add Carets to Ends of Selected Lines": "在所选行末尾添加光标",
+  "Select Line at Caret": "选择光标所在行",
   "Unselect Occurrence": "取消选择匹配项",
   "Paste from History…": "从历史记录粘贴…",
   "Sort Lines": "排序行",

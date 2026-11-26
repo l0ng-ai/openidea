@@ -69,6 +69,7 @@
   "Toggle Case": "Changer la casse",
   "Cycle Identifier Case": "Alterner la casse de l'identifiant",
   "Add Carets to Ends of Selected Lines": "Ajouter des curseurs à la fin des lignes sélectionnées",
+  "Select Line at Caret": "Sélectionner la ligne du curseur",
   "Unselect Occurrence": "Désélectionner l'occurrence",
   "Paste from History…": "Coller depuis l'historique…",
   "Sort Lines": "Trier les lignes",

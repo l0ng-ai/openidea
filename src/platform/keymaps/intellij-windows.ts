@@ -129,6 +129,7 @@ export const intellijWindows: Record<string, string[]> = {
   "code.selectAllOccurrences": ["Ctrl+Alt+Shift+J"],
   "code.unselectOccurrence": ["Alt+Shift+J"],
   "code.addCaretsToLineEnds": ["Alt+Shift+G"],
+  "editor.selectLine": [],
   "code.startNewLine": ["Shift+Enter"],
   "code.startNewLineBefore": ["Ctrl+Alt+Enter"],
   // Before the HTTP / SQL consoles' Ctrl+Enter (Run), which wins there.

@@ -128,6 +128,7 @@ export const intellijMacos: Record<string, string[]> = {
   "code.selectAllOccurrences": ["Ctrl+Meta+G"],
   "code.unselectOccurrence": ["Ctrl+Shift+G"],
   "code.addCaretsToLineEnds": ["Alt+Shift+G"],
+  "editor.selectLine": [],
   "code.startNewLine": ["Shift+Enter"],
   "code.startNewLineBefore": ["Meta+Alt+Enter"],
   // Before the HTTP / SQL consoles' ⌘↵ (Run), which wins there.
