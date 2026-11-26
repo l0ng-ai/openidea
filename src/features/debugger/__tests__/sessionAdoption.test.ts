@@ -92,14 +92,20 @@ describe("Attach to Node.js with Reconnect automatically", () => {
     );
   const ended = (id: number) => handleDebugEvent(id, { kind: "terminated" });
 
-  it("shows the restarted process in place of the finished one", async () => {
+  it("shows the restarted process in place of the finished one, with its output", async () => {
     expect(await attach(true)).toBe(1);
-    child(2, 1, "Remote Process [0]");
+    child(2, 1, "Remote Process [100]");
+    handleDebugEvent(2, { kind: "output", category: "stderr", output: "Error: boom\n" });
     ended(2);
-    child(3, 1, "Remote Process [0]");
+    // nodemon's next process has another pid.
+    child(3, 1, "Remote Process [200]");
+    handleDebugEvent(3, { kind: "output", category: "stdout", output: "listening\n" });
     const { sessions } = useDebug.getState();
     expect(Object.keys(sessions).map(Number)).toEqual([1, 3]);
     expect(sessions[1]?.status).toBe("running");
+    await vi.waitFor(() =>
+      expect(useDebug.getState().console[3]?.map((l) => l.text)).toEqual(["Error: boom\n", "listening\n"]),
+    );
   });
 
   it("keeps finished processes of other sessions", async () => {

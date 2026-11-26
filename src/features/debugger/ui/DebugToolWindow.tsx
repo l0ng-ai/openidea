@@ -438,10 +438,11 @@ function FramesPane({ session }: { session: DebugSession }) {
   }, [items]);
   const paused = session.status === "paused";
   const rootId = rootOf(session).id;
-  // js-debug attaches each process in a child session: none live while it waits for the process to restart.
-  const attached = useDebug((s) =>
-    Object.values(s.sessions).some((c) => c.parent != null && isLive(c) && rootOf(c).id === rootId),
-  );
+  // js-debug attaches each process in a child session: an ended one and none live while it waits for a restart.
+  const reconnecting = useDebug((s) => {
+    const processes = Object.values(s.sessions).filter((c) => c.parent === rootId);
+    return processes.length > 0 && !processes.some(isLive);
+  });
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
     const frames = items.flatMap((i) => (i.kind === "frame" ? [i.frame] : []));
@@ -477,7 +478,7 @@ function FramesPane({ session }: { session: DebugSession }) {
           <div className={styles.note}>
             {session.status === "terminated"
               ? tx("Finished")
-              : (remoteWaitingNote(rootOf(session).runConfig, attached) ?? tx("Running…"))}
+              : (remoteWaitingNote(rootOf(session).runConfig, reconnecting) ?? tx("Running…"))}
           </div>
         )}
         {stopNote(session) && <div className={styles.note}>{stopNote(session)}</div>}

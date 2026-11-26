@@ -225,11 +225,12 @@ describe("remote attach requests", () => {
     for (const t of REMOTE_TYPES.filter((x) => x !== phpRemoteType)) expect(remoteWaitingNote(configOf(t))).toBeNull();
   });
 
-  it("Attach to Node.js with Reconnect automatically says it waits while no process is attached", () => {
+  it("Attach to Node.js with Reconnect automatically says it waits once its process has ended", () => {
     const rc = configOf(nodeRemoteType, { restart: "true", port: "9230" });
-    expect(remoteWaitingNote(rc)).toBe("Waiting to reconnect to Node.js on localhost:9230");
-    expect(remoteWaitingNote(rc, true)).toBeNull();
-    expect(remoteWaitingNote(configOf(nodeRemoteType))).toBeNull();
+    expect(remoteWaitingNote(rc, true)).toBe("Waiting to reconnect to Node.js on localhost:9230");
+    // The first attach (or one that never connects) isn't a reconnect.
+    expect(remoteWaitingNote(rc)).toBeNull();
+    expect(remoteWaitingNote(configOf(nodeRemoteType), true)).toBeNull();
   });
 
   it("start-the-remote-side hints follow the port", () => {

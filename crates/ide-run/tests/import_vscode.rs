@@ -411,6 +411,7 @@ fn attach_requests_become_remote_debug_configurations() {
     assert!(!off.extras.params.contains_key("restart"));
     assert!(ignored(&r, "Attach (no restart)").is_empty());
     assert_eq!(get(&r, "Attach (restart policy)").extras.params["restart"], "true");
+    assert_eq!(ignored(&r, "Attach (restart policy)"), ["restart"]);
 
     assert_eq!(reason(&r, "Attach to PID"), &SkipReason::UnsupportedAttach);
     assert_eq!(reason(&r, "Odd"), &SkipReason::UnsupportedRequest { request: "test".into() });

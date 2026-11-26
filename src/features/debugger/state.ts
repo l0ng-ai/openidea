@@ -360,10 +360,16 @@ function ownSession(id: DebugSessionId, event: DebugEvent): DebugSession | null 
     const parent = st.sessions[event.parent];
     if (!parent) return null;
     const child = adoptSession(id, { name: event.name, adapter: event.adapter, parent: event.parent });
-    // A process attached again after its restart takes the finished one's place, like one tab.
+    // A process attached again after its restart takes the finished one's place (one tab, its output kept).
     if (reconnects(rootOf(parent).runConfig))
-      for (const s of Object.values(st.sessions))
-        if (s.parent === event.parent && !isLive(s) && s.name === event.name) removeSession(s.id);
+      for (const s of Object.values(st.sessions)) {
+        if (s.parent !== event.parent || isLive(s)) continue;
+        flushConsoleOutput();
+        useDebug.setState((cur) => ({
+          console: { ...cur.console, [id]: [...(cur.console[s.id] ?? []), ...(cur.console[id] ?? [])] },
+        }));
+        removeSession(s.id);
+      }
     return child;
   }
   if (pendingStarts === 0) return null;

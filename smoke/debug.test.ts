@@ -242,14 +242,18 @@ beforeAll(() => {
 });
 afterAll(() => deactivate?.());
 
-afterEach(async () => {
+async function teardown() {
   resetRuns();
   disconnect?.();
+  disconnect = null;
   // `close` kills the server and what it started (debug adapters, language servers)
   // and waits until they're gone, so the removal below can't race their writes.
   await server?.close();
+  server = null;
   if (base) rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
-});
+  base = "";
+}
+afterEach(teardown);
 
 async function open(c: Case): Promise<string> {
   base = realpathSync(mkdtempSync(join(tmpdir(), "openidea-smoke-")));
@@ -637,8 +641,21 @@ async function traceStream(language: string, t: NonNullable<Case["streamTrace"]>
   ]);
 }
 
+/** More of a language's debugging, each with a project of its own (CI runs one test per language). */
+const MORE: Record<string, Array<() => Promise<void>>> = {
+  typescript: [() => nodeReconnect(true), () => nodeReconnect(false)],
+};
+
 for (const language of Object.keys(CASES)) {
-  test(language, () => smoke(language));
+  test(language, async () => {
+    await smoke(language);
+    for (const more of MORE[language] ?? []) {
+      // oxlint-disable-next-line no-await-in-loop -- each case starts its own server after the last one is gone.
+      await teardown();
+      // oxlint-disable-next-line no-await-in-loop -- see above.
+      await more();
+    }
+  });
 }
 
 /** A free TCP port on the loopback interface. */
@@ -679,6 +696,14 @@ async function nodeReconnect(restart: boolean) {
     const first = await until("the breakpoint", stoppedAfter(stops));
     expect([first.frames[0]!.path, first.frames[0]!.line], shown()).toEqual([path, 1]);
     const rootId = rootOf(first).id;
+    const processes = () => Object.values(useDebug.getState().sessions).filter((c) => c.parent === rootId);
+    // What the Frames pane shows for the session: the note once its process has ended and none is attached.
+    const note = () =>
+      remoteWaitingNote(
+        useDebug.getState().sessions[rootId]?.runConfig,
+        processes().length > 0 && !processes().some(isLive),
+      );
+    expect(note(), "no note while attached the first time").toBeNull();
     await executeAction("debug.resume");
 
     // `node --watch` restarts the program when its file changes.
@@ -687,31 +712,27 @@ async function nodeReconnect(restart: boolean) {
       await until("the end", () => Object.values(useDebug.getState().sessions).every((d) => !isLive(d)));
       return;
     }
-    // While no process is attached, the root session waits and says so.
     let waited = "";
     const again = await until("the breakpoint after the restart", () => {
-      const sessions = Object.values(useDebug.getState().sessions);
-      const rootSession = useDebug.getState().sessions[rootId]!;
-      if (!isLive(rootSession)) throw new Error(`the session ended with the process\n${shown()}`);
-      const attached = sessions.some((c) => c.parent != null && isLive(c) && rootOf(c).id === rootId);
-      waited ||= remoteWaitingNote(rootSession.runConfig, attached) ?? "";
+      if (!isLive(useDebug.getState().sessions[rootId]))
+        throw new Error(`the session ended with the process\n${shown()}`);
+      waited ||= note() ?? "";
       const s = paused();
       return s && s.id !== first.id && s;
     });
     expect([again.frames[0]!.path, again.frames[0]!.line], shown()).toEqual([path, 1]);
     expect(rootOf(again).id, "the same debug session").toBe(rootId);
     expect(again.id, "a new process").not.toBe(first.id);
+    expect(
+      processes().map((c) => c.id),
+      "one process tab",
+    ).toEqual([again.id]);
     expect(waited).toBe(`Waiting to reconnect to Node.js on 127.0.0.1:${port}`);
-    console.info(`node reconnect: ${Object.keys(useDebug.getState().sessions).length} sessions; "${waited}"`);
 
     // With the process gone, the session waits for it; Stop ends it.
     await executeAction("debug.resume");
     node.kill();
-    await until("the wait for the process", () => {
-      const st = useDebug.getState();
-      const attached = Object.values(st.sessions).some((c) => c.parent != null && isLive(c));
-      return !attached && isLive(st.sessions[rootId]);
-    });
+    await until("the wait for the process", () => note());
     selectSession(rootId);
     await executeAction("debug.stop");
     await until("the end", () => Object.values(useDebug.getState().sessions).every((d) => !isLive(d)));
@@ -719,6 +740,3 @@ async function nodeReconnect(restart: boolean) {
     node.kill();
   }
 }
-
-test("node attach reconnects", () => nodeReconnect(true));
-test("node attach without reconnect ends with the process", () => nodeReconnect(false));

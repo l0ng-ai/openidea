@@ -432,12 +432,15 @@ export const reconnects = (rc: Pick<RunConfig, "kind" | "params"> | undefined) =
 
 /**
  * What a session of `rc` shows while nothing is suspended, when it waits for the debuggee to connect.
- * `attached`: a process is attached (a child session of js-debug's is live).
+ * `reconnecting`: the process it attached to has ended and none is attached yet.
  */
-export function remoteWaitingNote(rc: Pick<RunConfig, "kind" | "params"> | undefined, attached = false): string | null {
+export function remoteWaitingNote(
+  rc: Pick<RunConfig, "kind" | "params"> | undefined,
+  reconnecting = false,
+): string | null {
   const p = rc?.params ?? {};
-  if (reconnects(rc) && !attached)
-    return tx`Waiting to reconnect to Node.js on ${serverAddress(hostOf(p), portOf(p, 9229))}`;
+  if (reconnects(rc))
+    return reconnecting ? tx`Waiting to reconnect to Node.js on ${serverAddress(hostOf(p), portOf(p, 9229))}` : null;
   if (rc?.kind !== PHP_REMOTE) return null;
   return tx`Listening for Xdebug on port ${portOf(p, 9003)}`;
 }
