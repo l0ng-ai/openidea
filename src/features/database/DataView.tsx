@@ -120,6 +120,20 @@ export function viewMenu(
   ];
 }
 
+/** Copy as › SQL INSERT / UPDATE / DELETE of the whole selected rows, in the selected order. */
+function sqlCopies(rows: readonly number[], extractor: ExtractorMenu): MenuItem[] {
+  const copy = (format: ExportFormat) => () =>
+    void Promise.resolve(extractor.table()).then((data) => {
+      const picked = data && rows.flatMap((r) => (data.rows[r] ? [data.rows[r]] : []));
+      if (picked?.length) void writeClipboardText(exportData(format, { ...data!, rows: picked }));
+    });
+  return [
+    { label: "SQL INSERT", run: copy("sql") },
+    { label: "SQL UPDATE", run: copy("sqlUpdates") },
+    { label: "SQL DELETE", run: copy("sqlDeletes") },
+  ];
+}
+
 /** The Record / Value / Aggregates panel's toggle (IDEA's "Show Value Editor"). */
 export function PanelToggle({ panel, onChange }: { panel: DataPanel | null; onChange: (p: DataPanel | null) => void }) {
   return (
@@ -300,6 +314,7 @@ export function DataView(props: DataViewProps) {
             driver={props.driver}
             sort={sort}
             onSort={onSort}
+            copyAs={props.extractor && ((rows) => sqlCopies(rows.map(at), props.extractor!))}
             rowMenu={(rows) => {
               const own = props.rowMenu?.(rows.map(at)) ?? [];
               const view = viewMenu(panel, onPanelChange, props.extractor);

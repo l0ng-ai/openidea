@@ -469,7 +469,12 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
         return null;
       }
     }
-    return { columns, rows: rowsOf(r), driver, table: queryTable(text, { driver }) };
+    return {
+      columns: gridColumns.map((c) => ({ name: c.name, type: c.type, primaryKey: c.primaryKey })),
+      rows: rowsOf(r),
+      driver,
+      table: queryTable(text, { driver }),
+    };
   };
   const showExport = async (at: { x: number; y: number }) => {
     const data = await exportSource();

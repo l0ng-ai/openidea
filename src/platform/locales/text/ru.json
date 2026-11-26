@@ -10175,5 +10175,11 @@
   "Filter columns": "Фильтр столбцов",
   "Package Registries": "Реестры пакетов",
   "Use only the configured package registries": "Использовать только настроенные реестры пакетов",
-  "For a company registry such as Nexus or Artifactory: installing tools and agents never retries against the public npm registry when the configured one refuses or misses a package, and the IDE fetches nothing from Maven Central, npm, PyPI or crates.io itself (the JUnit launcher, dependency version completion).": "Для корпоративного реестра, например Nexus или Artifactory: при установке инструментов и агентов не выполняется повторная попытка через публичный реестр npm, если настроенный реестр отклонил пакет или не нашёл его, а сама IDE ничего не загружает из Maven Central, npm, PyPI или crates.io (JUnit Launcher, автодополнение версий зависимостей)."
+  "For a company registry such as Nexus or Artifactory: installing tools and agents never retries against the public npm registry when the configured one refuses or misses a package, and the IDE fetches nothing from Maven Central, npm, PyPI or crates.io itself (the JUnit launcher, dependency version completion).": "Для корпоративного реестра, например Nexus или Artifactory: при установке инструментов и агентов не выполняется повторная попытка через публичный реестр npm, если настроенный реестр отклонил пакет или не нашёл его, а сама IDE ничего не загружает из Maven Central, npm, PyPI или crates.io (JUnit Launcher, автодополнение версий зависимостей).",
+  "SQL Updates": "SQL-обновления",
+  "SQL Deletes": "SQL-удаления",
+  "Where Clause": "Условие WHERE",
+  "SQL INSERT": "SQL INSERT",
+  "SQL UPDATE": "SQL UPDATE",
+  "SQL DELETE": "SQL DELETE"
 }
