@@ -305,7 +305,7 @@ export const commands = {
 	/**
 	 *  The clipboard's plain text, read natively as [`clipboard_write_text`] writes it: a Paste
 	 *  from a menu has no paste event, and WebKitGTK gives `navigator.clipboard.readText()` no
-	 *  text there (#3041). None on Windows, where the WebView's clipboard is used.
+	 *  text there (#3041); WebView2 asks the user before letting the page read it.
 	 */
 	clipboardText: () => typedError<string | null, IdeError>(__TAURI_INVOKE("clipboard_text")),
 	/**  Copies image pixels to this computer's clipboard, including from remote project windows. */
