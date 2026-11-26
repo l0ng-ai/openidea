@@ -437,6 +437,11 @@ function FramesPane({ session }: { session: DebugSession }) {
     if (list.current && selectedRow.current) revealVertically(list.current, selectedRow.current);
   }, [items]);
   const paused = session.status === "paused";
+  const rootId = rootOf(session).id;
+  // js-debug attaches each process in a child session: none live while it waits for the process to restart.
+  const attached = useDebug((s) =>
+    Object.values(s.sessions).some((c) => c.parent != null && isLive(c) && rootOf(c).id === rootId),
+  );
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
     const frames = items.flatMap((i) => (i.kind === "frame" ? [i.frame] : []));
@@ -472,7 +477,7 @@ function FramesPane({ session }: { session: DebugSession }) {
           <div className={styles.note}>
             {session.status === "terminated"
               ? tx("Finished")
-              : (remoteWaitingNote(rootOf(session).runConfig) ?? tx("Running…"))}
+              : (remoteWaitingNote(rootOf(session).runConfig, attached) ?? tx("Running…"))}
           </div>
         )}
         {stopNote(session) && <div className={styles.note}>{stopNote(session)}</div>}

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { LaunchConfig } from "@/platform/ipc";
+import type { LaunchConfig, RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { handleDebugEvent, resetSessions, startSession, useDebug } from "../state";
 
@@ -81,5 +81,32 @@ describe("sessions of a window whose backend changes", () => {
     handleDebugEvent(1, { kind: "output", category: "stdout", output: "late\n" });
     expect(useDebug.getState().sessions).toEqual({});
     expect(useDebug.getState().console).toEqual({});
+  });
+});
+
+describe("Attach to Node.js with Reconnect automatically", () => {
+  const attach = (restart: boolean) =>
+    startSession(
+      { ...launch, name: "Attach", request: "attach" },
+      { runConfig: { name: "Attach", kind: "node-remote", params: restart ? { restart: "true" } : {} } as RunConfig },
+    );
+  const ended = (id: number) => handleDebugEvent(id, { kind: "terminated" });
+
+  it("shows the restarted process in place of the finished one", async () => {
+    expect(await attach(true)).toBe(1);
+    child(2, 1, "Remote Process [0]");
+    ended(2);
+    child(3, 1, "Remote Process [0]");
+    const { sessions } = useDebug.getState();
+    expect(Object.keys(sessions).map(Number)).toEqual([1, 3]);
+    expect(sessions[1]?.status).toBe("running");
+  });
+
+  it("keeps finished processes of other sessions", async () => {
+    await attach(false);
+    child(2, 1, "Remote Process [0]");
+    ended(2);
+    child(3, 1, "Remote Process [0]");
+    expect(Object.keys(useDebug.getState().sessions).map(Number)).toEqual([1, 2, 3]);
   });
 });
