@@ -10601,5 +10601,8 @@
   "Keys": "键",
   "Triggers": "触发器",
   "Filter by name or type": "按名称或类型过滤",
-  "Filter columns": "过滤列"
+  "Filter columns": "过滤列",
+  "Package Registries": "包仓库",
+  "Use only the configured package registries": "仅使用已配置的包仓库",
+  "For a company registry such as Nexus or Artifactory: installing tools and agents never retries against the public npm registry when the configured one refuses or misses a package, and the IDE fetches nothing from Maven Central, npm, PyPI or crates.io itself (the JUnit launcher, dependency version completion).": "适用于 Nexus、Artifactory 等公司仓库：安装工具和 agent 时，若已配置的仓库拒绝或找不到某个包，不再改从公共 npm 仓库重试；IDE 自身也不会从 Maven Central、npm、PyPI 或 crates.io 获取任何内容（JUnit 启动器、依赖版本补全）。"
 }

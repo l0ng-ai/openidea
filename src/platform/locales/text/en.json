@@ -4157,5 +4157,8 @@
   "Keys": "Keys",
   "Triggers": "Triggers",
   "Filter by name or type": "Filter by name or type",
-  "Filter columns": "Filter columns"
+  "Filter columns": "Filter columns",
+  "Package Registries": "Package Registries",
+  "Use only the configured package registries": "Use only the configured package registries",
+  "For a company registry such as Nexus or Artifactory: installing tools and agents never retries against the public npm registry when the configured one refuses or misses a package, and the IDE fetches nothing from Maven Central, npm, PyPI or crates.io itself (the JUnit launcher, dependency version completion).": "For a company registry such as Nexus or Artifactory: installing tools and agents never retries against the public npm registry when the configured one refuses or misses a package, and the IDE fetches nothing from Maven Central, npm, PyPI or crates.io itself (the JUnit launcher, dependency version completion)."
 }

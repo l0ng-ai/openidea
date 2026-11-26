@@ -185,6 +185,7 @@ pub async fn agent_registry_install(
 ) -> IdeResult<()> {
     // The agent then shows in `agent_providers`.
     let paths = registry_paths(host);
+    let public_npm_fallback = !host.configured_registries_only();
     let installing = Installing::begin(&id)?;
     let cancel = host.begin_request(request);
     // Also a background task of every project window, so it stays visible and can be
@@ -211,7 +212,7 @@ pub async fn agent_registry_install(
             move || cancel.cancel()
         });
         report(None, None, false);
-        let result = ide_agent::registry::install(&paths, &id, &cancel, &|e| {
+        let result = ide_agent::registry::install(&paths, &id, public_npm_fallback, &cancel, &|e| {
             match &e {
                 InstallEvent::Line { text } => report(Some(text.clone()), None, false),
                 InstallEvent::Progress { fraction, message } => {

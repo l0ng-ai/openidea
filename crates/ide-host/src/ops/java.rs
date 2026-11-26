@@ -922,7 +922,7 @@ pub async fn java_build_workspace(
 /// The JVM of OpenIDEA's JUnit runner for the module at `module`, given its resolved test classpath:
 /// the classpath with the runner and `junit-platform-launcher` of the engine's version (unless the
 /// classpath has one, or has JUnit 4 alone; from the engine's repository, else downloaded once from
-/// Maven Central), and,
+/// Maven Central unless only the configured package registries are allowed), and,
 /// for a Maven module, what its Surefire configuration gives the forked test JVM.
 #[command(trust = trusted)]
 pub async fn java_junit_runner(
@@ -935,6 +935,7 @@ pub async fn java_junit_runner(
     let project = host.project(window)?;
     let module = ide_core::project_roots::resolve(&project.root, &module);
     let data_dir = host.local_data_dir.clone();
+    let registries_only = host.configured_registries_only();
     tokio::task::spawn_blocking(move || {
         let scope = workspace::scope_for(&project, &module)?;
         let model = load_launch_model(&scope);
@@ -948,7 +949,9 @@ pub async fn java_junit_runner(
         let launcher = match ide_sdk::java::junit_launcher(&class_paths) {
             ide_sdk::java::JunitLauncher::OnClasspath | ide_sdk::java::JunitLauncher::Junit4 => None,
             ide_sdk::java::JunitLauncher::Found(path) => Some(path),
-            ide_sdk::java::JunitLauncher::Missing(version) => Some(download_junit_launcher(&data_dir, &version)?),
+            ide_sdk::java::JunitLauncher::Missing(version) => {
+                Some(download_junit_launcher(&data_dir, &version, registries_only)?)
+            }
             ide_sdk::java::JunitLauncher::NoPlatform => {
                 return Err(IdeError::unavailable(
                     "Neither JUnit 5 (junit-platform-engine) nor JUnit 4 is on the test classpath. To run these tests \
@@ -1017,7 +1020,9 @@ fn junit_launch(
     }
 }
 
-fn download_junit_launcher(data_dir: &Path, version: &str) -> IdeResult<PathBuf> {
+/// The launcher jar downloaded once from Maven Central; with only the configured package
+/// registries allowed (Settings › Tools › Download Mirrors), only one downloaded before.
+fn download_junit_launcher(data_dir: &Path, version: &str, registries_only: bool) -> IdeResult<PathBuf> {
     if version.is_empty() || !version.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) {
         return Err(IdeError::invalid(format!("Unexpected JUnit Platform version '{version}'")));
     }
@@ -1025,6 +1030,14 @@ fn download_junit_launcher(data_dir: &Path, version: &str) -> IdeResult<PathBuf>
     let dest = data_dir.join("junit").join(&name);
     if dest.is_file() {
         return Ok(dest);
+    }
+    if registries_only {
+        return Err(IdeError::unavailable(format!(
+            "{name} is not on the test classpath, and Settings › Tools › Download Mirrors allows only the \
+             configured package registries, so it is not downloaded from Maven Central. Add \
+             org.junit.platform:junit-platform-launcher to the test dependencies, or set Settings › Build Tools › \
+             Maven › Run tests using to Maven."
+        )));
     }
     std::fs::create_dir_all(dest.parent().expect("has a parent"))?;
     let url = format!("https://repo1.maven.org/maven2/org/junit/platform/junit-platform-launcher/{version}/{name}");
