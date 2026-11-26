@@ -2,35 +2,19 @@
  * Interactive sign-in dialog for coding agents (`copilot login`, `codex login`, `claude`, …),
  * backed by an IDE-managed PTY (`agent_login_spawn`) and a lazily loaded embedded terminal widget.
  */
-import { Channel } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState } from "react";
 import type { AgentLoginEvent, TerminalId } from "@/bindings";
 import { tx } from "@/platform/i18n";
-import { call, commands } from "@/platform/ipc";
+import { commands } from "@/platform/ipc";
 import { Dialog, Spinner, T } from "@/ui";
-import { embeddedTerminal, type EmbeddedTerminal, type EmbeddedTerminalFactory } from "@/workbench/contributions";
+import { embeddedTerminal, type EmbeddedTerminal } from "@/workbench/contributions";
 import styles from "./AgentSignInDialog.module.css";
+import { tauriCommands } from "./registry";
 
 export type SignInTarget = { kind: "agent"; id: string; name: string };
 
 export interface SignInSpawner {
   loginSpawn?(id: string, cols: number, rows: number, onEvent: (e: AgentLoginEvent) => void): Promise<TerminalId>;
-}
-
-const defaultSpawner: Required<SignInSpawner> = {
-  loginSpawn: async (id, cols, rows, onEvent) => {
-    const channel = new Channel<AgentLoginEvent>();
-    channel.onmessage = onEvent;
-    const info = await call(commands.agentLoginSpawn(id, cols, rows, channel));
-    return info.id;
-  },
-};
-
-async function loadTerminalFactory(): Promise<EmbeddedTerminalFactory> {
-  const registered = embeddedTerminal();
-  if (registered) return registered;
-  const mod = await import("@/features/terminal/embedded");
-  return async (host, opts) => mod.createEmbeddedTerminal(host, opts);
 }
 
 export function AgentSignInDialog({
@@ -77,8 +61,9 @@ export function AgentSignInDialog({
 
     void (async () => {
       try {
-        const factory = await loadTerminalFactory();
-        if (disposed) return;
+        // Provided by the terminal feature (workbench windows) or the Settings window's boot.
+        const factory = embeddedTerminal();
+        if (!factory) throw new Error(tx("The terminal is not available in this window."));
         const instance = await factory(el, {
           onData: (data) => {
             const id = ptyIdRef.current;
@@ -123,7 +108,7 @@ export function AgentSignInDialog({
 
       try {
         const custom = callbacksRef.current.spawner;
-        const ptyId = await (custom?.loginSpawn ?? defaultSpawner.loginSpawn)(
+        const ptyId = await (custom?.loginSpawn ?? tauriCommands.loginSpawn!)(
           agentId,
           pendingSize.cols,
           pendingSize.rows,

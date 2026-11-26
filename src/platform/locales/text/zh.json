@@ -10634,5 +10634,6 @@
   "Sign-in exited with code {exitCode}.": "登录已退出，代码为 {exitCode}。",
   "Install GitHub CLI": "安装 GitHub CLI",
   "Download manually…": "手动下载…",
-  "Show Scratches and Consoles": "显示临时文件和控制台"
+  "Show Scratches and Consoles": "显示临时文件和控制台",
+  "The terminal is not available in this window.": "此窗口中无法使用终端。"
 }

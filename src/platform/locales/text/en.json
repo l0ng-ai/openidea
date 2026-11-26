@@ -4186,5 +4186,6 @@
   "Sign-in exited with code {exitCode}.": "Sign-in exited with code {exitCode}.",
   "Install GitHub CLI": "Install GitHub CLI",
   "Download manually…": "Download manually…",
-  "Show Scratches and Consoles": "Show Scratches and Consoles"
+  "Show Scratches and Consoles": "Show Scratches and Consoles",
+  "The terminal is not available in this window.": "The terminal is not available in this window."
 }

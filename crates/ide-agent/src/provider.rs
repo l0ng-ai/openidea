@@ -977,6 +977,22 @@ mod tests {
     }
 
     #[test]
+    fn every_builtin_login_hint_yields_the_arguments_sign_in_runs() {
+        // Sign In runs the arguments in the hint's backticks: rewording a hint must keep that form.
+        for spec in builtins() {
+            if matches!(spec.id.as_str(), "claude-acp" | "codex-acp" | "vibe") {
+                continue;
+            }
+            assert!(builtin_login_args(&spec).is_some(), "{}: {}", spec.id, spec.login_hint);
+        }
+        let args = |id: &str| builtin_login_args(&builtin_spec(id).unwrap()).unwrap();
+        assert_eq!(args("copilot"), ["login"]);
+        assert_eq!(args("goose"), ["configure"]);
+        assert_eq!(args("hermes"), ["model"]);
+        assert!(args("qwen").is_empty());
+    }
+
+    #[test]
     fn login_hints_cover_all_builtin_commands_and_preserve_separate_login_tools() {
         for spec in builtins() {
             let separate = matches!(spec.id.as_str(), "claude-acp" | "codex-acp" | "vibe");

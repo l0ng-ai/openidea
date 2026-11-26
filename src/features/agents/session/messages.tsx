@@ -19,7 +19,7 @@ import { formatDuration, formatSentAt, userMessageText } from "../conversation";
 import { isSignInErrorMessage, useAgentErrorText } from "../loginHint";
 import { isBusy, type ReplyTimes, type ReplyTurn } from "../model";
 import { useRevealedText } from "../reveal";
-import { forkTask, refreshProviders, rerunFrom, resendMessage } from "../store";
+import { forkTask, refreshProviders, rerunFrom, resendMessage, useAgents } from "../store";
 import { PermissionLine, QuestionForm, type QuestionAnswer } from "./QuestionForm";
 import { providerName, samePropsExcept, type UserEntry } from "./shared";
 import { SubagentCard, ThoughtEntry, ToolEntry } from "./toolEntries";
@@ -244,7 +244,8 @@ export const Entry = memo(
 function AgentErrorEntry({ task, message }: { task: AgentTask; message: string }) {
   const [signingIn, setSigningIn] = useState(false);
   const text = useAgentErrorText(message);
-  const canSignIn = isTauri() && isSignInErrorMessage(message);
+  const providerCanSignIn = useAgents((s) => s.providers.find((p) => p.id === task.provider)?.canSignIn ?? false);
+  const canSignIn = isTauri() && providerCanSignIn && isSignInErrorMessage(message);
   const name = providerName(task.provider);
   return (
     <div className={styles.error} role="alert">
