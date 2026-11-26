@@ -55,6 +55,10 @@
   margin: 0;
   color: var(--fg-muted);
 }
+.driverMode {
+  margin-inline-start: var(--space-2);
+  color: var(--fg-muted);
+}
 .aliases > summary {
   cursor: pointer;
 }

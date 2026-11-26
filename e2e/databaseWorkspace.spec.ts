@@ -176,6 +176,7 @@ test("completes preferred aliases and pages the same workspace result", async ({
   const workspace = page.getByRole("region", { name: "Query Workspace" });
   const settings = page.getByRole("dialog", { name: "Configure Workspace Sources" });
   await selectSources(page, settings);
+  await expect(settings.getByText("In memory", { exact: true })).toBeVisible();
   await page.screenshot({ path: info.outputPath("workspace-settings.png"), animations: "disabled" });
   await settings.getByText("SQL aliases", { exact: true }).click();
   await settings.getByRole("textbox", { name: "Left SQL alias" }).fill("  acct  ");

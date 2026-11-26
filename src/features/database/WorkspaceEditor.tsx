@@ -571,9 +571,13 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
             <label className={styles.field}>
               <span>
                 <T>Workspace DuckDB driver</T>
+                <small className={styles.driverMode}>
+                  <T>In memory</T>
+                </small>
               </span>
               <Select
                 aria-label={t("Workspace DuckDB driver")}
+                aria-description={t("In memory")}
                 value={driverFor(settings.profile)?.id ?? null}
                 placeholder="Select DuckDB driver"
                 options={drivers.map(jdbcProfileOption)}
