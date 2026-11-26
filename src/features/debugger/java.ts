@@ -43,21 +43,23 @@ function baseName(p: string): string {
 }
 /** The name jdtls knows this folder's Java project by: Eclipse's project descriptor for an Eclipse
  * project, the Maven artifactId for a module (jdtls names those after the artifact, not the
- * folder), and the folder name when neither says anything. Dependency-only Maven POMs
- * leave project selection to the adapter.
+ * folder), and the folder name when neither says anything.
  */
-export async function javaProjectName(root: string): Promise<string | undefined> {
-  const pom = await readText(join(root, "pom.xml"));
-  // A child module's own <artifactId> follows the <parent> block, which names the parent.
-  const own = pom.replace(/<parent>[\s\S]*?<\/parent>/, "");
-  // Let java-debug resolve the main class's project rather than naming a non-Java POM.
-  if (/<packaging>\s*pom\s*<\/packaging>/.test(own)) return undefined;
+export async function javaProjectName(root: string): Promise<string> {
   const descriptor = await readText(join(root, ".project"));
   const eclipse = /<name>([^<]+)<\/name>/.exec(descriptor)?.[1]?.trim();
   if (eclipse) return eclipse;
-  const artifact = /<artifactId>\s*([^<\s]+)\s*<\/artifactId>/.exec(own)?.[1];
+  const artifact = /<artifactId>\s*([^<\s]+)\s*<\/artifactId>/.exec(ownPom(await readText(join(root, "pom.xml"))))?.[1];
   if (artifact && !artifact.includes("${")) return artifact;
   return baseName(root);
+}
+
+/** A child module's own part of its POM: its <artifactId> follows the <parent> block, which names the parent. */
+const ownPom = (pom: string) => pom.replace(/<parent>[\s\S]*?<\/parent>/, "");
+
+/** A dependency-only Maven module (`packaging=pom`): jdtls has no Java project for it. */
+async function isPomOnlyModule(root: string): Promise<boolean> {
+  return /<packaging>\s*pom\s*<\/packaging>/.test(ownPom(await readText(join(root, "pom.xml"))));
 }
 
 /** A file of the project, or "" when it is missing (or when there is no filesystem bridge). */
@@ -227,7 +229,9 @@ export async function javaLaunchConfig(
   // java-debug resolves the Java project for Evaluate on its own from `mainClass` only when
   // the class belongs to a project it knows; name the project it imported so that works for
   // classes compiled outside the language server's build (plain folders, custom outputs).
-  const project = await javaProjectName(info.projectRoot ?? join(root, module));
+  const projectRoot = info.projectRoot ?? join(root, module);
+  // A launch from a dependency-only POM names no project: java-debug finds the main class's own.
+  const project = (await isPomOnlyModule(projectRoot)) ? undefined : await javaProjectName(projectRoot);
   return {
     name: rc.name,
     adapter: JAVA_ADAPTER,

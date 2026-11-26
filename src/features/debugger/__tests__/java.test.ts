@@ -286,6 +286,12 @@ describe("naming the Java project jdtls imported", () => {
     expect(JSON.parse(launch.extraJson!).classPaths).toEqual(["/p/target/classes", "/m2/a.jar"]);
   });
 
+  it("still names the project of an aggregator root for a JDWP attach", async () => {
+    files["/p/pom.xml"] = "<project><artifactId>root</artifactId><packaging>pom</packaging></project>";
+    const attach = await javaAttachConfig({ name: "remote", module: "", hostName: "remote", port: 5005 }, "/p");
+    expect(JSON.parse(attach.extraJson!).projectName).toBe("root");
+  });
+
   it("uses the configured Java module when the resolver does not report a project root", async () => {
     launchProjectRoot = undefined;
     files["/p/pom.xml"] = "<project><artifactId>root</artifactId><packaging>pom</packaging></project>";
