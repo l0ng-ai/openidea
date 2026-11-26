@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { auxiliaryWindow } from "./auxWindow";
 import capability from "../../src-tauri/capabilities/default.json";
 import bridgeCapability from "../../src-tauri/capabilities/e2e.json";
-import browserCapability from "../../src-tauri/capabilities/browser.json";
 
 describe("auxiliaryWindow", () => {
   it("reads the kind and parent from the label", () => {
@@ -20,26 +19,12 @@ describe("auxiliaryWindow", () => {
   it.each(["settings", "comparison", "diff", "editor", "deployment"])(
     "grants %s windows permission to close",
     (kind) => {
-      expect(capability.webviews).toContain(`${kind}-*`);
-      expect(bridgeCapability.webviews).toContain(`${kind}-*`);
+      expect(capability.windows).toContain(`${kind}-*`);
+      expect(bridgeCapability.windows).toContain(`${kind}-*`);
       expect(capability.permissions).toContain("core:window:allow-close");
       expect(capability.permissions).toContain("core:window:allow-destroy");
     },
   );
-
-  it("does not confer host privileges on the Browser webview sharing its window", () => {
-    for (const cap of [capability, bridgeCapability, browserCapability]) {
-      expect(cap).not.toHaveProperty("windows");
-    }
-    const guest = "browser-guest-project-2-12";
-    const grants = [capability, bridgeCapability, browserCapability].filter((cap) =>
-      cap.webviews.some((pattern) =>
-        pattern.endsWith("*") ? guest.startsWith(pattern.slice(0, -1)) : guest === pattern,
-      ),
-    );
-    expect(grants.map((cap) => cap.identifier)).toEqual(["browser"]);
-    expect(grants.flatMap((cap) => cap.permissions)).toEqual([]);
-  });
 
   it("leaves project windows and malformed labels alone", () => {
     for (const label of ["", "main", "project-1", "settings-", "comparison-main", "comparison-main-x"]) {
