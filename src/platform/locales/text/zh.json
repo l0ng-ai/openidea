@@ -13,6 +13,7 @@
   "Image preview": "图像预览",
   "No image on this side": "此侧无图像",
   "SQL client": "SQL 客户端",
+  "Open Client in Editor": "在编辑器中打开客户端",
   "Short Go error guards and case clauses": "简短的 Go 错误检查和 case 分支",
   "Create function '{name}'": "创建函数 '{name}'",
   "Create class '{name}'": "创建类 '{name}'",

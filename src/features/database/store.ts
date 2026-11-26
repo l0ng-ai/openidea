@@ -1567,7 +1567,7 @@ export async function executeConsole(
       executions: { ...s.executions, [path]: execution },
     }));
     onStart?.(statements);
-    if (!inline) revealDatabaseResults();
+    if (!inline) revealDatabaseResults(path);
     const pageSize = useDatabase.getState().maxRows;
     const schema = consoleSchema(path) || (await loadCompletion(id))?.defaultSchema || "";
     if (!ownsRun()) return [];
@@ -1783,7 +1783,7 @@ export async function explainConsole(path: string, text: string, from: number, t
   try {
     const [statement] = await consoleStatements(id, text, from, to);
     if (!statement) return;
-    revealDatabaseResults();
+    revealDatabaseResults(path);
     showPlan(
       path,
       id,

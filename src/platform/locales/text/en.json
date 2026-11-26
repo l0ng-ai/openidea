@@ -18,6 +18,7 @@
   "Reset additional arguments": "Reset additional arguments",
   "Close the quoted argument before applying.": "Close the quoted argument before applying.",
   "SQL client": "SQL client",
+  "Open Client in Editor": "Open Client in Editor",
   "Short Go error guards and case clauses": "Short Go error guards and case clauses",
   "Create function '{name}'": "Create function '{name}'",
   "Create class '{name}'": "Create class '{name}'",

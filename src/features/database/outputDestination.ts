@@ -10,7 +10,20 @@ export function outputDestination(settings: unknown = useProject.getState().sett
     : "databaseOutput";
 }
 
-export function revealDatabaseResults() {
-  if (outputDestination() === "services") showServiceView(RESULTS_VIEW, false);
-  else toolWindowService().show(DB_OUTPUT_WINDOW, false);
+const outputRevealListeners = new Set<(path: string) => void>();
+
+export function onOutputReveal(listener: (path: string) => void) {
+  outputRevealListeners.add(listener);
+  return () => {
+    outputRevealListeners.delete(listener);
+  };
+}
+
+export function revealDatabaseResults(path?: string) {
+  if (outputDestination() === "services") {
+    showServiceView(RESULTS_VIEW, false);
+  } else {
+    if (path !== undefined) for (const listener of outputRevealListeners) listener(path);
+    toolWindowService().show(DB_OUTPUT_WINDOW, false);
+  }
 }
