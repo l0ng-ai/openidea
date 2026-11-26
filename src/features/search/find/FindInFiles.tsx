@@ -829,7 +829,9 @@ function FindInFilesDialog() {
                           ...customScopes.map((c) => ({
                             value: customScopeValue(c.name),
                             label: c.name,
+                            verbatim: true,
                             detail: c.pattern,
+                            verbatimDetail: true,
                           })),
                         ]
                       : []),

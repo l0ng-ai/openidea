@@ -80,7 +80,7 @@ function ValueControl({
       <Select
         aria-label={label}
         value={String(value)}
-        options={s.options.map((o) => ({ value: o, label: o }))}
+        options={s.options.map((o) => ({ value: o, label: o, verbatim: true }))}
         onChange={set}
       />
     );
