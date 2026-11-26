@@ -159,18 +159,20 @@ command = "test-selection"
 when = "editorLangId == markdown"   # optional
 ```
 
-| `menu`                  | Where                                                                         | API |
-| ----------------------- | ----------------------------------------------------------------------------- | --- |
-| `editor.context`        | Editor right-click menu                                                       | 1.0 |
-| `projectView.context`   | Project tool window right-click menu                                          | 1.0 |
-| `editorTab.context`     | Editor tab right-click menu                                                   | 1.0 |
-| `tools`                 | **Tools** in the main menu                                                    | 1.0 |
-| `viewItem.context`      | Right-click menu of the items of one of the plugin's own views (needs `view`) | 1.2 |
-| `commit.message`        | Toolbar above the commit message (Commit tool window and Commit dialog)       | 1.3 |
-| `editor.title`          | Actions area of the editor tab bar                                            | 1.4 |
-| `mainToolbar`           | Main toolbar                                                                  | 1.4 |
-| `problems.context`      | Right-click menu of a problem in the Problems tool window                     | 1.4 |
-| `searchResults.context` | Right-click menu of a search result                                           | 1.4 |
+| `menu`                  | Where                                                                         | API  |
+| ----------------------- | ----------------------------------------------------------------------------- | ---- |
+| `editor.context`        | Editor right-click menu                                                       | 1.0  |
+| `projectView.context`   | Project tool window right-click menu                                          | 1.0  |
+| `editorTab.context`     | Editor tab right-click menu                                                   | 1.0  |
+| `tools`                 | **Tools** in the main menu                                                    | 1.0  |
+| `viewItem.context`      | Right-click menu of the items of one of the plugin's own views (needs `view`) | 1.2  |
+| `commit.message`        | Toolbar above the commit message (Commit tool window and Commit dialog)       | 1.3  |
+| `editor.title`          | Actions area of the editor tab bar                                            | 1.4  |
+| `mainToolbar`           | Main toolbar                                                                  | 1.4  |
+| `problems.context`      | Right-click menu of a problem in the Problems tool window                     | 1.4  |
+| `searchResults.context` | Right-click menu of a search result                                           | 1.4  |
+| `services.context`      | Right-click menu of the IDE's own Services nodes (run configurations, Docker) | 1.18 |
+| `services.toolbar`      | Services toolbar, for the selected IDE-owned nodes                            | 1.18 |
 
 Using a menu newer than 1.0 means declaring at least that API in `engines.openidea`.
 Every entry names a command the plugin declares. The menu's `when` applies alongside the
@@ -204,6 +206,28 @@ view = "pods"
 command = "kube.logs"
 when = "viewItemKind == pod"
 ```
+
+**Services menus** (API 1.18). `services.context` and `services.toolbar` act on the nodes
+the IDE puts in Services itself: run configurations and Docker containers. The `when`
+clause sees, for each selected service, `serviceProvider` (`runConfigurations` or
+`docker`), `serviceKind` (the configuration kind, such as `spring-boot`, or
+`docker-container`), `serviceId`, `serviceName`, `serviceRunning`, `runConfigurationId`
+(empty for a container) and `serviceSelectionCount`. An entry shows only when its `when`
+holds for every selected service. The command's argument is JSON text,
+`{"services": [{"provider", "id", "kind", "name", "running", "runConfigurationId"}]}`.
+A toolbar entry shows the command's `icon`, else the plugin's.
+
+```toml
+[[contributes.menus]]
+menu = "services.context"
+command = "hotreload.attach"
+submenu = "Hot Reload"
+when = "serviceKind == 'spring-boot' && serviceRunning"
+```
+
+To launch the selected configuration with the plugin's Java agent, bind the agent to an
+executor instead (`executor` on `[[contributes.javaAgents]]`): **Run … with** and
+**Debug … with** entries then appear beside Run and Debug, also in this menu.
 
 ## Status bar items
 
