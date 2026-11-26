@@ -168,6 +168,21 @@ impl DbManager {
         persist_local(&path, fingerprint.as_bytes())
     }
 
+    /// A workspace uses only the selected host driver and a fresh in-memory database.
+    pub(crate) async fn workspace_engine(&self, profile: &str) -> IdeResult<JdbcPool> {
+        let driver = self
+            .jdbc_drivers()?
+            .into_iter()
+            .find(|driver| {
+                driver.id == profile
+                    && driver.vendor.as_deref() == Some("duckdb")
+                    && driver.class_name == "org.duckdb.DuckDBDriver"
+            })
+            .ok_or_else(|| IdeError::invalid("Choose an installed DuckDB JDBC driver for the workspace"))?;
+        let source = DataSource { url: "jdbc:duckdb:".into(), ..Default::default() };
+        JdbcPool::connect(&source, None, driver, self.jdbc_registry()?.with_file_name("jdbc")).await
+    }
+
     pub(crate) async fn open_pool(
         &self,
         source: &DataSource,

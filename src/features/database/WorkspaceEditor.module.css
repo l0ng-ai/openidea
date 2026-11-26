@@ -1,0 +1,40 @@
+.workspace {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  background: var(--bg-editor);
+}
+.toolbar,
+.field,
+.status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.toolbar,
+.status {
+  flex-wrap: wrap;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.status[role="alert"] {
+  color: var(--danger);
+}
+.field {
+  font-family: var(--font-mono);
+}
+.query {
+  flex: 0 1 38%;
+  min-height: 90px;
+  overflow: auto;
+  border-bottom: 1px solid var(--border);
+}
+.query :global(.cm-editor) {
+  height: 100%;
+}
+.results {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}

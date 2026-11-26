@@ -15,6 +15,49 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::PathBuf;
 
+/// A table explicitly selected as one side of a project workspace join.
+#[derive(Deserialize, Serialize, Type)]
+#[serde(rename_all = "camelCase", rename = "DbWorkspaceJoinTable")]
+pub struct WorkspaceJoinTable {
+    pub source_id: String,
+    pub database: String,
+    pub schema: String,
+    pub table: String,
+    pub key: String,
+}
+
+impl WorkspaceJoinTable {
+    fn input(self) -> (ide_db::workspace_input::WorkspaceInputRequest, String) {
+        use ide_db::workspace_input::{WorkspaceInputLimits, WorkspaceInputRequest};
+        let input = WorkspaceInputRequest {
+            source_id: self.source_id,
+            database: self.database,
+            schema: self.schema,
+            table: self.table,
+            limits: WorkspaceInputLimits { max_rows: 100_000, max_cell_bytes: 1_048_576, max_bytes: 16_777_216 },
+        };
+        (input, self.key)
+    }
+}
+
+#[command(trust = trusted)]
+pub async fn db_workspace_join(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    driver: String,
+    left: WorkspaceJoinTable,
+    right: WorkspaceJoinTable,
+) -> IdeResult<QueryResult> {
+    let db = host.project(window)?.db.clone();
+    let (left, left_key) = left.input();
+    let (right, right_key) = right.input();
+    let cancel = host.begin_request(request);
+    let result = db.workspace_join(&driver, [&left, &right], [&left_key, &right_key], &cancel).await;
+    host.end_request(request);
+    result
+}
+
 /// One statement of a console run.
 #[derive(Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -666,6 +709,7 @@ pub async fn server_version(host: &Host, window: &str, id: &str) -> IdeResult<u3
 ide_command::domain!(
     db:
     db_apply_edits,
+    db_workspace_join,
     db_completion,
     db_connect,
     db_connected,

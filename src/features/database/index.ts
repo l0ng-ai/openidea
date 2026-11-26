@@ -18,7 +18,9 @@ import {
   type TableCommandTarget,
 } from "./tableEditorFocus";
 import { useProject } from "@/platform/project";
+import { projectLocation } from "@/platform/remote";
 import {
+  editorService,
   registerEditorKind,
   registerOverlay,
   registerServiceView,
@@ -143,6 +145,14 @@ export function activate(): () => void {
       component: lazyComponent(() => import("./ResultsView").then((m) => m.ResultsView)),
     }),
     registerEditorKind({
+      kind: "db-workspace",
+      singleton: true,
+      component: lazyComponent(() => import("./WorkspaceEditor").then((m) => m.WorkspaceEditor)),
+      title: () => tx("Query Workspace"),
+      icon: () => "database",
+      keepAlive: true,
+    }),
+    registerEditorKind({
       kind: TABLE_KIND,
       component: lazyComponent(() => import("./TableEditor").then((m) => m.TableEditor)),
       title: tableTitle,
@@ -249,6 +259,19 @@ export function activate(): () => void {
         keywords: ["data sources", "sql", "tables"],
         when: "projectOpen",
         run: () => toolWindowService().show(DB_TOOL_WINDOW, true),
+      },
+      {
+        id: "db.queryWorkspace",
+        title: "Query Workspace",
+        category: "Tools",
+        icon: "database",
+        keywords: ["cross-database", "join", "workspace"],
+        when: "projectOpen",
+        run: async () => {
+          const location = projectLocation(useProject.getState().project?.root);
+          if (location)
+            await editorService().openInput({ kind: "db-workspace", key: "db-workspace:" + location }, { focus: true });
+        },
       },
       {
         id: "db.newDataSource",

@@ -79,7 +79,12 @@ async function sourceFromClipboard() {
 
 /** The toolbar's "+" menu (IDEA: New). */
 export function newMenu(): MenuItem[] {
-  return [{ kind: "action", action: "db.newConsole", label: "Query Console" }, sep, ...dataSourceItems()];
+  return [
+    { kind: "action", action: "db.newConsole", label: "Query Console" },
+    { kind: "action", action: "db.queryWorkspace", label: "Query Workspace" },
+    sep,
+    ...dataSourceItems(),
+  ];
 }
 
 function sqlScripts(n: DbNode, table: boolean): MenuItem {

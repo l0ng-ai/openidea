@@ -24,6 +24,8 @@ pub mod sql;
 pub mod tools;
 mod watch;
 pub use watch::SourcesWatch;
+pub mod workspace_input;
+pub mod workspace;
 
 pub use catalog::{CatalogDatabase, CatalogSchema, SourceCatalog};
 pub use conn::{Held, Pool, QueryResult, ResultColumn, TruncatedCell};
@@ -289,6 +291,7 @@ pub struct DbManager {
     sessions: Mutex<HashMap<String, Session>>,
     /// Result pages read on from where the previous page stopped, not by running the statement again.
     cursors: conn::Cursors,
+    workspace_run: tokio::sync::Mutex<()>,
     /// The data sources as last read from disk, for [`DbManager::reconcile_sources`]
     /// (`None` until [`DbManager::watch_sources`]).
     on_disk: Mutex<Option<Vec<DataSource>>>,
@@ -451,6 +454,7 @@ impl DbManager {
             on_disk: Mutex::default(),
             sessions: Mutex::default(),
             cursors: conn::Cursors::default(),
+            workspace_run: tokio::sync::Mutex::new(()),
         }
     }
 
