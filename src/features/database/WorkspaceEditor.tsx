@@ -1,10 +1,11 @@
-import { autocompletion, completionKeymap, type CompletionSource } from "@codemirror/autocomplete";
+import { autocompletion, completionKeymap, snippet, type CompletionSource } from "@codemirror/autocomplete";
 import { EditorState, Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { findLanguageDescription, loadSupport } from "@/editor/core/cm/languages";
 import { baseExtensions, compartments } from "@/editor/core/cm/setup";
 import { tx, useTx } from "@/platform/i18n";
+import { shortcutLabel } from "@/platform/keymap";
 import {
   call,
   commands,
@@ -15,24 +16,61 @@ import {
   type RequestId,
 } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { Button, Select, Spinner, T } from "@/ui";
+import { Button, Dialog, IconButton, Select, Spinner, T, Toolbar } from "@/ui";
 import type { EditorInput } from "@/workbench/contributions";
 import { Grid } from "./Grid";
 import { jdbcProfileOption, JdbcDriverProfiles, useJdbcDrivers } from "./JdbcDriverProfiles";
 import { projectRequest } from "./requests";
 import { formatElapsed } from "./resultView";
 import { quoteIdent } from "./sql/complete";
-import { inLiteral, lex } from "./sql/lexer";
+import { identName, inLiteral, lex } from "./sql/lexer";
 import { loadCompletion, loadSources, useDatabase } from "./store";
 import { DUCKDB_JDBC_CLASS, vendorOf } from "./vendors";
-import { workspaceJoinQuery } from "./workspaceQuery";
+import { workspaceJoinQuery, workspaceSourceNames, workspaceSourceSide } from "./workspaceQuery";
 import styles from "./WorkspaceEditor.module.css";
 
-const INITIAL_SQL =
-  "SELECT *\nFROM #left.public.customers AS a\nJOIN #right.events.purchases AS b ON a.id = b.customer_id";
 const PAGE_SIZE = 500;
-type Side = "left" | "right";
+const sides = ["left", "right"] as const;
+type Side = (typeof sides)[number];
 type Selections = Record<Side, string>;
+type Configuration = Selections & { profile: string };
+
+function sourcePrefix(name: string) {
+  return "#" + (name === "left" || name === "right" ? name : quoteIdent(name, "postgres"));
+}
+
+function joinTemplate(names: Selections) {
+  const prefix = (side: Side) => sourcePrefix(names[side]).replace(/[{}]/g, "\\$&");
+  return (
+    "SELECT *\nFROM " +
+    prefix("left") +
+    ".${1:public}.${2:customers} AS a\nJOIN " +
+    prefix("right") +
+    ".${3:events}.${4:purchases} AS b\n  ON a.${5:id} = b.${6:customer_id}"
+  );
+}
+
+const exampleKeywords = new Set(["SELECT", "FROM", "AS", "JOIN", "ON"]);
+
+function JoinExample({ template }: { template: string }) {
+  const sql = template.replace(/\$\{\d+:([^}]+)\}/g, "$1").replace(/\\([{}])/g, "$1");
+  const tokens = lex(sql, "postgres").tokens.filter(
+    (token) => token.kind === "quoted" || exampleKeywords.has(token.upper),
+  );
+  return (
+    <pre className={styles.example}>
+      <code>
+        {tokens.map((token, index) => (
+          <Fragment key={token.from}>
+            {sql.slice(tokens[index - 1]?.to ?? 0, token.from)}
+            <span className={token.kind === "quoted" ? styles.exampleName : styles.exampleKeyword}>{token.text}</span>
+          </Fragment>
+        ))}
+        {sql.slice(tokens.at(-1)?.to ?? 0)}
+      </code>
+    </pre>
+  );
+}
 
 function eligible(source: DataSource): source is DataSource & { id: string } {
   return (
@@ -42,7 +80,7 @@ function eligible(source: DataSource): source is DataSource & { id: string } {
   );
 }
 
-function complete(selected: () => Selections): CompletionSource {
+function complete(bindings: () => { config: Configuration; names: Selections }): CompletionSource {
   return async (context) => {
     const sql = context.state.sliceDoc(0, context.pos);
     const parsed = lex(sql, "postgres");
@@ -55,25 +93,30 @@ function complete(selected: () => Selections): CompletionSource {
     const from = parsed.tokens[hash]!.from;
     const prefix = sql.slice(from);
     if (/\s$/.test(prefix) && state !== "quoted") return null;
-    const selection = selected();
+    const { config, names } = bindings();
     if (tokens.length < 2) {
       return {
         from,
-        options: (["left", "right"] as const)
-          .filter((side) => selection[side])
-          .map((side) => ({ label: "#" + side, type: "namespace" })),
+        options: sides
+          .filter((side) => config[side])
+          .flatMap((side) => [
+            { label: sourcePrefix(names[side]), type: "namespace", boost: 5 },
+            ...(names[side] === side ? [] : [{ label: sourcePrefix(side), type: "namespace" }]),
+          ]),
       };
     }
-    const side = tokens[0]!.text.toLowerCase();
-    if ((side !== "left" && side !== "right") || tokens[1]!.text !== "." || !selection[side]) return null;
+    const name = tokens[0]!.kind === "quoted" ? identName(tokens[0]!) : tokens[0]!.text.toLowerCase();
+    const side = workspaceSourceSide(name, names);
+    if (!side || tokens[1]!.text !== "." || !config[side]) return null;
     const current = projectRequest();
-    const id = selection[side];
+    const id = config[side];
     const catalog = useDatabase.getState().completion[id] ?? (await loadCompletion(id));
-    if (!current() || context.aborted || selected()[side] !== id || !catalog) return null;
+    if (!current() || context.aborted || bindings().config[side] !== id || !catalog) return null;
     const options = [];
     for (const table of catalog.tables) {
       if (table.kind !== "table") continue;
-      const label = "#" + side + "." + quoteIdent(table.schema, "postgres") + "." + quoteIdent(table.name, "postgres");
+      const label =
+        sourcePrefix(name) + "." + quoteIdent(table.schema, "postgres") + "." + quoteIdent(table.name, "postgres");
       if (label.toLowerCase().startsWith(prefix.toLowerCase())) {
         options.push({ label, type: "class", detail: table.kind });
         if (options.length === 100) break;
@@ -95,7 +138,7 @@ function readDraft(key: string) {
     left: typeof value.left === "string" ? value.left : "",
     right: typeof value.right === "string" ? value.right : "",
     profile: typeof value.profile === "string" ? value.profile : "",
-    sql: typeof value.sql === "string" ? value.sql : INITIAL_SQL,
+    sql: typeof value.sql === "string" ? value.sql : "",
   };
 }
 
@@ -105,9 +148,11 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
   const [draft] = useState(() => readDraft(storageKey));
   const sources = useDatabase((state) => state.sources);
   const registry = useJdbcDrivers();
-  const [selection, setSelection] = useState<Selections>({ left: draft.left, right: draft.right });
-  const [profile, setProfile] = useState(draft.profile);
+  const [config, setConfig] = useState<Configuration>({ left: draft.left, right: draft.right, profile: draft.profile });
+  const [settings, setSettings] = useState<Configuration | null>(null);
+  const settingsRequested = useDatabase((state) => state.workspaceSettingsRequest === input.key);
   const [manage, setManage] = useState(false);
+  const [empty, setEmpty] = useState(() => draft.sql.length === 0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState<DbQueryResult | null>(null);
@@ -115,17 +160,37 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const request = useRef<RequestId | null>(null);
-  const current = useRef({ selection, profile, execute: () => {} });
-  const drivers = registry.drivers?.filter((d) => d.vendor === "duckdb" && d.className === DUCKDB_JDBC_CLASS) ?? [];
-  const driver = profile ? drivers.find((d) => d.id === profile) : drivers[0];
   const candidates = sources.filter(eligible);
-  const ready =
-    !!driver &&
-    [selection.left, selection.right].every((id) => candidates.some((s) => s.id === id)) &&
-    selection.left !== selection.right;
+  const drivers = registry.drivers?.filter((d) => d.vendor === "duckdb" && d.className === DUCKDB_JDBC_CLASS) ?? [];
+  const driverFor = (id: string) => (id ? drivers.find((driver) => driver.id === id) : drivers[0]);
+  const sourceFor = (id: string) => candidates.find((source) => source.id === id);
+  const configured = (value: Configuration) =>
+    !!driverFor(value.profile) && sides.every((side) => sourceFor(value[side])) && value.left !== value.right;
+  const ready = configured(config);
+  const names = workspaceSourceNames(sourceFor(config.left)?.name ?? "", sourceFor(config.right)?.name ?? "");
+  const current = useRef({ config, names, execute: () => {} });
+
+  useEffect(() => {
+    if (!settingsRequested || busy) return;
+    const frame = requestAnimationFrame(() => {
+      useDatabase.setState({ workspaceSettingsRequest: null });
+      setSettings(config);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [settingsRequested, busy, config]);
 
   const execute = async () => {
-    if (request.current !== null || !ready || !driver || !view.current) return;
+    if (request.current !== null || !view.current) return;
+    const driver = driverFor(config.profile);
+    if (!ready || !driver) {
+      setSettings(config);
+      return;
+    }
+    const sql = view.current.state.doc.toString();
+    if (!sql.trim()) {
+      view.current.focus();
+      return;
+    }
     const activeProject = projectRequest();
     const id = nextRequestId();
     request.current = id;
@@ -134,9 +199,9 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
     setPage(0);
     setBusy(true);
     try {
-      const [a, b] = workspaceJoinQuery(view.current.state.doc.toString());
+      const [a, b] = workspaceJoinQuery(sql, names);
       const table = (ref: typeof a) => {
-        const source = candidates.find((item) => item.id === selection[ref.source])!;
+        const source = sourceFor(config[ref.source])!;
         return {
           sourceId: source.id,
           database: source.driver === "clickhouse" ? ref.schema : "",
@@ -158,7 +223,7 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
     }
   };
   useLayoutEffect(() => {
-    current.current = { selection, profile, execute: () => void execute() };
+    current.current = { config, names, execute: () => void execute() };
   });
 
   useEffect(() => {
@@ -177,7 +242,10 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
           docLength: draft.sql.length,
           contributions: [],
           extra: [
-            autocompletion({ override: [complete(() => current.current.selection)] }),
+            autocompletion({ override: [complete(() => current.current)] }),
+            EditorView.updateListener.of((update) => {
+              if (update.docChanged) setEmpty(update.state.doc.length === 0);
+            }),
             Prec.highest(
               keymap.of([
                 {
@@ -197,9 +265,11 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
     });
     view.current = editor;
     const save = () => {
-      const { selection, profile } = current.current;
       try {
-        localStorage.setItem(storageKey, JSON.stringify({ ...selection, profile, sql: editor.state.doc.toString() }));
+        localStorage.setItem(
+          storageKey,
+          JSON.stringify({ ...current.current.config, sql: editor.state.doc.toString() }),
+        );
       } catch {
         /* The current session remains usable without storage. */
       }
@@ -223,75 +293,76 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
     };
   }, [draft, storageKey]);
 
-  const update = (side: Side, value: string) => {
-    setSelection({ ...selection, [side]: value });
-    setError("");
-    setResult(null);
-    setPage(0);
+  const template = joinTemplate(names);
+  const insertJoin = () => {
+    const editor = view.current;
+    if (!editor || editor.state.doc.length) return;
+    snippet(template)(editor, null, 0, 0);
+    editor.focus();
+  };
+  const applySettings = () => {
+    if (!settings || !configured(settings)) return;
+    const next = { ...settings, profile: driverFor(settings.profile)!.id };
+    if (next.left !== config.left || next.right !== config.right || next.profile !== config.profile) {
+      setConfig(next);
+      setResult(null);
+      setError("");
+      setPage(0);
+    }
+    setSettings(null);
   };
   const start = page * PAGE_SIZE;
   return (
     <section className={styles.workspace} aria-label={t("Query Workspace")}>
-      <div className={styles.toolbar}>
-        {(["left", "right"] as const).map((side) => (
-          <label key={side} className={styles.field}>
-            <span>{"#" + side}</span>
-            <Select
-              aria-label={t(side === "left" ? "Left data source" : "Right data source")}
-              searchable
-              disabled={busy}
-              value={selection[side]}
-              placeholder="Select data source"
-              options={candidates.map((s) => ({
-                value: s.id,
-                label: s.name || s.id,
-                verbatim: true,
-                icon: vendorOf(s).icon,
-                disabled: s.id === selection[side === "left" ? "right" : "left"],
-              }))}
-              onChange={(id) => update(side, id)}
-            />
-          </label>
-        ))}
-        <Select
-          aria-label={t("Workspace DuckDB driver")}
-          value={driver?.id ?? null}
-          disabled={busy}
-          placeholder="Select DuckDB driver"
-          options={drivers.map(jdbcProfileOption)}
-          onChange={setProfile}
-        />
-        <Button variant="ghost" disabled={busy} onClick={() => setManage(true)}>
-          <T>Manage Drivers…</T>
-        </Button>
+      <Toolbar className={styles.toolbar} aria-label="Workspace actions">
         {busy ? (
-          <Button
+          <IconButton
+            icon="stop"
+            title="Stop"
+            tone="danger"
             onClick={() => {
               if (request.current !== null) void commands.cancelRequest(request.current);
             }}
-          >
-            <T>Cancel</T>
-          </Button>
+          />
         ) : (
-          <Button variant="primary" icon="run" disabled={!ready} onClick={() => void execute()}>
-            <T>Run</T>
-          </Button>
+          <IconButton
+            icon="run"
+            title="Run"
+            tone="accent"
+            shortcut={shortcutLabel("db.execute")}
+            onClick={() => void execute()}
+          />
+        )}
+        <IconButton icon="settings" title="Configure Sources…" disabled={busy} onClick={() => setSettings(config)} />
+        {busy && (
+          <span className={styles.running}>
+            <Spinner label={t("Running query")} /> <T>Running query</T>
+          </span>
+        )}
+      </Toolbar>
+      <div className={styles.query} data-result={result ? "" : undefined}>
+        <div className={styles.editor} ref={host} />
+        {empty && (
+          <div className={styles.firstRun}>
+            {ready ? (
+              <T>Use qualified table names to join the selected sources.</T>
+            ) : (
+              <T>Choose two saved data sources and a DuckDB JDBC driver.</T>
+            )}
+            <JoinExample template={template} />
+            <div className={styles.firstRunActions}>
+              <Button variant="secondary" size="small" onClick={insertJoin}>
+                <T>Insert JOIN</T>
+              </Button>
+              {!ready && (
+                <Button variant="ghost" size="small" onClick={() => setSettings(config)}>
+                  <T>Configure Sources…</T>
+                </Button>
+              )}
+            </div>
+          </div>
         )}
       </div>
-      <div className={styles.query} ref={host} />
-      {registry.error && (
-        <div role="alert" className={styles.status}>
-          {registry.error}{" "}
-          <Button onClick={registry.retry}>
-            <T>Retry</T>
-          </Button>
-        </div>
-      )}
-      {busy && (
-        <div className={styles.status}>
-          <Spinner label={t("Running query")} /> <T>Running query</T>
-        </div>
-      )}
       {error && (
         <div role="alert" className={styles.status}>
           {error}
@@ -331,18 +402,97 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
           </div>
         </>
       )}
-      {manage && registry.drivers && (
+      {settings && (
+        <Dialog
+          open
+          title={t("Configure Workspace Sources")}
+          width={440}
+          onClose={() => {
+            setManage(false);
+            setSettings(null);
+          }}
+          buttons={[
+            { label: "Cancel", role: "cancel" },
+            { label: "OK", role: "default", disabled: !configured(settings), onClick: applySettings },
+          ]}
+        >
+          <div className={styles.settings}>
+            {sides.map((side) => (
+              <label key={side} className={styles.field}>
+                <span>{t(side === "left" ? "Left data source" : "Right data source")}</span>
+                <Select
+                  aria-label={t(side === "left" ? "Left data source" : "Right data source")}
+                  searchable
+                  value={settings[side]}
+                  placeholder="Select data source"
+                  options={candidates
+                    .filter((s) => s.id !== settings[side === "left" ? "right" : "left"])
+                    .map((s) => ({ value: s.id, label: s.name || s.id, verbatim: true, icon: vendorOf(s).icon }))}
+                  onChange={(id) => setSettings({ ...settings, [side]: id })}
+                />
+              </label>
+            ))}
+            <label className={styles.field}>
+              <span>
+                <T>Workspace DuckDB driver</T>
+              </span>
+              <Select
+                aria-label={t("Workspace DuckDB driver")}
+                value={driverFor(settings.profile)?.id ?? null}
+                placeholder="Select DuckDB driver"
+                options={drivers.map(jdbcProfileOption)}
+                onChange={(profile) => setSettings({ ...settings, profile })}
+              />
+            </label>
+            <div className={styles.settingsActions}>
+              <Button
+                variant="ghost"
+                icon="swap-panels"
+                disabled={!settings.left && !settings.right}
+                onClick={() => setSettings({ ...settings, left: settings.right, right: settings.left })}
+              >
+                <T>Swap Sides</T>
+              </Button>
+              <Button variant="ghost" disabled={registry.drivers === null} onClick={() => setManage(true)}>
+                <T>Manage Drivers…</T>
+              </Button>
+              {registry.error && (
+                <Button onClick={registry.retry}>
+                  <T>Retry</T>
+                </Button>
+              )}
+            </div>
+            {registry.error && <div role="alert">{registry.error}</div>}
+            {candidates.length < 2 && (
+              <p>
+                <T>Save two PostgreSQL or ClickHouse data sources first.</T>
+              </p>
+            )}
+            {sides.some((side) => settings[side] && !sourceFor(settings[side])) && (
+              <p role="alert">
+                <T>A saved workspace source is unavailable.</T>
+              </p>
+            )}
+            {settings.profile && registry.drivers && !driverFor(settings.profile) && (
+              <p role="alert">
+                <T>The saved DuckDB driver is unavailable.</T>
+              </p>
+            )}
+          </div>
+        </Dialog>
+      )}
+      {settings && manage && registry.drivers && (
         <JdbcDriverProfiles
           drivers={registry.drivers}
-          selected={driver?.id ?? ""}
+          selected={driverFor(settings.profile)?.id ?? ""}
           sourceVendor="duckdb"
           onClose={() => setManage(false)}
           onSave={(d) => {
             registry.setDrivers((old) => [...(old ?? []).filter((entry) => entry.id !== d.id), d]);
-            setProfile(d.id);
+            setSettings({ ...settings, profile: d.id });
           }}
           onUse={(d) => {
-            setProfile(d.id);
+            setSettings({ ...settings, profile: d.id });
             setManage(false);
           }}
           onRemove={(id) => registry.setDrivers((old) => (old ?? []).filter((d) => d.id !== id))}

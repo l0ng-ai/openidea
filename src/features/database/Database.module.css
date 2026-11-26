@@ -351,6 +351,9 @@
   flex: 1;
   min-height: 0;
 }
+.treeHost[data-empty] > :first-child {
+  flex: 0 0 32px;
+}
 .nodeRow {
   display: flex;
   align-items: center;

@@ -125,6 +125,11 @@ const diagrams = (n: DbNode): MenuItem => ({
 /** Context menu of a tree node (`null`: the empty area). */
 export function nodeMenu(n: DbNode | null): MenuItem[] {
   if (!n) return [{ label: "New", icon: "plus", submenu: newMenu() }];
+  if (n.kind === "workspace")
+    return [
+      { kind: "action", action: "db.queryWorkspace", label: "Query Workspace", icon: "db-console" },
+      { kind: "action", action: "db.queryWorkspace", label: "Configure Sources…", icon: "settings", arg: "configure" },
+    ];
   const id = nodeTarget(n) ?? "";
   const driver = sourceById(id)?.driver ?? "sqlite";
   const o = objectOf(n);

@@ -66,6 +66,7 @@ interface InTable {
 }
 
 export type DbNode =
+  | { kind: "workspace"; key: string }
   | { kind: "source"; key: string; source: DataSource }
   /** A database of a PostgreSQL / SQL Server host; `id` is its connection target. */
   | { kind: "database"; key: string; id: string; name: string; current: boolean }
@@ -87,6 +88,7 @@ export type DbNode =
 
 /** The connection target a node belongs to. */
 export function nodeTarget(n: DbNode): string | null {
+  if (n.kind === "workspace") return null;
   if (n.kind === "source") return n.source.id ?? null;
   if ("id" in n && typeof n.id === "string") return n.id;
   return n.key.split("/")[0] ?? null;

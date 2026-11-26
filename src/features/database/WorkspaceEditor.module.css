@@ -6,28 +6,89 @@
   background: var(--bg-editor);
 }
 .toolbar,
-.field,
+.firstRunActions,
+.running,
+.settingsActions,
 .status {
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: var(--space-2);
 }
 .toolbar,
 .status {
-  flex-wrap: wrap;
-  padding: 6px 10px;
+  flex: none;
+  padding: var(--space-1) var(--space-2);
   border-bottom: 1px solid var(--border);
 }
-.status[role="alert"] {
+.toolbar {
+  gap: var(--space-0-5);
+}
+.firstRun,
+.running {
+  color: var(--fg-muted);
+}
+.running {
+  margin-inline-start: var(--space-2);
+}
+.status[role="alert"],
+.settings [role="alert"] {
   color: var(--danger);
 }
+.settings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+}
+.settings p {
+  margin: 0;
+  color: var(--fg-muted);
+}
 .field {
-  font-family: var(--font-mono);
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
 }
 .query {
-  flex: 0 1 38%;
+  position: relative;
+  flex: 1;
   min-height: 90px;
-  overflow: auto;
+  overflow: hidden;
+}
+.editor {
+  height: 100%;
+}
+.firstRun {
+  position: absolute;
+  inset-block-start: 42px;
+  inset-inline-start: 44px;
+  max-width: calc(100% - 54px);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-field, 6px);
+  background: var(--bg-island);
+  pointer-events: none;
+}
+.firstRunActions button {
+  pointer-events: auto;
+}
+.example {
+  margin: var(--space-2) 0;
+  color: var(--fg-editor);
+  font-family: var(--font-mono);
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.exampleKeyword {
+  color: var(--syn-keyword);
+}
+.exampleName {
+  color: var(--syn-string);
+}
+.query[data-result] {
+  flex: 0 1 38%;
   border-bottom: 1px solid var(--border);
 }
 .query :global(.cm-editor) {

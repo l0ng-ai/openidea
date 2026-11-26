@@ -244,6 +244,7 @@ interface DatabaseState {
   selectedNodes: DbNode[];
   /** The toolbar's New popup is open. */
   newMenuOpen: boolean;
+  workspaceSettingsRequest: string | null;
   /** Expanded nodes of the Database tree. */
   treeExpanded: Set<string>;
   /** A tree node to select and scroll to (Go to Declaration from a console). */
@@ -310,6 +311,7 @@ export const useDatabase = create<DatabaseState>(() => ({
   selectedNode: null,
   selectedNodes: [],
   newMenuOpen: false,
+  workspaceSettingsRequest: null,
   treeExpanded: new Set(),
   treeReveal: null,
   paramValues: {},

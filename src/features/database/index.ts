@@ -215,6 +215,7 @@ export function activate(): () => void {
         executions: {},
         dialog: null,
         newMenuOpen: false,
+        workspaceSettingsRequest: null,
       });
     }),
     useDatabase.subscribe((s, prev) => {
@@ -267,10 +268,13 @@ export function activate(): () => void {
         icon: "database",
         keywords: ["cross-database", "join", "workspace"],
         when: "projectOpen",
-        run: async () => {
+        run: async ({ arg }) => {
           const location = projectLocation(useProject.getState().project?.root);
-          if (location)
-            await editorService().openInput({ kind: "db-workspace", key: "db-workspace:" + location }, { focus: true });
+          if (!location) return;
+          const key = "db-workspace:" + location;
+          const current = projectRequest();
+          await editorService().openInput({ kind: "db-workspace", key }, { focus: true });
+          if (arg === "configure" && current()) useDatabase.setState({ workspaceSettingsRequest: key });
         },
       },
       {

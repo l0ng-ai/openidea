@@ -80,41 +80,109 @@ async function openWorkspace(page: Page) {
   return page.getByRole("region", { name: "Query Workspace" });
 }
 
-async function selectSources(page: Page, workspace: Locator) {
-  await workspace.getByRole("button", { name: "Left data source" }).click();
-  await page.getByRole("option", { name: "Accounts · PostgreSQL" }).click();
-  await workspace.getByRole("button", { name: "Right data source" }).click();
-  await page.getByRole("option", { name: "Events · ClickHouse" }).click();
-}
+const SQL = "SELECT * FROM #left.public.customers a JOIN #right.events.purchases b ON a.id = b.customer_id";
 
-test("completes qualified references and pages the same workspace result", async ({ workbench: page }, info) => {
-  await setupWorkspace(page);
+async function showDatabase(page: Page) {
   await page.evaluate(async () => {
     const actions = "/src/platform/actions.ts";
     await (await import(/* @vite-ignore */ actions)).executeAction("db.showToolWindow");
   });
-  const newButton = page
-    .getByRole("toolbar", { name: "Database actions" })
-    .getByRole("button", { name: "New", exact: true });
-  await newButton.click();
-  await page.getByRole("menuitem", { name: "Query Workspace", exact: true }).click();
+  return page.getByRole("tree", { name: "Data sources" }).getByRole("treeitem", { name: "Query Workspace" });
+}
 
+async function settingsFor(page: Page, workspace: Locator) {
+  await workspace
+    .getByRole("toolbar", { name: "Workspace actions" })
+    .getByRole("button", { name: "Configure Sources…" })
+    .click();
+  return page.getByRole("dialog", { name: "Configure Workspace Sources" });
+}
+
+async function selectSources(page: Page, settings: Locator) {
+  await settings.getByRole("button", { name: "Left data source" }).click();
+  await page.getByRole("option", { name: "Accounts · PostgreSQL" }).click();
+  await settings.getByRole("button", { name: "Right data source" }).click();
+  await expect(page.getByRole("option", { name: "Accounts · PostgreSQL" })).toHaveCount(0);
+  await page.getByRole("option", { name: "Events · ClickHouse" }).click();
+}
+
+test("shows the workspace before any data sources are added", async ({ workbench: page }, info) => {
+  await setupWorkspace(page);
+  await page.evaluate(async () => {
+    const store = "/src/features/database/store.ts";
+    const { useDatabase } = await import(/* @vite-ignore */ store);
+    window.__ipc.handlers.db_sources = () => [];
+    useDatabase.setState({ sources: [], loaded: true });
+  });
+  const node = await showDatabase(page);
+  await expect(node).toBeVisible();
+  await node.click();
+  await page.keyboard.press("Enter");
   const workspace = page.getByRole("region", { name: "Query Workspace" });
-  await expect(workspace.getByRole("button", { name: "Run", exact: true })).toBeDisabled();
-  await selectSources(page, workspace);
   const editor = workspace.getByLabel("Workspace SQL");
+  await expect(editor).toBeEmpty();
+  await expect(workspace.locator("pre")).toContainText("FROM #left.public.customers");
+  await expect(workspace.locator("pre")).toContainText("ON a.id = b.customer_id");
+  await expect(workspace.getByRole("grid")).toHaveCount(0);
+  const height = await editor.evaluate((element) => element.closest(".cm-editor")!.getBoundingClientRect().height);
+  expect(height).toBeGreaterThan(500);
+  await page.screenshot({ path: info.outputPath("workspace-empty.png"), animations: "disabled" });
+  await page.setViewportSize({ width: 720, height: 620 });
+  await page.evaluate(async () => {
+    const module = "/src/platform/project.ts";
+    const { useProject } = await import(/* @vite-ignore */ module);
+    const settings = useProject.getState().settings;
+    useProject.setState({
+      settings: { ...settings, appearance: { ...settings?.appearance, theme: "dark", syncWithOs: false } },
+    });
+  });
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   await editor.click();
+  await page.keyboard.insertText("SELECT");
+  await expect(editor).toHaveText("SELECT");
+  await expect(workspace.locator("pre")).toHaveCount(0);
+  await editor.press("Meta+Enter");
+  const settings = page.getByRole("dialog", { name: "Configure Workspace Sources" });
+  await expect(settings.getByText("Save two PostgreSQL or ClickHouse data sources first.")).toBeVisible();
+  await expect(settings.getByRole("button", { name: "OK", exact: true })).toBeDisabled();
+  const dialog = (await settings.boundingBox())!;
+  expect(dialog.x + dialog.width).toBeLessThanOrEqual(720);
+  await settings.press("Escape");
+  expect(await ipcCalls(page, "db_workspace_join")).toHaveLength(0);
+});
+
+test("completes named references and pages the same workspace result", async ({ workbench: page }, info) => {
+  await setupWorkspace(page);
+  const node = await showDatabase(page);
+  await node.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Configure Sources…" }).click();
+  const workspace = page.getByRole("region", { name: "Query Workspace" });
+  const settings = page.getByRole("dialog", { name: "Configure Workspace Sources" });
+  await selectSources(page, settings);
+  await page.screenshot({ path: info.outputPath("workspace-settings.png"), animations: "disabled" });
+  await settings.getByRole("button", { name: "OK", exact: true }).click();
+  const editor = workspace.getByLabel("Workspace SQL");
+  await workspace.getByRole("button", { name: "Insert JOIN" }).click();
+  const left = '#"Accounts · PostgreSQL"';
+  await expect(editor).toContainText(left + ".public.customers");
+  await expect(editor).toContainText('#"Events · ClickHouse".events.purchases');
+  const selection = () => page.evaluate(() => window.getSelection()?.toString());
+  expect(await selection()).toBe("public");
+  await editor.press("Tab");
+  expect(await selection()).toBe("customers");
+  await editor.press("Escape");
+
   await editor.press("Meta+A");
   await page.keyboard.insertText("SELECT * FROM #");
   await editor.press("Control+Space");
-  await expect(page.getByRole("option", { name: "#right", exact: true })).toBeVisible();
-  await page.getByRole("option", { name: "#left", exact: true }).click();
+  await expect(page.getByRole("option", { name: '#"Events · ClickHouse"', exact: true })).toBeVisible();
+  await page.getByRole("option", { name: left, exact: true }).click();
   await page.keyboard.insertText(".");
   await editor.press("Control+Space");
-  await expect(page.getByRole("option", { name: /#left\.legacy\.customers/ })).toBeVisible();
+  await expect(page.getByRole("option", { name: /legacy\.customers/ })).toBeVisible();
   await expect(page.getByRole("option", { name: /customers_view/ })).toHaveCount(0);
   await page.screenshot({ path: info.outputPath("workspace-completion.png"), animations: "disabled" });
-  await page.getByRole("option", { name: /#left\.public\.customers/ }).click();
+  await page.getByRole("option", { name: /public\.customers/ }).click();
   await page.keyboard.insertText(" a\nJOIN #right.events.");
   await editor.press("Control+Space");
   await page.getByRole("option", { name: /#right\.events\.purchases/ }).click();
@@ -145,11 +213,12 @@ test("completes qualified references and pages the same workspace result", async
 test("cancels the active request and surfaces parser, source and limit errors", async ({ workbench: page }) => {
   await setupWorkspace(page);
   const workspace = await openWorkspace(page);
-  await selectSources(page, workspace);
+  const settings = await settingsFor(page, workspace);
+  await selectSources(page, settings);
+  await settings.getByRole("button", { name: "OK", exact: true }).click();
   const run = workspace.getByRole("button", { name: "Run", exact: true });
   const alert = workspace.getByRole("alert");
   const editor = workspace.getByLabel("Workspace SQL");
-  const initialSql = await editor.innerText();
   await editor.click();
   await editor.press("Meta+A");
   await page.keyboard.insertText("DELETE FROM #left.public.customers");
@@ -159,7 +228,7 @@ test("cancels the active request and surfaces parser, source and limit errors", 
 
   await editor.click();
   await editor.press("Meta+A");
-  await page.keyboard.insertText(initialSql);
+  await page.keyboard.insertText(SQL);
   await page.evaluate(() => {
     let active: { id: unknown; reject: (error: unknown) => void } | undefined;
     window.__ipc.handlers.db_workspace_join = ({ request }) =>
@@ -173,8 +242,8 @@ test("cancels the active request and surfaces parser, source and limit errors", 
   });
   await run.click();
   await expect(workspace.getByText("Running query", { exact: true })).toBeVisible();
-  await expect(workspace.getByRole("button", { name: "Left data source" })).toBeDisabled();
-  await workspace.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(workspace.getByRole("button", { name: "Configure Sources…" })).toBeDisabled();
+  await workspace.getByRole("button", { name: "Stop", exact: true }).click();
   await expect(alert).toHaveText("Cancelled");
   await expect(run).toBeEnabled();
   expect(await ipcCalls(page, "cancel_request")).toEqual([
@@ -202,15 +271,16 @@ test("cancels the active request and surfaces parser, source and limit errors", 
 test("restores the SQL, sources and driver on reopen within each project", async ({ workbench: page }) => {
   await setupWorkspace(page);
   const workspace = await openWorkspace(page);
-  await selectSources(page, workspace);
-  const driver = workspace.getByRole("button", { name: "Workspace DuckDB driver" });
+  const settings = await settingsFor(page, workspace);
+  await selectSources(page, settings);
+  const driver = settings.getByRole("button", { name: "Workspace DuckDB driver" });
   await driver.click();
   await page.getByRole("option", { name: "DuckDB Local" }).click();
+  await settings.getByRole("button", { name: "OK", exact: true }).click();
   const editor = workspace.getByLabel("Workspace SQL");
-  const sql = "SELECT * FROM #left.public.customers a JOIN #right.events.purchases b ON a.id = b.customer_id";
   await editor.click();
   await editor.press("Meta+A");
-  await page.keyboard.insertText(sql);
+  await page.keyboard.insertText(SQL);
 
   const close = page
     .getByRole("region", { name: "Editor", exact: true })
@@ -218,10 +288,33 @@ test("restores the SQL, sources and driver on reopen within each project", async
   await close.click();
   await expect(workspace).toHaveCount(0);
   await openWorkspace(page);
-  await expect(editor).toHaveText(sql);
-  await expect(workspace.getByRole("button", { name: "Left data source" })).toHaveText("Accounts · PostgreSQL");
-  await expect(workspace.getByRole("button", { name: "Right data source" })).toHaveText("Events · ClickHouse");
+  await expect(editor).toHaveText(SQL);
+  await settingsFor(page, workspace);
+  await expect(settings.getByRole("button", { name: "Left data source" })).toHaveText("Accounts · PostgreSQL");
+  await expect(settings.getByRole("button", { name: "Right data source" })).toHaveText("Events · ClickHouse");
   await expect(driver).toHaveText("DuckDB Local");
+  await settings.getByRole("button", { name: "Swap Sides" }).click();
+  await expect(settings.getByRole("button", { name: "Left data source" })).toHaveText("Events · ClickHouse");
+  await expect(settings.getByRole("button", { name: "Right data source" })).toHaveText("Accounts · PostgreSQL");
+  await driver.click();
+  await page.getByRole("option", { name: "DuckDB JDBC" }).click();
+  await settings.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(editor).toHaveText(SQL);
+  await settingsFor(page, workspace);
+  await expect(driver).toHaveText("DuckDB Local");
+  await expect(settings.getByRole("button", { name: "Left data source" })).toHaveText("Accounts · PostgreSQL");
+  await expect(settings.getByRole("button", { name: "Right data source" })).toHaveText("Events · ClickHouse");
+  await settings.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.evaluate(async () => {
+    const store = "/src/features/database/store.ts";
+    const { useDatabase } = await import(/* @vite-ignore */ store);
+    useDatabase.setState({ sources: [{ id: "events", name: "Events · ClickHouse", driver: "clickhouse" }] });
+  });
+  await workspace.getByRole("button", { name: "Run", exact: true }).click();
+  await expect(settings.getByRole("alert")).toHaveText("A saved workspace source is unavailable.");
+  await expect(settings.getByRole("button", { name: "OK", exact: true })).toBeDisabled();
+  await settings.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(editor).toHaveText(SQL);
   await expect(workspace.getByRole("grid")).toHaveCount(0);
   await close.click();
 
@@ -232,8 +325,9 @@ test("restores the SQL, sources and driver on reopen within each project", async
     useProject.setState({ project: { ...project, root: project.root + "-other" } });
   });
   await openWorkspace(page);
-  await expect(editor).not.toHaveText(sql);
-  await expect(workspace.getByRole("button", { name: "Left data source" })).toHaveText("Select data source");
+  await expect(editor).toBeEmpty();
+  await settingsFor(page, workspace);
+  await expect(settings.getByRole("button", { name: "Left data source" })).toHaveText("Select data source");
   await expect(driver).toHaveText("DuckDB JDBC");
   expect(await ipcCalls(page, "db_workspace_join")).toHaveLength(0);
 });
