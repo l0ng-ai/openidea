@@ -120,6 +120,14 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(k.unknownActions).toEqual([]);
   });
 
+  it("maps Recent Find Usages", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="R" parent="$default"><action id="ShowRecentFindUsagesGroup"><keyboard-shortcut first-keystroke="control alt shift F7"/></action></keymap>`,
+    );
+    expect(k.overrides["find.recentUsages"]).toEqual([normalizeBinding("Ctrl+Alt+Shift+F7")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
   it("maps Hungry Backspace", () => {
     const k = parseIdeaKeymap(
       `<keymap name="H" parent="$default"><action id="EditorHungryBackSpace"><keyboard-shortcut first-keystroke="control alt BACK_SPACE"/></action></keymap>`,

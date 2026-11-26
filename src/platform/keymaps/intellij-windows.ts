@@ -76,6 +76,7 @@ export const intellijWindows: Record<string, string[]> = {
   "find.replaceInPath": ["Ctrl+Shift+R"],
   "find.usages": ["Alt+F7"],
   "find.showUsages": ["Ctrl+Alt+F7"],
+  "find.recentUsages": [],
   "find.highlightUsages": ["Ctrl+Shift+F7"],
 
   // Code

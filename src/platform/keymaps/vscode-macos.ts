@@ -127,6 +127,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "find.replaceInPath": ["Meta+Shift+H"],
   "find.usages": ["Alt+Shift+F12"],
   "find.showUsages": ["Shift+F12"],
+  "find.recentUsages": [],
   "find.highlightUsages": [],
 
   // Code

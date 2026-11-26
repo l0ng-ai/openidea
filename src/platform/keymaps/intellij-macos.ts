@@ -75,6 +75,7 @@ export const intellijMacos: Record<string, string[]> = {
   "find.replaceInPath": ["Meta+Shift+R"],
   "find.usages": ["Alt+F7"],
   "find.showUsages": ["Meta+Alt+F7"],
+  "find.recentUsages": [],
   "find.highlightUsages": ["Meta+Shift+F7"],
 
   // Code
