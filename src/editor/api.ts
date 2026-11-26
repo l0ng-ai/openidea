@@ -34,7 +34,7 @@ import type { LanguageDescription } from "@codemirror/language";
 import type { HunkKind } from "@/bindings";
 import type { LineEnding } from "@/platform/ipc";
 import { create } from "zustand";
-import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
+import { maybeEditorService, type EditorInput, type MenuGroupContext } from "@/workbench/contributions";
 import { isSameOrInside } from "@/platform/paths";
 import { useProject } from "@/platform/project";
 import { rootOfPath } from "@/platform/projectRoots";
@@ -1015,6 +1015,37 @@ export function codePreviewExtensions(path: string, editable = false): Promise<E
 /** @internal editor/core only. */
 export function _provideCodePreview(provider: typeof codePreviewProvider) {
   codePreviewProvider = provider;
+}
+
+/** A row of the Copy Path/Reference… chooser. */
+export interface CopyPathRow {
+  /** The action whose shortcut the row shows. */
+  id: string;
+  /** English label, translated by the chooser. */
+  label: string;
+  /** The copied text; a row without one is left out. */
+  preview: string | null;
+  run: () => void;
+}
+
+type CopyPathChooser = (
+  anchor: { x: number; y: number } | "center",
+  rows: readonly CopyPathRow[],
+  ctx: MenuGroupContext,
+) => void;
+let copyPathChooser: CopyPathChooser | null = null;
+
+/**
+ * The editor's Copy Path/Reference… chooser for files outside an editor (the Project view's
+ * selection): `rows`, then the rows contributed to the `copyPath` menu for `ctx`, with previews.
+ */
+export function openCopyPathChooser(...args: Parameters<CopyPathChooser>): void {
+  copyPathChooser?.(...args);
+}
+
+/** @internal editor/core only. */
+export function _provideCopyPathChooser(open: CopyPathChooser) {
+  copyPathChooser = open;
 }
 
 let workspaceHistory: ((id: number, redo: boolean) => Promise<void>) | null = null;

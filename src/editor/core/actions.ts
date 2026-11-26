@@ -70,7 +70,8 @@ import { customRegions } from "./cm/regions";
 import { toggleRenderedViewAtCaret } from "./cm/renderedDocs";
 import { enclosingHeaders } from "./cm/stickyScroll";
 import { moveElementLeft, moveElementRight } from "./cm/moveElement";
-import { caretAnchor, openPopup, updatePopup, useLspPopup, type LspPopup } from "@/editor/lsp/popupStore";
+import { caretAnchor, openPopup, updatePopup, useLspPopup } from "@/editor/lsp/popupStore";
+import { copyPathPopup } from "./copyPathChooser";
 import {
   cursorCodeBlockEnd,
   cursorCodeBlockStart,
@@ -111,7 +112,7 @@ import {
 import { useProject } from "@/platform/project";
 import { call, commands } from "@/platform/ipc";
 import { editorPrefs } from "@/platform/editorSettings";
-import { menuGroupItems, notifications } from "@/workbench/contributions";
+import { notifications } from "@/workbench/contributions";
 import { togglePinSelectedContent } from "@/workbench/toolwindows/content";
 import { useToolWindowLayout } from "@/workbench/toolwindows/store";
 import { toggleReadOnly } from "./fileAttributes";
@@ -649,22 +650,6 @@ function copyPathReferencePopup(view: EditorView, slot: EditorSlot | null) {
   // The popup's items resolve against the open document; a notebook cell has none.
   if (!slot) return;
   const path = slot.model.path;
-  const contributed = menuGroupItems("copyPath", {
-    paths: [path],
-    ...selectedLineContext(view.state),
-  }).flatMap((item) =>
-    (item.kind ?? "item") === "item" && "run" in item && item.id && item.run && item.preview
-      ? [
-          {
-            id: item.id,
-            label: item.verbatim ? item.label : tx(item.label),
-            preview: item.preview,
-            shortcut: shortcutLabel(item.id),
-            run: item.run,
-          },
-        ]
-      : [],
-  );
   const flavours = [
     { id: "project.copyAbsolutePath", label: "Absolute Path", value: pathToCopy("absolute", path) },
     {
@@ -681,26 +666,20 @@ function copyPathReferencePopup(view: EditorView, slot: EditorSlot | null) {
       value: pathWithLines(view.state, path),
     },
   ];
-  const popup: Extract<LspPopup, { kind: "list" }> = {
-    kind: "list",
-    title: tx("Copy Path/Reference…"),
-    layout: "copyPath",
-    anchor: caretAnchor(view, view.state.selection.main.head),
-    items: [
-      ...flavours
-        .filter((f) => f.value !== null)
-        .map((f) => ({
-          id: f.id,
-          label: tx(f.label),
-          preview: f.value!,
-          shortcut: shortcutLabel(f.id),
-          run: () => {
-            const lineNumbered =
-              f.id === "editor.copyPathWithLineNumber" || f.id === "editor.copyAbsolutePathWithLineNumber";
-            void executeAction(f.id, lineNumbered ? f.value : path);
-          },
-        })),
-      ...contributed,
+  const popup = copyPathPopup(
+    caretAnchor(view, view.state.selection.main.head),
+    flavours.map((f) => ({
+      id: f.id,
+      label: f.label,
+      preview: f.value,
+      run: () => {
+        const lineNumbered =
+          f.id === "editor.copyPathWithLineNumber" || f.id === "editor.copyAbsolutePathWithLineNumber";
+        void executeAction(f.id, lineNumbered ? f.value : path);
+      },
+    })),
+    { paths: [path], ...selectedLineContext(view.state) },
+    [
       {
         id: "editor.copyReference",
         label: tx("Reference"),
@@ -710,7 +689,7 @@ function copyPathReferencePopup(view: EditorView, slot: EditorSlot | null) {
         run: () => {},
       },
     ],
-  };
+  );
   openPopup(popup);
   void resolveReference(view, slot)
     .then((reference) => {
