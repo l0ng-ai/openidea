@@ -5152,7 +5152,7 @@
   "'{name}' needs an open file": "Для «{name}» требуется открытый файл",
   "Run a configuration (hold Shift to debug); the title bar widget passes \"select\" to only select one": "Запустить конфигурацию (удерживайте Shift для отладки); виджет в строке заголовка передаёт \"select\", чтобы только выбрать её",
   "Runs with a contributed executor (`{ executor, config? }` or `{ executor, context }`): the given or selected configuration, or the context.": "Запускает с помощью предоставленного исполнителя (`{ executor, config? }` или `{ executor, context }`): указанную или выбранную конфигурацию либо контекст.",
-  "Saves the given `RunConfig` as a user configuration and opens it in Edit Configurations.": "Сохраняет заданную `RunConfig` как пользовательскую конфигурацию и открывает её в окне «Изменить конфигурации».",
+  "Saves the given `RunConfig` as a user configuration and opens it in Edit Configurations; a saved one with its id opens unchanged.": "Сохраняет заданную `RunConfig` как пользовательскую конфигурацию и открывает её в окне «Изменить конфигурации»; уже сохранённая с этим id открывается без изменений.",
   "No sources for this class": "Нет исходного кода для этого класса",
   "Error running '{name}'": "Ошибка при запуске '{name}'",
   "No JDK can run '{name}'": "Нет JDK, подходящего для запуска '{name}'",
