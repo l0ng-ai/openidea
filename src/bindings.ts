@@ -861,7 +861,7 @@ export const commands = {
 	 *  The JVM of OpenIDEA's JUnit runner for the module at `module`, given its resolved test classpath:
 	 *  the classpath with the runner and `junit-platform-launcher` of the engine's version (unless the
 	 *  classpath has one, or has JUnit 4 alone; from the engine's repository, else downloaded once from
-	 *  Maven Central), and,
+	 *  Maven Central unless only the configured package registries are allowed), and,
 	 *  for a Maven module, what its Surefire configuration gives the forked test JVM.
 	 */
 	javaJunitRunner: (module: string, classPaths: string[]) => typedError<JunitLaunch, IdeError>(__TAURI_INVOKE("java_junit_runner", { module, classPaths })),
@@ -14164,6 +14164,14 @@ export type ToolDownloadSettings = {
 	 *  download on its official host.
 	 */
 	githubMirror?: string,
+	/**
+	 *  Package registries only as configured (a company Nexus or Artifactory): npm and pnpm
+	 *  installs and update checks never retry against the public npm registry, and the IDE
+	 *  fetches nothing from public package registries itself (the JUnit Platform launcher from
+	 *  Maven Central, dependency version completion from Maven Central, npm, PyPI and
+	 *  crates.io). Off by default.
+	 */
+	configuredRegistriesOnly?: boolean,
 };
 
 /**  UI-facing state of one tool. */

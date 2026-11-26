@@ -1078,6 +1078,7 @@ impl Tools {
             },
             &specs,
             pnpm,
+            !self.downloads.configured_registries_only,
             cancel,
             emit,
         )
@@ -1463,6 +1464,12 @@ impl Tools {
                 sources::openvsx_pick(&json, assets, self.platform)
             }
             ReleaseSource::MavenCentral { group, artifact } => {
+                if self.downloads.configured_registries_only {
+                    return Err(IdeError::unavailable(format!(
+                        "{group}:{artifact} is downloaded from Maven Central, and Settings › Tools › Download Mirrors \
+                         allows only the configured package registries"
+                    )));
+                }
                 let xml = http.get_text(&sources::maven_metadata_url(group, artifact), cancel)?;
                 sources::maven_pick(group, artifact, &xml)
             }
@@ -1690,7 +1697,7 @@ impl Tools {
                 // on a slow registry takes several seconds per package, more when run side by side.
                 let out = match view(&[]) {
                     Some((true, out)) => Some(out),
-                    Some((false, out)) if is_npm_registry_miss(&out) => {
+                    Some((false, out)) if !self.downloads.configured_registries_only && is_npm_registry_miss(&out) => {
                         let extra = npm_public_registry_args([packages[0]], pnpm);
                         view(&extra).and_then(|(ok, retry)| ok.then_some(retry))
                     }
