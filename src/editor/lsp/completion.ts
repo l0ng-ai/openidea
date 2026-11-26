@@ -620,7 +620,6 @@ function cancelInflight() {
   inflight = null;
 }
 
-/** Language-data completion sources (keywords etc.), used when no server answers. */
 /** Inside a stylesheet's `var(`, where `cssVariableSource` lists the project's custom properties instead of the server or the document's words. */
 function inVarCall(ctx: CompletionContext): boolean {
   const language = ctx.state.facet(lspDoc)?.language ?? "";
@@ -629,6 +628,7 @@ function inVarCall(ctx: CompletionContext): boolean {
   return cssVariablePrefix(line.text.slice(0, ctx.pos - line.from)) !== null;
 }
 
+/** Language-data completion sources (keywords etc.), used when no server answers. */
 async function fallback(ctx: CompletionContext): Promise<CompletionResult | null> {
   if (inVarCall(ctx)) return null;
   const sources = ctx.state.languageDataAt<CompletionSource | readonly (string | Completion)[]>(
