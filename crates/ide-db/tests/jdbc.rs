@@ -239,19 +239,24 @@ async fn duckdb_named_memory_lives_until_disconnect() -> IdeResult<()> {
         vendor: "duckdb".into(),
         global: true,
         jdbc_driver: "duck".into(),
-        url: "jdbc:duckdb:".into(),
         ..Default::default()
     };
     let cancel = CancellationToken::new();
-    db.save_sources(vec![source.clone()]).await?;
-    db.execute("test", "create table session_items as select 42 as id", 1, &cancel).await?;
-    assert_eq!(db.execute("test", "select id from session_items", 1, &cancel).await?.rows, [vec![Some("42".into())]]);
-    db.disconnect("test").await;
-    assert!(!db.tables("test", "main").await?.iter().any(|table| table.name == "session_items"));
-    db.disconnect("test").await;
+    for url in ["jdbc:duckdb:", "jdbc:duckdb:memory:default"] {
+        source.url = url.into();
+        db.save_sources(vec![source.clone()]).await?;
+        db.execute("test", "create table session_items as select 42 as id", 1, &cancel).await?;
+        assert_eq!(
+            db.execute("test", "select id from session_items", 1, &cancel).await?.rows,
+            [vec![Some("42".into())]]
+        );
+        db.disconnect("test").await;
+        assert!(!db.tables("test", "main").await?.iter().any(|table| table.name == "session_items"));
+        db.disconnect("test").await;
+    }
 
     source.read_only = true;
-    for url in ["jdbc:duckdb:", "jdbc:duckdb::memory:"] {
+    for url in ["jdbc:duckdb:", "jdbc:duckdb::memory:", "jdbc:duckdb:memory:default"] {
         source.url = url.into();
         let err = db.test(&source, None, None).await.unwrap_err();
         assert!(err.message.contains("existing database file"), "{}", err.message);
