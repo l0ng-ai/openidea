@@ -10482,5 +10482,9 @@
   "Debug '{name}' with {title}": "使用 {title} 调试 '{name}'",
   "Run with {title}": "使用 {title} 运行",
   "Debug with {title}": "使用 {title} 调试",
-  "Launches the selected configuration with the Java agent of {pluginName}": "使用 {pluginName} 的 Java 代理启动所选配置"
+  "Launches the selected configuration with the Java agent of {pluginName}": "使用 {pluginName} 的 Java 代理启动所选配置",
+  "Watch for changes": "监视更改",
+  "Rerun Automatically": "自动重新运行",
+  "Debug runs the tests once, without watching.": "调试时测试只运行一次，不监视更改。",
+  "Watch mode needs a command or script that ends with Jest or Vitest: the tests run once.\n": "监视模式要求命令或脚本以 Jest 或 Vitest 结尾：测试只运行一次。\n"
 }

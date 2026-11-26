@@ -4081,5 +4081,9 @@
   "Dependencies changed since the last install": "Dependencies changed since the last install",
   "Run '{command}' in '{rel}' to install them.": "Run '{command}' in '{rel}' to install them.",
   "Run '{command}' to install them.": "Run '{command}' to install them.",
-  "Install Node.js Dependencies": "Install Node.js Dependencies"
+  "Install Node.js Dependencies": "Install Node.js Dependencies",
+  "Watch for changes": "Watch for changes",
+  "Rerun Automatically": "Rerun Automatically",
+  "Debug runs the tests once, without watching.": "Debug runs the tests once, without watching.",
+  "Watch mode needs a command or script that ends with Jest or Vitest: the tests run once.\n": "Watch mode needs a command or script that ends with Jest or Vitest: the tests run once.\n"
 }

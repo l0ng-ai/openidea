@@ -512,6 +512,7 @@ const ICONS = {
   "gutter-javadoc-edit": "gutter/javadocEdit",
   stop: "run/stop",
   rerun: "run/rerun",
+  "rerun-automatically": "actions/rerunAutomatically",
   "hot-reload": "openidea/general/hotReload",
   "rerun-filled": "run/rerun_stroke",
   "restart-debug": "run/restartDebug",

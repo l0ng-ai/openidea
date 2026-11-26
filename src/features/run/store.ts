@@ -57,6 +57,7 @@ import { TeamcityOutput } from "./testing/teamcity";
 import type { TestStdout } from "./testing/types";
 import { flutterMachineOutput, isFlutterMachineRun } from "./flutterMachine";
 import { recordTestStates } from "./testing/states";
+import { packageScript, watchLaunch } from "./testing/watch";
 import { failedTestPaths, leafTestPaths, rerunFailedConfigs, testsConfigs } from "./testing/rerun";
 import { testsBySubproject } from "./testing/gradleSubprojects";
 import {
@@ -113,6 +114,8 @@ export interface RunSession {
   pinned?: boolean;
   /** Commit checks own these tabs so their output stays available for review. */
   backgroundCheck?: boolean;
+  /** Jest / Vitest watch mode: the process reruns the tests after each edit. */
+  watching?: boolean;
 }
 
 interface SessionRuntime {
@@ -792,8 +795,13 @@ function newRuntime(config: RunConfig): SessionRuntime {
         })
       : null;
   const parser = pluginTests ? null : builtIn;
+  // A watch cycle's end records the test states like a finished run (gutter icons).
+  const applyTests = (events: TestEvent[]) => {
+    tests!.apply(events);
+    if (events.some((e) => e.type === "end")) recordTestStates(tests!);
+  };
   const feed = (line: string) => {
-    if (tests && parser) tests.apply(parser.feed(line));
+    if (tests && parser) applyTests(parser.feed(line));
   };
   const framework = tests && parser ? frameworkFor(config) : null;
   // PHPUnit `--teamcity` and Gradle's test init script report through service messages, Minitest,
@@ -817,7 +825,7 @@ function newRuntime(config: RunConfig): SessionRuntime {
       maxChars: consoleCharLimit(),
       onLine: (text, kind) => {
         if (pluginTests && kind !== "system") pluginTests.feed(text);
-        if (parser && tests && kind !== "system" && !(kind === "stdout" && stdout)) tests.apply(parser.feed(text));
+        if (parser && tests && kind !== "system" && !(kind === "stdout" && stdout)) applyTests(parser.feed(text));
         if (kind !== "system") for (const l of runtime.lineListeners) l(text);
         if (kind !== "system") runtime.dotnetReports?.feed(text);
       },
@@ -1044,6 +1052,7 @@ async function startRunIn(
       stopped: false,
       httpPort: undefined,
       backgroundCheck: undefined,
+      watching: undefined,
     };
     const updated = session;
     useRun.setState((s) => ({
@@ -1120,6 +1129,20 @@ async function startRunIn(
   };
   try {
     let launch = options.launch ?? config;
+    // Jest / Vitest "Watch for changes". Debug and derived runs (Rerun Failed, selected tests,
+    // Update Snapshot) run the tests once.
+    if (!options.launch && !baseConfig && launch.watch && launch.isTest && frameworkFor(launch) === "js") {
+      const watched = watchLaunch(launch, await packageScript(launch));
+      if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
+      if (watched) {
+        launch = watched;
+        patchSession(sessionId, { watching: true });
+      } else
+        enqueue(sessionId, {
+          kind: "system",
+          text: tx`Watch mode needs a command or script that ends with Jest or Vitest: the tests run once.\n`,
+        });
+    }
     // A Maven/Gradle configuration's own command is its build; Rebuild adds clean.
     if (!options.launch) launch = applyBuildPolicyToCommand(launch);
     // "Build and run using: Gradle": the module's Gradle build compiles and launches it.
@@ -1650,6 +1673,14 @@ useRun.subscribe((s, prev) => {
 /** The configuration was saved or temporary in this window and has been removed since. */
 export function configRemoved(id: string): boolean {
   return listedConfigIds.has(id) && !useRun.getState().configs.some((c) => c.id === id);
+}
+
+/** "Rerun Automatically": a Jest / Vitest run in watch mode in the same tab; off stops the watcher. */
+export function toggleRerunAutomatically(sessionId: string) {
+  const session = getSession(sessionId);
+  if (!session) return;
+  if (session.watching && isLive(session)) void stopSession(sessionId);
+  else void startRun({ ...baseConfigOf(session), watch: true }, sessionId);
 }
 
 export function rerunSession(sessionId: string) {

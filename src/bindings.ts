@@ -12552,6 +12552,8 @@ export type RunExtras_Deserialize = {
 	 *  test output parser and how a single test is selected.
 	 */
 	testRunner?: string | null,
+	/**  Jest / Vitest "Watch for changes": the run stays alive and reruns the tests after each edit. */
+	watch?: boolean,
 	/**
 	 *  The plugin executor a launch goes through ("Run with <title>"): the plugin's id. Set
 	 *  on the launched copy, not saved; the plugin's executor-bound Java agent loads only then.
@@ -12607,6 +12609,8 @@ export type RunExtras_Serialize = {
 	 *  test output parser and how a single test is selected.
 	 */
 	testRunner?: string | null,
+	/**  Jest / Vitest "Watch for changes": the run stays alive and reruns the tests after each edit. */
+	watch?: boolean,
 	/**
 	 *  The plugin executor a launch goes through ("Run with <title>"): the plugin's id. Set
 	 *  on the launched copy, not saved; the plugin's executor-bound Java agent loads only then.
