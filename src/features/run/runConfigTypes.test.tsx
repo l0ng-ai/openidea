@@ -1057,3 +1057,36 @@ it.each(["maven", "gradle", "delegated", "absolute", "legacy"])(
     }
   },
 );
+
+describe("detected plugin configurations in ConfigForm", () => {
+  it("exposes Emulate terminal in output console and disables Redirect input when active", async () => {
+    const pluginCfg = cfg("plugin:go-task:dev", {
+      name: "dev",
+      kind: "plugin",
+      command: "task",
+      args: ["dev"],
+      detected: true,
+      emulateTerminal: true,
+    });
+    const onChange = vi.fn();
+    render(
+      <ConfigForm
+        config={pluginCfg}
+        all={[pluginCfg]}
+        type={typeFor(pluginCfg.kind)}
+        errors={{}}
+        onChange={onChange}
+        modifyRequest={0}
+      />,
+    );
+    expect(screen.getByText(/Detected from the project/)).toBeTruthy();
+    expect(screen.getByText("Emulate terminal in output console")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Modify options/ }));
+    const redirectItem = await screen.findByRole("menuitemcheckbox", { name: "Redirect input" });
+    expect((redirectItem as HTMLButtonElement).getAttribute("aria-disabled")).toBe("true");
+    const termItem = screen.getByRole("menuitemcheckbox", { name: "Emulate terminal in output console" });
+    expect(termItem.getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(termItem);
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ emulateTerminal: false }));
+  });
+});

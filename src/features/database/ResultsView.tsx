@@ -907,6 +907,7 @@ export function ResultsView() {
             ...results.map((r) => ({
               id: String(r.id),
               label: r.title,
+              verbatim: true,
               icon: r.plan ? "db-plan" : "db-table",
               closable: true,
               pinned: r.pinned,

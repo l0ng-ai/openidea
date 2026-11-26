@@ -113,7 +113,11 @@ function RepositorySelector() {
       <div className={styles.selectorRow}>
         <Select
           value={value}
-          options={remotes.map((r) => ({ value: nameWithOwner(r), label: repositoryDisplayName(remotes, r, true) }))}
+          options={remotes.map((r) => ({
+            value: nameWithOwner(r),
+            verbatim: true,
+            label: repositoryDisplayName(remotes, r, true),
+          }))}
           onChange={setChosen}
           aria-label="Repository"
         />
@@ -251,7 +255,7 @@ export function PullRequestsTabs() {
       onClose={(id) => closeTab(id as GhTabId)}
       onContextMenu={(id, e) => showContextMenu(e, tabMenu(id as GhTabId, ids))}
       items={[
-        { id: "list", label: repo, tooltip: nameWithOwner(connection.coordinates), closable: false },
+        { id: "list", label: repo, verbatim: true, tooltip: nameWithOwner(connection.coordinates), closable: false },
         ...tabs.map((t) =>
           t.kind === "pr"
             ? {

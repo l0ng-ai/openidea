@@ -39,7 +39,12 @@ impl Shared {
     }
 }
 impl PluginApi {
-    pub(super) fn register_target(&self, root: &Path, target: PluginRunTarget) -> Result<(), HostError> {
+    pub(super) fn register_target(
+        &self,
+        root: &Path,
+        target: PluginRunTarget,
+        generation: Option<u64>,
+    ) -> Result<(), HostError> {
         ide_remote::plugin_target::validate(&target).map_err(|e| HostError::Invalid(e.to_string()))?;
         let workspace = self.shared.workspace().ok_or(HostError::Cancelled)?;
         if !workspace.projects().iter().any(|r| r == root) {
@@ -47,6 +52,12 @@ impl PluginApi {
         }
         if !workspace.trusted(root) {
             return Err(HostError::Denied("project is not trusted".into()));
+        }
+        if let Some(expected) = generation {
+            let current = self.shared.project_generation(root)?;
+            if expected < current {
+                return Err(HostError::Stale);
+            }
         }
         self.approved_program_in_project(&target.program, Some(root))?;
         let blocked = self.shared.prompts_blocked.lock();

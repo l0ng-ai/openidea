@@ -68,7 +68,7 @@ function ChoiceItem({ item, details, options, set }: ItemProps) {
       <Select
         aria-label={item.label ?? choice.name}
         value={options.choices?.[choice.id] ?? choice.default}
-        options={choice.options.map((o) => ({ value: o.id, label: o.name }))}
+        options={choice.options.map((o) => ({ value: o.id, verbatim: true, label: o.name }))}
         onChange={(value) => set({ choices: { ...options.choices, [choice.id]: value } })}
       />
     </Row>

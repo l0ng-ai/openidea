@@ -1017,6 +1017,13 @@ fn on_reverse_request(mgr: &Arc<DebugManager>, s: &Arc<Session>, seq: i64, comma
     }
 }
 
+/// `text` as a terminal sends it when typed: Enter is CR. A Unix terminal turns CR into the
+/// newline a line read waits for, but Windows' ConPTY reads LF as Ctrl+J, so a program blocked
+/// in `input()` never sees its line end (#6041).
+fn as_typed(text: &str) -> std::borrow::Cow<'_, str> {
+    if text.contains('\n') { text.replace("\r\n", "\r").replace('\n', "\r").into() } else { text.into() }
+}
+
 /// A `runInTerminal` program and the pseudo-terminal it runs in.
 pub(crate) struct ProgramTerminal {
     writer: Arc<ide_core::input::InputWriter>,
@@ -1030,7 +1037,7 @@ pub(crate) struct ProgramTerminal {
 
 impl ProgramTerminal {
     pub(crate) fn write(&mut self, text: &str) -> std::io::Result<()> {
-        self.writer.write(text.as_bytes())
+        self.writer.write(as_typed(text).as_bytes())
     }
 
     /// The program's process id while it runs.
@@ -1386,6 +1393,13 @@ fn parse_jdwp_port(line: &str) -> Option<u16> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn typed_input_ends_lines_with_enter() {
+        assert_eq!(super::as_typed("42\n"), "42\r");
+        assert_eq!(super::as_typed("a\r\nb\n"), "a\rb\r");
+        assert_eq!(super::as_typed("no newline"), "no newline");
+    }
+
     use super::{Suspension, kotlin_jvm_args, parse_jdwp_port};
 
     #[test]

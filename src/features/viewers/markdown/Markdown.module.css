@@ -151,6 +151,52 @@
   background: none;
   font-size: 0.93em;
 }
+.codeBlock {
+  position: relative;
+  margin: 0 0 1em;
+}
+.codeBlock > :global(pre) {
+  margin: 0;
+  padding-inline-start: 34px;
+}
+.codeCopy {
+  position: absolute;
+  inset-block-start: 4px;
+  inset-inline-start: 4px;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-small);
+  background: var(--bg-elev);
+  color: var(--fg-secondary);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.codeBlock:hover > .codeCopy,
+.preview :global([data-mermaid]):hover > .codeCopy,
+.codeCopy:focus-visible,
+.codeCopy[data-copied] {
+  opacity: 1;
+  pointer-events: auto;
+}
+.codeCopy:hover {
+  background: var(--bg-toolbar-hover);
+}
+.codeCopy:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.codeCopy[data-copied] {
+  color: var(--success);
+}
 .preview :global(blockquote) {
   padding: 0 1em;
   border-left: 3px solid var(--border-strong);
@@ -252,6 +298,9 @@
 }
 .preview :global([data-mermaid] > pre) {
   margin: 0;
+}
+.preview :global([data-mermaid]):has(> .codeCopy) > :global(pre) {
+  padding-inline-start: 34px;
 }
 .preview :global([data-mermaid-state="ok"] > pre) {
   display: none;

@@ -23,7 +23,7 @@ const { MCP_SERVER_PAGE } = await import("../pages/mcpServer");
 const { specLabels } = await import("../pages/spec");
 const { useRemote } = await import("@/platform/remote");
 
-const section = MCP_SERVER_PAGE.sections!.find((s) => s.title === "Background projects")!;
+const section = MCP_SERVER_PAGE.sections!.find((s) => s.title === "Background Projects")!;
 const custom = (label: string) => {
   const option = section.options.find((o) => o.label === label);
   if (option?.kind !== "custom") throw new Error(`${label} is not a custom option`);
@@ -61,7 +61,12 @@ afterEach(() => {
 
 describe("Background projects settings section", () => {
   it("follows the server section with the mode, the folders, the limits and the live list", () => {
-    expect(MCP_SERVER_PAGE.sections!.map((s) => s.title)).toEqual([undefined, "Background projects"]);
+    expect(MCP_SERVER_PAGE.sections!.map((s) => s.title)).toEqual([
+      undefined,
+      "Connection",
+      "Agent Tabs",
+      "Background Projects",
+    ]);
     expect(section.options.map((o) => o.label)).toEqual([
       "Serve without a window",
       "Folders",
@@ -110,7 +115,7 @@ describe("Background projects settings section", () => {
     const labels = specLabels(MCP_SERVER_PAGE);
     expect(labels).toEqual(
       expect.arrayContaining([
-        "Background projects",
+        "Background Projects",
         "Serve without a window",
         "Trusted projects",
         "Listed projects",

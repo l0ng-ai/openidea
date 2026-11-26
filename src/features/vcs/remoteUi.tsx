@@ -772,7 +772,17 @@ function MultiPushDialog({
         diff={diff}
         onClose={closeDiff}
         commits={
-          <div className={styles.pushTreeWrap}>
+          <div
+            className={styles.pushTreeWrap}
+            onKeyDown={(e) => {
+              // Space on a selected repository row includes or excludes it, as its checkbox does.
+              const target = e.target as HTMLElement;
+              if (e.key !== " " || e.metaKey || e.ctrlKey || e.altKey || only !== undefined) return;
+              if (!shown || shown.commit || target.closest("input, button, textarea, [contenteditable]")) return;
+              e.preventDefault();
+              toggle(shown.repo.root);
+            }}
+          >
             {loadErrors.map(({ root, message }) => (
               <div key={root} className={styles.error} role="alert">
                 <strong>{repoName(root)}</strong> {message}
@@ -826,28 +836,18 @@ function MultiPushDialog({
                     <span
                       className={styles.pushRepoRow}
                       data-idle={(!!n.repo.branch.upstream && !n.children?.length) || undefined}
-                      // A row click toggles the checkbox, like before; only the chevron collapses.
-                      onClick={(e) => {
-                        if (only === undefined && !(e.target as HTMLElement | null)?.closest?.("label"))
-                          toggle(n.repo.root);
-                      }}
                     >
-                      {only === undefined ? (
+                      {/* A row click only selects it (its outgoing files); the checkbox, or Space, includes it. */}
+                      {only === undefined && (
                         <Checkbox
                           checked={checked.has(n.repo.root)}
                           onChange={() => toggle(n.repo.root)}
-                          className={styles.pushRepoName}
-                          label={
-                            <span className={styles.pushRepoLabel} title={repoName(n.repo.root)}>
-                              {repoName(n.repo.root)}
-                            </span>
-                          }
+                          aria-label={repoName(n.repo.root)}
                         />
-                      ) : (
-                        <span className={styles.pushRepoLabel} title={repoName(n.repo.root)}>
-                          {repoName(n.repo.root)}
-                        </span>
                       )}
+                      <span className={styles.pushRepoLabel} title={repoName(n.repo.root)}>
+                        {repoName(n.repo.root)}
+                      </span>
                       <span
                         className={styles.pushSourceBranch}
                         title={n.repo.review?.revision ?? n.repo.branch.head ?? detachedTitle(n.repo.branch.headCommit)}

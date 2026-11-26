@@ -6125,6 +6125,7 @@ fn files_changed_wakes_idle_once_and_keeps_every_delta() {
                 created: vec![to_ipc(&f.project.join(format!("新建😀-{i}.rs")))],
                 modified: vec![to_ipc(&f.project.join("shared.rs"))],
                 removed: vec![to_ipc(&f.project.join("gone.rs"))],
+                ..Default::default()
             })],
         );
     }
@@ -6262,6 +6263,7 @@ fn files_changed_filters_each_category_before_waking_idle_plugins() {
             created: vec![path("src/unrelated.rs")],
             modified: vec![path("notes.txt")],
             removed: vec![path("elsewhere/a.yaml")],
+            ..Default::default()
         })],
     );
     f.host.flush_events();
@@ -6272,6 +6274,7 @@ fn files_changed_filters_each_category_before_waking_idle_plugins() {
             created: vec![path("config/new.yaml"), path("src/unrelated.rs")],
             modified: vec![path("config/changed.yaml"), path("notes.txt")],
             removed: vec![path("config/gone.yaml"), path("elsewhere/a.yaml")],
+            ..Default::default()
         })],
     );
     f.host.flush_events();
@@ -6284,6 +6287,7 @@ fn files_changed_filters_each_category_before_waking_idle_plugins() {
             created: vec![path("config/new.yaml")],
             modified: vec![path("config/changed.yaml")],
             removed: vec![path("config/gone.yaml")],
+            ..Default::default()
         }]
     );
 }

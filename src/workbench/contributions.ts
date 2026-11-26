@@ -1909,14 +1909,17 @@ export function runUndoHandlers(command: "undo" | "redo", focused: Element): boo
   return [...undoHandlers].reverse().some((h) => h(command, focused));
 }
 
-/** Registers `nav` (the latest render's) for `toolWindow` while the calling view is mounted. */
-export function useOccurrenceNavigator(toolWindow: string, nav: OccurrenceNavigator["go"]) {
+/** Registers `nav` (the latest render's) for `toolWindow` (none when `null`) while the calling view is mounted. */
+export function useOccurrenceNavigator(toolWindow: string | null, nav: OccurrenceNavigator["go"]) {
   const latest = useRef(nav);
   useEffect(() => {
     latest.current = nav;
   });
   useEffect(
-    () => registerOccurrenceNavigator(toolWindow, { go: (dir, focus) => latest.current(dir, focus) }),
+    () =>
+      toolWindow
+        ? registerOccurrenceNavigator(toolWindow, { go: (dir, focus) => latest.current(dir, focus) })
+        : undefined,
     [toolWindow],
   );
 }
@@ -2037,6 +2040,11 @@ export interface RunAnythingProvider {
    * synchronous): Markdown offers run icons for such lines in code blocks.
    */
   accepts?(line: string): boolean;
+  /**
+   * For providers whose entries arrive later (a plugin's answer): `listener` is called when
+   * `items` would return something new, so the open popup asks again. Returns the unsubscribe.
+   */
+  subscribe?(listener: () => void): () => void;
 }
 
 const runAnythingProviders = new Map<string, RunAnythingProvider>();

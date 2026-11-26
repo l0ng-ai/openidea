@@ -107,6 +107,7 @@ import {
 import { SHOW_THREE_SIDE_DIFF } from "./stagingVersions";
 import { addToChangelist, commitFiles } from "./changelistsUi";
 import { acceptConflictSide, canRevertResolved } from "./conflictsUi";
+import { setCommitDialogSelection } from "./commitDialogSelection";
 import {
   messageHistory,
   pendingFixup,
@@ -823,6 +824,14 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const treeRef = useRef<TreeHandle>(null);
   const viewRef = useRef<HTMLButtonElement>(null);
+  // The modal dialog's tree publishes its own selection; the shared store may hold
+  // the Git window's Local Changes selection instead. Mounted = empty, unmounted = null.
+  const dialogMode = mode === "dialog";
+  useLayoutEffect(() => {
+    if (!dialogMode) return;
+    setCommitDialogSelection({ paths: [], keys: [] });
+    return () => setCommitDialogSelection(null);
+  }, [dialogMode]);
 
   const repos = useVcs((s) => s.roots);
   const heads = useVcs((s) => s.heads);
@@ -1130,6 +1139,7 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
       >
         <Tree<ChangeNode>
           handleRef={treeRef}
+          horizontalScroll
           roots={roots}
           getKey={(n) => n.key}
           getLabel={nodeText}
@@ -1152,12 +1162,14 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
           onSelectionChange={(sel) => {
             setSelected(sel);
             const nodes = [...sel].map((k) => byKey.get(k)).filter((n): n is ChangeNode => !!n);
+            const paths = filesOf(nodes.filter((n) => n.group !== "ignored")).map((f) => f.path);
             useCommit.setState({
-              selection: filesOf(nodes.filter((n) => n.group !== "ignored")).map((f) => f.path),
+              selection: paths,
               selectionKeys: [...sel],
               unstagedSelection: unstagedSelection(nodes).map((file) => file.path),
               selectedList: nodes.find((n) => n.changelist)?.changelist ?? null,
             });
+            if (dialogMode) setCommitDialogSelection({ paths, keys: [...sel] });
             followSelection(nodes);
           }}
           onActivate={(n) => openNode(n, roots, mode === "dialog")}

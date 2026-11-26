@@ -90,7 +90,7 @@
   fill: var(--accent);
 }
 .toggle {
-  cursor: pointer;
+  cursor: default;
 }
 .toggle > rect {
   fill: transparent;

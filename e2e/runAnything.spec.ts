@@ -84,3 +84,32 @@ test("Run Anything keeps its command field and shortcuts visible as its results 
   await expect(popup).toBeHidden();
   await expect(page.locator("body")).toHaveAttribute("data-run-anything-command", "npm run verify-1");
 });
+
+test("Run Anything shows entries a provider reads in the background without another keystroke", async ({
+  workbench: page,
+}) => {
+  await page.evaluate(async () => {
+    const contributionsModule = "/src/workbench/contributions.ts";
+    const { registerRunAnythingProvider } = await import(/* @vite-ignore */ contributionsModule);
+    let loaded = false;
+    registerRunAnythingProvider({
+      id: "test-background",
+      order: -100,
+      group: "Package Executables",
+      items: (line: string) =>
+        loaded && line.startsWith("npx") ? [{ key: "vite", label: "npx vite", completion: "npx vite ", run() {} }] : [],
+      subscribe(onChange: () => void) {
+        const timer = setTimeout(() => {
+          loaded = true;
+          onChange();
+        }, 300);
+        return () => clearTimeout(timer);
+      },
+    });
+  });
+  await page.keyboard.press("Control");
+  await page.keyboard.press("Control");
+  const popup = page.getByRole("dialog", { name: "Run Anything", exact: true });
+  await popup.getByLabel("Command line", { exact: true }).pressSequentially("npx ");
+  await expect(popup.getByRole("option", { name: /npx vite/ })).toBeVisible();
+});

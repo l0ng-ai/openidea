@@ -28,11 +28,21 @@ pub(super) fn retain_live(events: &mut Vec<WorkbenchEvent>, source: Option<&Sour
     }
 }
 
+/// Queues `incoming`, folding a filesystem batch into the queued one it continues:
+/// the project batch, or the watched-paths batch of the same project.
 pub(super) fn append(events: &mut Vec<WorkbenchEvent>, incoming: Vec<WorkbenchEvent>) {
     for event in incoming {
-        if let WorkbenchEvent::FilesChanged(batch) = &event
-            && let Some(WorkbenchEvent::FilesChanged(previous)) =
-                events.iter_mut().find(|e| matches!(e, WorkbenchEvent::FilesChanged(_)))
+        let previous = events.iter_mut().find_map(|queued| match (queued, &event) {
+            (WorkbenchEvent::FilesChanged(previous), WorkbenchEvent::FilesChanged(_)) => Some(previous),
+            (WorkbenchEvent::WatchedFilesChanged(previous), WorkbenchEvent::WatchedFilesChanged(batch))
+                if previous.project == batch.project =>
+            {
+                Some(previous)
+            }
+            _ => None,
+        });
+        if let (WorkbenchEvent::FilesChanged(batch) | WorkbenchEvent::WatchedFilesChanged(batch), Some(previous)) =
+            (&event, previous)
         {
             use std::collections::BTreeMap;
             #[derive(Clone, Copy)]
@@ -61,7 +71,9 @@ pub(super) fn append(events: &mut Vec<WorkbenchEvent>, incoming: Vec<WorkbenchEv
                     paths.insert(path.clone(), kind);
                 }
             }
-            *previous = FilesChanged::default();
+            let project = batch.project.clone().or_else(|| previous.project.clone());
+            let generation = batch.generation.or(previous.generation);
+            *previous = FilesChanged { project, generation, ..Default::default() };
             for (path, kind) in paths {
                 match kind {
                     Created => previous.created.push(path),
@@ -88,14 +100,15 @@ impl PluginHost {
         }
         let paths =
             |paths: &[PathBuf]| paths.iter().filter(|p| p.starts_with(root)).map(|p| to_ipc(p)).collect::<Vec<_>>();
-        let batch = FilesChanged {
-            created: paths(&batch.created),
-            modified: paths(&batch.modified),
-            removed: paths(&batch.removed),
-        };
-        if batch.created.is_empty() && batch.modified.is_empty() && batch.removed.is_empty() {
+        let created = paths(&batch.created);
+        let modified = paths(&batch.modified);
+        let removed = paths(&batch.removed);
+        if created.is_empty() && modified.is_empty() && removed.is_empty() {
             return;
         }
+        let generation = self.shared.bump_project_generation(root);
+        let batch =
+            FilesChanged { project: Some(to_ipc(root)), generation: Some(generation), created, modified, removed };
         self.post_events_from(
             Some(client),
             vec![WorkbenchEvent::FilesChanged(batch)],
@@ -189,7 +202,15 @@ mod tests {
         let queues = host.queues.lock();
         let queue = queues.values().next().expect("new session queue");
         assert!(queue.files_source.as_ref().unwrap().same(&Source { active: Arc::downgrade(&new) }));
-        assert_eq!(queue.events, [delta(0, &to_ipc(&root.join("new.rs")))]);
+        assert_eq!(
+            queue.events,
+            [WorkbenchEvent::FilesChanged(FilesChanged {
+                project: Some(to_ipc(&root)),
+                generation: Some(2),
+                created: vec![to_ipc(&root.join("new.rs"))],
+                ..Default::default()
+            })]
+        );
     }
 
     #[test]
@@ -291,6 +312,7 @@ mod tests {
                     created: vec![to_ipc(&root.join("config/a.yaml")), to_ipc(&root.join("src/a.rs"))],
                     modified: vec![to_ipc(&root.join("config/b.yaml"))],
                     removed: vec![to_ipc(&root.join("config/c.yaml"))],
+                    ..Default::default()
                 })],
             );
             host.flush_events();
@@ -306,6 +328,7 @@ mod tests {
                         created: vec![to_ipc(&root.join("config/a.yaml"))],
                         modified: vec![to_ipc(&root.join("config/b.yaml"))],
                         removed: vec![to_ipc(&root.join("config/c.yaml"))],
+                        ..Default::default()
                     }]
                 );
             } else {
@@ -437,6 +460,7 @@ mod tests {
                 PendingFiles {
                     queue: super::super::EventQueue {
                         since: std::time::Instant::now(),
+                        last_event: std::time::Instant::now(),
                         events: vec![delta(0, "/project/new")],
                         files_source: None,
                     },
@@ -475,6 +499,7 @@ mod tests {
                     created: vec![format!("/project/{i}")],
                     modified: vec!["/project/shared".into()],
                     removed: vec!["/project/gone".into()],
+                    ..Default::default()
                 })],
             );
         }
@@ -616,7 +641,15 @@ mod tests {
         };
         let data = host.run_command("files-events", "events", None, inv).unwrap().unwrap();
         let received: Vec<FilesChanged> = serde_json::from_str(&data).unwrap();
-        assert_eq!(received, [FilesChanged { created: vec![to_ipc(&root.join("new.rs"))], ..Default::default() }]);
+        assert_eq!(
+            received,
+            [FilesChanged {
+                project: Some(to_ipc(&root)),
+                generation: Some(3),
+                created: vec![to_ipc(&root.join("new.rs"))],
+                ..Default::default()
+            }]
+        );
     }
     #[test]
     fn queued_filter_replacement_and_pause_do_not_activate() {
@@ -655,5 +688,227 @@ mod tests {
         assert_eq!(host.instances(), 0, "pausing suppresses a queued batch before activation");
         host.post_files_changed("main", &root, &active, &batch);
         assert!(host.queues.lock().is_empty(), "paused paths never queue work");
+    }
+
+    #[test]
+    fn files_changed_debounce_coalesces_bursts_of_edits_without_repeated_delivery() {
+        use super::super::event_paths::PathFilter;
+        use std::time::Duration;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let host = files_changed_host(&root);
+        host.shared.subscriptions.lock().set_paths(
+            "files-events",
+            "files-changed",
+            PathFilter::with_debounce("files-changed", vec!["**/*".into()], Some(Duration::from_millis(80))).unwrap(),
+        );
+
+        let active = Arc::new(AtomicBool::new(true));
+        // Post 3 bursts of file changes quickly within debounce window
+        host.post_files_changed(
+            "main",
+            &root,
+            &active,
+            &ide_vfs::FsBatch { created: vec![root.join("file1.rs")], ..Default::default() },
+        );
+        host.flush_events();
+        assert_eq!(host.instances(), 0, "first change must be debounced, not delivered immediately");
+
+        std::thread::sleep(Duration::from_millis(20));
+        host.post_files_changed(
+            "main",
+            &root,
+            &active,
+            &ide_vfs::FsBatch { modified: vec![root.join("file2.rs")], ..Default::default() },
+        );
+        host.flush_events();
+        assert_eq!(host.instances(), 0, "second change within debounce window resets debounce");
+
+        std::thread::sleep(Duration::from_millis(20));
+        host.post_files_changed(
+            "main",
+            &root,
+            &active,
+            &ide_vfs::FsBatch { removed: vec![root.join("file3.rs")], ..Default::default() },
+        );
+        host.flush_events();
+        assert_eq!(host.instances(), 0, "third change still debouncing");
+
+        // Wait until debounce expires (> 80 ms since last event)
+        std::thread::sleep(Duration::from_millis(100));
+        host.flush_events();
+        assert!(host.wait_events(Duration::from_secs(5)));
+
+        let inv = ide_plugin::Invocation {
+            client: Some("main".into()),
+            workspace_root: Some(root.clone()),
+            ..Default::default()
+        };
+        let data = host.run_command("files-events", "events", None, inv).unwrap().unwrap();
+        let batches: Vec<FilesChanged> = serde_json::from_str(&data).unwrap();
+        assert_eq!(batches.len(), 1, "rapid edit bursts must coalesce into exactly 1 batch");
+        assert_eq!(batches[0].created, [to_ipc(&root.join("file1.rs"))]);
+        assert_eq!(batches[0].modified, [to_ipc(&root.join("file2.rs"))]);
+        assert_eq!(batches[0].removed, [to_ipc(&root.join("file3.rs"))]);
+        assert_eq!(host.shared.project_generation(&root).unwrap(), 4);
+    }
+
+    struct MultiWorkspace(std::sync::Mutex<Vec<PathBuf>>);
+    impl super::super::PluginWorkspace for MultiWorkspace {
+        fn projects(&self) -> Vec<PathBuf> {
+            self.0.lock().unwrap().clone()
+        }
+        fn buffer_text(&self, _: &Path) -> Option<String> {
+            None
+        }
+        fn document(&self, _: &Path) -> Option<(u64, String)> {
+            None
+        }
+        fn apply_edits(
+            &self,
+            _: &Path,
+            _: u64,
+            _: &[ide_core::TextEdit],
+            _: bool,
+        ) -> Result<u64, ide_plugin::HostError> {
+            unreachable!()
+        }
+        fn trusted(&self, _: &Path) -> bool {
+            true
+        }
+        fn project_of(&self, window: &str) -> Option<PathBuf> {
+            let projects = self.0.lock().unwrap();
+            match window {
+                "main" => projects.first().cloned(),
+                "other" => projects.get(1).cloned(),
+                _ => None,
+            }
+        }
+        fn publish_diagnostics(
+            &self,
+            _: &str,
+            _: &Path,
+            _: Vec<ide_core::Diagnostic>,
+        ) -> Result<(), ide_plugin::HostError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn stale_run_target_registration_rejected_after_generation_bump() {
+        use ide_plugin::HostError;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let host = files_changed_host(&root);
+        let dummy = root.join("dummy");
+        std::fs::write(&dummy, b"dummy").unwrap();
+        host.shared.pins.write().insert(
+            ("files-events".into(), "process:dummy".into()),
+            ide_language::ProgramPin::approve(&dummy).unwrap(),
+        );
+        let plugin = host.get("files-events").unwrap();
+        let api = super::super::api::PluginApi { pkg: plugin.pkg.clone(), shared: host.shared.clone() };
+
+        let target = ide_plugin::PluginRunTarget {
+            id: "target-1".into(),
+            name: "Target 1".into(),
+            program: "dummy".into(),
+            args: vec!["test".into()],
+            workdir_args: vec![],
+            container_root: None,
+            commands: vec![],
+        };
+
+        // Generation starts at 1
+        let gen1 = host.shared.project_generation(&root).unwrap();
+        assert_eq!(gen1, 1);
+
+        // Registering with matching generation succeeds
+        assert!(api.register_target(&root, target.clone(), Some(gen1)).is_ok());
+
+        // Bump generation (simulating filesystem change or manual bump)
+        let gen2 = host.shared.bump_project_generation(&root);
+        assert_eq!(gen2, 2);
+
+        // Registering with old generation is rejected with Stale
+        let err = api.register_target(&root, target.clone(), Some(gen1)).unwrap_err();
+        assert!(matches!(err, HostError::Stale));
+
+        // Registering with new generation succeeds
+        assert!(api.register_target(&root, target, Some(gen2)).is_ok());
+    }
+
+    #[test]
+    fn project_isolation_and_project_closed_lifecycle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root_a = dunce::canonicalize(tmp.path()).unwrap().join("project_a");
+        let root_b = dunce::canonicalize(tmp.path()).unwrap().join("project_b");
+        std::fs::create_dir_all(&root_a).unwrap();
+        std::fs::create_dir_all(&root_b).unwrap();
+        let host = files_changed_host(&root_a);
+        let ws = Arc::new(MultiWorkspace(std::sync::Mutex::new(vec![root_a.clone(), root_b.clone()])));
+        host.set_workspace(Some(ws.clone()));
+
+        let dummy = tmp.path().join("dummy");
+        std::fs::write(&dummy, b"dummy").unwrap();
+        host.shared.pins.write().insert(
+            ("files-events".into(), "process:dummy".into()),
+            ide_language::ProgramPin::approve(&dummy).unwrap(),
+        );
+        let plugin = host.get("files-events").unwrap();
+        let api = super::super::api::PluginApi { pkg: plugin.pkg.clone(), shared: host.shared.clone() };
+
+        let active_a = Arc::new(AtomicBool::new(true));
+        let active_b = Arc::new(AtomicBool::new(true));
+
+        // Post changes to Project A and B
+        host.post_files_changed(
+            "main",
+            &root_a,
+            &active_a,
+            &ide_vfs::FsBatch { created: vec![root_a.join("a.rs")], ..Default::default() },
+        );
+        host.post_files_changed(
+            "other",
+            &root_b,
+            &active_b,
+            &ide_vfs::FsBatch { created: vec![root_b.join("b.rs")], ..Default::default() },
+        );
+
+        assert_eq!(host.shared.project_generation(&root_a).unwrap(), 2);
+        assert_eq!(host.shared.project_generation(&root_b).unwrap(), 2);
+
+        // Bumping project A does not bump project B
+        let bump_a = host.shared.bump_project_generation(&root_a);
+        assert_eq!(bump_a, 3);
+        assert_eq!(host.shared.project_generation(&root_b).unwrap(), 2);
+
+        // Register target for project A and B
+        let target = ide_plugin::PluginRunTarget {
+            id: "run".into(),
+            name: "Run".into(),
+            program: "dummy".into(),
+            args: vec![],
+            workdir_args: vec![],
+            container_root: None,
+            commands: vec![],
+        };
+        assert!(api.register_target(&root_a, target.clone(), None).is_ok());
+        assert!(api.register_target(&root_b, target.clone(), None).is_ok());
+
+        assert_eq!(host.run_targets(&root_a).len(), 1);
+        assert_eq!(host.run_targets(&root_b).len(), 1);
+
+        // Close project A
+        ws.0.lock().unwrap().retain(|p| p != &root_a);
+        host.project_closed(&root_a, "main");
+
+        // Project A targets withdrawn, Project B untouched
+        assert!(host.run_targets(&root_a).is_empty());
+        assert_eq!(host.run_targets(&root_b).len(), 1);
+
+        // Project A generation closed (NotFound on lookup), Project B intact
+        assert!(host.shared.project_generation(&root_a).is_err());
+        assert_eq!(host.shared.project_generation(&root_b).unwrap(), 2);
     }
 }
