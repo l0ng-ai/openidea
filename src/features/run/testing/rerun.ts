@@ -293,10 +293,11 @@ function builtinTestsConfig(config: RunConfig, paths: string[][], name: string):
     }
     case "jasmine": {
       // Jasmine's `--filter=` matches a spec's full name: its describe chain and name, space separated.
+      // A failed suite (`afterAll`) has no spec of that name: its name followed by a space matches its specs.
       const files = unique(paths.map((p) => p[0]!).filter(Boolean));
       const names = unique(paths.filter((p) => p.length > 1).map((p) => p.slice(1).join(" ")));
       if (!files.length) return null;
-      const filter = names.length ? [`--filter=^(?:${names.map(escapeRegExp).join("|")})$`] : [];
+      const filter = names.length ? [`--filter=^(?:${names.map(escapeRegExp).join("|")})(?: |$)`] : [];
       args = appendScriptArgs(config.command, dropFlag(config.args, ["--filter"]), [...files, ...filter]);
       break;
     }

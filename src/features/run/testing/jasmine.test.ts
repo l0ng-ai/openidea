@@ -82,8 +82,20 @@ describe("Jasmine runs", () => {
       "test",
       "--",
       "spec/cartSpec.js",
-      "--filter=^(?:cart intentionally fails \\(set OPENIDEA_FAIL=1\\))$",
+      "--filter=^(?:cart intentionally fails \\(set OPENIDEA_FAIL=1\\))(?: |$)",
     ]);
+  });
+
+  it("rerun a suite whose afterAll failed by its specs", async () => {
+    // The hook's record for an `afterAll` failure, after the suite's specs passed.
+    const afterAll = String.raw`@@openidea:test@@{"path":["spec/cartSpec.js","cart","total","sums"],"status":"passed","ms":0,"line":3,"col":5}
+@@openidea:test@@{"path":["spec/cartSpec.js","cart"],"status":"failed","ms":1,"error":"Error: afterAll broke"}`;
+    const paths = failedTestPaths(results(afterAll));
+    expect(paths).toEqual([["spec/cartSpec.js", "cart"]]);
+    const [rerun] = await rerunFailedConfigs(script, paths);
+    const filter = new RegExp(rerun!.args.at(-1)!.slice("--filter=".length));
+    expect(filter.test("cart total sums")).toBe(true);
+    expect(filter.test("cartography maps")).toBe(false);
   });
 });
 
