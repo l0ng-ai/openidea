@@ -863,7 +863,7 @@ export const commands = {
 	 *  The JVM of OpenIDEA's JUnit runner for the module at `module`, given its resolved test classpath:
 	 *  the classpath with the runner and `junit-platform-launcher` of the engine's version (unless the
 	 *  classpath has one, or has JUnit 4 alone; from the engine's repository, else downloaded once from
-	 *  Maven Central), and,
+	 *  Maven Central unless only the configured package registries are allowed), and,
 	 *  for a Maven module, what its Surefire configuration gives the forked test JVM.
 	 */
 	javaJunitRunner: (module: string, classPaths: string[]) => typedError<JunitLaunch, IdeError>(__TAURI_INVOKE("java_junit_runner", { module, classPaths })),
@@ -5258,6 +5258,8 @@ export type DbColumnInfo = {
 	nullable: boolean,
 	default: string | null,
 	primaryKey: boolean,
+	/**  `None` when it has none, or the engine keeps no comments. */
+	comment?: string | null,
 };
 
 /**  The schema model SQL completion and resolution work from. */
@@ -5680,6 +5682,8 @@ export type DbStatementOutcome = {
 };
 
 export type DbTableDetails = {
+	/**  The table's comment; `None` when it has none, or the engine keeps no comments. */
+	comment?: string | null,
 	columns: DbColumnInfo[],
 	indexes: DbIndexInfo[],
 	foreignKeys: DbForeignKey[],
@@ -9160,6 +9164,18 @@ export type LanguageCodeStyle_Deserialize = {
 	keywordCase?: string | null,
 	/**  SQL › Case › Identifiers (unquoted names): `upper` | `lower` | `keep`. */
 	identifierCase?: string | null,
+	/**
+	 *  Java: organize imports switches to a wildcard import once this many
+	 *  classes of one package are used (jdtls `starThreshold`; IDEA's default
+	 *  5; unset keeps the language server's default).
+	 */
+	classCountToUseImportWithStar?: number | null,
+	/**
+	 *  Java: organize imports switches to a wildcard static import once this
+	 *  many statically imported names are used (jdtls `staticStarThreshold`;
+	 *  IDEA's default 3; unset keeps the language server's default).
+	 */
+	namesCountToUseStaticImportWithStar?: number | null,
 	/**  JavaScript / TypeScript › Punctuation › Semicolons: `ignore` | `insert` | `remove`. */
 	semicolons?: string | null,
 	/**  JavaScript / TypeScript › Punctuation › Quotes: `auto` | `single` | `double`. */
@@ -9190,6 +9206,18 @@ export type LanguageCodeStyle_Serialize = {
 	keywordCase?: string | null,
 	/**  SQL › Case › Identifiers (unquoted names): `upper` | `lower` | `keep`. */
 	identifierCase?: string | null,
+	/**
+	 *  Java: organize imports switches to a wildcard import once this many
+	 *  classes of one package are used (jdtls `starThreshold`; IDEA's default
+	 *  5; unset keeps the language server's default).
+	 */
+	classCountToUseImportWithStar?: number | null,
+	/**
+	 *  Java: organize imports switches to a wildcard static import once this
+	 *  many statically imported names are used (jdtls `staticStarThreshold`;
+	 *  IDEA's default 3; unset keeps the language server's default).
+	 */
+	namesCountToUseStaticImportWithStar?: number | null,
 	/**  JavaScript / TypeScript › Punctuation › Semicolons: `ignore` | `insert` | `remove`. */
 	semicolons?: string | null,
 	/**  JavaScript / TypeScript › Punctuation › Quotes: `auto` | `single` | `double`. */
@@ -14166,6 +14194,14 @@ export type ToolDownloadSettings = {
 	 *  download on its official host.
 	 */
 	githubMirror?: string,
+	/**
+	 *  Package registries only as configured (a company Nexus or Artifactory): npm and pnpm
+	 *  installs and update checks never retry against the public npm registry, and the IDE
+	 *  fetches nothing from public package registries itself (the JUnit Platform launcher from
+	 *  Maven Central, dependency version completion from Maven Central, npm, PyPI and
+	 *  crates.io). Off by default.
+	 */
+	configuredRegistriesOnly?: boolean,
 };
 
 /**  UI-facing state of one tool. */

@@ -1176,7 +1176,8 @@ const EXT_ICONS = table({
   "file-jsp": "jsp jspx jspf jsph tag tagf tagx",
   "file-freemarker": "ftl ftlh ftlx",
   "file-astro": "astro",
-  "file-json": "json jsonc json5 jsonl ndjson geojson topojson webmanifest har avsc code-workspace code-snippets map",
+  "file-json":
+    "json jsonc json5 jsonl ndjson geojson topojson webmanifest har avsc code-workspace code-snippets map uproject uplugin",
   "file-md": "md mdx markdown mdown mkd mkdn mdwn ronn workbook",
   "file-word": "doc docx rtf odt",
   "file-pdf": "pdf",

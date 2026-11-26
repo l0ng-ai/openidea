@@ -138,8 +138,10 @@ async function drainBreakpoints() {
 
 /** Makes this window's whole list the backend's: files it no longer lists are cleared there. */
 async function replaceBreakpoints() {
-  if (!isTauri() || useProject.getState().project?.trusted === false) return;
-  const { byFile, muted } = useBreakpoints.getState();
+  // Without a project (before one opens, after it closes) the backend holds no breakpoints for
+  // this window and has none to clear.
+  const { root, byFile, muted } = useBreakpoints.getState();
+  if (!isTauri() || root === null || useProject.getState().project?.trusted === false) return;
   const files = Object.fromEntries(Object.entries(byFile).map(([path, list]) => [path, toBackend(list, muted, path)]));
   await call(commands.debugReplaceBreakpoints(files));
 }

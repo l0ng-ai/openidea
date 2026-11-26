@@ -145,7 +145,8 @@ const SNOWFLAKE_TYPE: &str = "CASE WHEN data_type = 'NUMBER' THEN 'NUMBER(' || n
      WHEN data_type = 'TEXT' THEN 'VARCHAR(' || character_maximum_length || ')' \
      WHEN data_type LIKE 'TIME%' THEN data_type || '(' || datetime_precision || ')' ELSE data_type END";
 
-/// Rows: `name, type, nullable (YES/NO or 0/1), default, is_pk (0/1)`.
+/// Rows: `name, type, nullable (YES/NO or 0/1), default, is_pk (0/1)`, and the column's
+/// comment on the engines that keep one (PostgreSQL, MySQL, Oracle, ClickHouse).
 pub fn columns(driver: DbDriver, schema: &str, table: &str) -> String {
     let (s, t) = (quote_literal(driver, schema), quote_literal(driver, table));
     match driver {
@@ -153,7 +154,7 @@ pub fn columns(driver: DbDriver, schema: &str, table: &str) -> String {
         DbDriver::Clickhouse => format!(
             "SELECT name, type, CASE WHEN startsWith(type, 'Nullable(') \
              OR startsWith(type, 'LowCardinality(Nullable(') THEN 'YES' ELSE 'NO' END, \
-             if(default_kind = '', NULL, default_expression), is_in_primary_key \
+             if(default_kind = '', NULL, default_expression), is_in_primary_key, comment \
              FROM system.columns WHERE database = {s} AND table = {t} ORDER BY position"
         ),
         DbDriver::Sqlite => format!(
@@ -166,13 +167,14 @@ pub fn columns(driver: DbDriver, schema: &str, table: &str) -> String {
                JOIN information_schema.key_column_usage k ON k.constraint_name = tc.constraint_name \
                AND k.table_schema = tc.table_schema AND k.table_name = tc.table_name \
                WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = c.table_schema \
-               AND tc.table_name = c.table_name AND k.column_name = c.column_name) THEN 1 ELSE 0 END \
+               AND tc.table_name = c.table_name AND k.column_name = c.column_name) THEN 1 ELSE 0 END, \
+             col_description(format('%I.%I', c.table_schema, c.table_name)::regclass, c.ordinal_position::int) \
              FROM information_schema.columns c WHERE c.table_schema = {s} AND c.table_name = {t} \
              ORDER BY c.ordinal_position"
         ),
         DbDriver::Mysql => format!(
             "SELECT column_name, column_type, is_nullable, column_default, \
-             CASE WHEN column_key = 'PRI' THEN 1 ELSE 0 END \
+             CASE WHEN column_key = 'PRI' THEN 1 ELSE 0 END, column_comment \
              FROM information_schema.columns WHERE table_schema = {s} AND table_name = {t} \
              ORDER BY ordinal_position"
         ),
@@ -192,8 +194,10 @@ pub fn columns(driver: DbDriver, schema: &str, table: &str) -> String {
         ),
         DbDriver::Oracle => format!(
             "SELECT c.column_name, c.data_type, DECODE(c.nullable, 'Y', 'YES', 'NO'), c.data_default, \
-             CASE WHEN k.column_name IS NOT NULL THEN 1 ELSE 0 END \
+             CASE WHEN k.column_name IS NOT NULL THEN 1 ELSE 0 END, cc.comments \
              FROM all_tab_columns c \
+             LEFT JOIN all_col_comments cc ON cc.owner = c.owner AND cc.table_name = c.table_name \
+             AND cc.column_name = c.column_name \
              LEFT JOIN (SELECT kc.column_name FROM all_constraints con \
                JOIN all_cons_columns kc ON kc.owner = con.owner AND kc.table_name = con.table_name \
                AND kc.constraint_name = con.constraint_name \
@@ -201,6 +205,28 @@ pub fn columns(driver: DbDriver, schema: &str, table: &str) -> String {
              ON k.column_name = c.column_name \
              WHERE c.owner = {s} AND c.table_name = {t} ORDER BY c.column_id"
         ),
+    }
+}
+
+/// One row, one column: the table's comment (`NULL` or empty for none). `None` for the
+/// engines whose comments the IDE doesn't read here (Snowflake reads it with `SHOW`).
+pub fn table_comment(driver: DbDriver, schema: &str, table: &str) -> Option<String> {
+    let (s, t) = (quote_literal(driver, schema), quote_literal(driver, table));
+    match driver {
+        DbDriver::Postgres => Some(format!(
+            "SELECT obj_description(c.oid, 'pg_class') FROM pg_class c \
+             JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = {s} AND c.relname = {t}"
+        )),
+        // A view's `table_comment` is the word `VIEW`.
+        DbDriver::Mysql => Some(format!(
+            "SELECT CASE WHEN table_type = 'VIEW' THEN NULL ELSE table_comment END \
+             FROM information_schema.tables WHERE table_schema = {s} AND table_name = {t}"
+        )),
+        DbDriver::Oracle => {
+            Some(format!("SELECT comments FROM all_tab_comments WHERE owner = {s} AND table_name = {t}"))
+        }
+        DbDriver::Clickhouse => Some(format!("SELECT comment FROM system.tables WHERE database = {s} AND name = {t}")),
+        _ => None,
     }
 }
 
@@ -954,6 +980,22 @@ mod tests {
         assert_eq!(quote_ident(DbDriver::Mysql, "a`b"), "`a``b`");
         assert_eq!(quote_literal(DbDriver::Sqlite, "it's \\"), "'it''s \\'");
         assert_eq!(quote_literal(DbDriver::Mysql, "it's \\"), "'it''s \\\\'");
+    }
+
+    #[test]
+    fn comments_are_read_where_the_engine_keeps_them() {
+        assert!(columns(DbDriver::Postgres, "public", "t").contains("col_description("));
+        assert!(columns(DbDriver::Mysql, "db", "t").contains("column_comment"));
+        assert!(columns(DbDriver::Oracle, "S", "T").contains("all_col_comments"));
+        assert!(columns(DbDriver::Clickhouse, "db", "t").contains("is_in_primary_key, comment"));
+        let pg = table_comment(DbDriver::Postgres, "public", "o'rders").unwrap();
+        assert!(pg.contains("obj_description(c.oid, 'pg_class')") && pg.contains("'o''rders'"), "{pg}");
+        assert!(table_comment(DbDriver::Mysql, "db", "t").unwrap().contains("table_comment"));
+        assert!(table_comment(DbDriver::Oracle, "S", "T").unwrap().contains("all_tab_comments"));
+        assert!(table_comment(DbDriver::Clickhouse, "db", "t").unwrap().contains("system.tables"));
+        for driver in [DbDriver::Sqlite, DbDriver::SqlServer, DbDriver::Snowflake] {
+            assert_eq!(table_comment(driver, "s", "t"), None);
+        }
     }
 
     #[test]

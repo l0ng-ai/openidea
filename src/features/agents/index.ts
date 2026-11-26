@@ -232,7 +232,7 @@ export function activate(): () => void {
     registerStatusItem({ id: "agents.status", align: "right", priority: 3, title: "Agents", component: AgentsStatus }),
     registerMenuGroup({
       id: "agents.send",
-      menus: ["editor", "projectView"],
+      menus: ["editor", "editorTab", "projectView"],
       order: 80,
       items: (menu, { paths, dirs }) =>
         paths.length && !paths.some(isVirtualUri) && agentsHere()
@@ -240,7 +240,8 @@ export function activate(): () => void {
               {
                 kind: "action",
                 action: "agents.sendToAgent",
-                arg: menu === "projectView" ? paths.map((p, i) => (dirs?.[i] ? `${p}/` : p)) : undefined,
+                // The editor sends its selection; a tab or the Project view sends the files.
+                arg: menu === "editor" ? undefined : paths.map((p, i) => (dirs?.[i] ? `${p}/` : p)),
               },
             ]
           : [],
