@@ -47,6 +47,7 @@ const CHANNEL_RE = /^__CHANNEL__:(\d+)$/;
 interface ReadyMessage {
   type: "ready";
   window: string;
+  instance: string;
   server: {
     version: string;
     protocol: number;
@@ -185,6 +186,7 @@ export async function initWebRuntime(): Promise<boolean> {
   let nextEventId = 1;
   let nextInvokeId = 1;
   let serverHome = "";
+  let serverInstance: string | null = null;
   let ws: WebSocket | null = null;
   let reconnectTimer: number | null = null;
   let reconnectAttempt = 0;
@@ -288,6 +290,11 @@ export async function initWebRuntime(): Promise<boolean> {
         if (typeof args.title === "string") document.title = args.title;
         return null;
       }
+      // One browser tab is one window with one webview.
+      case "plugin:window|get_all_windows":
+        return [windowLabel];
+      case "plugin:webview|get_all_webviews":
+        return [{ windowLabel, label: windowLabel }];
       case "plugin:window|is_fullscreen":
         return Boolean(document.fullscreenElement);
       case "plugin:window|is_maximized":
@@ -424,6 +431,13 @@ export async function initWebRuntime(): Promise<boolean> {
         }
         switch (msg.type) {
           case "ready": {
+            // A restarted server has none of this page's projects, terminals or runs: start over.
+            // The unsaved-changes guard still asks before the page goes.
+            if (serverInstance !== null && serverInstance !== msg.instance) {
+              window.location.reload();
+              return;
+            }
+            serverInstance = msg.instance;
             serverHome = msg.server.home;
             reconnectAttempt = 0;
             useWebConnection.setState({

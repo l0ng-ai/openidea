@@ -123,6 +123,7 @@ describe("webBridge", () => {
     ws.receive({
       type: "ready",
       window: "main",
+      instance: "a",
       server: { version: "0.1.38", protocol: 2, os: "linux", arch: "x86_64", home: "/home/dev" },
     });
 
@@ -142,6 +143,7 @@ describe("webBridge", () => {
     await internals.invoke("plugin:window|set_title", { title: "My Project" });
     expect(document.title).toBe("My Project");
     await expect(internals.invoke("plugin:path|resolve_directory", { directory: 21 })).resolves.toBe("/home/dev");
+    await expect(internals.invoke("plugin:window|get_all_windows")).resolves.toEqual(["main"]);
 
     // Command invoke + response.
     const req = internals.invoke("app_info", {}) as Promise<unknown>;
@@ -203,6 +205,7 @@ describe("webBridge", () => {
     firstWs.receive({
       type: "ready",
       window: "main",
+      instance: "a",
       server: { version: "0.1.38", protocol: 2, os: "linux", arch: "x86_64", home: "/home/dev" },
     });
     await expect(boot).resolves.toBe(true);
@@ -243,8 +246,39 @@ describe("webBridge", () => {
     secondWs.receive({
       type: "ready",
       window: "main",
+      instance: "a",
       server: { version: "0.1.38", protocol: 2, os: "linux", arch: "x86_64", home: "/home/dev" },
     });
     expect(useWebConnection.getState().status).toBe("connected");
+  });
+
+  it("reloads the page when it reconnects to a restarted server", async () => {
+    vi.useFakeTimers();
+    const meta = document.createElement("meta");
+    meta.name = "openidea-web";
+    meta.content = "1";
+    document.head.appendChild(meta);
+    globalThis.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+    const reload = vi.fn();
+    vi.spyOn(window, "location", "get").mockReturnValue({ ...window.location, reload } as Location);
+    const server = { version: "0.1.38", protocol: 2, os: "linux", arch: "x86_64", home: "/home/dev" };
+
+    const boot = initWebRuntime();
+    await Promise.resolve();
+    FakeWebSocket.instances[0]!.receive({ type: "ready", window: "main", instance: "a", server });
+    await expect(boot).resolves.toBe(true);
+
+    // The same server again: the page keeps its state.
+    FakeWebSocket.instances[0]!.close();
+    vi.advanceTimersByTime(1_000);
+    FakeWebSocket.instances[1]!.receive({ type: "ready", window: "main", instance: "a", server });
+    expect(reload).not.toHaveBeenCalled();
+    expect(useWebConnection.getState().status).toBe("connected");
+
+    // A restarted server: its projects and runs are gone, so the page starts over.
+    FakeWebSocket.instances[1]!.close();
+    vi.advanceTimersByTime(1_000);
+    FakeWebSocket.instances[2]!.receive({ type: "ready", window: "main", instance: "b", server });
+    expect(reload).toHaveBeenCalledOnce();
   });
 });

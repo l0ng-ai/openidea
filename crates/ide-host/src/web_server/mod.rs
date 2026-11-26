@@ -42,8 +42,6 @@ use tokio_tungstenite::tungstenite::protocol::Role;
 
 /// Keepalive ping interval so reverse proxies do not drop idle WebSocket sessions.
 const WS_PING_INTERVAL: Duration = Duration::from_secs(25);
-/// Maximum queued outbound frames per WebSocket session to bound server memory under slow clients.
-const WS_OUTBOUND_CAPACITY: usize = 2048;
 /// Minimum uncompressed asset size (bytes) before applying gzip compression.
 const GZIP_MIN_BYTES: usize = 1024;
 const AUTH_COOKIE_NAME: &str = "openidea_token";
@@ -108,6 +106,8 @@ enum ClientMessage {
 enum ServerMessage {
     Ready {
         window: String,
+        /// Changes when the server restarts: the page reloads, as its projects and runs are gone.
+        instance: String,
         server: ServerInfo,
     },
     Response {
@@ -134,7 +134,8 @@ enum ServerMessage {
     Pong,
 }
 
-type Subscriber = (u64, mpsc::Sender<ServerMessage>);
+type Outbound = mpsc::UnboundedSender<ServerMessage>;
+type Subscriber = (u64, Outbound);
 
 /// Fans out [`IdeEvent`]s emitted by [`Host`] to active WebSocket connections per window label.
 #[derive(Default)]
@@ -145,7 +146,7 @@ struct WebEventHub {
 }
 
 impl WebEventHub {
-    fn subscribe(&self, window: &str, tx: mpsc::Sender<ServerMessage>) -> u64 {
+    fn subscribe(&self, window: &str, tx: Outbound) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let displaced = {
             let mut map = self.subscribers.write();
@@ -155,11 +156,7 @@ impl WebEventHub {
             prev
         };
         for (_, old_tx) in displaced {
-            if let Err(mpsc::error::TrySendError::Full(msg)) = old_tx.try_send(ServerMessage::Superseded) {
-                tokio::spawn(async move {
-                    let _ = old_tx.send(msg).await;
-                });
-            }
+            let _ = old_tx.send(ServerMessage::Superseded);
         }
         id
     }
@@ -180,14 +177,14 @@ impl WebEventHub {
             Some(w) => {
                 if let Some(list) = map.get(w) {
                     for (_, tx) in list {
-                        let _ = tx.try_send(ServerMessage::Event { window: Some(w.to_owned()), event: event.clone() });
+                        let _ = tx.send(ServerMessage::Event { window: Some(w.to_owned()), event: event.clone() });
                     }
                 }
             }
             None => {
                 for (w, list) in map.iter() {
                     for (_, tx) in list {
-                        let _ = tx.try_send(ServerMessage::Event { window: Some(w.clone()), event: event.clone() });
+                        let _ = tx.send(ServerMessage::Event { window: Some(w.clone()), event: event.clone() });
                     }
                 }
             }
@@ -218,6 +215,7 @@ struct ServerState {
     web_dir: PathBuf,
     base_path: Option<String>,
     auth_token: Option<String>,
+    instance: String,
 }
 
 /// Starts the web server bound to `config.host:config.port` and returns a handle immediately.
@@ -301,6 +299,7 @@ pub async fn start(config: WebServerConfig, base: PathBuf) -> IdeResult<RunningW
         web_dir,
         base_path: config.base_path.as_deref().and_then(normalize_base_path),
         auth_token: config.auth_token,
+        instance: generate_token()[..16].to_owned(),
     });
 
     if state.auth_token.is_none() && !addr.ip().is_loopback() {
@@ -836,21 +835,14 @@ fn collect_arg_channels(val: &Value, out: &mut Vec<u64>) {
     }
 }
 
-fn send_channel_end(tx: &mpsc::Sender<ServerMessage>, id: u64) {
-    if let Err(mpsc::error::TrySendError::Full(msg)) = tx.try_send(ServerMessage::ChannelEnd { id }) {
-        let tx = tx.clone();
-        tokio::spawn(async move {
-            let _ = tx.send(msg).await;
-        });
-    }
-}
-
 async fn serve_ws_session<S>(ws: WebSocketStream<S>, state: Arc<ServerState>)
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     let (mut ws_tx, mut ws_rx) = ws.split();
-    let (out_tx, mut out_rx) = mpsc::channel::<ServerMessage>(WS_OUTBOUND_CAPACITY);
+    // Unbounded like the stdio transport's writer: a dropped channel message or event would
+    // leave a terminal, run console or tool window silently out of step.
+    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<ServerMessage>();
     let (superseded_tx, mut superseded_rx) = oneshot::channel::<()>();
     let active_requests: Arc<Mutex<HashSet<RequestId>>> = Arc::new(Mutex::new(HashSet::new()));
 
@@ -921,7 +913,7 @@ where
 
         match parsed {
             ClientMessage::Ping => {
-                let _ = out_tx.try_send(ServerMessage::Pong);
+                let _ = out_tx.send(ServerMessage::Pong);
             }
             ClientMessage::Hello { window, project } => {
                 if let (Some(old_w), Some(old_id)) = (window_label.take(), sub_id.take()) {
@@ -933,7 +925,14 @@ where
                 state.shell.seed_launch(&state.host, &label, requested);
                 window_label = Some(label.clone());
                 sub_id = Some(id);
-                if out_tx.send(ServerMessage::Ready { window: label, server: rpc::server_info(None) }).await.is_err() {
+                if out_tx
+                    .send(ServerMessage::Ready {
+                        window: label,
+                        instance: state.instance.clone(),
+                        server: rpc::server_info(None),
+                    })
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -967,10 +966,10 @@ where
                             opened_for_sink.lock().insert(cid);
                         }
                         ChannelSignal::Data(msg) => {
-                            let _ = ch_tx.try_send(ServerMessage::Channel { id: msg.id, data: msg.data });
+                            let _ = ch_tx.send(ServerMessage::Channel { id: msg.id, data: msg.data });
                         }
                         ChannelSignal::End(cid) => {
-                            send_channel_end(&ch_tx, cid);
+                            let _ = ch_tx.send(ServerMessage::ChannelEnd { id: cid });
                         }
                     });
                     let reply =
@@ -986,11 +985,11 @@ where
                         let opened = opened_channels.lock();
                         for cid in arg_channels {
                             if !opened.contains(&cid) {
-                                send_channel_end(&tx, cid);
+                                let _ = tx.send(ServerMessage::ChannelEnd { id: cid });
                             }
                         }
                     }
-                    let _ = tx.send(reply).await;
+                    let _ = tx.send(reply);
                 });
             }
         }
@@ -1418,6 +1417,25 @@ mod tests {
         };
         assert_eq!(read_reply["ok"], true, "read_reply={read_reply}");
         assert_eq!(read_reply["data"], "hello web ide\n");
+        ws.close(None).await.ok();
+
+        // A reloaded page (a new socket for the same window) gets the project it still has open.
+        let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url).await.expect("ws reconnect");
+        ws.send(WsMessage::Text(json!({ "type": "hello", "window": "main" }).to_string().into())).await.unwrap();
+        let ready: Value = serde_json::from_str(&ws.next().await.unwrap().unwrap().into_text().unwrap()).unwrap();
+        assert_eq!(ready["type"], "ready");
+        ws.send(WsMessage::Text(
+            json!({ "type": "invoke", "id": 4, "cmd": "window_take_launch", "args": {} }).to_string().into(),
+        ))
+        .await
+        .unwrap();
+        let relaunch = loop {
+            let msg: Value = serde_json::from_str(&ws.next().await.unwrap().unwrap().into_text().unwrap()).unwrap();
+            if msg["type"] == "response" && msg["id"] == 4 {
+                break msg;
+            }
+        };
+        assert_eq!(relaunch["data"]["project"].as_str(), Some(launch_project.as_str()));
 
         ws.close(None).await.ok();
         server.shutdown().await;

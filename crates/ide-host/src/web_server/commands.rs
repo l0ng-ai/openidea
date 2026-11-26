@@ -6,13 +6,13 @@
 //! HTTP client helpers, and benign no-ops for native-window-only commands).
 
 use crate::Host;
-use crate::catalogue::TrustClass;
+use crate::catalogue::TrustClass::{self, Always, Trusted};
+use crate::menu;
 use crate::ops::project::ProjectInfo;
 use crate::rpc::Dispatcher;
 use ide_core::settings::Settings;
 use ide_core::{IdeError, IpcPath, RequestId};
 use ide_language::LanguageInfo;
-use ide_workspace::settings::SettingsScope;
 use ide_workspace::{RecentProject, RecentProjectGroup, RecentProjects};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -43,9 +43,14 @@ impl WebShellState {
     }
 
     /// Seeds a pending project launch for `window` (from URL `?project=...` or `--project`),
-    /// if the window does not already have a project open.
+    /// or the project the window already has open when its page reloads.
     pub fn seed_launch(&self, host: &Host, window: &str, requested_project: Option<PathBuf>) {
-        if host.project(window).is_ok() {
+        if let Ok(project) = host.project(window) {
+            // A reloaded page gets the project the window still has: reopening it keeps its
+            // index, language servers and runs.
+            if !project.light {
+                self.launches.lock().insert(window.to_owned(), project.root.clone());
+            }
             return;
         }
         let target = requested_project.or_else(|| self.default_project.clone());
@@ -65,18 +70,11 @@ impl WebShellState {
     }
 
     pub fn record_project(&self, project: &crate::Project) {
-        if project.light {
-            return;
+        if !project.light
+            && let Err(e) = crate::ops::project::record_recent(&self.recent, project)
+        {
+            tracing::warn!("cannot record {} in recent projects: {e}", project.root.display());
         }
-        let info = crate::ops::project::info(project);
-        let attached = info.workspace.as_ref().is_some_and(|w| !w.is_container(&project.root));
-        let branch = if attached {
-            None
-        } else {
-            project.repos.read().primary().and_then(|r| r.branch_info().ok()).and_then(|b| b.head)
-        };
-        let _ = self.recent.touch(&project.root, branch);
-        let _ = self.recent.rename(&project.root, Some(&info.display_name));
     }
 }
 
@@ -136,176 +134,11 @@ struct LogLocation {
     file: Option<IpcPath>,
 }
 
-#[derive(Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-enum MenuNode {
-    Submenu {
-        id: String,
-        label: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        current: Option<bool>,
-        children: Vec<MenuNode>,
-    },
-    Action {
-        id: String,
-        label: String,
-        hint: Option<String>,
-        arg: Option<String>,
-        checked: Option<bool>,
-    },
-    Placeholder {
-        id: String,
-        label: String,
-    },
-    Separator,
-}
-
-fn action(id: &str, label: &str) -> MenuNode {
-    MenuNode::Action { id: id.into(), label: label.into(), hint: None, arg: None, checked: None }
-}
-
-fn submenu(id: &str, label: &str, children: Vec<MenuNode>) -> MenuNode {
-    MenuNode::Submenu { id: id.into(), label: label.into(), current: None, children }
-}
-
-fn web_menu_model(recent: &[RecentProject]) -> Vec<MenuNode> {
-    let recent_children: Vec<MenuNode> = if recent.is_empty() {
-        vec![MenuNode::Placeholder { id: "file.openRecent.empty".into(), label: "No Recent Projects".into() }]
-    } else {
-        recent
-            .iter()
-            .take(15)
-            .map(|r| MenuNode::Action {
-                id: "file.openRecentProject".into(),
-                label: r.name.clone(),
-                hint: None,
-                arg: Some(r.path.to_string_lossy().into_owned()),
-                checked: None,
-            })
-            .collect()
-    };
-
-    vec![
-        submenu(
-            "menu.file",
-            "File",
-            vec![
-                action("file.newProject", "New Project…"),
-                action("file.openProject", "Open…"),
-                submenu("file.openRecent", "Open Recent", recent_children),
-                MenuNode::Separator,
-                action("file.newFile", "New File…"),
-                action("file.save", "Save All"),
-                action("file.reloadFromDisk", "Reload All from Disk"),
-                MenuNode::Separator,
-                action("file.settings", "Settings…"),
-                action("file.projectStructure", "Project Structure…"),
-                MenuNode::Separator,
-                action("file.closeProject", "Close Project"),
-            ],
-        ),
-        submenu(
-            "menu.edit",
-            "Edit",
-            vec![
-                action("edit.undo", "Undo"),
-                action("edit.redo", "Redo"),
-                MenuNode::Separator,
-                action("edit.cut", "Cut"),
-                action("edit.copy", "Copy"),
-                action("edit.paste", "Paste"),
-                action("edit.selectAll", "Select All"),
-                MenuNode::Separator,
-                action("search.find", "Find…"),
-                action("search.replace", "Replace…"),
-                action("search.findInFiles", "Find in Files…"),
-                action("search.replaceInFiles", "Replace in Files…"),
-            ],
-        ),
-        submenu(
-            "menu.view",
-            "View",
-            vec![
-                action("view.toolWindow.project", "Project"),
-                action("view.toolWindow.terminal", "Terminal"),
-                action("view.toolWindow.problems", "Problems"),
-                action("view.toolWindow.structure", "Structure"),
-                action("view.toolWindow.git", "Git"),
-                action("view.toolWindow.run", "Run"),
-                action("view.toolWindow.debug", "Debug"),
-                MenuNode::Separator,
-                action("view.quickSwitch", "Quick Switch Scheme…"),
-                action("view.distractionFree", "Distraction Free Mode"),
-                action("view.zoomIn", "Zoom In"),
-                action("view.zoomOut", "Zoom Out"),
-                action("view.zoomReset", "Reset Zoom"),
-            ],
-        ),
-        submenu(
-            "menu.navigate",
-            "Navigate",
-            vec![
-                action("navigate.searchEverywhere", "Search Everywhere"),
-                action("navigate.goToFile", "File…"),
-                action("navigate.goToSymbol", "Symbol…"),
-                action("navigate.goToLine", "Line:Column…"),
-                MenuNode::Separator,
-                action("navigate.back", "Back"),
-                action("navigate.forward", "Forward"),
-                MenuNode::Separator,
-                action("navigate.declaration", "Declaration or Usages"),
-                action("navigate.implementation", "Implementation(s)"),
-                action("navigate.findUsages", "Find Usages"),
-            ],
-        ),
-        submenu(
-            "menu.code",
-            "Code",
-            vec![
-                action("code.reformat", "Reformat Code"),
-                action("code.optimizeImports", "Optimize Imports"),
-                action("code.commentLine", "Comment with Line Comment"),
-                action("code.commentBlock", "Comment with Block Comment"),
-            ],
-        ),
-        submenu(
-            "menu.refactor",
-            "Refactor",
-            vec![
-                action("refactor.rename", "Rename…"),
-                action("refactor.extractVariable", "Extract Variable…"),
-                action("refactor.extractMethod", "Extract Method…"),
-            ],
-        ),
-        submenu(
-            "menu.run",
-            "Run",
-            vec![
-                action("run.run", "Run"),
-                action("run.debug", "Debug"),
-                action("run.stop", "Stop"),
-                MenuNode::Separator,
-                action("run.editConfigurations", "Edit Configurations…"),
-            ],
-        ),
-        submenu(
-            "menu.git",
-            "Git",
-            vec![
-                action("vcs.commit", "Commit…"),
-                action("vcs.update", "Update Project"),
-                action("vcs.push", "Push…"),
-                MenuNode::Separator,
-                action("vcs.branches", "Branches…"),
-                action("vcs.showLog", "Show Git Log"),
-            ],
-        ),
-        submenu(
-            "menu.help",
-            "Help",
-            vec![action("navigate.findAction", "Find Action…"), action("help.about", "About OpenIDEA")],
-        ),
-    ]
+/// The menu bar the browser draws: the desktop spec as on Windows and Linux, without the
+/// update check (updates are managed with the server).
+fn web_menu_model(recent: &[RecentProject]) -> Vec<menu::MenuNode> {
+    let spec = menu::without_action(menu::spec(menu::Os::Linux), "app.checkForUpdates");
+    menu::model(&spec, &menu::recent_items(recent, &[], dirs::home_dir().as_deref()), &menu::MenuConfig::default())
 }
 
 #[derive(Deserialize)]
@@ -448,16 +281,7 @@ pub fn register(dispatcher: &mut Dispatcher, shell: Arc<WebShellState>) {
         let s = s.clone();
         async move {
             let name: String = c.arg("name")?;
-            let project = c.host.project(&c.window)?;
-            let trimmed = name.trim();
-            if let Some(workspace) = ide_workspace::workspace::Workspace::load(&project.root)?
-                && workspace.is_container(&project.root)
-            {
-                crate::ops::project::save_workspace(&c.host, &c.window, trimmed, workspace.projects)?;
-            } else {
-                let value = if trimmed.is_empty() { Value::Null } else { Value::String(trimmed.to_owned()) };
-                project.settings.set(SettingsScope::Project, "general.projectName", value)?;
-            }
+            let project = crate::ops::project::rename(&c.host, &c.window, &name)?;
             s.record_project(&project);
             Ok::<ProjectInfo, IdeError>(crate::ops::project::info(&project))
         }
@@ -524,32 +348,33 @@ pub fn register(dispatcher: &mut Dispatcher, shell: Arc<WebShellState>) {
     dispatcher.add("window_close_context", TrustClass::Always, |_| async move {
         Ok(CloseContext { quitting: false, windows: 1 })
     });
-    for noop in [
-        "window_set_titlebar_height",
-        "window_set_smooth_scrolling",
-        "window_flash_taskbar",
-        "window_cycle",
-        "menu_configure",
-        "menu_refresh",
-        "menu_set_disabled",
-        "show_system_notification",
-        "window_group_cancel_close",
-        "plugin_subscribe",
-        "plugin_activation_event",
-        "plugin_set_theme_frame",
+    for (noop, trust) in [
+        ("window_set_titlebar_height", Always),
+        ("window_set_smooth_scrolling", Always),
+        ("window_flash_taskbar", Always),
+        ("window_cycle", Always),
+        ("menu_configure", Always),
+        ("menu_refresh", Always),
+        ("menu_set_disabled", Always),
+        ("show_system_notification", Trusted),
+        ("window_group_cancel_close", Always),
+        ("window_group_restore", Always),
+        ("plugin_subscribe", Always),
+        ("plugin_activation_event", Trusted),
+        ("plugin_set_theme_frame", Always),
     ] {
-        dispatcher.add(noop, TrustClass::Always, |_| async move { Ok(Value::Null) });
+        dispatcher.add(noop, trust, |_| async move { Ok(Value::Null) });
     }
-    for noop_false in [
-        "window_toggle_fullscreen",
-        "window_toggle_zoom",
-        "window_start_drag",
-        "window_drag_files",
-        "file_dialog_needs_gtk",
-        "clipboard_has_files",
-        "clipboard_has_image",
+    for (noop_false, trust) in [
+        ("window_toggle_fullscreen", Always),
+        ("window_toggle_zoom", Always),
+        ("window_start_drag", Always),
+        ("window_drag_files", Always),
+        ("file_dialog_needs_gtk", Trusted),
+        ("clipboard_has_files", Always),
+        ("clipboard_has_image", Always),
     ] {
-        dispatcher.add(noop_false, TrustClass::Always, |_| async move { Ok(false) });
+        dispatcher.add(noop_false, trust, |_| async move { Ok(false) });
     }
 
     let s = shell.clone();
@@ -559,23 +384,29 @@ pub fn register(dispatcher: &mut Dispatcher, shell: Arc<WebShellState>) {
     });
 
     // Empty desktop-only collections so UI components render cleanly without errors.
-    for empty_list in [
-        "window_group_current",
-        "system_font_families",
-        "system_probe_hotkeys",
-        "wsl_distros",
-        "web_browsers",
-        "plugin_catalog",
-        "plugin_installed_intellij_themes",
-        "git_credentials",
-        "android_devices",
-        "clipboard_file_list",
+    for (empty_list, trust) in [
+        ("window_group_current", Always),
+        ("system_font_families", Always),
+        ("system_probe_hotkeys", Trusted),
+        ("wsl_distros", Always),
+        ("web_browsers", Always),
+        ("plugin_catalog", Always),
+        ("plugin_installed_intellij_themes", Always),
+        ("git_credentials", Always),
+        ("android_devices", Trusted),
+        ("clipboard_file_list", Always),
     ] {
-        dispatcher.add(empty_list, TrustClass::Always, |_| async move { Ok(Vec::<Value>::new()) });
+        dispatcher.add(empty_list, trust, |_| async move { Ok(Vec::<Value>::new()) });
     }
 
-    for null_opt in ["wsl_resolve", "remote_current", "plugin_market_url", "clipboard_text", "clipboard_image"] {
-        dispatcher.add(null_opt, TrustClass::Always, |_| async move { Ok(Value::Null) });
+    for (null_opt, trust) in [
+        ("wsl_resolve", Always),
+        ("remote_current", Always),
+        ("plugin_market_url", Always),
+        ("clipboard_text", Trusted),
+        ("clipboard_image", Always),
+    ] {
+        dispatcher.add(null_opt, trust, |_| async move { Ok(Value::Null) });
     }
 
     dispatcher.add("plugin_list", TrustClass::Always, |_| async move {
@@ -583,7 +414,7 @@ pub fn register(dispatcher: &mut Dispatcher, shell: Arc<WebShellState>) {
     });
 
     // Caches & LSP & Web & Workspace & HTTP helpers already available through ide-host dependencies.
-    dispatcher.add("caches_local_data_info", TrustClass::Always, |c| async move {
+    dispatcher.add("caches_local_data_info", TrustClass::Trusted, |c| async move {
         let current = c.host.local_data_dir.to_string_lossy().into_owned();
         Ok(LocalDataInfo {
             default_dir: current.clone(),
@@ -601,7 +432,7 @@ pub fn register(dispatcher: &mut Dispatcher, shell: Arc<WebShellState>) {
         Ok(Value::Null)
     });
 
-    dispatcher.add("web_serves_page", TrustClass::Always, |c| async move {
+    dispatcher.add("web_serves_page", TrustClass::Trusted, |c| async move {
         let url: String = c.arg("url")?;
         Ok(crate::ops::web::serves_page(&url).await)
     });
@@ -615,7 +446,7 @@ pub fn register(dispatcher: &mut Dispatcher, shell: Arc<WebShellState>) {
         result
     });
 
-    dispatcher.add("workspace_create", TrustClass::Trusted, |c| async move {
+    dispatcher.add("workspace_create", TrustClass::Always, |c| async move {
         let path: PathBuf = c.arg("path")?;
         let name: String = c.arg("name")?;
         let projects: Vec<PathBuf> = c.arg("projects")?;
@@ -628,7 +459,7 @@ pub fn register(dispatcher: &mut Dispatcher, shell: Arc<WebShellState>) {
     });
 
     let s = shell.clone();
-    dispatcher.add("workspace_update", TrustClass::Trusted, move |c| {
+    dispatcher.add("workspace_update", TrustClass::Always, move |c| {
         let s = s.clone();
         async move {
             let name: String = c.arg("name")?;
@@ -644,7 +475,7 @@ pub fn register(dispatcher: &mut Dispatcher, shell: Arc<WebShellState>) {
     });
 
     let s = shell.clone();
-    dispatcher.add("workspace_attach", TrustClass::Trusted, move |c| {
+    dispatcher.add("workspace_attach", TrustClass::Always, move |c| {
         let s = s.clone();
         async move {
             let path: PathBuf = c.arg("path")?;
@@ -657,12 +488,12 @@ pub fn register(dispatcher: &mut Dispatcher, shell: Arc<WebShellState>) {
         }
     });
 
-    dispatcher.add("http_requests", TrustClass::Always, |c| async move {
+    dispatcher.add("http_requests", TrustClass::Trusted, |c| async move {
         let text: String = c.arg("text")?;
         Ok(ide_http::parse::requests(&text))
     });
 
-    dispatcher.add("http_from_curl", TrustClass::Always, |c| async move {
+    dispatcher.add("http_from_curl", TrustClass::Trusted, |c| async move {
         let command: String = c.arg("command")?;
         Ok(ide_http::curl::from_curl(&command))
     });

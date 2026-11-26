@@ -15,6 +15,7 @@ mod formatter;
 mod java_runtime;
 mod kotlin_bridge;
 pub mod mcp;
+pub mod menu;
 pub mod notebook;
 pub mod ops;
 mod phpstan;

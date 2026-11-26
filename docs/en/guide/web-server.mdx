@@ -23,7 +23,7 @@ The quickest way to launch the web IDE (from a repo checkout or inside a contain
 ./scripts/start-web.sh
 ```
 
-It listens on `0.0.0.0:8080` by default (configurable via `OPENIDEA_HOST` / `OPENIDEA_PORT`), auto-detects the `openidea-server` binary, the built `dist/` folder, and the workspace directory, and stores persistent settings and caches in `~/.openidea` (outside the workspace so indexes and downloaded tools are not watched as project files).
+It listens on `127.0.0.1:8080` by default (set `OPENIDEA_HOST=0.0.0.0` inside a container; `OPENIDEA_PORT` changes the port), auto-detects the `openidea-server` binary, the built `dist/` folder, and the workspace directory, and stores persistent settings and caches in `~/.openidea` (outside the workspace so indexes and downloaded tools are not watched as project files).
 
 Or invoke `openidea-server --web` directly on any host and port (default: `127.0.0.1:8080`):
 
@@ -70,21 +70,14 @@ Web mode is **authenticated by default**:
 - `openidea-server --web` binds to `127.0.0.1` by default and generates a random access token unless `--token <secret>` or `--no-auth` is passed.
 - On startup, the server prints a one-click URL containing `?token=...` (which sets a path-scoped `HttpOnly; SameSite=Lax` cookie — plus `Secure` behind HTTPS proxies — and redirects to strip the token from the URL) and serves a sign-in form for unauthenticated visitors.
 - WebSocket upgrades (`/api/ws`) enforce same-origin validation (`Origin` against `Host` / `X-Forwarded-Host`) to block Cross-Site WebSocket Hijacking (CSWSH).
-- When running behind a reverse proxy that already authenticates every request, disable built-in token auth explicitly with `--no-auth` or `OPENIDEA_WEB_NO_AUTH=1`.
+- When running behind a reverse proxy that already authenticates every request, disable built-in token auth explicitly with `--no-auth` or `OPENIDEA_WEB_NO_AUTH=1`. Never expose the server without authentication: anyone who reaches it can read and write files and run commands.
 
 ## Session Lifecycle & Browser Tabs
 
-- **Server-owned state**: Open projects, terminals, background runs, and language servers live in `openidea-server`, not in the browser tab. Reloading or briefly disconnecting preserves running processes and reconnects automatically.
+- **Server-owned state**: Open projects, terminals, background runs, and language servers live in `openidea-server`, not in the browser tab. Reloading or briefly disconnecting preserves running processes and reconnects automatically. When the server itself restarted, the tab reloads, since what it showed is gone.
 - **Unsaved-changes protection**: The browser prompts before closing or reloading a tab when open buffers have unsaved edits.
 - **Single active tab per window**: Opening the same server window in a second tab hands control to the newer tab and pauses the older tab with a **Take Over** banner to avoid conflicting edits. Independent server instances (for example two separate workspace containers under the same proxy domain) have isolated server hubs and path-scoped cookies, so they run side by side without interfering.
 
 ## Persistent Storage & Containers
 
 In ephemeral container environments, point `OPENIDEA_SERVER_HOME` at a mounted persistent volume outside the project directory (for example `/home/openidea/.openidea`) so settings, recent projects, and indexes survive restarts without being watched or indexed as project files.
-
-Build and run with Docker:
-
-```bash
-docker build -f Dockerfile.web -t openidea-web .
-docker run --rm -p 8080:8080 -v "$PWD:/workspace" openidea-web
-```
