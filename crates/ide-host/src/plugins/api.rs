@@ -695,6 +695,8 @@ pub(super) struct Shared {
     pub(super) closed_clients: Mutex<BTreeSet<String>>,
     /// plugin → kinds subscribed at run time (kept across idle reclaim).
     pub subscriptions: Mutex<super::event_paths::Subscriptions>,
+    /// Paths outside their project that plugins watch (kept across idle reclaim).
+    pub(super) external_watches: super::external_watch::ExternalWatches,
     /// plugin → files it shows problems for, withdrawn when it stops.
     diagnostics: Mutex<HashMap<String, BTreeSet<PathBuf>>>,
     project_generations: Mutex<HashMap<PathBuf, u64>>,
@@ -774,6 +776,7 @@ impl Shared {
             contexts: Mutex::default(),
             closed_clients: Mutex::default(),
             subscriptions: Mutex::default(),
+            external_watches: Default::default(),
             diagnostics: Mutex::default(),
             project_generations: Mutex::default(),
             log_tabs: Mutex::default(),
@@ -1046,6 +1049,9 @@ impl Shared {
             for path in paths {
                 let _ = workspace.publish_diagnostics(plugin, &path, Vec::new());
             }
+        }
+        if subscriptions {
+            self.external_watches.remove_plugin(plugin);
         }
         if subscriptions && self.subscriptions.lock().remove(plugin) {
             self.sink.emit(None, PluginEvent::SubscriptionsChanged);
@@ -3041,6 +3047,10 @@ impl HostApi for PluginApi {
 
     fn project_generation(&self, root: &Path) -> Result<u64, HostError> {
         self.shared.project_generation(root)
+    }
+
+    fn watch_paths(&self, client: &str, project: &Path, paths: Vec<PathBuf>) -> Result<(), HostError> {
+        self.shared.external_watches.set(self.id(), client, project, paths)
     }
 
     fn unsubscribe(&self, kind: &str) {

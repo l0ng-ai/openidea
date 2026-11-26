@@ -27,6 +27,7 @@ pub(crate) mod diagnostics;
 pub mod endpoints;
 mod event_paths;
 mod execution;
+mod external_watch;
 mod files_changed;
 mod hover;
 mod icon_extensions;
@@ -1865,6 +1866,7 @@ impl PluginHost {
     /// events, and ignores context writes of commands still running for it.
     pub fn forget_client(&self, label: &str) {
         self.queues.lock().retain(|(_, client), _| client.as_deref() != Some(label));
+        self.shared.external_watches.remove_client(label);
         self.shared.forget_client(label);
         self.forget_web_ptys(label);
     }
@@ -1875,6 +1877,7 @@ impl PluginHost {
     /// `project-closed` to subscribed plugins.
     pub fn project_closed(&self, root: &Path, window: &str) {
         self.shared.close_project_generation(root);
+        self.shared.external_watches.remove_project(root);
         self.withdraw_project_run_targets(root);
         self.shared.run_configurations.write().retain(|(_, r), _| r != root);
 
@@ -1886,7 +1889,7 @@ impl PluginHost {
                     return false;
                 }
                 q.events.retain(|e| {
-                    if let WorkbenchEvent::FilesChanged(f) = e
+                    if let WorkbenchEvent::FilesChanged(f) | WorkbenchEvent::WatchedFilesChanged(f) = e
                         && f.project.as_deref() == Some(&root_ipc)
                     {
                         return false;
@@ -2050,6 +2053,36 @@ impl PluginHost {
         );
     }
 
+    /// Queues what `events.watch-paths` watchers saw for their plugin and window,
+    /// while that window still shows the project the watch belongs to.
+    fn queue_watched_changes(&self, now: Instant) {
+        let changes = self.shared.external_watches.take();
+        if changes.is_empty() {
+            return;
+        }
+        let subs = self.shared.subscriptions.lock().clone();
+        let plugins = self.plugins.read();
+        let mut queues = self.queues.lock();
+        for change in changes {
+            let Some(p) = plugins.get(&change.plugin) else { continue };
+            if self.shared.project_of(&change.client).as_deref() != Some(change.project.as_path())
+                || !Self::wants(p, EventKind::WatchedFilesChanged, subs.kinds.get(p.id()))
+            {
+                continue;
+            }
+            let batch =
+                ide_plugin::FilesChanged { project: Some(ide_core::ipc_path::to_ipc(&change.project)), ..change.batch };
+            let queue = queues.entry((change.plugin, Some(change.client))).or_insert_with(|| EventQueue {
+                since: now,
+                last_event: now,
+                events: Vec::new(),
+                files_source: None,
+            });
+            queue.last_event = now;
+            files_changed::append(&mut queue.events, vec![WorkbenchEvent::WatchedFilesChanged(batch)]);
+        }
+    }
+
     pub fn post_events(&self, client: Option<&str>, events: Vec<WorkbenchEvent>) {
         self.post_events_from(client, events, None);
     }
@@ -2122,6 +2155,7 @@ impl PluginHost {
                     && !matches!(
                         event,
                         WorkbenchEvent::FilesChanged(_)
+                            | WorkbenchEvent::WatchedFilesChanged(_)
                             | WorkbenchEvent::RunExited(_)
                             | WorkbenchEvent::TerminalExited(_)
                             | WorkbenchEvent::ContentTabAction(_)
@@ -2146,6 +2180,7 @@ impl PluginHost {
 
     #[doc(hidden)]
     pub fn flush_events_at(&self, now: Instant) {
+        self.queue_watched_changes(now);
         let due: Vec<(QueueKey, EventQueue)> = {
             let mut queues = self.queues.lock();
             let plugins = self.plugins.read();
@@ -2158,6 +2193,8 @@ impl PluginHost {
                 let running = plugins.get(id).is_some_and(|p| p.runtime.lock().as_ref().is_some_and(|a| a.is_alive()));
                 let has_files = q.events.iter().any(|e| matches!(e, WorkbenchEvent::FilesChanged(_)));
                 let has_scheduled = q.events.iter().any(|e| matches!(e, WorkbenchEvent::Scheduled));
+                // Already debounced by the watcher, like project file changes.
+                let has_watched = q.events.iter().any(|e| matches!(e, WorkbenchEvent::WatchedFilesChanged(_)));
                 let debounce = subs.paths.get(id).and_then(|p| p.get("files-changed")).and_then(|f| f.debounce);
 
                 let (files_due, files_debouncing) = if has_files {
@@ -2173,6 +2210,7 @@ impl PluginHost {
                 };
 
                 let other_events_due = (running
+                    || has_watched
                     || now.saturating_duration_since(q.since) >= IDLE_BATCH
                     || q.events.len() >= MAX_QUEUED_EVENTS / 2
                     || has_scheduled)
@@ -2201,6 +2239,7 @@ impl PluginHost {
                     }
                 } else {
                     let is_due = files_due
+                        || has_watched
                         || running
                         || now.saturating_duration_since(q.since) >= IDLE_BATCH
                         || q.events.len() >= MAX_QUEUED_EVENTS / 2

@@ -441,6 +441,12 @@ pub trait HostApi: Send + Sync {
     ) -> Result<(), HostError>;
     /// Monotonically increasing project generation (API 1.18).
     fn project_generation(&self, root: &Path) -> Result<u64, HostError>;
+    /// Replaces what this plugin watches outside `project` for the window `client`
+    /// (API 1.18): `paths` are real paths an `fs.read` grant covers, already checked.
+    /// Empty stops watching.
+    fn watch_paths(&self, _client: &str, _project: &Path, _paths: Vec<PathBuf>) -> Result<(), HostError> {
+        Err(HostError::Failed("watching paths is unavailable here".into()))
+    }
     fn unsubscribe(&self, kind: &str);
     /// Starts `cmd` and returns the handle to it without waiting.
     fn start_process(&self, cmd: ProcessCommand, cwd: Option<&Path>, client: Option<&str>) -> Result<u64, HostError>;
@@ -984,6 +990,10 @@ fn event_to_wit(e: WorkbenchEvent) -> wit_events::Event {
         WorkbenchEvent::FileSaved(p) => wit_events::Event::FileSaved(p),
         WorkbenchEvent::FilesChanged(batch) => wit_events::Event::Other(wit_types::Extension {
             kind: "files-changed".into(),
+            data: serde_json::to_string(&batch).expect("file paths serialize"),
+        }),
+        WorkbenchEvent::WatchedFilesChanged(batch) => wit_events::Event::Other(wit_types::Extension {
+            kind: "watched-files-changed".into(),
             data: serde_json::to_string(&batch).expect("file paths serialize"),
         }),
         WorkbenchEvent::EditorFocused(p) => wit_events::Event::EditorFocused(p),
