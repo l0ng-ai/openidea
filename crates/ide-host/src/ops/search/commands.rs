@@ -30,8 +30,13 @@ impl ReplaceHost for DocumentsHost<'_> {
                     continue;
                 }
                 docs.apply_edits(doc, &edits)?;
-                if save {
+                // An open tab's file may have changed on disk before the watcher reported it:
+                // autosave keeps that change and leaves the replacement unsaved. A file opened
+                // just for this was read now.
+                if transient {
                     docs.save(doc)?;
+                } else if save {
+                    docs.autosave(doc)?;
                 }
                 return Ok(edits.len() as u32);
             }
@@ -50,7 +55,9 @@ impl ReplaceHost for DocumentsHost<'_> {
 /// Edits go through the document layer as one patch per file, so open editors
 /// update live and undo the whole file's replacements in one step. Unsaved
 /// editor buffers are replaced in place and left unsaved; other open documents
-/// are saved, and files that were not open are opened transiently, saved and closed.
+/// are saved unless the file changed on disk meanwhile (then the replacement stays
+/// unsaved, as autosave does), and files that were not open are opened
+/// transiently, saved and closed.
 ///
 /// With `all_in_scope` (Replace All after the search hit its match limit) the
 /// scope is searched again without the limit and every match in it is replaced,
