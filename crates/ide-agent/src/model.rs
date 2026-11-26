@@ -700,6 +700,10 @@ pub struct NewAgentTask {
     /// `!` command runs in it first.
     #[serde(default)]
     pub idle: bool,
+    /// A throwaway task (Generate Commit Message): it isn't saved, so it doesn't outlive a
+    /// restart, and the agent keeps no session history of its own for it.
+    #[serde(default)]
+    pub ephemeral: bool,
 }
 
 /// A file the task changed: against [`AgentTask::base_commit`], or against `HEAD` in the
