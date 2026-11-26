@@ -54,7 +54,7 @@ All servers, debuggers and formatters are listed in **Settings › Languages & F
 | `vue-language-server`, `svelte-language-server`, `astro-ls`, `angular-language-server` | npm                                                                           |
 | `oxlint`                                                                               | npm                                                                           |
 | `tailwindcss-language-server`                                                          | npm (`@tailwindcss/language-server`)                                          |
-| Prettier, oxfmt, Biome                                                                 | npm                                                                           |
+| Prettier, oxfmt, Biome, dprint                                                         | npm                                                                           |
 | JavaScript Debugger (vscode-js-debug)                                                  | GitHub release (`microsoft/vscode-js-debug`)                                  |
 
 The Astro and Angular servers also run from the project's own `node_modules/.bin` when it has them.
@@ -75,6 +75,7 @@ The Astro and Angular servers also run from the project's own `node_modules/.bin
 - **Prettier** (**Settings › Languages & Frameworks › Prettier**) formats JavaScript, JSX, TypeScript, TSX, JSON, Vue, HTML, CSS, SCSS, Less, GraphQL, YAML and Markdown by default. The executable is found in the project's `node_modules`, then the managed installation, then `PATH`, unless you set **Prettier path**.
 - **oxfmt** (**Settings › Languages & Frameworks › oxfmt**) replaces Prettier for an enabled language in files below an oxfmt configuration (`.oxfmtrc.json`, `oxfmt.config.ts`), or when it is the selected provider.
 - **Biome** (**Settings › Languages & Frameworks › Biome**) replaces Prettier and oxfmt for JavaScript, JSX, TypeScript, TSX, JSON, CSS and GraphQL in files below a `biome.json` / `biome.jsonc` or an installed `@biomejs/biome` (unless the configuration sets `formatter.enabled` to `false`), or when it is the selected provider. It formats whole files and reads its own configuration.
+- **dprint** (**Settings › Languages & Frameworks › dprint**) formats every file its configuration's plugins cover (`dprint editor-info`), whatever the language, in files below a `dprint.json` / `.dprint.json` / `dprint.jsonc` or an installed `dprint`, or when it is the selected provider. It runs the project's own `dprint fmt --stdin` and formats whole files; files its plugins don't cover keep their usual formatter, and so do all files when dprint can't run there (not installed, plugins not downloadable); **Reformat with dprint** reports why. With **Format on save** on, saving runs it too.
 
 On these pages, **Formatting provider** chooses between **Automatic (language server first)** and the tool itself, **Run on save** formats on save, and **Enabled languages** limits which languages the tool handles.
 

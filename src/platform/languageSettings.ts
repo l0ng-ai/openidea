@@ -26,7 +26,7 @@ const DEFAULT_GO_BUILD_TAGS: GoBuildTags = {
   experiments: "",
 };
 
-/** An external formatter (Prettier, oxfmt, Biome, Ruff, Black) and the languages it formats. */
+/** An external formatter (Prettier, oxfmt, Biome, dprint, Ruff, Black) and the languages it formats. */
 interface ExternalFormatterValid {
   path: string;
   configurationDirectory: string;
@@ -63,6 +63,9 @@ const DEFAULT_BIOME_FORMATTER: ExternalFormatterValid = {
   ...DEFAULT_FORMATTER,
   languages: ["css", "graphql", "javascript", "javascriptreact", "typescript", "typescriptreact", "json", "jsonc"],
 };
+
+/** dprint formats what its configuration covers: no language list. */
+const DEFAULT_DPRINT_FORMATTER: ExternalFormatterValid = { ...DEFAULT_FORMATTER, languages: [] };
 
 const DEFAULT_PYTHON_FORMATTER: ExternalFormatterValid = {
   ...DEFAULT_FORMATTER,
@@ -212,6 +215,7 @@ export interface LanguagesValid {
   prettier: ExternalFormatterValid;
   oxfmt: ExternalFormatterValid;
   biome: ExternalFormatterValid;
+  dprint: ExternalFormatterValid;
   ruff: ExternalFormatterValid;
   black: ExternalFormatterValid;
   java: {
@@ -329,6 +333,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
   prettier: DEFAULT_FORMATTER,
   oxfmt: DEFAULT_FORMATTER,
   biome: DEFAULT_BIOME_FORMATTER,
+  dprint: DEFAULT_DPRINT_FORMATTER,
   ruff: DEFAULT_PYTHON_FORMATTER,
   black: DEFAULT_PYTHON_FORMATTER,
   java: {
@@ -511,6 +516,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
     prettier: validateFormatter(l.prettier),
     oxfmt: validateFormatter(l.oxfmt),
     biome: validateFormatter(l.biome, DEFAULT_BIOME_FORMATTER),
+    dprint: validateFormatter(l.dprint, DEFAULT_DPRINT_FORMATTER),
     ruff: validateFormatter(l.ruff, DEFAULT_PYTHON_FORMATTER),
     black: validateFormatter(l.black, DEFAULT_PYTHON_FORMATTER),
     java: {

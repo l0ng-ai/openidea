@@ -193,6 +193,17 @@ pub static TOOLS: &[ToolSpec] = &[
         homepage: "https://oxc.rs/docs/guide/usage/formatter",
     },
     ToolSpec {
+        name: "dprint",
+        display: "dprint",
+        kind: Formatter,
+        commands: &["dprint"],
+        method: Method::Npm { packages: &["dprint"] },
+        fallback: None,
+        version: ver("dprint"),
+        needs: NODE,
+        homepage: "https://dprint.dev",
+    },
+    ToolSpec {
         name: "oxlint",
         display: "oxlint",
         kind: LanguageServer,
@@ -1355,7 +1366,7 @@ mod tests {
                 known.insert((d.adapter.clone(), d.command.clone()));
             }
         }
-        // The host selects the formatter of each file (Prettier, oxfmt or Biome) and runs its own CLIs.
+        // The host selects the formatter of each file (Prettier, oxfmt, Biome or dprint) and runs its own CLIs.
         for t in TOOLS.iter().filter(|t| !matches!(t.kind, Plugin | Formatter | Cli)) {
             assert!(
                 known.contains(&(t.name.to_string(), t.commands[0].to_string())),
