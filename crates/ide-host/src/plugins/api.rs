@@ -3953,6 +3953,29 @@ impl PluginWorkspace for HostWorkspace {
 mod tests {
     use super::*;
 
+    #[test]
+    fn terminal_directories_stay_inside_the_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap().join("project");
+        std::fs::create_dir_all(root.join("sub/deeper")).unwrap();
+        std::fs::write(root.join("file.txt"), "").unwrap();
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        assert_eq!(project_subdirectory(&root, "").unwrap(), root);
+        assert_eq!(project_subdirectory(&root, "sub/deeper").unwrap(), root.join("sub/deeper"));
+        assert_eq!(project_subdirectory(&root, "sub/../sub").unwrap(), root.join("sub"));
+        for bad in ["/tmp", "../outside", "sub/../../outside", "missing", "file.txt", "a\0b"] {
+            assert!(matches!(project_subdirectory(&root, bad), Err(HostError::Invalid(_))), "{bad:?}");
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
+            assert!(project_subdirectory(&root, "escape").is_err(), "a link out of the project");
+            std::os::unix::fs::symlink(root.join("sub"), root.join("inside")).unwrap();
+            assert_eq!(project_subdirectory(&root, "inside").unwrap(), root.join("sub"));
+        }
+    }
+
     fn api(dir: &Path, pins: Arc<RwLock<HashMap<(String, String), ProgramPin>>>) -> PluginApi {
         let manifest = ide_extension::Manifest::parse(
             "id = \"acme.lint\"\nname = \"Lint\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.0\"\n",
