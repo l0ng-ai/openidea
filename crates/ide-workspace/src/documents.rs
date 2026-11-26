@@ -929,6 +929,8 @@ impl Documents {
                 st.disk_mtime = ide_vfs::mtime_ms(&meta);
                 st.disk_len = meta.len();
                 st.disk_conflict = true;
+                // The text read before no longer matches the file: undoing back to it is not clean.
+                st.clean_text = None;
                 self.sink.emit(IdeEvent::DocDiskConflict { doc, path: st.path.to_string_lossy().into_owned() });
             }
             if st.dirty && st.disk_conflict {
