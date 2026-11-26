@@ -130,7 +130,6 @@
   color: var(--fg);
   font: inherit;
   text-align: left;
-  cursor: pointer;
 }
 .locationsLink:hover {
   color: var(--fg-strong);

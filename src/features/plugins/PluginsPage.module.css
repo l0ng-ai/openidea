@@ -98,7 +98,6 @@
   background: none;
   color: inherit;
   font: inherit;
-  cursor: pointer;
 }
 .groupToggle:hover {
   color: var(--fg);
