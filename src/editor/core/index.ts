@@ -10,7 +10,8 @@ import {
   registerOverlay,
   registerStatusItem,
 } from "@/workbench/contributions";
-import { _provideCodePreview, _provideDocumentAttacher, editorsFor } from "@/editor/api";
+import { _provideCodePreview, _provideCopyPathChooser, _provideDocumentAttacher, editorsFor } from "@/editor/api";
+import { openCopyPathChooser } from "./copyPathChooser";
 import { isUntitledUri } from "@/platform/virtualDocs";
 import { formatDocument } from "@/editor/lsp/format";
 import { chooserTitle, locationItems, pinToFind } from "@/editor/lsp/navigation";
@@ -82,6 +83,7 @@ export function activate(): void | (() => void) {
     },
   });
   _provideDocumentAttacher((path, options) => attachDocument(ctrl.manager, path, options));
+  _provideCopyPathChooser(openCopyPathChooser);
   _provideCodePreview((path, editable) =>
     previewExtensions(path, ctrl.manager.settings()?.editor, ctrl.manager.backend, editable),
   );

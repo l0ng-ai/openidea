@@ -4148,5 +4148,14 @@
   "Semicolons": "Semicolons",
   "Quotes": "Quotes",
   "For the strings and imports the TypeScript server adds.": "For the strings and imports the TypeScript server adds.",
-  "The TypeScript server applies Spaces and Punctuation to Reformat Code and to the code it adds: quick fixes, imports, refactorings and organize imports. Files below a Prettier, Biome or oxfmt configuration are formatted by that tool. A .editorconfig's quote_type and ij_* properties come first. TSX files use the TypeScript settings, JSX files the JavaScript ones.": "The TypeScript server applies Spaces and Punctuation to Reformat Code and to the code it adds: quick fixes, imports, refactorings and organize imports. Files below a Prettier, Biome or oxfmt configuration are formatted by that tool. A .editorconfig's quote_type and ij_* properties come first. TSX files use the TypeScript settings, JSX files the JavaScript ones."
+  "The TypeScript server applies Spaces and Punctuation to Reformat Code and to the code it adds: quick fixes, imports, refactorings and organize imports. Files below a Prettier, Biome or oxfmt configuration are formatted by that tool. A .editorconfig's quote_type and ij_* properties come first. TSX files use the TypeScript settings, JSX files the JavaScript ones.": "The TypeScript server applies Spaces and Punctuation to Reformat Code and to the code it adds: quick fixes, imports, refactorings and organize imports. Files below a Prettier, Biome or oxfmt configuration are formatted by that tool. A .editorconfig's quote_type and ij_* properties come first. TSX files use the TypeScript settings, JSX files the JavaScript ones.",
+  "Show Record View": "Show Record View",
+  "Open in Value Editor": "Open in Value Editor",
+  "Show Aggregate View": "Show Aggregate View",
+  "Data Extractor": "Data Extractor",
+  "Export Table to Clipboard": "Export Table to Clipboard",
+  "Keys": "Keys",
+  "Triggers": "Triggers",
+  "Filter by name or type": "Filter by name or type",
+  "Filter columns": "Filter columns"
 }

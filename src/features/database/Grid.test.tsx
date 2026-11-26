@@ -1013,3 +1013,75 @@ describe("local filter (#6022)", () => {
     expect(cities()).toEqual(["Shanghai", "Beijing", "Shenzhen", "Hangzhou"]);
   });
 });
+
+describe("the data view's context menu (DataGrip)", () => {
+  const columns = [
+    { name: "id", type: "int" },
+    { name: "city", type: "text" },
+  ];
+  const data = [
+    ["1", "Shanghai"],
+    ["2", "Beijing"],
+  ];
+  const value = (r: number, c: number) => data[r]?.[c] ?? null;
+
+  it("toggles the side panels, switches the extractor and exports the whole table to the clipboard", async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const onPanelChange = vi.fn();
+    const onExtractor = vi.fn();
+    const table = () => ({ columns, rows: data, table: "cities", driver: "postgres" as const });
+    const { rerender } = render(
+      <>
+        <DataView
+          columns={columns}
+          rowCount={2}
+          value={value}
+          panel="value"
+          onPanelChange={onPanelChange}
+          extractor={{ value: "csv", onChange: onExtractor, table }}
+        />
+        <ContextMenuHost />
+      </>,
+    );
+    const open = () => {
+      fireEvent.mouseDown(screen.getAllByRole("gridcell")[0]!, { button: 0 });
+      fireEvent.contextMenu(screen.getByRole("grid"), { clientX: 5, clientY: 5 });
+    };
+    open();
+    expect(screen.getByRole("menuitemcheckbox", { name: /Open in Value Editor/ })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Show Record View/ }));
+    expect(onPanelChange).toHaveBeenLastCalledWith("record");
+    open();
+    // The shown panel's entry hides it.
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Open in Value Editor/ }));
+    expect(onPanelChange).toHaveBeenLastCalledWith(null);
+
+    open();
+    await act(async () => void fireEvent.click(screen.getByRole("menuitem", { name: /Export Table to Clipboard/ })));
+    expect(writeText).toHaveBeenCalledWith(exportData("csv", table()));
+
+    open();
+    fireEvent.click(screen.getByRole("menuitem", { name: /Data Extractor/ }));
+    expect(screen.getByRole("menuitemcheckbox", { name: /^CSV/ })).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /SQL Inserts/ }));
+    expect(onExtractor).toHaveBeenCalledWith("sql");
+
+    // Without an extractor (a view with no toolbar one) only the panels are offered.
+    rerender(
+      <>
+        <DataView columns={columns} rowCount={2} value={value} panel={null} onPanelChange={onPanelChange} />
+        <ContextMenuHost />
+      </>,
+    );
+    open();
+    expect(screen.queryByRole("menuitem", { name: /Export Table to Clipboard/ })).toBeNull();
+    expect(screen.getByRole("menuitemcheckbox", { name: /Show Aggregate View/ })).toHaveAttribute(
+      "aria-checked",
+      "false",
+    );
+  });
+});

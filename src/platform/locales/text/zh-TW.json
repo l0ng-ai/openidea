@@ -9386,5 +9386,14 @@
   "DuckLake requires the official DuckDB JDBC driver.": "DuckLake 需要官方 DuckDB JDBC 驅動程式。",
   "Update the remote OpenIDEA server to save DuckLake data sources.": "請更新遠端 OpenIDEA 伺服器以儲存 DuckLake 資料來源。",
   "Creating DuckLake…": "正在建立 DuckLake…",
-  "Allow all optional permissions": "允許全部可選權限"
+  "Allow all optional permissions": "允許全部可選權限",
+  "Show Record View": "顯示記錄檢視",
+  "Open in Value Editor": "在值編輯器中開啟",
+  "Show Aggregate View": "顯示彙總檢視",
+  "Data Extractor": "資料擷取器",
+  "Export Table to Clipboard": "將表格匯出到剪貼簿",
+  "Keys": "鍵",
+  "Triggers": "觸發器",
+  "Filter by name or type": "依名稱或類型篩選",
+  "Filter columns": "篩選欄"
 }

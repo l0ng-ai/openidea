@@ -8824,5 +8824,14 @@
   "Allowed command pattern": "İzin verilen komut kalıbı",
   "Blocked command pattern": "Engellenen komut kalıbı",
   "Mode applies to": "Modun uygulandığı yer",
-  "Allow all optional permissions": "Tüm isteğe bağlı izinlere izin ver"
+  "Allow all optional permissions": "Tüm isteğe bağlı izinlere izin ver",
+  "Show Record View": "Kayıt Görünümünü Göster",
+  "Open in Value Editor": "Değer Düzenleyicide Aç",
+  "Show Aggregate View": "Toplam Görünümünü Göster",
+  "Data Extractor": "Veri Çıkarıcı",
+  "Export Table to Clipboard": "Tabloyu Panoya Aktar",
+  "Keys": "Anahtarlar",
+  "Triggers": "Tetikleyiciler",
+  "Filter by name or type": "Ada veya türe göre filtrele",
+  "Filter columns": "Sütunları filtrele"
 }
