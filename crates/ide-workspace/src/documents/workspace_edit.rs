@@ -314,12 +314,7 @@ fn hash_disk(hash: &mut blake3::Hasher, path: &Path, unsaved: &HashMap<PathBuf, 
 
 /// The bytes saving `state` would write.
 fn saved_bytes(state: &DocState) -> IdeResult<Vec<u8>> {
-    let text = state.doc.text_for_save();
-    Ok(if state.native_to_ascii {
-        ide_vfs::encode_properties_ascii(&text).into_bytes()
-    } else {
-        ide_vfs::encode(&text, &state.encoding, state.has_bom)?
-    })
+    state.bytes_for_save(&state.doc)
 }
 
 /// A reverted edit may leave the dirty flag set even when all saved bytes match.

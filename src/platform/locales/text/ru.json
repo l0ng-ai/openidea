@@ -10181,5 +10181,6 @@
   "Where Clause": "Условие WHERE",
   "SQL INSERT": "SQL INSERT",
   "SQL UPDATE": "SQL UPDATE",
-  "SQL DELETE": "SQL DELETE"
+  "SQL DELETE": "SQL DELETE",
+  "Column comment": "Комментарий к столбцу"
 }

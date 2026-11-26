@@ -40,7 +40,8 @@ async fn create_schemas(db: &DbManager) {
             format!("DROP DATABASE IF EXISTS `{s}`"),
             format!("CREATE DATABASE `{s}` CHARACTER SET utf8mb4 COLLATE utf8mb4_bin"),
             format!(
-                "CREATE TABLE `{s}`.`用户` (id INT PRIMARY KEY, name VARCHAR(20) COLLATE utf8mb4_bin, raw VARBINARY(4))"
+                "CREATE TABLE `{s}`.`用户` (id INT PRIMARY KEY, name VARCHAR(20) COLLATE utf8mb4_bin COMMENT '名字', \
+                 raw VARBINARY(4)) COMMENT = '用户表'"
             ),
             format!("CREATE INDEX `名字` ON `{s}`.`用户` (name)"),
             format!("INSERT INTO `{s}`.`用户` VALUES (1, 'ann', 0xCAFE)"),
@@ -59,6 +60,9 @@ async fn assert_metadata_is_text(db: &DbManager) -> IdeResult<()> {
         let d = db.table_details("m", s, "用户").await?;
         let cols: Vec<_> = d.columns.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(cols, ["id", "name", "raw"]);
+        assert_eq!(d.comment.as_deref(), Some("用户表"));
+        let comments: Vec<_> = d.columns.iter().map(|c| c.comment.as_deref()).collect();
+        assert_eq!(comments, [None, Some("名字"), None]);
         assert!(d.indexes.iter().any(|i| i.name == "名字"), "{:?}", d.indexes);
         assert!(db.ddl("m", s, "用户").await?.contains("CREATE TABLE `用户`"));
     }
