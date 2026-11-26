@@ -28,6 +28,10 @@ TypeScript 服务器以 `tsconfig.json`、`jsconfig.json` 或 `package.json` 所
 
 嵌入提示会显示字面量实参的参数名、推断出的变量类型和枚举成员的值；可以在 **设置 › 编辑器 › 嵌入提示** 中按类型关闭。
 
+### 整个项目的类型错误
+
+语言服务器只检查已打开的文件。要在 Problems 工具窗口里保留整个项目的类型错误，在 Problems 工具窗口的 ⋮ 菜单中打开 **TypeScript 项目错误（tsc --watch）**（默认关闭，保存在项目设置中）。IDE 会对每个没有被其他配置引用的 `tsconfig.json` 运行项目自己的 `node_modules/.bin/tsc --noEmit --watch`（带项目引用的解决方案配置运行 `tsc -b --watch`），每次编译后替换这些错误。它不会向项目写入任何文件：编译输出和 `.tsbuildinfo` 都写到临时目录。被 `.gitignore` 忽略、被排除、隐藏或名为 `fixtures`、`examples`、`testdata` 的目录里的配置会被跳过。在编辑器中打开的文件改为显示语言服务器的错误；Build 也报告过的同一个错误只列出一次。没有本地 `typescript` 或处于受限模式时不会运行。
+
 ### TypeScript 版本
 
 **设置 › 语言和框架 › TypeScript** 决定 `vtsls` 和 `typescript-language-server` 加载哪个 TypeScript：
