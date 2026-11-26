@@ -1206,6 +1206,7 @@
   "Apply Patch…": "应用补丁…",
   "Apply Stash": "应用储藏",
   "Arguments": "实参",
+  "Argument completions": "参数补全",
   "Arrow function": "箭头函数",
   "As new branch:": "作为新分支：",
   "As typed": "按输入",
@@ -10449,5 +10450,10 @@
   "Not connected to OpenIDEA server": "未连接到 OpenIDEA 服务器",
   "Command failed": "命令执行失败",
   "This OpenIDEA session is open in another browser tab.": "此 OpenIDEA 会话已在另一个浏览器标签页中打开。",
-  "Take Over": "接管会话"
+  "Take Over": "接管会话",
+  "Dependencies are not installed": "未安装依赖",
+  "Dependencies changed since the last install": "依赖在上次安装后有变化",
+  "Run '{command}' in '{rel}' to install them.": "在 '{rel}' 中运行 '{command}' 安装依赖。",
+  "Run '{command}' to install them.": "运行 '{command}' 安装依赖。",
+  "Install Node.js Dependencies": "安装 Node.js 依赖"
 }

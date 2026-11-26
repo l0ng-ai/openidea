@@ -1,0 +1,18 @@
+id = "watch-paths"
+name = "Watched paths test"
+version = "0.1.0"
+engines.openidea = "^1.18"
+wasm = "dist/plugin.wasm"
+activation = ["on-command:*", "on-event:watched-files-changed"]
+
+[capabilities]
+required = ["events", "storage"]
+optional = ["fs.read:/opt/watched"]
+
+[[contributes.commands]]
+id = "watch"
+title = "Watch the paths given one per line"
+
+[[contributes.commands]]
+id = "events"
+title = "Read the watched changes received"

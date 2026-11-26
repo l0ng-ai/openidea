@@ -638,6 +638,10 @@ mod imp {
         wit::events::subscribe(k.name()).map_err(error)
     }
 
+    pub fn watch_paths(paths: &[&str]) -> Result<(), Error> {
+        wit::events::watch_paths(&paths.iter().map(|p| (*p).to_owned()).collect::<Vec<_>>()).map_err(error)
+    }
+
     pub fn unsubscribe(k: EventKind) {
         wit::events::unsubscribe(k.name())
     }
@@ -1934,6 +1938,25 @@ pub fn subscribe(kind: EventKind) -> Result<(), Error> {
 
 pub fn unsubscribe(kind: EventKind) {
     imp::unsubscribe(kind)
+}
+
+/// Watches files and directories outside the project of the window this call
+/// serves (a command or an event), replacing what the plugin watched for that
+/// project; an empty list stops (API 1.18). Changes arrive as
+/// [`crate::Event::WatchedFilesChanged`].
+///
+/// Each path is absolute (or `~/…`), exists, and is covered by an `fs.read:<path>`
+/// grant where it really is (a link out of the grant is `Denied`). Paths inside the
+/// project are `Invalid`: [`crate::Event::FilesChanged`] reports them. At most 32.
+/// A file is watched across atomic saves, removal and re-creation; a directory for
+/// its own entries, not recursively, and once removed it is no longer watched.
+/// Batches are debounced and coalesced, so read the files again rather than
+/// replaying steps; a rename is the old path removed and the new one created.
+/// Watches end when the project or its window closes or the plugin stops (also when
+/// a grant is revoked); idle reclaim keeps them. Nothing remote is watched: files
+/// behind a URL need the plugin's own refresh. Needs `events`.
+pub fn watch_paths(paths: &[&str]) -> Result<(), Error> {
+    imp::watch_paths(paths)
 }
 
 /// Files outside the open projects, for a program the plugin integrates with

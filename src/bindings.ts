@@ -1330,6 +1330,8 @@ export const commands = {
 	language: string,
 	selections: Range[],
 } | null, paths: string[] | null, settingsScope: "global" | "project" | null, commandChain: string[] | null, request: number | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("plugin_run_command", { pluginId, commandId, arg, editor, paths, settingsScope, commandChain, request })),
+	/**  Completions for a field of a plugin's own run configuration (API 1.18). */
+	pluginRunConfigurationComplete: (configId: string, field: string, text: string, caret: number) => typedError<RunConfigCompletion[], IdeError>(__TAURI_INVOKE("plugin_run_configuration_complete", { configId, field, text, caret })),
 	pluginRunTargets: () => typedError<RegisteredRunTarget[], IdeError>(__TAURI_INVOKE("plugin_run_targets")),
 	/**
 	 *  One page of `plugin_id`'s results for its search `category`. Cancellable with
@@ -6886,7 +6888,9 @@ export type EventKind = "document-changed" | "websocket-ready" | "file-closed" |
 /**  Problems of the window's files changed (a language server or a report). */
 "problems-changed" | 
 /**  A project was closed (or its window closed): the project root path. */
-"project-closed" | "scheduled";
+"project-closed" | 
+/**  Paths outside the project watched with `events.watch-paths` changed (API 1.18). */
+"watched-files-changed" | "scheduled";
 
 export type ExceptionClassBreakpoint = {
 	id: string,
@@ -12428,6 +12432,16 @@ export type RunAttach_Serialize = {
 
 export type RunConfig = RunConfig_Serialize | RunConfig_Deserialize;
 
+/**  A completion for a field of a plugin's own run configuration (API 1.18). */
+export type RunConfigCompletion = {
+	label: string,
+	detail: string | null,
+	/**  Replaces the UTF-16 range `[replace_start, replace_end)` of the field's text. */
+	insert: string,
+	replaceStart: number,
+	replaceEnd: number,
+};
+
 export type RunConfig_Deserialize = {
 	/**  Stable id, e.g. `npm:dev`, `cargo:run:app`, or a uuid for user-defined. */
 	id: string,
@@ -14575,7 +14589,12 @@ export type WorkbenchEvent = { kind: "documentChanged"; value: DocumentChanged }
 /**  Problems of the window's files changed; plugins re-read `problems`. */
 { kind: "problemsChanged" } | 
 /**  A project closed (API 1.18); payload is the canonical absolute root path. */
-{ kind: "projectClosed"; value: string } | { kind: "scheduled" };
+{ kind: "projectClosed"; value: string } | 
+/**
+ *  Changes to paths outside the project watched with `events.watch-paths` (API 1.18);
+ *  `project` is the project the watch belongs to, `generation` is unset.
+ */
+{ kind: "watchedFilesChanged"; value: FilesChanged } | { kind: "scheduled" };
 
 export type WorkingTreeChange = {
 	path: string,

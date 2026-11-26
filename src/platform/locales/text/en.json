@@ -4057,5 +4057,10 @@
   "Not connected to OpenIDEA server": "Not connected to OpenIDEA server",
   "Command failed": "Command failed",
   "This OpenIDEA session is open in another browser tab.": "This OpenIDEA session is open in another browser tab.",
-  "Take Over": "Take Over"
+  "Take Over": "Take Over",
+  "Dependencies are not installed": "Dependencies are not installed",
+  "Dependencies changed since the last install": "Dependencies changed since the last install",
+  "Run '{command}' in '{rel}' to install them.": "Run '{command}' in '{rel}' to install them.",
+  "Run '{command}' to install them.": "Run '{command}' to install them.",
+  "Install Node.js Dependencies": "Install Node.js Dependencies"
 }

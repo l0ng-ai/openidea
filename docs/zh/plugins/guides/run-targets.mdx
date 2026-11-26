@@ -12,6 +12,7 @@ description: "贡献运行配置，把测试输出解析进测试树，从代码
 | 在代码中计算项目的运行配置                     | `[[contributes.runConfigurations]]` + `run-configurations` 导出 | 1.4        |
 | 给配置加上环境变量和调试器                     | `launch-configurations` 导出                                    | 1.9        |
 | 为配置设置默认的 PTY 或管道输出模式            | `execution-configurations` 导出 / `runDetectors.outputMode`     | 1.18       |
+| 补全自己配置的“实参”字段                       | `run-configuration-completion` 导出                             | 1.18       |
 | 把测试输出转成 IDE 的测试树                    | `test-results` 导出，`framework = "plugin"`                     | 1.4        |
 | 从命令中启动自己的某个配置                     | `host::start_run` / `host::start_run_with_options`（`run` WIT） | 1.4 / 1.18 |
 | 让项目的所有运行都经过包装程序（DDEV、容器等） | `host::register_run_target`（WIT `run-targets`）                | 1.4        |
@@ -179,6 +180,14 @@ fn run_command(&mut self, _id: &str, _ctx: &Invocation, arg: Option<&str>) -> Re
 宿主禁止的 PTY 组合（`test` 配置、请求 `Pty` 的 `debug` 启动、远程运行目标、以及 `stdin` 文件重定向）会返回 `Invalid` 错误。
 
 > 普通伪终端（PTY）会将 `stdout` 和 `stderr` 合并为同一输出流，并可能改变缓冲、输入处理及终端行为（换行、回显与 ANSI 控制序列）。
+
+## 补全实参
+
+导出 `run-configuration-completion`（实现 `RunConfigurationCompletion`，注册为 `run_configuration_completion`），
+就能在 **运行 | 编辑配置…** 中补全自己配置的“实参”字段，比如任务运行器的任务名。用户输入（或按 Ctrl+Space）时，
+IDE 传入配置 id、`field = "arguments"`、字段文本和以 UTF-16 计的光标位置。每一项只替换它给出的 UTF-16 区间，
+其他选项、带引号的值和 `--` 之后的参数保持原样。请根据插件已经掌握的信息作答：IDE 最多保留 200 项，
+超过 300 ms 或文本已经变化后的回答会被丢弃。
 
 ## 运行目标
 

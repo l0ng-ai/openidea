@@ -169,6 +169,7 @@ pub const EVENT_KINDS: &[&str] = &[
     "vcs-changed",
     "problems-changed",
     "project-closed",
+    "watched-files-changed",
 ];
 
 impl std::fmt::Display for ActivationEvent {
@@ -407,8 +408,9 @@ impl Manifest {
             if matches!(event, ActivationEvent::Event(kind) if kind == "files-changed") {
                 self.needs_api("`on-event:files-changed`", 3)?;
             }
-            if matches!(event, ActivationEvent::Event(kind) if kind == "project-closed") {
-                self.needs_api("`on-event:project-closed`", 18)?;
+            if matches!(event, ActivationEvent::Event(kind) if kind == "project-closed" || kind == "watched-files-changed")
+            {
+                self.needs_api(&format!("`{event}`"), 18)?;
             }
             if !seen.insert(event) {
                 return Err(format!("duplicate activation event {event}"));
@@ -971,16 +973,18 @@ mod net_ask_api_tests {
     }
 
     #[test]
-    fn project_closed_event_requires_api_1_18() {
-        for engine in ["^1.17", "^1.18"] {
-            let manifest = format!(
-                "id = 'test'\nname = 'Test'\nversion = '0.1.0'\nwasm = 'plugin.wasm'\nengines.openidea = '{engine}'\nactivation = [\"on-event:project-closed\"]\n"
-            );
-            let parsed = Manifest::parse(&manifest);
-            if engine == "^1.18" {
-                parsed.unwrap();
-            } else {
-                assert!(parsed.unwrap_err().contains("new in plugin API 1.18"), "{engine}");
+    fn project_closed_and_watched_files_events_require_api_1_18() {
+        for kind in ["project-closed", "watched-files-changed"] {
+            for engine in ["^1.17", "^1.18"] {
+                let manifest = format!(
+                    "id = 'test'\nname = 'Test'\nversion = '0.1.0'\nwasm = 'plugin.wasm'\nengines.openidea = '{engine}'\nactivation = [\"on-event:{kind}\"]\n"
+                );
+                let parsed = Manifest::parse(&manifest);
+                if engine == "^1.18" {
+                    parsed.unwrap();
+                } else {
+                    assert!(parsed.unwrap_err().contains("new in plugin API 1.18"), "{kind} {engine}");
+                }
             }
         }
     }
