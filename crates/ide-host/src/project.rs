@@ -2035,6 +2035,7 @@ fn with_gradle_roots(
             // absolute owner (without `normalize`, which strips a leading `/`), except an ancestor
             // of the root (opened from a subproject) or a filesystem/drive root, which stay
             // `Gradle` so they cannot shadow in-project modules or collapse to a bare drive `D:`.
+            let project = dunce::canonicalize(&project).unwrap_or(project);
             let detected_from = match project.strip_prefix(root) {
                 Ok(rel) if !rel.as_os_str().is_empty() => {
                     format!("{}/Gradle", ide_workspace::roots::normalize(&rel.to_string_lossy()))
@@ -2554,6 +2555,45 @@ mod gradle_roots_tests {
                 ("lib/src/main/java".into(), Some("lib/Gradle")),
                 (abs(ext_posix), Some("Gradle")),
                 (abs(ext_win), Some("Gradle")),
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gradle_sync_roots_canonicalize_symlinked_project_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = dunce::canonicalize(tmp.path()).unwrap();
+        let real = ws.join("real");
+        let link = ws.join("link");
+        let app = real.join("app");
+        let lib = app.join("lib");
+        let cache = ws.join("cache");
+        for d in [real.join("src/main/java"), app.join("src/main/java"), lib.join("src/main/java"), cache.clone()] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let s = |p: PathBuf| p.to_string_lossy().into_owned();
+        // Opened at canonical `real/app`, while Gradle reports projects through the symlink `link`.
+        let json = serde_json::json!({ "hash": "", "at_ms": 1.0, "error": null, "tasks": [], "projects": [
+            { "path": ":", "dir": s(link.clone()), "sourceSets": [
+                { "name": "main", "test": false, "src": [s(real.join("src/main/java"))], "res": [] } ] },
+            { "path": ":app", "dir": s(link.join("app")), "sourceSets": [
+                { "name": "main", "test": false, "src": [s(app.join("src/main/java"))], "res": [] } ] },
+            { "path": ":app:lib", "dir": s(link.join("app/lib")), "sourceSets": [
+                { "name": "main", "test": false, "src": [s(lib.join("src/main/java"))], "res": [] } ] },
+        ]});
+        std::fs::write(cache.join("gradle.json"), json.to_string()).unwrap();
+        std::fs::write(app.join("build.gradle"), "").unwrap();
+        let out = with_gradle_roots(&app, &cache, &Default::default(), &[]);
+        let abs = |p: PathBuf| ide_workspace::roots::normalize(&s(p));
+        let got: Vec<_> = out.iter().map(|f| (f.path.clone(), f.detected_from.as_deref())).collect();
+        assert_eq!(
+            got,
+            [
+                (abs(real.join("src/main/java")), Some("Gradle")),
+                ("src/main/java".into(), Some("Gradle")),
+                ("lib/src/main/java".into(), Some("lib/Gradle")),
             ]
         );
     }
