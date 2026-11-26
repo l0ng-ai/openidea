@@ -336,7 +336,6 @@
   font-family: var(--font-ui);
   font-size: var(--fs-tiny);
   line-height: 1;
-  cursor: pointer;
 }
 .commandToggle:hover {
   background: var(--bg-hover);
@@ -465,7 +464,6 @@
   color: var(--fg);
   font: inherit;
   font-size: var(--fs-small);
-  cursor: pointer;
 }
 .entityChip:disabled {
   cursor: default;
@@ -479,6 +477,7 @@ button.entityChip:not(:disabled):hover {
 }
 .portChipLink {
   color: var(--link);
+  cursor: pointer;
 }
 .chipMeta {
   color: var(--fg-subtle);

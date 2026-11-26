@@ -39,6 +39,7 @@ import {
   addWatch,
   closeSessionTab,
   evaluate,
+  frameLocals,
   isLive,
   isThreadSuspended,
   selectFrame,
@@ -580,17 +581,21 @@ function VariablesPane({ session }: { session: DebugSession }) {
   const completion = useExpressionCompletion(evalField, expression, setExpression, session);
   const [history, setHistory] = useState<{ sessionId: number; stopSeq: number; entries: string[] } | null>(null);
   const [lastEval, setLastEval] = useState<EvalRow | null>(null);
-  const [scopeData, setScopeData] = useState<{ frame: number | null; scopes: Scope[]; locals: Variable[] }>({
-    frame: null,
+  // Each carries the generation it was fetched in. Adapters reuse frame ids across stops, so matching the
+  // frame alone would show the last stop's variables, and the tree would expand them by references the
+  // adapter has dropped or recomputes (#6170).
+  const [scopeData, setScopeData] = useState<{ generation: number; scopes: Scope[]; locals: Variable[] }>({
+    generation: -1,
     scopes: [],
     locals: [],
   });
-  const [watchData, setWatchData] = useState<{ frame: number | null; seq: number; rows: EvalRow[] }>({
-    frame: null,
-    seq: -1,
+  const [watchData, setWatchData] = useState<{ generation: number; rows: EvalRow[] }>({
+    generation: -1,
     rows: [],
   });
   const frame = session.status === "paused" ? session.selectedFrame : null;
+  // The stop, refresh and frame the variables are shown for. Variable references are only valid within it.
+  const generation = (stopSeq * 1000 + (variablesEpoch % 1000)) * 100000 + (frame ?? 0);
   const historyOpen = frame != null && history?.sessionId === session.id && history.stopSeq === stopSeq;
   const editor = settings?.editor;
   const live = liveWatchesApply(session);
@@ -603,31 +608,30 @@ function VariablesPane({ session }: { session: DebugSession }) {
   useEffect(() => {
     if (frame == null) return;
     let cancelled = false;
+    const fetched = generation;
     void (async () => {
       let scopes: Scope[] = [];
       let locals: Variable[] = [];
       try {
-        scopes = await call(commands.debugScopes(session.id, frame));
-        const first = scopes.find((s) => !s.expensive);
-        if (first) {
-          const vars = await call(commands.debugVariables(session.id, first.variablesReference));
-          locals = workflowSettings().debugger.sortValues ? sortVariables(vars) : vars;
-        }
+        const data = await frameLocals(session.id, frame);
+        scopes = data.scopes;
+        locals = workflowSettings().debugger.sortValues ? sortVariables(data.locals) : data.locals;
       } catch {
         // Frame went away (resumed).
       }
-      if (!cancelled) setScopeData({ frame, scopes, locals });
+      if (!cancelled) setScopeData({ generation: fetched, scopes, locals });
     })();
     return () => {
       cancelled = true;
     };
-  }, [session.id, frame, stopSeq, variablesEpoch]);
+  }, [session.id, frame, generation]);
 
   // Watches are re-evaluated on every stop / frame change, and when the adapter has new values (kotlin-lsp first
   // answers "Collecting data…").
   useEffect(() => {
     if (frame == null || !watches.length) return;
     let cancelled = false;
+    const fetched = generation;
     void (async () => {
       const rows = await Promise.all(
         watches.map(async (w): Promise<EvalRow> => {
@@ -638,7 +642,7 @@ function VariablesPane({ session }: { session: DebugSession }) {
           }
         }),
       );
-      if (!cancelled) setWatchData({ frame, seq: stopSeq, rows });
+      if (!cancelled) setWatchData({ generation: fetched, rows });
     })();
     return () => {
       cancelled = true;
@@ -658,7 +662,7 @@ function VariablesPane({ session }: { session: DebugSession }) {
         error: lastEval.error,
       });
     // While the program runs, a debugger that evaluates without suspending gives the values.
-    const watchRows = frame == null ? liveWatches : watchData.frame === frame ? watchData.rows : [];
+    const watchRows = frame == null ? liveWatches : watchData.generation === generation ? watchData.rows : [];
     for (const w of watches) {
       const r = watchRows.find((x) => x.expression === w);
       out.push({
@@ -669,7 +673,7 @@ function VariablesPane({ session }: { session: DebugSession }) {
         error: frame == null && !live ? "Not suspended" : (r?.error ?? null),
       });
     }
-    if (frame != null && scopeData.frame === frame) {
+    if (frame != null && scopeData.generation === generation) {
       const firstScope = scopeData.scopes.find((s) => !s.expensive);
       const seen = new Map<string, number>();
       for (const v of scopeData.locals) {
@@ -694,7 +698,7 @@ function VariablesPane({ session }: { session: DebugSession }) {
       }
     }
     return out;
-  }, [lastEval, watches, watchData, scopeData, frame, live, liveWatches]);
+  }, [lastEval, watches, watchData, scopeData, frame, generation, live, liveWatches]);
 
   const run = async () => {
     const e = expression.trim();
@@ -822,7 +826,7 @@ function VariablesPane({ session }: { session: DebugSession }) {
         <VariablesView
           roots={roots}
           session={session.id}
-          generation={(stopSeq * 1000 + (variablesEpoch % 1000)) * 100000 + (frame ?? 0)}
+          generation={generation}
           changes={{ epoch: stopSeq, scope: changeScope }}
           aria-label="Variables"
         />
