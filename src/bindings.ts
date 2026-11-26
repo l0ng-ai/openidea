@@ -2131,6 +2131,8 @@ export const commands = {
 	vcsHasHook: (repo: string | null, name: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("vcs_has_hook", { repo, name })),
 	vcsIgnoreBlameRevision: (path: string, commit: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_ignore_blame_revision", { path, commit })),
 	vcsIgnoredFiles: () => typedError<FileStatus[], IdeError>(__TAURI_INVOKE("vcs_ignored_files")),
+	/**  An image at the selected Git revision or index stage as a data URL, absent if the path is missing. */
+	vcsImageAt: (path: string, rev: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("vcs_image_at", { path, rev })),
 	/**
 	 *  `git init` in `dir` (VCS › Create Git Repository…): with the git of the window's project when
 	 *  it is trusted, the default one in a window without a project.
