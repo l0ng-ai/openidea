@@ -24,8 +24,8 @@ pub mod sql;
 pub mod tools;
 mod watch;
 pub use watch::SourcesWatch;
-pub mod workspace_input;
 pub mod workspace;
+pub mod workspace_input;
 
 pub use catalog::{CatalogDatabase, CatalogSchema, SourceCatalog};
 pub use conn::{Held, Pool, QueryResult, ResultColumn, TruncatedCell};
