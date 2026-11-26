@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Anser from "anser";
 import { tx } from "@/platform/i18n";
 import { openExternalUrl } from "@/platform/openUrl";
+import { subscribeTheme } from "@/platform/themeWatch";
 import { editorService, notifications } from "@/workbench/contributions";
 import { resolveLink } from "@/features/viewers/markdown/render";
 import {
@@ -44,18 +45,17 @@ function AnsiText({ text, error = false }: { text: string; error?: boolean }) {
   );
 }
 
+/** The output frame's colours: the notebook's own background and the theme's text and table colours. */
 function readPalette(): OutputPalette {
   const root = document.documentElement;
   const css = getComputedStyle(root);
-  const bg = css.getPropertyValue("--bg-app");
-  const rgb = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i.exec(bg.trim());
-  const luma = rgb ? (0.299 * parseInt(rgb[1], 16) + 0.587 * parseInt(rgb[2], 16) + 0.114 * parseInt(rgb[3], 16)) / 255 : 1;
+  const token = (name: string) => css.getPropertyValue(name).trim();
   return {
-    fg: css.getPropertyValue("--fg"),
-    bg,
-    border: css.getPropertyValue("--border-strong"),
-    headerBg: css.getPropertyValue("--bg-elev"),
-    scheme: luma < 0.5 ? "dark" : "light",
+    fg: token("--fg"),
+    bg: token("--bg-editor") || token("--bg-app"),
+    border: token("--border-strong"),
+    headerBg: token("--bg-elev"),
+    scheme: root.dataset.theme === "light" ? "light" : "dark",
   };
 }
 
@@ -65,9 +65,7 @@ function useOutputPalette(): OutputPalette {
   useEffect(() => {
     const update = () => setPalette(readPalette());
     update();
-    const observer = new MutationObserver(update);
-    observer.observe(document.documentElement, { attributes: true });
-    return () => observer.disconnect();
+    return subscribeTheme(update);
   }, []);
   return palette;
 }
