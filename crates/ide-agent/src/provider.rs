@@ -73,7 +73,7 @@ const BUILTIN: &[(&str, &str, Driver, &[&str], &str)] = &[
         "GitHub Copilot",
         Driver::Copilot,
         &["copilot", "--headless", "--no-auto-update", "--stdio"],
-        "Run `copilot` in a terminal and sign in.",
+        "Run `copilot login` in a terminal.",
     ),
     ("cursor", "Cursor", Driver::Acp, &["cursor-agent", "acp"], "Run `cursor-agent login` in a terminal."),
     ("opencode", "OpenCode", Driver::Acp, &["opencode", "acp"], "Run `opencode auth login` in a terminal."),
@@ -175,6 +175,80 @@ impl ProviderSpec {
                 .to_string_lossy()
                 .into_owned();
         self
+    }
+
+    /// Resolves the executable, arguments, and environment to run this agent's interactive
+    /// sign-in flow directly in an IDE PTY without shell quoting.
+    pub(crate) fn login_launch(&self, cwd: &Path, terminal_auth_args: Option<&[String]>) -> Option<LoginLaunch> {
+        let search = ide_core::tool_path::search_path();
+        let resolve_exe = |cmd: &str, env: &[(String, String)]| -> Option<PathBuf> {
+            let spawned = ide_jsonrpc::resolve_spawn_program(cmd, env);
+            let candidate =
+                if spawned.components().count() > 1 && !spawned.is_absolute() { cwd.join(&spawned) } else { spawned };
+            if candidate.is_absolute() && is_executable(&candidate) {
+                return Some(candidate);
+            }
+            ide_core::tool_path::find_command(&candidate.to_string_lossy(), &search, cwd)
+        };
+
+        if let Some((separate_cmd, separate_args)) = match self.id.as_str() {
+            "claude-acp" => Some(("claude", &[][..])),
+            "codex-acp" => Some(("codex", &["login"][..])),
+            "vibe" => Some(("vibe", &[][..])),
+            _ => None,
+        } {
+            let program = resolve_exe(separate_cmd, &self.env)?;
+            return Some(LoginLaunch {
+                program,
+                args: separate_args.iter().map(|s| (*s).to_owned()).collect(),
+                env: self.env.iter().cloned().collect(),
+            });
+        }
+
+        if let Some(builtin) = builtin_spec(&self.id) {
+            let args = terminal_auth_args
+                .filter(|_| matches!(self.source, AgentSource::Registry { .. }))
+                .map(<[String]>::to_vec)
+                .or_else(|| builtin_login_args(&builtin))?;
+            let resolved = self.clone().resolve_for_launch_base(cwd, true);
+            let program = resolve_exe(&resolved.command, &resolved.env)?;
+            let mut env: BTreeMap<String, String> = resolved.env.into_iter().collect();
+            if is_copilot_provider(&self.id) {
+                for key in AMBIENT_COPILOT_AUTH_VARS {
+                    env.insert(key.to_owned(), String::new());
+                }
+            }
+            return Some(LoginLaunch { program, args, env });
+        }
+
+        let args = terminal_auth_args?.to_vec();
+        let resolved = self.clone().resolve_for_launch_base(cwd, true);
+        let program = resolve_exe(&resolved.command, &resolved.env)?;
+        Some(LoginLaunch { program, args, env: resolved.env.into_iter().collect() })
+    }
+
+    pub(crate) fn can_sign_in(&self, cwd: &Path, terminal_auth_args: Option<&[String]>) -> bool {
+        self.login_launch(cwd, terminal_auth_args).is_some()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoginLaunch {
+    pub program: PathBuf,
+    pub args: Vec<String>,
+    pub env: BTreeMap<String, String>,
+}
+
+fn builtin_login_args(builtin: &ProviderSpec) -> Option<Vec<String>> {
+    let prefix = format!("Run `{}", builtin.command);
+    let rest = builtin.login_hint.strip_prefix(&prefix)?.strip_prefix([' ', '`']);
+    match rest {
+        Some(after_space) if builtin.login_hint[prefix.len()..].starts_with(' ') => {
+            let (args, _) = after_space.split_once('`')?;
+            Some(args.split_whitespace().map(str::to_owned).collect())
+        }
+        Some(_) => Some(Vec::new()),
+        None => None,
     }
 }
 
@@ -389,6 +463,7 @@ pub(crate) fn describe(spec: &ProviderSpec) -> AgentProvider {
         command_editable: reason.is_none(),
         command_read_only_reason: reason,
         installed: installed(&spec.command),
+        can_sign_in: spec.can_sign_in(Path::new("."), None),
         can_check_cli_update: spec.source == AgentSource::Builtin && crate::cli_update::package(&spec.id).is_some(),
         env: spec.env.iter().cloned().collect(),
         config: vec![],
@@ -899,6 +974,22 @@ mod tests {
         assert_eq!(reset.command, "qoderclicn");
         assert_eq!(reset.args, ["--acp"]);
         assert_eq!(reset.env, custom.env);
+    }
+
+    #[test]
+    fn every_builtin_login_hint_yields_the_arguments_sign_in_runs() {
+        // Sign In runs the arguments in the hint's backticks: rewording a hint must keep that form.
+        for spec in builtins() {
+            if matches!(spec.id.as_str(), "claude-acp" | "codex-acp" | "vibe") {
+                continue;
+            }
+            assert!(builtin_login_args(&spec).is_some(), "{}: {}", spec.id, spec.login_hint);
+        }
+        let args = |id: &str| builtin_login_args(&builtin_spec(id).unwrap()).unwrap();
+        assert_eq!(args("copilot"), ["login"]);
+        assert_eq!(args("goose"), ["configure"]);
+        assert_eq!(args("hermes"), ["model"]);
+        assert!(args("qwen").is_empty());
     }
 
     #[test]
@@ -1457,5 +1548,28 @@ mod tests {
             sanitize_copilot_env_with(&explicit, true, lookup),
             vec![("GITHUB_TOKEN".into(), String::new()), ("GH_TOKEN".into(), "github_pat_custom".into())]
         );
+    }
+
+    #[test]
+    fn login_launch_resolves_paths_with_spaces_and_clears_ambient_copilot_tokens() {
+        let dir = tempfile::tempdir().unwrap();
+        let app_support = dir.path().join("Application Support/copilot");
+        std::fs::create_dir_all(&app_support).unwrap();
+        let bin = app_support.join(if cfg!(windows) { "copilot.cmd" } else { "copilot" });
+        std::fs::write(&bin, "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mut spec = builtin_spec("copilot").unwrap();
+        spec.command = bin.to_string_lossy().into_owned();
+        spec.source = AgentSource::Registry { version: "1.0.115".into(), update: None };
+        let launch = spec.login_launch(dir.path(), None).unwrap();
+        assert_eq!(launch.program, bin);
+        assert_eq!(launch.args, ["login"]);
+        assert_eq!(launch.env.get("GITHUB_TOKEN").map(String::as_str), Some(""));
+        assert_eq!(launch.env.get("GH_TOKEN").map(String::as_str), Some(""));
+        assert_eq!(launch.env.get("COPILOT_GITHUB_TOKEN").map(String::as_str), Some(""));
     }
 }

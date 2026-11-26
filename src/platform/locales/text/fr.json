@@ -5690,7 +5690,6 @@
   "Run `auggie login` in a terminal.": "Exécutez `auggie login` dans un terminal.",
   "Run `claude` in a terminal and sign in.": "Exécutez `claude` dans un terminal et connectez-vous.",
   "Run `codex login` in a terminal.": "Exécutez `codex login` dans un terminal.",
-  "Run `copilot` in a terminal and sign in.": "Exécutez `copilot` dans un terminal et connectez-vous.",
   "Run `cursor-agent login` in a terminal.": "Exécutez `cursor-agent login` dans un terminal.",
   "Run `gemini` in a terminal and sign in.": "Exécutez `gemini` dans un terminal et connectez-vous.",
   "Run `goose configure` in a terminal.": "Exécutez `goose configure` dans un terminal.",

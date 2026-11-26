@@ -971,7 +971,6 @@
   "Run `auggie login` in a terminal.": "在终端中运行 `auggie login`。",
   "Run `claude` in a terminal and sign in.": "在终端中运行 `claude` 并登录。",
   "Run `codex login` in a terminal.": "在终端中运行 `codex login`。",
-  "Run `copilot` in a terminal and sign in.": "在终端中运行 `copilot` 并登录。",
   "Run `cursor-agent login` in a terminal.": "在终端中运行 `cursor-agent login`。",
   "Run `gemini` in a terminal and sign in.": "在终端中运行 `gemini` 并登录。",
   "Run `goose configure` in a terminal.": "在终端中运行 `goose configure`。",
@@ -10628,7 +10627,13 @@
   "SVG editor layout": "SVG 编辑器布局",
   "Resize SVG preview": "调整 SVG 预览大小",
   "The SVG source is not valid.": "SVG 源代码无效。",
+  "Sign In…": "登录…",
+  "Copy command": "复制命令",
+  "Sign In to {name}": "登录 {name}",
+  "Complete sign-in in your browser or the terminal above…": "请在浏览器或上方终端中完成登录…",
+  "Sign-in exited with code {exitCode}.": "登录已退出，代码为 {exitCode}。",
   "Install GitHub CLI": "安装 GitHub CLI",
   "Download manually…": "手动下载…",
-  "Show Scratches and Consoles": "显示临时文件和控制台"
+  "Show Scratches and Consoles": "显示临时文件和控制台",
+  "The terminal is not available in this window.": "此窗口中无法使用终端。"
 }

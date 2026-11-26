@@ -19,9 +19,23 @@ import { isCancelled, nextRequestId } from "@/platform/ipc";
 import { tx, useTxTemplate } from "@/platform/i18n";
 import { openExternalUrl } from "@/platform/openUrl";
 import clsx from "clsx";
-import { Button, Dialog, Icon, IconButton, Input, List, ProgressBar, SearchField, Select, Spinner, T } from "@/ui";
+import {
+  Button,
+  copyText,
+  Dialog,
+  Icon,
+  IconButton,
+  Input,
+  List,
+  ProgressBar,
+  SearchField,
+  Select,
+  Spinner,
+  T,
+} from "@/ui";
 import { useSettingsForm } from "@/workbench/contributions";
 import { confirm } from "@/workbench/messages";
+import { AgentSignInDialog, type SignInTarget } from "./AgentSignInDialog";
 import { LocalCliUpdate } from "./LocalCliUpdate";
 import { approvalDefaults, cursorModelDefaults, isPerModelOption } from "./composerModel";
 import { providerIcon, slugifyId } from "./model";
@@ -863,6 +877,7 @@ function ProviderSettings({
     return formatEnv(launchEnv(parsed));
   });
   const [error, setError] = useState<string | null>(null);
+  const [signInTarget, setSignInTarget] = useState<SignInTarget | null>(null);
   // An edit can have been staged by a previous page instance. Its Apply callback
   // refreshes that instance; the mounted one follows the newly applied value too.
   useEffect(() => {
@@ -875,16 +890,39 @@ function ProviderSettings({
       ? [agent.defaultProgram, ...agent.defaultArgs].join(" ")
       : formatArgs([agent.program, ...agent.args]);
   const envEditable = agent.commandReadOnlyReason !== "registry" && agent.commandReadOnlyReason !== "customAgent";
+  const canSignInInIde = agent.installed && (agent.canSignIn ?? false);
+  const commandSpan = agent.loginHint ? (/`([^`]+)`/.exec(agent.loginHint)?.[1] ?? null) : null;
   return (
     <>
       {value.trim() === current && agent.installed && agent.canCheckCliUpdate && (
         <LocalCliUpdate key={agent.program} agent={agent} backend={backend} />
       )}
-      {agent.loginHint && (
+      {(agent.loginHint || canSignInInIde) && (
         <Section title="Sign In">
-          <p className={styles.text}>
-            <LoginHint text={agent.loginHint} />
-          </p>
+          <div className={styles.signInRow}>
+            {canSignInInIde && (
+              <Button
+                size="small"
+                variant="primary"
+                onClick={() => setSignInTarget({ kind: "agent", id: agent.id, name: agent.name })}
+              >
+                <T>Sign In…</T>
+              </Button>
+            )}
+            {agent.loginHint && (
+              <p className={styles.signInHint}>
+                <LoginHint text={agent.loginHint} />
+                {commandSpan && (
+                  <IconButton
+                    size="small"
+                    icon="copy"
+                    title="Copy command"
+                    onClick={() => void copyText(commandSpan)}
+                  />
+                )}
+              </p>
+            )}
+          </div>
         </Section>
       )}
       <Section title="New Tasks">
@@ -1011,6 +1049,29 @@ function ProviderSettings({
           </p>
         )}
       </Section>
+      {signInTarget && (
+        <AgentSignInDialog
+          target={signInTarget}
+          spawner={backend}
+          onClose={() => setSignInTarget(null)}
+          onCompleted={() => {
+            void refresh().catch((e: unknown) => setError(errorText(e)));
+            onChanged?.();
+            if (backend.refreshModels) {
+              void backend
+                .refreshModels(agent.id, null, true)
+                .then((cat) =>
+                  useAgents.setState((s) => {
+                    const modelCatalogs = new Map(s.modelCatalogs);
+                    modelCatalogs.set(agent.id, cat);
+                    return { modelCatalogs };
+                  }),
+                )
+                .catch(() => {});
+            }
+          }}
+        />
+      )}
     </>
   );
 }

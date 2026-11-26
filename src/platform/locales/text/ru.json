@@ -927,7 +927,6 @@
   "Run `auggie login` in a terminal.": "Выполните `auggie login` в терминале.",
   "Run `claude` in a terminal and sign in.": "Запустите `claude` в терминале и выполните вход.",
   "Run `codex login` in a terminal.": "Выполните `codex login` в терминале.",
-  "Run `copilot` in a terminal and sign in.": "Запустите `copilot` в терминале и выполните вход.",
   "Run `cursor-agent login` in a terminal.": "Выполните `cursor-agent login` в терминале.",
   "Run `gemini` in a terminal and sign in.": "Запустите `gemini` в терминале и выполните вход.",
   "Run `goose configure` in a terminal.": "Выполните `goose configure` в терминале.",

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type {
   AcpImportOutcome,
+  AgentLoginEvent,
   AgentProvider,
   AgentRegistry,
   InstallEvent,
@@ -13,7 +14,7 @@ import { setLocale, tx } from "@/platform/i18n";
 import { iconMarkup } from "@/ui/icons";
 import { MessagesHost } from "@/workbench/messages";
 import { AgentRegistryPage as RegistryPage } from "./AgentRegistryPage";
-import { SettingsFormContext, registerSettingsPage } from "@/workbench/contributions";
+import { provideEmbeddedTerminal, SettingsFormContext, registerSettingsPage } from "@/workbench/contributions";
 import { useSettingsFormFor } from "@/features/settings/components/context";
 import { closeSettings, openSettings, selectPage } from "@/features/settings/model/staging";
 import { SettingsDialog } from "@/features/settings/dialog/SettingsDialog";
@@ -419,6 +420,8 @@ class FakeCommands implements CommandsBackend {
   list: AgentProvider[] = [];
   saved: [string, string | null][] = [];
   providers = vi.fn(async () => this.list);
+  loginSpawn?: CommandsBackend["loginSpawn"];
+  refreshModels?: CommandsBackend["refreshModels"];
   chooseExecutable = vi.fn(async () => "/chosen/agent");
   saveCustom = vi.fn(async () => {});
   setAdditionalArgs = vi.fn<CommandsBackend["setAdditionalArgs"]>();
@@ -638,6 +641,68 @@ describe("Built-in executable overrides", () => {
       ],
     ]);
     expect(JSON.stringify(commands.savedEnv)).not.toMatch(/gho_|ghp_|token/i);
+  });
+
+  it("runs in-IDE Sign In PTY dialog and refreshes the agent's model catalog on exit", async () => {
+    const written: string[] = [];
+    provideEmbeddedTerminal(async () => ({
+      write: (d) => written.push(d),
+      clear: vi.fn(),
+      focus: vi.fn(),
+      fit: vi.fn(),
+      dispose: vi.fn(),
+    }));
+    let onLoginEvent: ((e: AgentLoginEvent) => void) | null = null;
+    try {
+      const commands = new FakeCommands();
+      commands.loginSpawn = vi.fn(async (_id, _cols, _rows, cb) => {
+        onLoginEvent = cb;
+        return 101;
+      });
+      const refreshModels = vi.fn().mockResolvedValue({
+        provider: "copilot",
+        config: [],
+        thoughtLevels: {},
+        refreshing: false,
+        refreshedAtMs: Date.now(),
+        retryAtMs: null,
+        error: null,
+      });
+      commands.refreshModels = refreshModels;
+      commands.list = [
+        {
+          ...claudeProvider("copilot"),
+          id: "copilot",
+          name: "GitHub Copilot",
+          command: "copilot --headless --no-auto-update --stdio",
+          defaultProgram: "copilot",
+          loginHint: "Run `copilot login` in a terminal.",
+          installed: true,
+          canSignIn: true,
+          commandReadOnlyReason: "registry",
+        },
+      ];
+      await openCommands(commands, vi.fn(), "GitHub Copilot");
+      fireEvent.click(await screen.findByRole("button", { name: "Sign In…" }));
+      expect(await screen.findByRole("dialog", { name: "Sign In to GitHub Copilot" })).toBeInTheDocument();
+      await waitFor(() =>
+        expect(commands.loginSpawn).toHaveBeenCalledWith(
+          "copilot",
+          expect.any(Number),
+          expect.any(Number),
+          expect.any(Function),
+        ),
+      );
+      act(() => {
+        onLoginEvent?.({ type: "output", data: "Opening browser…\r\n" });
+        onLoginEvent?.({ type: "exited", code: 0 });
+      });
+      expect(written).toContain("Opening browser…\r\n");
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: "Sign In to GitHub Copilot" })).toBeNull());
+      expect(refreshModels).toHaveBeenCalledWith("copilot", null, true);
+    } finally {
+      provideEmbeddedTerminal(undefined);
+    }
   });
 
   it("Cancel discards command edits without writing", async () => {
