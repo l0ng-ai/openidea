@@ -74,7 +74,7 @@ The Astro and Angular servers also run from the project's own `node_modules/.bin
 
 On these pages, **Formatting provider** chooses between **Automatic (language server first)** and the tool itself, **Run on save** formats on save, and **Enabled languages** limits which languages the tool handles.
 
-With **Automatic**, a file below the tool's own configuration (a Prettier configuration file or `prettier` key in `package.json`, an oxfmt configuration, or Biome's) is formatted by that tool rather than by the language server.
+With **Automatic**, a JavaScript or TypeScript file below the tool's own configuration (a Prettier configuration file or `prettier` key in `package.json`, an oxfmt configuration, or Biome's) is formatted by that tool rather than by the language server, once the tool is installed (before `npm install`, the language server formats). **Settings › Editor › General › Reformat code on save** then runs the tool too.
 
 ### Code style
 

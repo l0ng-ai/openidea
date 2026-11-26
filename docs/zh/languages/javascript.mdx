@@ -75,7 +75,7 @@ Vue、Astro 和 Angular 服务器也会使用这里选择的版本。TypeScript 
 
 这些页面上，**格式化工具** 可选 **自动（优先语言服务器）** 或工具本身，**保存时运行** 控制保存时格式化，**启用的语言** 限定工具处理哪些语言。
 
-选 **自动** 时，位于该工具自身配置之下的文件（Prettier 配置文件或 `package.json` 里的 `prettier` 键、oxfmt 配置、Biome 配置）由该工具格式化，而不是语言服务器。
+选 **自动** 时，位于该工具自身配置之下的 JavaScript、TypeScript 文件（Prettier 配置文件或 `package.json` 里的 `prettier` 键、oxfmt 配置、Biome 配置）由该工具格式化，而不是语言服务器；前提是该工具已安装（`npm install` 之前仍由语言服务器格式化）。这时 **设置 › 编辑器 › 常规 › 保存时重新格式化代码** 也会运行该工具。
 
 ### 代码样式
 
