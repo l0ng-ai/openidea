@@ -522,7 +522,6 @@ export const viewerTheme = EditorView.theme(
       fontSize: "var(--fs-ui)",
       lineHeight: "1.4",
       textAlign: "start",
-      cursor: "pointer",
     },
     ".cm-collapsedLines > button:hover, .cm-collapsedLines > button:focus-visible": {
       backgroundColor: "var(--bg-hover)",

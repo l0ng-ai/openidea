@@ -27,7 +27,6 @@
   border-radius: var(--radius-small);
   background: var(--bg-elev);
   color: var(--fg-secondary);
-  cursor: pointer;
   user-select: none;
 }
 .tool:hover {
