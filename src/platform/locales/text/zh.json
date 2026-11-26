@@ -10455,5 +10455,14 @@
   "Dependencies changed since the last install": "依赖在上次安装后有变化",
   "Run '{command}' in '{rel}' to install them.": "在 '{rel}' 中运行 '{command}' 安装依赖。",
   "Run '{command}' to install them.": "运行 '{command}' 安装依赖。",
-  "Install Node.js Dependencies": "安装 Node.js 依赖"
+  "Install Node.js Dependencies": "安装 Node.js 依赖",
+  "{title} needs the Java agent of {pluginName}": "{title} 需要 {pluginName} 的 Java 代理",
+  "Allow the java.agent permission of {pluginName} in Settings › Plugins, then try again.": "请在 设置 › 插件 中允许 {pluginName} 的 java.agent 权限，然后重试。",
+  "Cannot run '{name}' with {title}": "无法使用 {title} 运行 '{name}'",
+  "Plugin Java agents load only into JVMs started on this machine. Choose “Local machine” under “Run on”.": "插件的 Java 代理只加载到本机启动的 JVM 中。请在“运行于”中选择“本地计算机”。",
+  "Run '{name}' with {title}": "使用 {title} 运行 '{name}'",
+  "Debug '{name}' with {title}": "使用 {title} 调试 '{name}'",
+  "Run with {title}": "使用 {title} 运行",
+  "Debug with {title}": "使用 {title} 调试",
+  "Launches the selected configuration with the Java agent of {pluginName}": "使用 {pluginName} 的 Java 代理启动所选配置"
 }

@@ -136,34 +136,34 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 
 ### Contribution points
 
-| Point               | Declaration                                                                                                                                                                                                                            | Code needed   |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
-| `commands`          | `id`, `title`, `category?`, `when?`                                                                                                                                                                                                    | to run them   |
-| `themes`            | `path` (theme JSON), `editor-scheme?`                                                                                                                                                                                                  | no            |
-| `iconThemes`        | `id`, `label`, `path` (icon theme JSON, see §5)                                                                                                                                                                                        | no            |
-| `languages`         | `path` (`languages/<id>.toml` format, see §6)                                                                                                                                                                                          | no            |
-| `runDetectors`      | `id`, `name`, `files`, `command`, `args?`, `test?`, `framework?` (API 1.4; §6.2)                                                                                                                                                       | no            |
-| `runConfigurations` | `files`: marker files for the optional `run-configurations` export (API 1.4)                                                                                                                                                           | yes           |
-| `javaAgents`        | `path` (a jar in the package), `args?`, `vmOptions?`, `jdk?` — a Java agent for Java run configurations, behind `java.agent` (API 1.10; `vmOptions`/`jdk` in 1.14; _Java agents_)                                                      | no            |
-| `skills`            | `path` (`skills/<name>/SKILL.md` in the package) — agent skill folder staged into coding-agent sessions (API 1.15)                                                                                                                     | no            |
-| `mcpTools`          | `name`, `description`, `inputSchema` (package JSON Schema path), `readOnly`, `destructive` (API 1.4; see _Plugin MCP tools_)                                                                                                           | yes           |
-| `snippets`          | `language`, `path` (named JSON snippets; API 1.4)                                                                                                                                                                                      | no            |
-| `providers`         | `kinds`, `languages` (editor providers, see _Providers_)                                                                                                                                                                               | yes           |
-| `secrets`           | `name`, `label`, `description?` (see _Network_)                                                                                                                                                                                        | to use them   |
-| `menus`             | `menu` (`editor.context`, `projectView.context`, `editorTab.context`, `viewItem.context`, `tools`, `commit.message`; API 1.4: `editor.title`, `mainToolbar`, `problems.context`, `searchResults.context`), `view?`, `command`, `when?` | no            |
-| `keymaps`           | `command`, `key`, `mac?` (`Ctrl+Alt+C`; a chord: `Meta+K Meta+C`); `key = "Escape"` with a required `when` (API 1.10) runs after the editor's own Escape handling                                                                      | no            |
-| `statusBar`         | `id`, `text`, `tooltip?`, `command?`, `align?`, `priority?`                                                                                                                                                                            | no            |
-| `settings`          | `schema` (JSON file) or `pages` (API 1.3), `title?` — see _Settings_                                                                                                                                                                   | no            |
-| `views`             | `id`, `title`, `icon?` (an icon name or a package SVG), `location` (`left`, `right`, `bottom`, `services`), `web?` (_Web views_), `frames?` (API 1.16), `group?`, `when?` (API 1.3)                                                    | without `web` |
-| `customEditors`     | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`, `frames?`, `binary?` (API 1.16)                                                                                                           | without `web` |
-| `editorPanels`      | `id`, `web`, `width` (pixels, 40–400), `when?`, `frames?` (API 1.16) — needs `editor.read` (API 1.9; _Editor panels_)                                                                                                                  | no            |
-| `overlays`          | `id`, `web`, `width`, `height` (pixels, 40–800), `anchor?`, `when?`, `interactive?` — floats over the workbench, never takes the focus (API 1.18; _Overlays_)                                                                          | no            |
-| `runAnything`       | `prefix`, `title?` — Run Anything lines starting with `prefix`, answered by the `run-anything-provider` export (API 1.18; _Run Anything entries_)                                                                                      | no            |
-| `dialogs`           | `id`, `title`, `web`, `width` (320–1600), `height` (200–1200) — a modal, resizable dialog opened by `views::reveal(id)` (API 1.18; _Dialogs_)                                                                                          | no            |
-| `fileIcons`         | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                                                                                                                               | no            |
-| `fileTemplates`     | `id`, `name`, `extension`, `path`; API 1.3: `fileName`, `variables = [{ name, prompt }]` — New menu                                                                                                                                    | no            |
-| `commitChecks`      | `id`, `title` — a before-commit check in Commit Options (see _Commits_)                                                                                                                                                                | yes           |
-| `serverCommands`    | `server`, `command`, `run` — a language server's client command run by this plugin's command (API 1.9; see _Commands a server hands to the client_)                                                                                    |
+| Point               | Declaration                                                                                                                                                                                                                                                                              | Code needed   |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| `commands`          | `id`, `title`, `category?`, `when?`                                                                                                                                                                                                                                                      | to run them   |
+| `themes`            | `path` (theme JSON), `editor-scheme?`                                                                                                                                                                                                                                                    | no            |
+| `iconThemes`        | `id`, `label`, `path` (icon theme JSON, see §5)                                                                                                                                                                                                                                          | no            |
+| `languages`         | `path` (`languages/<id>.toml` format, see §6)                                                                                                                                                                                                                                            | no            |
+| `runDetectors`      | `id`, `name`, `files`, `command`, `args?`, `test?`, `framework?` (API 1.4; §6.2)                                                                                                                                                                                                         | no            |
+| `runConfigurations` | `files`: marker files for the optional `run-configurations` export (API 1.4)                                                                                                                                                                                                             | yes           |
+| `javaAgents`        | `path` (a jar in the package), `args?`, `vmOptions?`, `jdk?`, `executor?` — a Java agent for Java run configurations, behind `java.agent` (API 1.10; `vmOptions`/`jdk` in 1.14; `executor` in 1.18; _Java agents_)                                                                       | no            |
+| `skills`            | `path` (`skills/<name>/SKILL.md` in the package) — agent skill folder staged into coding-agent sessions (API 1.15)                                                                                                                                                                       | no            |
+| `mcpTools`          | `name`, `description`, `inputSchema` (package JSON Schema path), `readOnly`, `destructive` (API 1.4; see _Plugin MCP tools_)                                                                                                                                                             | yes           |
+| `snippets`          | `language`, `path` (named JSON snippets; API 1.4)                                                                                                                                                                                                                                        | no            |
+| `providers`         | `kinds`, `languages` (editor providers, see _Providers_)                                                                                                                                                                                                                                 | yes           |
+| `secrets`           | `name`, `label`, `description?` (see _Network_)                                                                                                                                                                                                                                          | to use them   |
+| `menus`             | `menu` (`editor.context`, `projectView.context`, `editorTab.context`, `viewItem.context`, `tools`, `commit.message`; API 1.4: `editor.title`, `mainToolbar`, `problems.context`, `searchResults.context`; API 1.18: `services.context`, `services.toolbar`), `view?`, `command`, `when?` | no            |
+| `keymaps`           | `command`, `key`, `mac?` (`Ctrl+Alt+C`; a chord: `Meta+K Meta+C`); `key = "Escape"` with a required `when` (API 1.10) runs after the editor's own Escape handling                                                                                                                        | no            |
+| `statusBar`         | `id`, `text`, `tooltip?`, `command?`, `align?`, `priority?`                                                                                                                                                                                                                              | no            |
+| `settings`          | `schema` (JSON file) or `pages` (API 1.3), `title?` — see _Settings_                                                                                                                                                                                                                     | no            |
+| `views`             | `id`, `title`, `icon?` (an icon name or a package SVG), `location` (`left`, `right`, `bottom`, `services`), `web?` (_Web views_), `frames?` (API 1.16), `group?`, `when?` (API 1.3)                                                                                                      | without `web` |
+| `customEditors`     | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`, `frames?`, `binary?` (API 1.16)                                                                                                                                                             | without `web` |
+| `editorPanels`      | `id`, `web`, `width` (pixels, 40–400), `when?`, `frames?` (API 1.16) — needs `editor.read` (API 1.9; _Editor panels_)                                                                                                                                                                    | no            |
+| `overlays`          | `id`, `web`, `width`, `height` (pixels, 40–800), `anchor?`, `when?`, `interactive?` — floats over the workbench, never takes the focus (API 1.18; _Overlays_)                                                                                                                            | no            |
+| `runAnything`       | `prefix`, `title?` — Run Anything lines starting with `prefix`, answered by the `run-anything-provider` export (API 1.18; _Run Anything entries_)                                                                                                                                        | no            |
+| `dialogs`           | `id`, `title`, `web`, `width` (320–1600), `height` (200–1200) — a modal, resizable dialog opened by `views::reveal(id)` (API 1.18; _Dialogs_)                                                                                                                                            | no            |
+| `fileIcons`         | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                                                                                                                                                                                 | no            |
+| `fileTemplates`     | `id`, `name`, `extension`, `path`; API 1.3: `fileName`, `variables = [{ name, prompt }]` — New menu                                                                                                                                                                                      | no            |
+| `commitChecks`      | `id`, `title` — a before-commit check in Commit Options (see _Commits_)                                                                                                                                                                                                                  | yes           |
+| `serverCommands`    | `server`, `command`, `run` — a language server's client command run by this plugin's command (API 1.9; see _Commands a server hands to the client_)                                                                                                                                      |
 
 A `viewItem.context` menu needs `view`, the id of one of the plugin's own
 views. It adds the commands to the right-click menu of the items in that
@@ -2308,6 +2308,46 @@ use (ANSI stripped, the last 5000 lines and 16 KiB per line, Soft-wrap, Clear,
 the exit code at the end). A toggle appends its `args` and starts the program
 again. It stops when the node's pane closes or the Services window is hidden.
 
+#### Actions on the IDE's own Services nodes (API 1.18)
+
+A plugin can also act on the nodes the IDE puts in Services itself: run
+configurations (Spring Boot, Application, …) and Docker containers. Two menus
+take its commands, with `engines.openidea = "^1.18"`:
+
+```toml
+[[contributes.menus]]
+menu = "services.context"          # right-click menu of the selected services
+command = "hotreload.attach"
+submenu = "Hot Reload"
+when = "serviceKind == 'spring-boot' && serviceRunning"
+
+[[contributes.menus]]
+menu = "services.toolbar"          # Services toolbar button (the command's icon, else the plugin's)
+command = "hotreload.attach"
+when = "serviceSelectionCount == 1 && serviceKind == 'spring-boot'"
+```
+
+The `when` clause sees, for each selected service, `serviceProvider`
+(`runConfigurations` or `docker`), `serviceKind` (the run configuration's kind,
+such as `spring-boot`, `application` or `jar-application`, or
+`docker-container`), `serviceId`, `serviceName`, `serviceRunning`,
+`runConfigurationId` (empty for a container) and `serviceSelectionCount`. An
+entry shows only when its `when` holds for every selected service, and not when
+the selection includes a group node. The command gets the selection as its
+argument, JSON text:
+
+```json
+{"services": [{"provider": "runConfigurations", "id": "app", "kind": "spring-boot",
+  "name": "App", "running": true, "runConfigurationId": "app"}]}
+```
+
+`host::start_run` still starts only the plugin's own configurations. To launch
+the user's configuration with the plugin's Java agent, bind the agent to an
+executor (_Java agents_): **Run '<name>' with <title>** and **Debug '<name>'
+with <title>** then appear in this menu for Application, Spring Boot and JAR
+Application configurations, and go through the normal launch (build,
+classpath, JDK, debugger, Stop).
+
 #### Web views
 
 A view or custom editor can instead be a web page of the package, for UIs the
@@ -2830,6 +2870,25 @@ jdk = "jetbrains"                          # optional: only those VM options on 
   when the launcher is not JetBrains Runtime; the agent still loads. Arguments
   are separate argv items (no shell), so a path with spaces needs no quoting; a
   shortened command line moves only the classpath into its argument file.
+- **Executors** (API 1.18). With `executor = "<title>"` (1–40 characters) the
+  agent no longer loads into every launch. The plugin gets an executor beside
+  Run and Debug instead, as IDEA's "Run with JRebel" or "Profile": **Run '<name>'
+  with <title>** and **Debug '<name>' with <title>** in the run widget's ⋮ menu,
+  the gutter's ▶ menu, the context menus' run entries and the Services context
+  menu of those configurations, plus the actions **Run with <title>** and
+  **Debug with <title>** (Find Action, Keymap). Only launches through them get
+  the agent and its `vmOptions`; the grant and jar pin are the same. Without
+  `java.agent` the IDE says so instead of launching, and a configuration on a
+  run target is refused the same way.
+
+  ```toml
+  [[contributes.javaAgents]]
+  path = "agent/hotreload-agent.jar"
+  vmOptions = ["-XX:+AllowEnhancedClassRedefinition"]
+  jdk = "jetbrains"
+  executor = "Hot Reload"
+  ```
+
 - Not in this version: tests (JUnit), Maven and Gradle goals (an Application
   set to _Build and run using: Gradle_ runs as a Gradle task), application
   servers (Tomcat), remote JVM debug, configurations on a run target, and

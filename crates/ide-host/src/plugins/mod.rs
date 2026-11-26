@@ -3403,6 +3403,7 @@ impl PluginHost {
                     vm_options: agent.vm_options,
                     jdk: agent.jdk,
                     approved,
+                    executor: agent.executor,
                 }
             }),
             source: p.source,

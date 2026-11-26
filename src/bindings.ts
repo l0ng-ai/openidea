@@ -11046,6 +11046,11 @@ export type PluginJavaAgent = {
 	jdk: string | null,
 	/**  The jar still has the hash recorded when `java.agent` was granted. */
 	approved: boolean,
+	/**
+	 *  The title of the executor the agent is bound to (API 1.18): "Run with <title>" and
+	 *  "Debug with <title>" launch with it; other launches leave it out.
+	 */
+	executor?: string | null,
 };
 
 /**
@@ -12540,6 +12545,11 @@ export type RunExtras_Deserialize = {
 	 *  test output parser and how a single test is selected.
 	 */
 	testRunner?: string | null,
+	/**
+	 *  The plugin executor a launch goes through ("Run with <title>"): the plugin's id. Set
+	 *  on the launched copy, not saved; the plugin's executor-bound Java agent loads only then.
+	 */
+	executor?: string | null,
 };
 
 export type RunExtras_Serialize = {
@@ -12590,6 +12600,11 @@ export type RunExtras_Serialize = {
 	 *  test output parser and how a single test is selected.
 	 */
 	testRunner?: string | null,
+	/**
+	 *  The plugin executor a launch goes through ("Run with <title>"): the plugin's id. Set
+	 *  on the launched copy, not saved; the plugin's executor-bound Java agent loads only then.
+	 */
+	executor?: string | null,
 };
 
 /**  A process started from a run configuration. */

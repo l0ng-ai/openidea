@@ -5,7 +5,8 @@
 //!
 //! ```toml
 //! [[contributes.menus]]
-//! menu = "editor.context"          # projectView.context, editorTab.context, tools, viewItem.context, commit.message
+//! menu = "editor.context"          # projectView.context, editorTab.context, tools, viewItem.context, commit.message,
+//!                                  # services.context / services.toolbar (API 1.18: the Services tree's own nodes)
 //! command = "check"
 //! when = "editorLang == java"
 //! # view = "<view id>"             # required for (only allowed on) viewItem.context
@@ -112,7 +113,10 @@ pub const SERVER_COMMANDS: &str = "serverCommands";
 const VIEW_ITEM_MENU: &str = "viewItem.context";
 /// The toolbar above the commit message (Commit tool window and dialog).
 const COMMIT_MESSAGE_MENU: &str = "commit.message";
-const MENU_IDS: [&str; 10] = [
+/// The Services tool window's context menu and toolbar for the IDE's own nodes (run
+/// configurations, Docker containers…): the command gets the selected services.
+const SERVICES_MENUS: [&str; 2] = ["services.context", "services.toolbar"];
+const MENU_IDS: [&str; 12] = [
     "editor.context",
     "projectView.context",
     "editorTab.context",
@@ -123,6 +127,8 @@ const MENU_IDS: [&str; 10] = [
     "mainToolbar",
     "problems.context",
     "searchResults.context",
+    SERVICES_MENUS[0],
+    SERVICES_MENUS[1],
 ];
 const MAX_TITLE: usize = 256;
 const MAX_SETTINGS: usize = 200;
@@ -186,6 +192,9 @@ pub(super) fn menu(pkg: &Package, decl: toml::Value) -> Result<UiDecl, String> {
     }
     if d.menu == COMMIT_MESSAGE_MENU {
         pkg.manifest.needs_api(&format!("contributes.menus: {COMMIT_MESSAGE_MENU}"), 3)?;
+    }
+    if SERVICES_MENUS.contains(&d.menu.as_str()) {
+        pkg.manifest.needs_api(&format!("contributes.menus: {}", d.menu), 18)?;
     }
     if let Some(w) = &d.when {
         validate_when(w).map_err(|e| format!("contributes.menus: {e}"))?;
@@ -1370,6 +1379,27 @@ mod tests {
                 assert!(menu(&pkg, toml::from_str(&format!("menu='{location}'\ncommand='foreign'")).unwrap()).is_err());
             }
         }
+    }
+
+    #[test]
+    fn services_menus_require_api_1_18() {
+        for location in SERVICES_MENUS {
+            for (api, valid) in [("^1.17", false), ("^1.18", true)] {
+                let manifest = ide_extension::Manifest::parse(&format!("id='test'\nname='Test'\nversion='1.0.0'\nengines.openidea='{api}'\n[[contributes.commands]]\nid='reload'\ntitle='Reload'")).unwrap();
+                let pkg = Package::new(manifest, std::path::PathBuf::from("/unused"));
+                let decl = toml::from_str(&format!(
+                    "menu='{location}'\ncommand='reload'\nwhen=\"serviceKind == 'spring-boot' && serviceRunning\""
+                ))
+                .unwrap();
+                assert_eq!(menu(&pkg, decl).is_ok(), valid, "{api}:{location}");
+            }
+        }
+        let manifest = ide_extension::Manifest::parse("id='test'\nname='Test'\nversion='1.0.0'\nengines.openidea='^1.18'\n[[contributes.commands]]\nid='reload'\ntitle='Reload'").unwrap();
+        let pkg = Package::new(manifest, std::path::PathBuf::from("/unused"));
+        let grouped = toml::from_str("menu='services.context'\ncommand='reload'\nsubmenu='Hot Reload'").unwrap();
+        assert!(menu(&pkg, grouped).is_ok());
+        let toolbar = toml::from_str("menu='services.toolbar'\ncommand='reload'\nsubmenu='Hot Reload'").unwrap();
+        assert!(menu(&pkg, toolbar).unwrap_err().contains("only for context menus"));
     }
 
     #[test]

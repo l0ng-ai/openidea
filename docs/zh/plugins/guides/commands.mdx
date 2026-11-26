@@ -143,18 +143,20 @@ command = "test-selection"
 when = "editorLangId == markdown"   # 可选
 ```
 
-| `menu`                  | 位置                                             | API |
-| ----------------------- | ------------------------------------------------ | --- |
-| `editor.context`        | 编辑器右键菜单                                   | 1.0 |
-| `projectView.context`   | 项目工具窗口右键菜单                             | 1.0 |
-| `editorTab.context`     | 编辑器标签页右键菜单                             | 1.0 |
-| `tools`                 | 主菜单中的 **工具**                              | 1.0 |
-| `viewItem.context`      | 插件自有视图中条目的右键菜单（需要 `view`）      | 1.2 |
-| `commit.message`        | 提交信息上方的工具栏（提交工具窗口和提交对话框） | 1.3 |
-| `editor.title`          | 编辑器标签栏的动作区                             | 1.4 |
-| `mainToolbar`           | 主工具栏                                         | 1.4 |
-| `problems.context`      | 问题工具窗口中问题条目的右键菜单                 | 1.4 |
-| `searchResults.context` | 搜索结果的右键菜单                               | 1.4 |
+| `menu`                  | 位置                                                 | API  |
+| ----------------------- | ---------------------------------------------------- | ---- |
+| `editor.context`        | 编辑器右键菜单                                       | 1.0  |
+| `projectView.context`   | 项目工具窗口右键菜单                                 | 1.0  |
+| `editorTab.context`     | 编辑器标签页右键菜单                                 | 1.0  |
+| `tools`                 | 主菜单中的 **工具**                                  | 1.0  |
+| `viewItem.context`      | 插件自有视图中条目的右键菜单（需要 `view`）          | 1.2  |
+| `commit.message`        | 提交信息上方的工具栏（提交工具窗口和提交对话框）     | 1.3  |
+| `editor.title`          | 编辑器标签栏的动作区                                 | 1.4  |
+| `mainToolbar`           | 主工具栏                                             | 1.4  |
+| `problems.context`      | 问题工具窗口中问题条目的右键菜单                     | 1.4  |
+| `searchResults.context` | 搜索结果的右键菜单                                   | 1.4  |
+| `services.context`      | IDE 自带 Services 节点（运行配置、Docker）的右键菜单 | 1.18 |
+| `services.toolbar`      | 选中 IDE 自带节点时的 Services 工具栏                | 1.18 |
 
 使用 1.0 之后加入的菜单，需要在 `engines.openidea` 中至少声明对应的 API 版本。每个条目都必须指向插件声明过的命令。
 菜单的 `when` 与命令自身的 `when` 同时生效。
@@ -184,6 +186,24 @@ view = "pods"
 command = "kube.logs"
 when = "viewItemKind == pod"
 ```
+
+**Services 菜单**（API 1.18）。`services.context` 和 `services.toolbar` 作用于 IDE 自己放进 Services 的节点：
+运行配置和 Docker 容器。`when` 可以对每个选中的服务使用 `serviceProvider`（`runConfigurations` 或 `docker`）、
+`serviceKind`（运行配置类型，例如 `spring-boot`；容器为 `docker-container`）、`serviceId`、`serviceName`、
+`serviceRunning`、`runConfigurationId`（容器为空）和 `serviceSelectionCount`。只有 `when` 对每个选中的服务都成立时
+才显示该条目。命令参数是 JSON 文本：`{"services": [{"provider", "id", "kind", "name", "running", "runConfigurationId"}]}`。
+工具栏条目显示命令的 `icon`，否则使用插件图标。
+
+```toml
+[[contributes.menus]]
+menu = "services.context"
+command = "hotreload.attach"
+submenu = "Hot Reload"
+when = "serviceKind == 'spring-boot' && serviceRunning"
+```
+
+要用插件的 Java 代理启动选中的配置，请把代理绑定到执行器（`[[contributes.javaAgents]]` 的 `executor`）：
+“使用 … 运行”和“使用 … 调试”会出现在运行和调试旁边，也会出现在这个菜单中。
 
 ## 状态栏项
 
