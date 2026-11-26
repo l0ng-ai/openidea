@@ -78,7 +78,8 @@ test("precise filter values are ordered and filtering composes with result sorti
   const values = page.getByRole("group", { name: "Values", exact: true });
   const ascending = [integers[3]!, integers[2]!, integers[1]!, integers[0]!];
   await expect(values.locator("label")).toHaveText(ascending);
-  await values.getByRole("checkbox", { name: integers[3], exact: true }).uncheck();
+  // Checked values are the rows shown.
+  for (const value of ascending.slice(1)) await values.getByRole("checkbox", { name: value, exact: true }).check();
   await page.keyboard.press("Escape");
   await grid
     .getByRole("columnheader", { name: /^value\b/ })

@@ -38,9 +38,6 @@
   white-space: nowrap;
   color: var(--fg-strong);
 }
-.sortable {
-  cursor: pointer;
-}
 .sortable:hover {
   background: var(--bg-hover);
 }
@@ -855,7 +852,6 @@
   border-radius: var(--radius-small);
   background: transparent;
   color: var(--fg-secondary);
-  cursor: pointer;
 }
 
 /* Parameter info in `VALUES (…)`. */
@@ -1096,7 +1092,6 @@
   border-radius: var(--radius-small);
   background: transparent;
   color: var(--fg-muted);
-  cursor: pointer;
 }
 .headerFilter:hover {
   background: var(--bg-hover);

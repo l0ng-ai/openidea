@@ -27,24 +27,9 @@ async fn maven_launch_compiles_with_the_ides_java_build() {
     let temp = tempfile::tempdir().unwrap();
     let base = dunce::canonicalize(temp.path()).unwrap();
     let root = base.join("project");
-    write(
-        &root,
-        "pom.xml",
-        r#"<project><modelVersion>4.0.0</modelVersion><groupId>t</groupId><artifactId>root</artifactId><version>1</version><packaging>pom</packaging>
-<modules><module>lib</module><module>app</module></modules>
-<properties><maven.compiler.release>11</maven.compiler.release><project.build.sourceEncoding>UTF-8</project.build.sourceEncoding></properties></project>"#,
-    );
-    write(
-        &root,
-        "lib/pom.xml",
-        r#"<project><modelVersion>4.0.0</modelVersion><parent><groupId>t</groupId><artifactId>root</artifactId><version>1</version></parent><artifactId>lib</artifactId></project>"#,
-    );
-    write(
-        &root,
-        "app/pom.xml",
-        r#"<project><modelVersion>4.0.0</modelVersion><parent><groupId>t</groupId><artifactId>root</artifactId><version>1</version></parent><artifactId>app</artifactId>
-<dependencies><dependency><groupId>t</groupId><artifactId>lib</artifactId><version>1</version></dependency></dependencies></project>"#,
-    );
+    write(&root, "pom.xml", include_str!("../../ide-build/tests/fixtures/jbuild-maven/pom.xml"));
+    write(&root, "lib/pom.xml", include_str!("../../ide-build/tests/fixtures/jbuild-maven/lib/pom.xml"));
+    write(&root, "app/pom.xml", include_str!("../../ide-build/tests/fixtures/jbuild-maven/app/pom.xml"));
     write(
         &root,
         "lib/src/main/java/l/L.java",

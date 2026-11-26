@@ -62,6 +62,34 @@ export interface PluginViewProps {
 const OVERSCAN = 50;
 const ROW_HEIGHT = 24;
 
+/** Each rendered view root → its item menu, read when a command runs from a shortcut. */
+const viewMenus = new WeakMap<Element, (key: string) => MenuItem[]>();
+
+const offers = (items: MenuItem[], action: string): boolean =>
+  items.some((i) =>
+    i.kind === "action"
+      ? i.action === action
+      : (i.kind ?? "item") === "item" && offers(("submenu" in i && i.submenu) || [], action),
+  );
+
+/**
+ * The argument a plugin command run without one (a shortcut, Find Action) gets from the plugin's
+ * view that has the keyboard focus: the selected item's key, when that item's context menu offers
+ * the command — the same argument as from the menu. Null when the focus is elsewhere, in another
+ * plugin's view, nothing is selected, or the menu doesn't offer the command there.
+ */
+export function focusedViewItem(
+  pluginId: string,
+  action: string,
+  focused: Element | null = document.activeElement,
+): string | null {
+  const view = focused?.closest<HTMLElement>("[data-plugin-view]");
+  const key = view?.dataset.selectedKey;
+  if (!view || view.dataset.pluginView !== pluginId || key === undefined) return null;
+  const menu = viewMenus.get(view);
+  return menu && offers(menu(key), action) ? key : null;
+}
+
 /** Plugin text is shown as written: the plugin translates it through its own catalog. */
 export function PluginView(props: PluginViewProps) {
   const location = useViewLocation();
@@ -154,8 +182,19 @@ function PluginViewContent({
       </div>
     );
 
+  // The item a keyboard-invoked command of this plugin gets, as from the item's context menu
+  // (`focusedViewItem`); only a key the view still shows.
+  const currentKey = selection && items?.some((i) => i.key === selection.key) ? selection.key : undefined;
   return (
-    <div className={styles.view} aria-label={label}>
+    <div
+      ref={(el) => {
+        if (el && itemMenu) viewMenus.set(el, itemMenu);
+      }}
+      className={styles.view}
+      aria-label={label}
+      data-plugin-view={pluginId}
+      data-selected-key={currentKey}
+    >
       {content.toolbar.length > 0 && (
         <div className={styles.toolbar} role="toolbar">
           {content.toolbar.map((b) =>

@@ -184,7 +184,6 @@
   border: none;
   background: transparent;
   color: var(--fg-subtle);
-  cursor: pointer;
 }
 .star > * {
   grid-area: 1 / 1;

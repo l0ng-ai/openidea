@@ -446,9 +446,15 @@ pub fn stop_run() -> Tool {
             "Stops the running command of an agent tab, the way the Run tool window's Stop does: it asks the \
 process tree to exit and, with `force`, kills it. Waits up to `timeout` milliseconds (default {STOP_TIMEOUT_MS}) \
 for it to end and returns the tab's status (`stoppedByAgent` once it ended). A process that ignores the request \
-keeps `stopping`: call again with `force`. The tab stays open with its output."
+keeps `stopping`: call again with `force`. The tab stays open with its output.
+
+Pass `runId` instead of `name` to stop a run `execute_run_configuration` started and left running; the result is \
+its `state` (`stopped` or `stopping`) and `exitCode` when it has one."
         ),
         |call| async move {
+            if let Some(id) = call.opt_i64("runId")? {
+                return stop_configuration_run(&call, id).await;
+            }
             let run = find(&call)?;
             let id = run.live_process().ok_or_else(|| IdeError::invalid(format!("`{}` is not running", run.name)))?;
             let force = call.flag("force", false)?;
@@ -467,9 +473,46 @@ keeps `stopping`: call again with `force`. The tab stays open with its output."
         },
     )
     .write()
-    .param(Param::required("name", ParamType::String, NAME))
+    .param(Param::optional("name", ParamType::String, NAME))
+    .param(Param::optional("runId", ParamType::Integer, "`runId` from `execute_run_configuration`, instead of `name`"))
     .param(Param::optional("force", ParamType::Boolean, "Kill the process tree instead of asking it to exit"))
     .param(Param::optional("timeout", ParamType::Integer, "Milliseconds to wait for the command to end"))
+}
+
+/// `stop_run` for a run `execute_run_configuration` started (#6127).
+async fn stop_configuration_run(call: &Call, raw: i64) -> IdeResult<Output> {
+    use super::configs::{forget_started, run_exit, started_by_mcp, wait_exit};
+    if call.opt_str("name")?.is_some() {
+        return Err(IdeError::invalid("pass either `name` or `runId`, not both"));
+    }
+    let id = u32::try_from(raw)
+        .ok()
+        .map(ide_core::RunId)
+        .filter(|id| started_by_mcp(*id))
+        .ok_or_else(|| IdeError::not_found(format!("no run {raw} started by execute_run_configuration")))?;
+    let host = call.host();
+    let deadline = std::time::Instant::now() + timeout(call, STOP_TIMEOUT_MS)?;
+    let exit = match run_exit(&host, id) {
+        Some(exit) => Some(exit),
+        None => {
+            crate::ops::run::run_stop(&host, call.window(), id)?;
+            if call.flag("force", false)? {
+                // A second Stop kills the tree.
+                crate::ops::run::run_stop(&host, call.window(), id)?;
+            }
+            wait_exit(call, id, Some(deadline)).await?
+        }
+    };
+    if exit.is_some() {
+        forget_started(id);
+    }
+    let mut out = Map::new();
+    out.insert("runId".into(), id.0.into());
+    out.insert("state".into(), if exit.is_some() { "stopped" } else { "stopping" }.into());
+    if let Some(Some(code)) = exit {
+        out.insert("exitCode".into(), code.into());
+    }
+    Output::json(Value::Object(out))
 }
 
 pub fn tools() -> Vec<Tool> {

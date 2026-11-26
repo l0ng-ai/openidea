@@ -3,6 +3,7 @@
  * (threads, frames, locals) after each stop.
  */
 import { tx } from "@/platform/i18n";
+import { logError } from "@/platform/errorLog";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { executeAction, getAction } from "@/platform/actions";
 import { create } from "zustand";
@@ -96,6 +97,8 @@ export interface DebugSession {
   threads: ThreadInfo[];
   selectedThread: number | null;
   frames: StackFrame[];
+  /** Why the selected thread's frames could not be loaded (Threads & Variables offers a retry). */
+  framesError?: string | null;
   selectedFrame: number | null;
   /** Breakpoint hits in this session. */
   hits: number;
@@ -1296,16 +1299,19 @@ export function selectFrame(id: DebugSessionId, frameId: number, reveal = true) 
 
 /** `newStop`: false when returning to an earlier stop, whose breakpoint hit was handled when it happened. */
 async function loadFrames(id: DebugSessionId, threadId: number, reveal: boolean, newStop = true) {
+  if (useDebug.getState().sessions[id]?.framesError) patch(id, { framesError: null });
   const before = useDebug.getState().sessions[id];
   let frames: StackFrame[] = [];
+  let framesError: string | null = null;
   try {
     frames = await call(commands.debugStackTrace(id, threadId));
   } catch (e) {
-    console.warn("stackTrace failed", e);
+    logError("Debugger stack trace", e);
+    framesError = e instanceof Error ? e.message : String(e);
   }
   const s = useDebug.getState().sessions[id];
   if (!s || s.status !== "paused" || s.selectedThread !== threadId || s.frames !== before?.frames) return;
-  patch(id, { frames });
+  patch(id, { frames, framesError });
   const top = topFrame(frames);
   if (newStop && top?.path && (s.stopReason === "breakpoint" || s.stopReason === "function breakpoint")) {
     void logSuspendingHit(id, top);
