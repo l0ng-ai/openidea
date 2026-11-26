@@ -5,7 +5,7 @@ import { useTx } from "@/platform/i18n";
 import { Button, Dialog, IconButton, Input, Select, T } from "@/ui";
 import { baseName } from "./dumpTools";
 import { newSourceId } from "./model";
-import { VENDORS, vendorById } from "./vendors";
+import { DUCKDB_JDBC_CLASS, DUCKDB_JDBC_PREFIX, VENDORS, vendorById } from "./vendors";
 import styles from "./Database.module.css";
 
 export function useJdbcDrivers() {
@@ -38,7 +38,7 @@ const blankDriver = (): DbJdbcDriver => ({ id: newSourceId(), name: "", jars: []
 
 const DRIVER_TYPES = [
   { value: "", label: "Custom JDBC only" },
-  ...VENDORS.filter((v) => v.driver !== "jdbc").map((v) => ({ value: v.id, label: v.label, icon: v.icon })),
+  ...VENDORS.filter((v) => v.id !== "jdbc").map((v) => ({ value: v.id, label: v.label, icon: v.icon })),
 ];
 
 export function JdbcDriverProfiles({
@@ -279,7 +279,17 @@ export function JdbcDriverProfiles({
               <div className={styles.formRow}>
                 <Button
                   icon="plus"
-                  onClick={() => edit({ ...blankDriver(), ...(sourceVendor && { vendor: sourceVendor }) })}
+                  onClick={() =>
+                    edit({
+                      ...blankDriver(),
+                      ...(sourceVendor && { vendor: sourceVendor }),
+                      ...(sourceVendor === "duckdb" && {
+                        name: "DuckDB",
+                        className: DUCKDB_JDBC_CLASS,
+                        urlTemplate: `${DUCKDB_JDBC_PREFIX}{file}`,
+                      }),
+                    })
+                  }
                 >
                   <T>Add…</T>
                 </Button>

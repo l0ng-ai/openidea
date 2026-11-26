@@ -869,7 +869,7 @@ function SourceUrlDialog() {
     if (!parsed) return;
     closeDialog();
     const s = parsed.source;
-    const name = s.driver === "sqlite" ? s.name : `${s.database || s.user || "db"}@${s.host}`;
+    const name = s.name ?? (s.driver === "jdbc" ? undefined : `${s.database || s.user || "db"}@${s.host}`);
     openSourceDialog(null, { ...s, name }, parsed.password);
   };
   return (
@@ -899,7 +899,7 @@ function SourceUrlDialog() {
         <span className={styles.formHint}>
           {url.trim() && !parsed
             ? tx("Not a URL of PostgreSQL, MySQL, SQLite or a compatible database")
-            : "postgresql://, mysql://, mariadb://, redshift://, tidb://…, jdbc:…, sqlite:path"}
+            : "postgresql://, mysql://, mariadb://, redshift://, tidb://…, jdbc:…, sqlite:path, jdbc:duckdb:path"}
         </span>
       </div>
     </Dialog>
