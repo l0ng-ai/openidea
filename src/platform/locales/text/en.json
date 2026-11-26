@@ -1,4 +1,8 @@
 {
+  "Additional arguments": "Additional arguments",
+  "Appended to the launch command. Quote values containing spaces.": "Appended to the launch command. Quote values containing spaces.",
+  "Reset additional arguments": "Reset additional arguments",
+  "Close the quoted argument before applying.": "Close the quoted argument before applying.",
   "Short Go error guards and case clauses": "Short Go error guards and case clauses",
   "Create function '{name}'": "Create function '{name}'",
   "Create class '{name}'": "Create class '{name}'",

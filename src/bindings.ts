@@ -102,7 +102,7 @@ export const commands = {
 	 *  Reads the ACP registry's install state for every provider from disk, so it runs on the
 	 *  blocking pool.
 	 */
-	agentProviders: () => typedError<AgentProvider[], IdeError>(__TAURI_INVOKE("agent_providers")),
+	agentProviders: () => typedError<AgentProvider_Serialize[], IdeError>(__TAURI_INVOKE("agent_providers")),
 	/**  Refreshes the model catalog; force bypasses freshness, not the cooldown. */
 	agentRefreshModels: (provider: string, force: boolean, model: string | null) => typedError<AgentModelCatalog, IdeError>(__TAURI_INVOKE("agent_refresh_models", { provider, force, model })),
 	/**
@@ -139,6 +139,8 @@ export const commands = {
 "lastTurn" | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_rollback_changes", { task, paths, view })),
 	/**  Sends a queued message now, interrupting the current turn. */
 	agentSendQueuedNow: (task: string, queued: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_send_queued_now", { task, queued })),
+	/**  Sets additional launch arguments for a built-in ACP agent; an empty list resets them. */
+	agentSetAdditionalArgs: (id: string, args: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("agent_set_additional_args", { id, args })),
 	/**
 	 *  Overrides built-in agent `id`'s command with `command` (its agent file keeps the
 	 *  built-in's driver and arguments), or returns it to auto-detection with `None`.
@@ -2952,7 +2954,9 @@ export type AgentPrompt = {
 	images: AgentImage[],
 };
 
-export type AgentProvider = {
+export type AgentProvider = AgentProvider_Serialize | AgentProvider_Deserialize;
+
+export type AgentProvider_Deserialize = {
 	id: string,
 	name: string,
 	/**  The command line that starts its ACP server. */
@@ -2960,6 +2964,8 @@ export type AgentProvider = {
 	/**  Executable and arguments actually launched, without flattening paths containing spaces. */
 	program: string,
 	args: string[],
+	/**  Settings-managed suffix of `args`; absent for launches that cannot be edited. */
+	additionalArgs?: string[] | null,
 	defaultProgram: string | null,
 	defaultArgs: string[],
 	loginHint: string | null,
@@ -2976,6 +2982,37 @@ export type AgentProvider = {
 	config: AgentConfigOption[],
 	/**  Thinking-level options by model value; absent models have not reported their levels. */
 	thoughtLevels?: { [key in string]: AgentConfigOption[] },
+	/**  Slash commands it offered last time. */
+	commands: AgentCommand[],
+	source: AgentSource,
+};
+
+export type AgentProvider_Serialize = {
+	id: string,
+	name: string,
+	/**  The command line that starts its ACP server. */
+	command: string,
+	/**  Executable and arguments actually launched, without flattening paths containing spaces. */
+	program: string,
+	args: string[],
+	/**  Settings-managed suffix of `args`; absent for launches that cannot be edited. */
+	additionalArgs?: string[] | null,
+	defaultProgram: string | null,
+	defaultArgs: string[],
+	loginHint: string | null,
+	commandOverridden: boolean,
+	commandEditable: boolean,
+	commandReadOnlyReason: AgentCommandReadOnlyReason | null,
+	/**  Whether the command was found (on `PATH`). */
+	installed: boolean,
+	/**  The built-in command can be owned by a global npm package. */
+	canCheckCliUpdate: boolean,
+	/**  Environment variables it starts with (from its agent file). */
+	env: { [key in string]: string },
+	/**  Settings (models, modes…) the agent offered last time it ran; empty before its first session. */
+	config: AgentConfigOption[],
+	/**  Thinking-level options by model value; absent models have not reported their levels. */
+	thoughtLevels: { [key in string]: AgentConfigOption[] },
 	/**  Slash commands it offered last time. */
 	commands: AgentCommand[],
 	source: AgentSource,

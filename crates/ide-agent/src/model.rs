@@ -612,6 +612,9 @@ pub struct AgentProvider {
     /// Executable and arguments actually launched, without flattening paths containing spaces.
     pub program: String,
     pub args: Vec<String>,
+    /// Settings-managed suffix of `args`; absent for launches that cannot be edited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub additional_args: Option<Vec<String>>,
     pub default_program: Option<String>,
     pub default_args: Vec<String>,
     pub login_hint: Option<String>,

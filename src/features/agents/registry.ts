@@ -34,6 +34,7 @@ export interface CommandsBackend {
   providers(): Promise<AgentProvider[]>;
   refreshModels?(id: string, model: string | null): Promise<AgentModelCatalog>;
   set(id: string, command: string | null): Promise<void>;
+  setAdditionalArgs(id: string, args: string[]): Promise<void>;
   setEnv(id: string, env: Record<string, string>): Promise<void>;
   chooseExecutable(title: string, current?: string, location?: "desktop"): Promise<string | null>;
   saveCustom(input: CustomAgentInput): Promise<void>;
@@ -68,6 +69,9 @@ export const tauriCommands: CommandsBackend = {
   },
   set: async (id, command) => {
     await call(commands.agentSetCommand(id, command));
+  },
+  setAdditionalArgs: async (id, args) => {
+    await call(commands.agentSetAdditionalArgs(id, args));
   },
   setEnv: async (id, env) => {
     await call(commands.agentSetEnv(id, env));
