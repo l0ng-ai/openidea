@@ -615,7 +615,8 @@ function objectGroups(
       rows: (details?.indexes ?? []).map((ix) => ({
         key: `ix-${ix.name}`,
         name: ix.name,
-        detail: `${ix.unique ? "UNIQUE " : ""}${list(ix.columns)}`,
+        // `UNIQUE` is SQL, not UI text.
+        detail: ix.unique ? ["UNIQUE", list(ix.columns)].join(" ") : list(ix.columns),
       })),
     },
     {
