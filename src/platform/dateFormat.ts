@@ -99,3 +99,16 @@ export function formatTimestamp(ms: number, now = Date.now(), o: DateFormatOptio
   }
   return formatDateTime(d, o);
 }
+
+/**
+ * Day without clock time (blame gutter): "Today" / "Yesterday" when pretty
+ * formatting is on, as IDEA's annotate shows; older dates keep the short date.
+ */
+export function formatPrettyDay(ms: number, now = Date.now(), o: DateFormatOptions = dateFormatOptions()): string {
+  const d = new Date(ms);
+  if (o.pretty) {
+    if (d.toDateString() === new Date(now).toDateString()) return tx("Today");
+    if (d.toDateString() === new Date(now - 86_400_000).toDateString()) return tx("Yesterday");
+  }
+  return formatDay(d, o, true);
+}
