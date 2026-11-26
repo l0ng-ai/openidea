@@ -441,7 +441,7 @@ impl JavaBuild<'_> {
         let record = model::load_record(&model::reactor_dir(self.cache, &top.key()))?;
         let project = record.model.projects.iter().find(|p| p.dir == module)?;
         let paths = class_paths(project, test);
-        paths.first().is_some_and(|p| p.is_dir()).then_some(paths)
+        paths.first().is_some_and(|p| p.exists()).then_some(paths)
     }
 
     /// Builds `target`. A launch gets the classpath to run with; the others an empty one.
@@ -1039,7 +1039,7 @@ fn launch_projects<'a>(model: &'a ReactorModel, target: &'a ProjectModel, test: 
         if test {
             visit(project, false, by_output, by_test_output, seen, out);
         }
-        for entry in &project.set(test).classpath {
+        for entry in project.set(test).classpath.iter().chain(&project.set(test).runtime_classpath) {
             if let Some(upstream) = by_output.get(entry.as_path()).filter(|p| p.dir != project.dir) {
                 visit(upstream, false, by_output, by_test_output, seen, out);
             } else if let Some(upstream) = by_test_output.get(entry.as_path()).filter(|p| p.dir != project.dir) {
@@ -1061,10 +1061,12 @@ fn class_paths(target: &ProjectModel, test: bool) -> Vec<PathBuf> {
             out.push(p.clone());
         }
     };
-    if test {
-        push(&target.test.output);
+    if target.packaging != "pom" {
+        if test {
+            push(&target.test.output);
+        }
+        push(&target.main.output);
     }
-    push(&target.main.output);
     for entry in &target.set(test).runtime_classpath {
         push(entry);
     }

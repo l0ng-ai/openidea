@@ -146,6 +146,38 @@ export function pythonSuperDeps(
   };
 }
 
+/** A base's construction never runs a subclass's constructor: its usages are no usages of the subclass's. */
+const CONSTRUCTORS = new Set(["__init__", "__new__"]);
+
+const onName = (item: OutlineItem, pos: Pos) =>
+  pos.line === item.selection_range.start.line &&
+  pos.col >= item.selection_range.start.col &&
+  pos.col <= item.selection_range.end.col;
+
+/** The methods the Python method named at `pos` in `path` overrides, in every ancestor of its class, nearest first. */
+export async function pythonOverriddenMethods(
+  hierarchy: PythonHierarchy,
+  path: string,
+  pos: Pos,
+  outline: (path: string) => Promise<OutlineItem[]>,
+): Promise<Location[]> {
+  const { method, type } = memberAt(await outline(path), pos);
+  if (!method || !type || !type.children.includes(method) || !onName(method, pos)) return [];
+  const name = baseName(method.name);
+  if (CONSTRUCTORS.has(name)) return [];
+  // The graph is rebuilt on save: after an unsaved edit, another class can sit on the line it knows.
+  const cls = classAt(hierarchy, path, type.selection_range.start);
+  if (cls?.name !== type.name) return [];
+  const own = declarationKey(cls);
+  // `class TestCase(django.test.TestCase)` keeps only the base's last segment, which names the class itself.
+  const ancestors = (await pythonAncestors(hierarchy, cls)).filter((a) => declarationKey(a) !== own);
+  const outlines = await Promise.all(ancestors.map((a) => outline(a.path).catch(() => [] as OutlineItem[])));
+  return ancestors.flatMap((a, i) => {
+    const declared = methodInOutline(outlines[i]!, a, name);
+    return declared ? [{ path: a.path, range: declared.selection_range }] : [];
+  });
+}
+
 /**
  * Go to Implementation targets of the Python class or method at `pos` in `path`: the classes
  * inheriting from it, or the methods overriding it, anywhere below it in the graph.

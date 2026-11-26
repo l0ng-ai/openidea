@@ -79,6 +79,8 @@ function ConsentDialog({ pending, onDone }: { pending: Pending; onDone: () => vo
   const [accepted, setAccepted] = useState<Set<string>>(
     () => new Set(optional.filter((c) => c.granted || c.risk === "low").map((c) => c.id)),
   );
+  const allOptionalAccepted = optional.length > 0 && accepted.size === optional.length;
+  const someOptionalAccepted = accepted.size > 0 && !allOptionalAccepted;
   const high = caps.some((c) => c.risk === "high" && (!c.optional || accepted.has(c.id)));
   const finish = (consent: Consent | null) => {
     pending.resolve(consent);
@@ -120,35 +122,50 @@ function ConsentDialog({ pending, onDone }: { pending: Pending; onDone: () => vo
             <T>This plugin needs no special permissions.</T>
           </p>
         ) : (
-          <ul className={styles.items} aria-label={tx("Requested permissions")}>
-            {caps.map((c) => (
-              <li key={c.id} className={styles.capabilityItem}>
-                <div className={styles.capabilityHeader}>
-                  {c.optional ? (
-                    <Checkbox
-                      checked={accepted.has(c.id)}
-                      onChange={(on) =>
-                        setAccepted((s) => {
-                          const next = new Set(s);
-                          if (on) next.add(c.id);
-                          else next.delete(c.id);
-                          return next;
-                        })
-                      }
-                      aria-label={tx`Allow ${c.id}`}
-                    />
-                  ) : (
-                    <span className={styles.consentRequired} title={tx("Required")}>
-                      •
-                    </span>
-                  )}
-                  <span className={styles.mono}>{c.id}</span>
-                  <Badge tone={RISK_LABEL[c.risk].tone}>{RISK_LABEL[c.risk].label}</Badge>
-                </div>
-                <p className={styles.capabilityDescription}>{capabilityDescription(c)}</p>
-              </li>
-            ))}
-          </ul>
+          <div className={styles.consentList}>
+            {optional.length > 1 && (
+              <div className={styles.consentSelectAll}>
+                <Checkbox
+                  checked={allOptionalAccepted}
+                  indeterminate={someOptionalAccepted}
+                  onChange={() => setAccepted(allOptionalAccepted ? new Set() : new Set(optional.map((c) => c.id)))}
+                  label="Allow all optional permissions"
+                />
+                <span className={styles.consentCount}>
+                  {accepted.size}/{optional.length}
+                </span>
+              </div>
+            )}
+            <ul className={styles.items} aria-label={tx("Requested permissions")}>
+              {caps.map((c) => (
+                <li key={c.id} className={styles.capabilityItem}>
+                  <div className={styles.capabilityHeader}>
+                    {c.optional ? (
+                      <Checkbox
+                        checked={accepted.has(c.id)}
+                        onChange={(on) =>
+                          setAccepted((s) => {
+                            const next = new Set(s);
+                            if (on) next.add(c.id);
+                            else next.delete(c.id);
+                            return next;
+                          })
+                        }
+                        aria-label={tx`Allow ${c.id}`}
+                      />
+                    ) : (
+                      <span className={styles.consentRequired} title={tx("Required")}>
+                        •
+                      </span>
+                    )}
+                    <span className={styles.mono}>{c.id}</span>
+                    <Badge tone={RISK_LABEL[c.risk].tone}>{RISK_LABEL[c.risk].label}</Badge>
+                  </div>
+                  <p className={styles.capabilityDescription}>{capabilityDescription(c)}</p>
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
         {high && (
           <p className={styles.consentWarning} role="alert">

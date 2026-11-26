@@ -16,7 +16,8 @@ pub use launch_resources::process_launch_resources;
 pub use modules::record_module_build;
 pub use single::{
     SingleFileTarget, compile_file_plan, compile_file_plan_cancellable, find_javac, gradle_compile_file_plan,
-    has_gradle_file_target, javac_step, module_classpath, module_classpaths, single_file_classpath, single_file_target,
+    has_gradle_file_target, javac_step, module_classpath, module_classpath_without_build, module_classpaths,
+    single_file_classpath, single_file_target,
 };
 pub use structure::{
     StructureJdk, StructureRoots, artifact_file, artifact_output, language_release, structure_compile_file_plan,

@@ -36,7 +36,7 @@ sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
 crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave, semantic-tokens, hover, commit, inlay-hints, decorations
 ```
 
-The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.17.0`, world
+The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.18.0`, world
 `plugin`).
 
 ## 1. Quick start
@@ -136,31 +136,34 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 
 ### Contribution points
 
-| Point               | Declaration                                                                                                                                                                                                                            | Code needed   |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
-| `commands`          | `id`, `title`, `category?`, `when?`                                                                                                                                                                                                    | to run them   |
-| `themes`            | `path` (theme JSON), `editor-scheme?`                                                                                                                                                                                                  | no            |
-| `iconThemes`        | `id`, `label`, `path` (icon theme JSON, see §5)                                                                                                                                                                                        | no            |
-| `languages`         | `path` (`languages/<id>.toml` format, see §6)                                                                                                                                                                                          | no            |
-| `runDetectors`      | `id`, `name`, `files`, `command`, `args?`, `test?`, `framework?` (API 1.4; §6.2)                                                                                                                                                       | no            |
-| `runConfigurations` | `files`: marker files for the optional `run-configurations` export (API 1.4)                                                                                                                                                           | yes           |
-| `javaAgents`        | `path` (a jar in the package), `args?`, `vmOptions?`, `jdk?` — a Java agent for Java run configurations, behind `java.agent` (API 1.10; `vmOptions`/`jdk` in 1.14; _Java agents_)                                                      | no            |
-| `skills`            | `path` (`skills/<name>/SKILL.md` in the package) — agent skill folder staged into coding-agent sessions (API 1.15)                                                                                                                     | no            |
-| `mcpTools`          | `name`, `description`, `inputSchema` (package JSON Schema path), `readOnly`, `destructive` (API 1.4; see _Plugin MCP tools_)                                                                                                           | yes           |
-| `snippets`          | `language`, `path` (named JSON snippets; API 1.4)                                                                                                                                                                                      | no            |
-| `providers`         | `kinds`, `languages` (editor providers, see _Providers_)                                                                                                                                                                               | yes           |
-| `secrets`           | `name`, `label`, `description?` (see _Network_)                                                                                                                                                                                        | to use them   |
-| `menus`             | `menu` (`editor.context`, `projectView.context`, `editorTab.context`, `viewItem.context`, `tools`, `commit.message`; API 1.4: `editor.title`, `mainToolbar`, `problems.context`, `searchResults.context`), `view?`, `command`, `when?` | no            |
-| `keymaps`           | `command`, `key`, `mac?` (`Ctrl+Alt+C`; a chord: `Meta+K Meta+C`); `key = "Escape"` with a required `when` (API 1.10) runs after the editor's own Escape handling                                                                      | no            |
-| `statusBar`         | `id`, `text`, `tooltip?`, `command?`, `align?`, `priority?`                                                                                                                                                                            | no            |
-| `settings`          | `schema` (JSON file) or `pages` (API 1.3), `title?` — see _Settings_                                                                                                                                                                   | no            |
-| `views`             | `id`, `title`, `icon?` (an icon name or a package SVG), `location` (`left`, `right`, `bottom`, `services`), `web?` (_Web views_), `frames?` (API 1.16), `group?`, `when?` (API 1.3)                                                    | without `web` |
-| `customEditors`     | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`, `frames?`, `binary?` (API 1.16)                                                                                                           | without `web` |
-| `editorPanels`      | `id`, `web`, `width` (pixels, 40–400), `when?`, `frames?` (API 1.16) — needs `editor.read` (API 1.9; _Editor panels_)                                                                                                                  | no            |
-| `fileIcons`         | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                                                                                                                               | no            |
-| `fileTemplates`     | `id`, `name`, `extension`, `path`; API 1.3: `fileName`, `variables = [{ name, prompt }]` — New menu                                                                                                                                    | no            |
-| `commitChecks`      | `id`, `title` — a before-commit check in Commit Options (see _Commits_)                                                                                                                                                                | yes           |
-| `serverCommands`    | `server`, `command`, `run` — a language server's client command run by this plugin's command (API 1.9; see _Commands a server hands to the client_)                                                                                    |
+| Point               | Declaration                                                                                                                                                                                                                                                                              | Code needed   |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| `commands`          | `id`, `title`, `category?`, `when?`                                                                                                                                                                                                                                                      | to run them   |
+| `themes`            | `path` (theme JSON), `editor-scheme?`                                                                                                                                                                                                                                                    | no            |
+| `iconThemes`        | `id`, `label`, `path` (icon theme JSON, see §5)                                                                                                                                                                                                                                          | no            |
+| `languages`         | `path` (`languages/<id>.toml` format, see §6)                                                                                                                                                                                                                                            | no            |
+| `runDetectors`      | `id`, `name`, `files`, `command`, `args?`, `test?`, `framework?` (API 1.4; §6.2)                                                                                                                                                                                                         | no            |
+| `runConfigurations` | `files`: marker files for the optional `run-configurations` export (API 1.4)                                                                                                                                                                                                             | yes           |
+| `javaAgents`        | `path` (a jar in the package), `args?`, `vmOptions?`, `jdk?`, `executor?` — a Java agent for Java run configurations, behind `java.agent` (API 1.10; `vmOptions`/`jdk` in 1.14; `executor` in 1.18; _Java agents_)                                                                       | no            |
+| `skills`            | `path` (`skills/<name>/SKILL.md` in the package) — agent skill folder staged into coding-agent sessions (API 1.15)                                                                                                                                                                       | no            |
+| `mcpTools`          | `name`, `description`, `inputSchema` (package JSON Schema path), `readOnly`, `destructive` (API 1.4; see _Plugin MCP tools_)                                                                                                                                                             | yes           |
+| `snippets`          | `language`, `path` (named JSON snippets; API 1.4)                                                                                                                                                                                                                                        | no            |
+| `providers`         | `kinds`, `languages` (editor providers, see _Providers_)                                                                                                                                                                                                                                 | yes           |
+| `secrets`           | `name`, `label`, `description?` (see _Network_)                                                                                                                                                                                                                                          | to use them   |
+| `menus`             | `menu` (`editor.context`, `projectView.context`, `editorTab.context`, `viewItem.context`, `tools`, `commit.message`; API 1.4: `editor.title`, `mainToolbar`, `problems.context`, `searchResults.context`; API 1.18: `services.context`, `services.toolbar`), `view?`, `command`, `when?` | no            |
+| `keymaps`           | `command`, `key`, `mac?` (`Ctrl+Alt+C`; a chord: `Meta+K Meta+C`); `key = "Escape"` with a required `when` (API 1.10) runs after the editor's own Escape handling                                                                                                                        | no            |
+| `statusBar`         | `id`, `text`, `tooltip?`, `command?`, `align?`, `priority?`                                                                                                                                                                                                                              | no            |
+| `settings`          | `schema` (JSON file) or `pages` (API 1.3), `title?` — see _Settings_                                                                                                                                                                                                                     | no            |
+| `views`             | `id`, `title`, `icon?` (an icon name or a package SVG), `location` (`left`, `right`, `bottom`, `services`), `web?` (_Web views_), `frames?` (API 1.16), `group?`, `when?` (API 1.3)                                                                                                      | without `web` |
+| `customEditors`     | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`, `frames?`, `binary?` (API 1.16)                                                                                                                                                             | without `web` |
+| `editorPanels`      | `id`, `web`, `width` (pixels, 40–400), `when?`, `frames?` (API 1.16) — needs `editor.read` (API 1.9; _Editor panels_)                                                                                                                                                                    | no            |
+| `overlays`          | `id`, `web`, `width`, `height` (pixels, 40–800), `anchor?`, `when?`, `interactive?` — floats over the workbench, never takes the focus (API 1.18; _Overlays_)                                                                                                                            | no            |
+| `runAnything`       | `prefix`, `title?` — Run Anything lines starting with `prefix`, answered by the `run-anything-provider` export (API 1.18; _Run Anything entries_)                                                                                                                                        | no            |
+| `dialogs`           | `id`, `title`, `web`, `width` (320–1600), `height` (200–1200) — a modal, resizable dialog opened by `views::reveal(id)` (API 1.18; _Dialogs_)                                                                                                                                            | no            |
+| `fileIcons`         | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                                                                                                                                                                                 | no            |
+| `fileTemplates`     | `id`, `name`, `extension`, `path`; API 1.3: `fileName`, `variables = [{ name, prompt }]` — New menu                                                                                                                                                                                      | no            |
+| `commitChecks`      | `id`, `title` — a before-commit check in Commit Options (see _Commits_)                                                                                                                                                                                                                  | yes           |
+| `serverCommands`    | `server`, `command`, `run` — a language server's client command run by this plugin's command (API 1.9; see _Commands a server hands to the client_)                                                                                                                                      |
 
 A `viewItem.context` menu needs `view`, the id of one of the plugin's own
 views. It adds the commands to the right-click menu of the items in that
@@ -170,7 +173,11 @@ its first `:`, so `pod` for `pod:default/nginx`; the whole key when it has no
 `:`). Only the menu's `when` sees them, not the command's own `when`; a command
 whose `when` is false shows greyed out. Other menus refuse `view`, a web view
 has no item menu, and no menu opens when no declaration matches the item.
-The menu is new in API 1.2, so a plugin using it declares
+A command run without an argument (its shortcut, Find Action) while one of the
+plugin's views has the keyboard focus gets the selected item's key too, when
+that item's `viewItem.context` menu offers the command: a shortcut acts on the
+selected item like the menu entry. With nothing selected, the focus elsewhere or
+the command not in the item's menu, it gets none. The menu is new in API 1.2, so a plugin using it declares
 `engines.openidea = "^1.2"`. For example:
 
 ```toml
@@ -427,9 +434,65 @@ are always available. Calling a gated function without its capability returns
 
 ## 3. Writing code (Rust SDK)
 
+### API 1.18
+
+API 1.18.0 is in development on `main`. Use `engines.openidea = "^1.18"` and the
+matching SDK. Plugins for 1.17 and earlier keep working. New in 1.18:
+
+- **Overlays (`[[contributes.overlays]]`).** A web page of the package floats over
+  the workbench at one of nine anchors while its `when` holds, without ever taking
+  the keyboard focus — a mascot, a reaction, a timer. The page moves and resizes
+  itself with `openidea.overlay`. No code or capability needed. See [Overlays](#overlays).
+- **Dialogs (`[[contributes.dialogs]]`).** A web page of the package in a modal,
+  resizable IDE dialog with a title bar, opened by the plugin's code with
+  `views::reveal(id)`; closing it sends the view a `closed` event
+  (`ViewEvent::closed()`), and the page can close it with `openidea.dialog.close()`.
+  See [Dialogs](#dialogs).
+- `host::subscribe_paths_with_options(kind, &SubscriptionOptions)` (`events.subscribe-paths-with-options`)
+  adds optional `debounce_ms` coalescing for `files-changed` events on the host side (up to 5 s) and
+  cooperatively cancels in-flight event-handler work via `cancel_soft()` when a newer delta arrives.
+- `Project::generation()` (`workspace.project.generation`) returns a monotonically increasing project state
+  generation; `FilesChanged` carries `project` and `generation`, and registering run targets or run
+  configurations from a superseded generation is rejected with `Error::Stale`.
+- `EventKind::ProjectClosed` (`project-closed`) notifies subscribed plugins when a project closes,
+  after queued project events are dropped and project run targets and configurations are withdrawn.
+- **Files outside the project.** `host::watch_paths(&paths)` (`events.watch-paths`) watches files
+  and directories outside the window's project that an `fs.read` grant covers, delivered as
+  `Event::WatchedFilesChanged` (`watched-files-changed`). See
+  [Watching paths outside the project](#watching-paths-outside-the-project).
+- **Run output transport (`pipes` or `pty`).** Non-test plugin run
+  configurations can request pseudo-terminal emulation (`OutputMode::Pty`,
+  matching **Emulate terminal in output console**) instead of separate stdout
+  and stderr pipes (`OutputMode::Pipes`, the default). Static
+  `[[contributes.runDetectors]]` accept `outputMode = "pty"` (or `"pipes"`),
+  dynamic configurations can export `execution-configurations`
+  (`ExecutionConfigurations`, registration `execution_configurations`), and
+  launches can pass a per-invocation override via
+  `host::start_run_with_options` (`run.start-with-options`). User-saved
+  overrides win over per-invocation overrides, which win over plugin defaults.
+- **Completion in a configuration's Arguments field.** The optional
+  `run-configuration-completion` export (`RunConfigurationCompletion`, registration
+  `run_configuration_completion`) completes the Arguments field of the plugin's own
+  run configurations in **Run | Edit Configurations…**: each item replaces one UTF-16
+  range, so the other arguments stay as typed. See
+  [Completing configuration arguments](#completing-configuration-arguments).
+  PTY is rejected for `test` configurations, `debug` launches requesting `Pty`,
+  remote run targets, and redirected `stdin` files. See
+  [Output transport: pipes or PTY](#output-transport-pipes-or-pty-api-118).
+- **Run Anything (`[[contributes.runAnything]]`, `run-anything-provider`).** Lines
+  starting with the plugin's prefix (`task build`) are suggested and run by its
+  code; a claimed line never falls back to the shell. See
+  [Run Anything entries](#run-anything-entries-api-118).
+- **Terminals in a project directory.** `host::open_terminal_session_in` starts a
+  keyed terminal in a directory of the project rather than its root.
+- **The window's project.** `host::invoking_project()` (`workspace.invoking-project`)
+  is the project of the window a call serves, also in `gutter-actions` and
+  `hover-actions` calls, which tells overlapping projects apart. Gutter and hover
+  action buttons go inert after an edit until the provider answers for the new text.
+
 ### API 1.17
 
-API 1.17.0 is in development on `main`. Use `engines.openidea = "^1.17"` and the
+API 1.17.0 shipped with OpenIDEA 0.1.53. Use `engines.openidea = "^1.17"` and the
 matching SDK. Plugins for 1.16 and earlier keep working. New in 1.17:
 
 - [Editor decorations](#editor-and-project-snapshots-api-14):
@@ -905,7 +968,9 @@ then run `openidea-plugin check`.
 | `host::register_run_target(project, target)`                                                                   | `run-targets.register`                       | API 1.4: project-scoped, read-only argv wrapper; requires its process grant, executable pin and project trust; remote projects run on the server.                                                                                                                                                                                                         |
 | `host::unregister_run_target(project, id)`                                                                     | `run-targets.unregister`                     | Withdraw this plugin's target; remembered prompt answers remain.                                                                                                                                                                                                                                                                                          |
 | `host::start_run(config, args, debug)`                                                                         | `run.start`                                  | API 1.4: start an owned configuration in this window's Run tool window; returns an id, followed by `run-exited`. Approved `process:` program; commands/events only.                                                                                                                                                                                       |
+| `host::start_run_with_options(config, args, options)`                                                          | `run.start-with-options`                     | API 1.18: start an owned configuration with `RunStartOptions` (`debug` and optional per-launch `output_mode`); user-saved override wins over `options.output_mode`, which wins over plugin default.                                                                                                                                                       |
 | `host::open_terminal_session(key, title, cmd)`                                                                 | `views.open-terminal-session`                | API 1.4: keyed, pinned terminal in this window, append-only env; returns its operation id and later `terminal-exited`.                                                                                                                                                                                                                                    |
+| `host::open_terminal_session_in(key, title, cmd, cwd)`                                                         | `views.open-terminal-session-in`             | API 1.18: the same, started in `cwd`, a directory of the project relative to its root.                                                                                                                                                                                                                                                                    |
 | `host::write_terminal(key, text)`                                                                              | `views.write-terminal`                       | API 1.4: write only to this plugin's still-running terminal in this window; trusted project, commands/events only.                                                                                                                                                                                                                                        |
 | `host::open_content_tab(tab)`                                                                                  | `views.open-content-tab`                     | API 1.4: the shared content editor protocol, without a web view; actions arrive as `content-tab-action`.                                                                                                                                                                                                                                                  |
 | `host::reply_content_tab(request_id, reply)`                                                                   | `views.reply-content-tab`                    | API 1.4: reply to an owned action in the originating window. No capability; commands/events only.                                                                                                                                                                                                                                                         |
@@ -913,6 +978,8 @@ then run `openidea-plugin check`.
 | `host::open_file_diff(diff, file_name)`                                                                        | `views.open-file-diff`                       | API 1.10: `open_diff` where a side may be `None` (the file doesn't exist there: added or deleted); the viewer shows the other side alone. Both `None` fails with `Invalid`.                                                                                                                                                                               |
 | `RunConfigurations::configurations(root)`                                                                      | export `run-configurations.configurations`   | API 1.4: optional `plugin-run-configurations` world; SDK registration `run_configurations`. Full project list, refreshed on configuration listing.                                                                                                                                                                                                        |
 | `LaunchConfigurations::launch_configurations(root)`                                                            | export `launch-configurations`               | API 1.9: optional `plugin-launch-configurations` world; SDK registration `launch_configurations`. The same list with `env` and `debugger`; preferred over `run-configurations`.                                                                                                                                                                           |
+| `ExecutionConfigurations::execution_configurations(root)`                                                      | export `execution-configurations`            | API 1.18: optional `plugin-execution-configurations` world; SDK registration `execution_configurations`. Adds a default `output_mode` (`Pipes` or `Pty`); preferred over `launch-configurations` and `run-configurations`.                                                                                                                                |
+| `RunConfigurationCompletion::complete(project, config, field, text, caret)`                                    | export `run-configuration-completion`        | API 1.18: optional `plugin-run-configuration-completion` world; SDK registration `run_configuration_completion`. Completes the Arguments field (`field = "arguments"`) of the plugin's own configurations; items replace a UTF-16 range; 200 items, 300 ms.                                                                                               |
 | `TestResults::parse(config, chunk)`                                                                            | export `test-results.parse`                  | API 1.4: optional `plugin-test-results` world; SDK registration `test_results`. Bounded output batches for `framework = "plugin"`; failures use built-in parsers.                                                                                                                                                                                         |
 | `TestResults::select_tests(config, tests)`                                                                     | export `test-results.select-tests`           | API 1.4: full replacement argv for test-tree name paths, or `None` when unsupported (the SDK default). Enables rerunning failed tests and running tree selections.                                                                                                                                                                                        |
 | `host::open_location(path, line, column)`                                                                      | `views.open-location`                        | Opens a file inside the project in an editor of the invoking window, the caret at `line`/`column` (0-based, UTF-16): a view's links to code. Needs `project.read`.                                                                                                                                                                                        |
@@ -1368,21 +1435,23 @@ log/blame return empty lists and diff returns `None`.
 
 ### Events
 
-| Kind                 | Capability     | Delivered                                                                                                                                  |
-| -------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `document-changed`   | `events`       | API 1.6: a committed local edit as versioned UTF-16 replacements; `subscribe-paths` only, also needs `project.read` and `editor.read`      |
-| `websocket-ready`    | `events`       | API 1.6: a bounded host-owned WebSocket has frames or a final close state to drain                                                         |
-| `file-opened`        | `events`       | a file opens in an editor                                                                                                                  |
-| `file-closed`        | `events`       | API 1.4, `Event::Other`: JSON path string                                                                                                  |
-| `settings-changed`   | `events`       | API 1.4, `Event::Other`: JSON array of this plugin's changed setting keys (effective values)                                               |
-| `extensions-changed` | —              | API 1.5, `Event::Other`: JSON array of this plugin's extension points whose contributions changed                                          |
-| `input-mode-changed` | `events.input` | API 1.4, `Event::Other`: JSON `{path, mode, sub}` on focused Vim mode changes; `ctx.editor()` includes the document and current selections |
-| `files-changed`      | `events`       | debounced created, modified and removed paths in open projects (API 1.3)                                                                   |
-| `file-saved`         | `events`       | after the file is written                                                                                                                  |
-| `editor-focused`     | `events`       | the focused editor changes (path, or none)                                                                                                 |
-| `vcs-changed`        | `events`       | a repository's state changed (commit, checkout, fetch…; its root)                                                                          |
-| `action-performed`   | `events.input` | an IDE action ran: id, title, source (keyboard, menu, toolbar…), shortcut                                                                  |
-| `scheduled`          | —              | the `on-schedule` period elapsed                                                                                                           |
+| Kind                    | Capability     | Delivered                                                                                                                                  |
+| ----------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `document-changed`      | `events`       | API 1.6: a committed local edit as versioned UTF-16 replacements; `subscribe-paths` only, also needs `project.read` and `editor.read`      |
+| `websocket-ready`       | `events`       | API 1.6: a bounded host-owned WebSocket has frames or a final close state to drain                                                         |
+| `file-opened`           | `events`       | a file opens in an editor                                                                                                                  |
+| `file-closed`           | `events`       | API 1.4, `Event::Other`: JSON path string                                                                                                  |
+| `settings-changed`      | `events`       | API 1.4, `Event::Other`: JSON array of this plugin's changed setting keys (effective values)                                               |
+| `extensions-changed`    | —              | API 1.5, `Event::Other`: JSON array of this plugin's extension points whose contributions changed                                          |
+| `input-mode-changed`    | `events.input` | API 1.4, `Event::Other`: JSON `{path, mode, sub}` on focused Vim mode changes; `ctx.editor()` includes the document and current selections |
+| `files-changed`         | `events`       | debounced created, modified and removed paths in open projects (API 1.3)                                                                   |
+| `file-saved`            | `events`       | after the file is written                                                                                                                  |
+| `editor-focused`        | `events`       | the focused editor changes (path, or none)                                                                                                 |
+| `vcs-changed`           | `events`       | a repository's state changed (commit, checkout, fetch…; its root)                                                                          |
+| `action-performed`      | `events.input` | an IDE action ran: id, title, source (keyboard, menu, toolbar…), shortcut                                                                  |
+| `project-closed`        | `events`       | API 1.18: a project was closed or detached; JSON root path string (`Event::ProjectClosed`)                                                 |
+| `watched-files-changed` | `events`       | API 1.18: paths watched with `host::watch_paths` changed; JSON like `files-changed` with absolute paths (`Event::WatchedFilesChanged`)     |
+| `scheduled`             | —              | the `on-schedule` period elapsed                                                                                                           |
 
 Events are batched: a running plugin gets them within a fraction of a second,
 an idle one collects them for 2 s before it is woken, so frequent events
@@ -1415,9 +1484,81 @@ its own project, which the event names in `project` (the root's absolute path):
 two open projects can hold the same relative path, so key per-document state by
 both. IDEs before this field omit it. For `files-changed`, each category is filtered and an empty batch
 is omitted; replacing or pausing a filter also affects batches already queued.
-Patterns use `/`, `*` stays within a directory, and `**` crosses
-directories. Up to 64 patterns of 1024 bytes each are accepted; absolute paths,
-parent traversal and malformed patterns fail without replacing the old filter.
+API 1.18 adds `project` (the project root path) and `generation` (the monotonic project workspace generation)
+to `FilesChanged`.
+
+API 1.18 adds `host::subscribe_paths_with_options(kind, &SubscriptionOptions)` (`events.subscribe-paths-with-options`)
+with an optional `debounce_ms` setting. When configured, incoming filesystem events for `files-changed` are debounced on the
+host side across rapid edits, coalescing deltas and avoiding redundant plugin invocations (with a maximum delay cap of 5 s
+during continuous changes). In-flight `files-changed` discovery work is cooperatively cancelled via `cancel_soft()` when a newer
+delta arrives for the same project.
+
+Each project maintains an internal monotonic `generation` incremented on filesystem changes and project transitions. Plugins
+can read it via `project.generation()` (API 1.18). If a plugin attempts to publish run targets or run configurations discovered
+with an older generation after the project generation has moved forward, the registration is rejected with `Error::Stale`. When
+a project closes, in-flight work and queued events for that project are cancelled and dropped, run targets and configurations
+under that root are withdrawn, and `project-closed` (`Event::ProjectClosed`) is delivered to subscribed plugins.
+
+### Completing configuration arguments
+
+A configuration a plugin provides (a `[[contributes.runDetectors]]` entry or one from a
+configurations export) can have its Arguments field completed by that plugin in
+**Run | Edit Configurations…**, also after the user overrode it there. Export
+`run-configuration-completion` (API 1.18):
+
+```rust
+impl RunConfigurationCompletion for MyPlugin {
+    fn complete(&mut self, project: &str, config: &str, field: &str, text: &str, caret: u32)
+        -> Vec<RunConfigurationCompletionItem> {
+        if field != "arguments" { return Vec::new(); }
+        // Find the argument under `caret` (UTF-16 offsets) and offer task names for it.
+        // …
+    }
+}
+register_plugin!(MyPlugin, run_configuration_completion);
+```
+
+- **What the plugin gets.** `config` is the configuration's id as the plugin reported it,
+  `field` is `arguments` (answer none for a field you don't know: later IDEs may ask for more),
+  `text` is the field as typed and `caret` a UTF-16 offset into it. The field splits like a
+  shell command line: whitespace separates arguments, `'` and `"` quote.
+- **What it answers.** Each item has a `label`, an optional `detail` (grey, such as the file a
+  task comes from), an optional `insert` (default: `label`) and the UTF-16 range
+  `replace_start..replace_end` it replaces. Replace only the argument being completed, so the
+  other options, quoted values and the arguments after `--` stay as they are.
+- **Limits.** The IDE asks while the user types (and on Ctrl+Space). Answer from what the plugin
+  already knows, without starting a process per keystroke. It keeps the first 200 items, drops
+  items whose range is outside the text, and drops an answer slower than 300 ms or one for text
+  that has changed since. A configuration the plugin no longer provides for the project (its
+  program revoked, the plugin stopped) is not completed. A failure leaves the field as it is.
+
+### Watching paths outside the project
+
+A build tool's configuration often includes files from outside the project (a shared Taskfile, a
+parent POM, a toolchain file). `host::watch_paths(&paths)` (API 1.18) watches them for the project of
+the window the call serves, replacing what the plugin watched for that project; an empty list stops.
+
+- **Within read grants.** Each path is absolute (or `~/…`), exists, and is covered by an
+  `fs.read:<path>` grant the user approved, checked where it really is: a link leading out of the
+  grant is `Denied`. Paths inside the project are `Invalid`, since `files-changed` reports them. At
+  most 32 paths.
+- **What is watched.** A file is watched where it is, across atomic saves, removal and re-creation.
+  A directory is watched for its own entries, not recursively; once it is removed it is reported
+  and no longer watched, so call again when it is back.
+- **Delivery.** Changes arrive as `Event::WatchedFilesChanged` (`watched-files-changed`) to the
+  window that asked, with `project` set to its project and absolute paths. Batches are debounced
+  and coalesced like `files-changed`, so read the files again rather than replaying steps; a rename
+  is the old path removed and the new one created. Calling `watch_paths` subscribes to the kind;
+  declare `activation = ["on-event:watched-files-changed"]` to be woken for it after a restart.
+- **Lifecycle.** Watches end when the project or its window closes, or when the plugin stops
+  (disabled, updated, or a grant revoked in Settings › Plugins). Idle reclaim keeps them, and a
+  change activates the plugin again.
+- **No remote freshness.** Nothing is watched over the network, and a watch grants no network
+  access. Files behind a URL (Task's remote Taskfiles, for example) need the plugin's own refresh
+  command.
+  Patterns use `/`, `*` stays within a directory, and `**` crosses
+  directories. Up to 64 patterns of 1024 bytes each are accepted; absolute paths,
+  parent traversal and malformed patterns fail without replacing the old filter.
 
 Register filters in `activate`, using a startup or command activation to install
 them before observing events. Patterns are ORed; another call replaces the same
@@ -1450,6 +1591,10 @@ the final close only after queued frames have drained.
 Provider calls can use `host::project_of(&doc.path)` (`workspace.project-of`)
 without an invocation project or enumerating every open project. It returns the
 deepest open project containing the absolute path, or `None` outside open roots.
+`host::invoking_project()` (`workspace.invoking-project`, API 1.18) is the project
+of the window the call serves instead: the invoking window's in commands and events,
+the editor's window's in `gutter-actions` and `hover-actions`. Use it when projects
+overlap (one opened inside another), where `project_of` always answers the inner one.
 Symlinks and missing file tails are resolved before checking containment.
 Obtaining a handle grants no read access: `Project::root` and file operations
 still require `project.read`.
@@ -1731,7 +1876,7 @@ and register `register_plugin!(MyPlugin, language_features)`:
 | `document-symbols`    | `document_symbols(doc)`                          | Structure and breadcrumbs use these only when LSP returns no document symbols (including an empty list); otherwise LSP symbols win. Tree-sitter is the final fallback.                                                                                                                                                                                          |
 | `implementation`      | `implementation(doc, at)`                        | Merged with LSP Go to Implementation, deduplicated by location.                                                                                                                                                                                                                                                                                                 |
 | `type-definition`     | `type_definition(doc, at)`                       | Merged with LSP Go to Type Declaration, deduplicated by location.                                                                                                                                                                                                                                                                                               |
-| `gutter-actions`      | `gutter_actions(doc)`                            | Buttons beside line markers. Clicks invoke only the returning plugin's declared command, with its optional string argument and the editor window/project context. Icons accept the same names, aliases and declared marker SVG paths as line markers.                                                                                                           |
+| `gutter-actions`      | `gutter_actions(doc)`                            | Buttons beside line markers. Clicks invoke only the returning plugin's declared command, with its optional string argument and the editor window/project context. After an edit the buttons are inert until the provider answers for the new text. Icons accept the same names, aliases and declared marker SVG paths as line markers.                          |
 | `hover-actions`       | `hover_actions(doc)`                             | Left-edge actions revealed by line-edge hover, with an anchor line and an inclusive trigger line range (API 1.14).                                                                                                                                                                                                                                              |
 
 The optional WIT interface is `language-features`, in worlds
@@ -2139,6 +2284,46 @@ use (ANSI stripped, the last 5000 lines and 16 KiB per line, Soft-wrap, Clear,
 the exit code at the end). A toggle appends its `args` and starts the program
 again. It stops when the node's pane closes or the Services window is hidden.
 
+#### Actions on the IDE's own Services nodes (API 1.18)
+
+A plugin can also act on the nodes the IDE puts in Services itself: run
+configurations (Spring Boot, Application, …) and Docker containers. Two menus
+take its commands, with `engines.openidea = "^1.18"`:
+
+```toml
+[[contributes.menus]]
+menu = "services.context"          # right-click menu of the selected services
+command = "hotreload.attach"
+submenu = "Hot Reload"
+when = "serviceKind == 'spring-boot' && serviceRunning"
+
+[[contributes.menus]]
+menu = "services.toolbar"          # Services toolbar button (the command's icon, else the plugin's)
+command = "hotreload.attach"
+when = "serviceSelectionCount == 1 && serviceKind == 'spring-boot'"
+```
+
+The `when` clause sees, for each selected service, `serviceProvider`
+(`runConfigurations` or `docker`), `serviceKind` (the run configuration's kind,
+such as `spring-boot`, `application` or `jar-application`, or
+`docker-container`), `serviceId`, `serviceName`, `serviceRunning`,
+`runConfigurationId` (empty for a container) and `serviceSelectionCount`. An
+entry shows only when its `when` holds for every selected service, and not when
+the selection includes a group node. The command gets the selection as its
+argument, JSON text:
+
+```json
+{"services": [{"provider": "runConfigurations", "id": "app", "kind": "spring-boot",
+  "name": "App", "running": true, "runConfigurationId": "app"}]}
+```
+
+`host::start_run` still starts only the plugin's own configurations. To launch
+the user's configuration with the plugin's Java agent, bind the agent to an
+executor (_Java agents_): **Run '<name>' with <title>** and **Debug '<name>'
+with <title>** then appear in this menu for Application, Spring Boot and JAR
+Application configurations, and go through the normal launch (build,
+classpath, JDK, debugger, Stop).
+
 #### Web views
 
 A view or custom editor can instead be a web page of the package, for UIs the
@@ -2285,6 +2470,82 @@ older IDEs. Outside the visible area the editor estimates wrapped rows from the
 line's length until it lays the line out; `onLayout` follows when it does.
 `crates/ide-plugin/tests/fixtures/editor-panel` is a minimal minimap (each line
 2 px, its frame draggable, problems marked at its right edge, folded lines left out, the selected lines and the caret's line tinted, VCS changes at its left edge) to install and try.
+
+#### Overlays
+
+With API 1.18 (`engines.openidea = "^1.18"`), a web page can float over the
+workbench — over the editor, tool windows and all — without ever taking the
+keyboard focus: a mascot reacting to your work, a timer, a reaction GIF. It needs
+no code and no capability, since it sees nothing of the IDE:
+
+```toml
+[[contributes.overlays]]
+id = "stage"
+web = "web/stage.html"        # the same rules as a web view's page
+width = 320                   # pixels, 40–800
+height = 240
+anchor = "bottom-right"       # optional: top-left, top-center, top-right, middle-left,
+                              # center, middle-right, bottom-left, bottom-center, bottom-right
+when = "plugin.<id>.showing"  # optional: the plugin's own key through `host::set_context`
+interactive = true            # optional: false lets every click through to the IDE
+```
+
+The overlay is in the window while `when` holds (always, without one), clear of
+the title and status bars, under dialogs, popups and notifications. Its frame is
+out of the tab order and is never focused when it appears, so typing carries on in
+the editor; a click in an interactive overlay goes to its page, as any click does.
+With `interactive = false` the frame lets every click through. The frame is
+transparent: draw only what should show. When the page can't be loaded (the
+plugin was disabled meanwhile), the overlay shows nothing.
+
+The page gets `openidea.overlay` (only an overlay's page has it), besides
+`postMessage` / `onMessage` to the plugin's code and the theme:
+
+| `openidea.overlay`                    | What it does                                                                                                                                        |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `get()`                               | `{ anchor, width, height }`: where the overlay is and its size, the declaration's until the page changes them                                       |
+| `place({ anchor?, width?, height? })` | Moves the overlay to another anchor and/or resizes it (sizes clamped to 40–800 and to the window); resolves with `get()`, rejects an unknown anchor |
+
+The placement lasts while the overlay is shown; the next time `when` holds it
+starts again from the declaration. To fit a picture, the page measures it and
+places the overlay at that size. `crates/ide-plugin/tests/fixtures/overlay` is a
+minimal card that moves itself around the window.
+
+#### Dialogs
+
+With API 1.18 (`engines.openidea = "^1.18"`), a web page of the package can open
+in a modal dialog of the IDE, as IntelliJ's `DialogWrapper` does: the platform's
+title bar with the dialog's title, a close button, Escape, and a grip to resize
+it. A SQL preview, a parameter form beside its result, a confirmation with
+a picture:
+
+```toml
+[[contributes.dialogs]]
+id = "preview"                # not the id of one of the plugin's views
+title = "SQL Preview"         # the title bar; translated by the plugin's catalog
+web = "web/preview.html"      # the same rules as a web view's page
+width = 900                   # pixels, 320–1600: the size it first opens at
+height = 600                  # pixels, 200–1200
+```
+
+The plugin's code opens it in the window of the current command or event with
+`views::reveal("preview")` (`views.reveal`, `invalid` outside one), the same call
+that brings a tool window to the front; revealing an open dialog does nothing.
+The dialog keeps the size the user last gave it. It closes with its close button,
+Escape (unless the page handles Escape itself and calls `preventDefault()`), or
+the page's `openidea.dialog.close()`; then the view gets a `closed` event:
+
+```rust
+fn handle(view: &str, event: ViewEvent) {
+    if view == "preview" && event.closed() { /* forget the preview's state */ }
+}
+```
+
+The page talks to the plugin's code as any web view does (`openidea.postMessage`
+/ `onMessage`, `views::post_message("preview", …)`), and sees nothing else of the
+IDE, so a dialog needs no capability. Only a dialog's page has `openidea.dialog`.
+For something that stays open beside the editor without taking the keyboard,
+use an [overlay](#overlays) or a tool window.
 
 ### Web frame PTYs (API 1.3)
 
@@ -2463,6 +2724,27 @@ register_plugin!(Functions, launch_configurations);
 A component exporting both uses `launch-configurations`. Plugins that call
 `run.start(config, args, true)` on such a configuration get the same Debug.
 
+#### Output transport: pipes or PTY (API 1.18)
+
+Plugins targeting API 1.18+ can request either piped console output (`Pipes`, the
+default preserved for all older plugins) or pseudo-terminal emulation (`Pty`,
+equivalent to **Emulate terminal in output console**):
+
+- On static `[[contributes.runDetectors]]`, set `outputMode = "pty"` (or `"pipes"`).
+- From code, export `execution-configurations` (`ExecutionConfigurations`,
+  registered as `execution_configurations`), which sets `output_mode: OutputMode`
+  on each `PluginExecutionConfiguration` and takes precedence over
+  `launch-configurations` and `run-configurations`.
+- Per launch, call `host::start_run_with_options(config, &args, &RunStartOptions { debug, output_mode })`.
+
+Precedence at launch: a user-saved override in **Run | Edit Configurations…**
+wins over the per-invocation `output_mode`, which wins over the plugin's
+configured default. Disallowed combinations (`test` configurations, `debug`
+launches requesting `Pty`, remote run targets, and `stdin` file redirection) are
+rejected with `Invalid`. Ordinary PTYs combine stdout and stderr into a single
+stream and can change buffering, input handling, and terminal behavior (line
+endings, echo, and ANSI control sequences).
+
 For a static detector, `framework = "plugin"` is an API 1.4 manifest field. For
 either kind of configuration, it enables the optional `TestResults` export
 (registration `test_results`). `parse(config, chunk)` receives the short config
@@ -2486,6 +2768,15 @@ have the same append-only validation and collision errors as `run-command`.
 like writing to a process child. Closing the tab stops the operation. Idle wasm
 reclamation retains running sessions; disabling the plugin or revoking its grant
 ends its PTYs. `views.open-terminal` keeps its released behavior.
+
+`host::open_terminal_session_in(key, title, &cmd, "services/api")` (API 1.18,
+`views.open-terminal-session-in`) starts the terminal in a directory of the
+project instead of its root: the path is relative to the root (`""` is the root),
+must name an existing directory and must stay inside the project once symlinks
+are resolved (an absolute path, `..` out of the project or a symlink pointing
+outside is `invalid`). The project, not the directory, decides trust and the
+approved program. Reopening a running key focuses it where it is. This places
+the shell; it does not confine what the program then does.
 
 Completions go only to the owning plugin, in its launching window, even without
 a subscription and even when its wasm instance was reclaimed. A terminal emits
@@ -2555,6 +2846,25 @@ jdk = "jetbrains"                          # optional: only those VM options on 
   when the launcher is not JetBrains Runtime; the agent still loads. Arguments
   are separate argv items (no shell), so a path with spaces needs no quoting; a
   shortened command line moves only the classpath into its argument file.
+- **Executors** (API 1.18). With `executor = "<title>"` (1–40 characters) the
+  agent no longer loads into every launch. The plugin gets an executor beside
+  Run and Debug instead, as IDEA's "Run with JRebel" or "Profile": **Run '<name>'
+  with <title>** and **Debug '<name>' with <title>** in the run widget's ⋮ menu,
+  the gutter's ▶ menu, the context menus' run entries and the Services context
+  menu of those configurations, plus the actions **Run with <title>** and
+  **Debug with <title>** (Find Action, Keymap). Only launches through them get
+  the agent and its `vmOptions`; the grant and jar pin are the same. Without
+  `java.agent` the IDE says so instead of launching, and a configuration on a
+  run target is refused the same way.
+
+  ```toml
+  [[contributes.javaAgents]]
+  path = "agent/hotreload-agent.jar"
+  vmOptions = ["-XX:+AllowEnhancedClassRedefinition"]
+  jdk = "jetbrains"
+  executor = "Hot Reload"
+  ```
+
 - Not in this version: tests (JUnit), Maven and Gradle goals (an Application
   set to _Build and run using: Gradle_ runs as a Gradle task), application
   servers (Tomcat), remote JVM debug, configurations on a run target, and
@@ -3132,7 +3442,7 @@ the API itself follows _Evolving the plugin API_ below.
 
 Released versions are frozen: 1.0.0 shipped with OpenIDEA 0.1.36, 1.1.0
 with 0.1.37, 1.2.0 with 0.1.38, 1.3.0 with 0.1.39 and 1.4.0 with 0.1.40.
-API 1.5.0 shipped with 0.1.41, 1.6.0 with 0.1.43, 1.7.0 with 0.1.44, 1.8.0 with 0.1.45, 1.9.0 with 0.1.46 and 1.10.0 with 0.1.47; API 1.11.0, 1.12.0, 1.13.0, 1.14.0 1.15.0 and 1.16.0 are in development on `main`. wasmtime decides what stays compatible: it resolves interface names
+API 1.5.0 shipped with 0.1.41, 1.6.0 with 0.1.43, 1.7.0 with 0.1.44, 1.8.0 with 0.1.45, 1.9.0 with 0.1.46, 1.10.0 with 0.1.47, 1.13.0 with 0.1.49, 1.16.0 with 0.1.52 and 1.17.0 with 0.1.53; API 1.11.0, 1.12.0, 1.14.0, 1.15.0 and 1.18.0 are in development on `main`. wasmtime decides what stays compatible: it resolves interface names
 by semver (a component importing `openidea:plugin/x@1.0.0` links against a
 host defining `@1.1.0`, and the host finds its exports the same way), but
 function types must match exactly — a record with another field count, or a
@@ -3434,6 +3744,46 @@ Composer/npm scripts, PHPUnit and Node tests use that choice through the normal
 Run flow. Explicit per-configuration targets take precedence. Choosing Local
 machine explicitly overrides defaults. Language servers, tool discovery/version
 probes and external analysis helpers remain local to the host.
+
+### Run Anything entries (API 1.18)
+
+A task runner's plugin can answer Run Anything (Ctrl Ctrl) lines that start with
+its command word, as the IDE does for `mvn` and `gradle`. Declare the prefix:
+
+```toml
+[[contributes.runAnything]]
+prefix = "task"      # one lowercase word: letters, digits, `.`, `_`, `-` (at most 32)
+title = "Go Task"    # optional: the heading of its entries (default: the plugin's name)
+```
+
+and implement `RunAnything`, registered with `run_anything`:
+
+```rust
+impl RunAnything for MyPlugin {
+    fn suggest(&mut self, project: &str, prefix: &str, text: &str) -> Vec<RunAnythingItem> {
+        // From the tasks the plugin already listed: no process per keystroke.
+        self.tasks(project).iter().filter(|t| format!("{prefix} {t}").starts_with(text))
+            .map(|t| RunAnythingItem { label: format!("{prefix} {t}"), ..Default::default() }).collect()
+    }
+    fn run(&mut self, project: &str, prefix: &str, line: &str) -> bool {
+        let Some(task) = self.task_for(project, line) else { return false };
+        host::start_run(&task.configuration_id, &[], false).is_ok()
+    }
+}
+register_plugin!(MyPlugin, run_anything);
+```
+
+`suggest` is asked while the field's text starts with the prefix (`task b`) or is
+the start of it (`ta`). Entries arrive after the IDE's own: the first 100 are
+kept, an answer that comes after the text changed is dropped, and the call has
+300 ms. `line` (default `label`) is what Tab completes and Enter runs.
+
+`run` gets a line whose first word is the prefix, in a command context of the
+invoking window, so it can use `host::start_run`, terminals and its other granted
+calls, with their usual trust and grant checks. `true` claims the line. `false`
+leaves it to the IDE's other entries and finally the shell. When the call fails
+(trap, timeout, plugin disabled) the line counts as claimed and the error is
+shown: a line meant for the plugin never runs in the shell by accident.
 
 ### Validating run targets (API 1.5)
 

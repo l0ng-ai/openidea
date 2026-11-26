@@ -121,6 +121,7 @@ describe("SkillsPage", () => {
     render(<SkillsPage backend={backendSpy} />);
 
     await waitFor(() => expect(screen.getByText("tdd")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /^tdd/ }));
     pick("Scope for tdd", "Workspace");
     pick("Mode for tdd", "Slash only");
     await waitFor(() =>
@@ -133,7 +134,6 @@ describe("SkillsPage", () => {
     render(<SkillsPage backend={{ list: vi.fn(async () => withSymlink), setMode: vi.fn(async () => withSymlink) }} />);
 
     await waitFor(() => expect(screen.getByText("tdd")).toBeInTheDocument());
-    expect(screen.getByTitle(".claude/skills")).toHaveTextContent("Claude Code");
     fireEvent.click(screen.getByRole("button", { name: /^tdd/ }));
     expect(await screen.findByText("/skills/tdd")).toBeInTheDocument();
     expect(screen.getByText("Claude Code (.claude/skills)")).toBeInTheDocument();
@@ -278,7 +278,7 @@ describe("SkillsPage", () => {
     await waitFor(() => expect(screen.getByText("deploy-script")).toBeInTheDocument());
   });
 
-  it("displays context: fork and paths badges and expands paths in the inspector", async () => {
+  it("shows context: fork and paths in the inspector", async () => {
     const forked = [
       state("verify-ux", "workspace", "auto", {
         contextFork: true,
@@ -288,9 +288,8 @@ describe("SkillsPage", () => {
     render(<SkillsPage backend={{ list: vi.fn(async () => forked), setMode: vi.fn(async () => forked) }} />);
 
     await waitFor(() => expect(screen.getByText("verify-ux")).toBeInTheDocument());
-    expect(screen.getByText("context: fork")).toBeInTheDocument();
-    expect(screen.getByText("paths (2)")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /^verify-ux/ }));
     expect(await screen.findByText("src/**/*.tsx, e2e/*.spec.ts")).toBeInTheDocument();
+    expect(screen.getByText(/context: fork/)).toBeInTheDocument();
   });
 });

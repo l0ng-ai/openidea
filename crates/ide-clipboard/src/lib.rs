@@ -260,8 +260,8 @@ pub fn decode(bytes: &[u8]) -> Vec<PathBuf> {
 /// may be larger than the text, and a malformed one may lack the NUL.
 #[cfg(any(windows, test))]
 fn unicode_text(bytes: &[u8]) -> String {
-    let units: Vec<u16> =
-        bytes.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).take_while(|&unit| unit != 0).collect();
+    let (pairs, _) = bytes.as_chunks::<2>();
+    let units: Vec<u16> = pairs.iter().map(|&pair| u16::from_le_bytes(pair)).take_while(|&unit| unit != 0).collect();
     String::from_utf16_lossy(&units)
 }
 

@@ -37,7 +37,8 @@ export function blockOf(text: string, [from, to]: readonly [number, number]): st
 /** The rows of the list: Local Changes when the block differs from HEAD, then the commits. */
 export function historyRows(history: BlockHistory, current: string): HistoryRow[] {
   const rows: HistoryRow[] = history.revisions.map((revision) => ({ kind: "revision", revision }));
-  const head = history.revisions[0]?.after;
+  // Servers that predate `head` only give the newest row's block, which a merge leaves empty.
+  const head = history.head ?? history.revisions[0]?.after;
   if (history.headLines && head !== undefined && head !== current) rows.unshift({ kind: "local", head, current });
   return rows;
 }

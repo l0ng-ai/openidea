@@ -10,6 +10,17 @@ describe("path completion context", () => {
     expect(pathContext("See [docs](guide/", "markdown")).toEqual({ prefix: "guide/", eager: true });
   });
 
+  it("completes bare path lines in ignore files", () => {
+    expect(pathContext("target/", "ignore")).toEqual({ prefix: "target/", eager: true });
+    expect(pathContext("src/comp", "ignore")).toEqual({ prefix: "src/comp", eager: true });
+    expect(pathContext("node_modules", "ignore")).toEqual({ prefix: "node_modules", eager: true });
+    expect(pathContext("!node_modules", "ignore")).toEqual({ prefix: "node_modules", eager: true });
+    expect(pathContext("/src-tauri/gen", "ignore")).toEqual({ prefix: "/src-tauri/gen", eager: true });
+    expect(pathContext("  # a comment", "ignore")).toBeNull();
+    expect(pathContext("*.log", "ignore")).toBeNull();
+    expect(pathContext("src/*.ts", "ignore")).toBeNull();
+  });
+
   it("completes string literals only once they look like paths", () => {
     expect(pathContext('open("data/x', "python")).toEqual({ prefix: "data/x", eager: false });
     expect(pathLike("data/x") && pathLike("./") && pathLike("../a")).toBe(true);

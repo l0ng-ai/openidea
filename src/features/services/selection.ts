@@ -1,6 +1,11 @@
 import { executeAction, getAction, isActionEnabled } from "@/platform/actions";
 import type { MenuItem } from "@/ui";
-import type { ServiceItemAction, ServiceProviderContribution } from "@/workbench/contributions";
+import {
+  serviceSelectionContributions,
+  type ServiceContext,
+  type ServiceItemAction,
+  type ServiceProviderContribution,
+} from "@/workbench/contributions";
 import type { Located } from "./tree";
 
 /** A selected group already targets its descendants; don't invoke those twice. */
@@ -24,15 +29,42 @@ function batch<T extends { disabled?: boolean; run?: () => void }>(items: T[]): 
   return { ...items[0]!, disabled: !enabled.length, run: () => enabled.forEach((item) => item.run?.()) };
 }
 
+/** The selected services as other features see them; null when a selected node is no service (a group). */
+export function selectionContexts(
+  selection: Located[],
+  providers: readonly ServiceProviderContribution[],
+): ServiceContext[] | null {
+  const contexts = selection.map(({ item, provider }) => providers.find((p) => p.id === provider)?.context?.(item));
+  return contexts.length && contexts.every((c) => !!c) ? (contexts as ServiceContext[]) : null;
+}
+
+function contributed<T>(
+  selection: Located[],
+  providers: readonly ServiceProviderContribution[],
+  pick: (c: ReturnType<typeof serviceSelectionContributions>[number], services: ServiceContext[]) => T[] | undefined,
+): T[] {
+  const services = selectionContexts(selection, providers);
+  if (!services) return [];
+  return serviceSelectionContributions().flatMap((c) => {
+    try {
+      return pick(c, services) ?? [];
+    } catch (e) {
+      console.error(`services contribution ${c.id} failed`, e);
+      return [];
+    }
+  });
+}
+
 export function selectionActions(
   selection: Located[],
   providers: readonly ServiceProviderContribution[],
 ): ServiceItemAction[] {
   const groups = selection.map(({ item, provider }) => providers.find((p) => p.id === provider)?.actions?.(item) ?? []);
-  return (groups[0] ?? []).flatMap((action) => {
+  const own = (groups[0] ?? []).flatMap((action) => {
     const matches = groups.flatMap((group) => group.filter((a) => a.id === action.id));
     return matches.length === groups.length ? [batch(matches)] : [];
   });
+  return [...own, ...contributed(selection, providers, (c, services) => c.actions?.(services))];
 }
 
 function menuKey(item: MenuItem): string | undefined {
@@ -70,5 +102,7 @@ function commonMenu(groups: MenuItem[][]): MenuItem[] {
 
 export function selectionMenu(selection: Located[], providers: readonly ServiceProviderContribution[]): MenuItem[] {
   const groups = selection.map(({ item, provider }) => providers.find((p) => p.id === provider)?.menu?.(item) ?? []);
-  return groups.length === 1 ? groups[0]! : commonMenu(groups);
+  const own = groups.length === 1 ? groups[0]! : commonMenu(groups);
+  const extra = contributed(selection, providers, (c, services) => c.menu?.(services));
+  return extra.length ? [...own, ...(own.length ? [{ kind: "separator" } as const] : []), ...extra] : own;
 }

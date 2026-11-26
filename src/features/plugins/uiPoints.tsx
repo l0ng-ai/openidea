@@ -2,8 +2,8 @@
  * Client side of the plugin UI points: declarations the
  * backend validated, projected onto the workbench's own registries.
  *
- * - `menus`: editor / project view / editor tab context menus, Tools in the main menu, and the
- *   toolbar above the commit message;
+ * - `menus`: editor / project view / editor tab context menus, Tools in the main menu, the
+ *   toolbar above the commit message, and the Services tree's context menu and toolbar;
  * - `keymaps`: default shortcuts below the IDE's (a taken keystroke is dropped);
  * - `statusBar`: items shown before the code runs (its `set-status-item` with the same id updates them);
  * - `settings`: a page under Settings › Plugins generated from the schema;
@@ -11,13 +11,15 @@
  * - `customEditors`: files opening in a plugin editor sharing the text document, in its own tab or
  *   beside the text editor;
  * - `editorPanels`: a web page at the right edge of every editor group, following its text editor;
+ * - `overlays`: a web page floating over the workbench that never takes the focus;
+ * - `dialogs`: a web page in a modal, resizable dialog that `views.reveal(id)` opens;
  * - `fileIcons`: icons for the files a plugin knows, whatever icon theme is in use;
  * - `fileTemplates`: entries of the New menu;
  * - `commitChecks`: before-commit checks listed in Commit Options, run by the plugin's code.
  */
 import type { PluginInfo } from "@/bindings";
 import { registerEditorContribution } from "@/editor/api";
-import { getAction } from "@/platform/actions";
+import { executeAction, getAction } from "@/platform/actions";
 import { evaluateWhen, getContext, useContextKeys } from "@/platform/context";
 import { tx } from "@/platform/i18n";
 import { isMacHost, registerExtensionBindings } from "@/platform/keymap";
@@ -32,9 +34,12 @@ import {
   registerMenuGroup,
   registerMenuSlotItem,
   registerServiceProvider,
+  registerServiceSelectionItems,
   registerTextEditorWrapper,
   type ContextMenuId,
   type ContributedCommitProblem,
+  type ServiceContext,
+  type ServiceItemAction,
   type ToolWindowAnchor,
 } from "@/workbench/contributions";
 import { pluginsBackend } from "./backend";
@@ -57,6 +62,9 @@ import {
 } from "./views/customEditor";
 import { layoutActions, layoutWrapper } from "./views/editorLayout";
 import { editorPanelUpdates, projectEditorPanel, type EditorPanelDecl } from "./views/editorPanel";
+import { projectOverlay, type OverlayDecl } from "./views/overlay";
+import { projectDialog, type DialogDecl } from "./views/dialog";
+import { projectRunAnything, type RunAnythingDecl } from "./runAnything";
 import { registerContentActions } from "./views/contentActions";
 import {
   PluginContentEditor,
@@ -85,7 +93,9 @@ interface MenuDecl {
     | "editorTab.context"
     | "viewItem.context"
     | "tools"
-    | "commit.message";
+    | "commit.message"
+    | "services.context"
+    | "services.toolbar";
   view?: string | null;
   command: string;
   when?: string | null;
@@ -173,6 +183,66 @@ export function pluginViewItemMenuItems(pluginId: string, view: string, key: str
     addGrouped(out, groups, pluginId, decl.submenu, { kind: "action", action, arg: key });
   }
   return flattenSingleGroups(out);
+}
+
+/** The when keys of one selected service. */
+export function serviceWhenContext(service: ServiceContext, count: number) {
+  return {
+    ...getContext(),
+    serviceProvider: service.provider,
+    serviceKind: service.kind,
+    serviceId: service.id,
+    serviceName: service.name,
+    serviceRunning: service.running,
+    runConfigurationId: service.runConfigurationId ?? "",
+    serviceSelectionCount: count,
+  };
+}
+
+/** The command's argument (JSON text, as a plugin command's argument is a string): the selected services. */
+export const servicesArg = (services: readonly ServiceContext[]) =>
+  JSON.stringify({
+    services: services.map((s) => ({
+      provider: s.provider,
+      id: s.id,
+      kind: s.kind,
+      name: s.name,
+      running: s.running,
+      runConfigurationId: s.runConfigurationId ?? null,
+    })),
+  });
+
+/** Plugin entries of `services.context` / `services.toolbar` whose `when` holds for every selected service. */
+function serviceEntries(menu: "services.context" | "services.toolbar", services: readonly ServiceContext[]) {
+  return [...contextItems.values()].flatMap(({ pluginId, decl }) => {
+    if (decl.menu !== menu) return [];
+    if (!services.every((s) => evaluateWhen(decl.when ?? undefined, serviceWhenContext(s, services.length)))) return [];
+    const action = pluginActionId(pluginId, decl.command);
+    return getAction(action) ? [{ pluginId, decl, action }] : [];
+  });
+}
+
+export function pluginServiceMenuItems(services: readonly ServiceContext[]): MenuItem[] {
+  const out: MenuItem[] = [];
+  const groups = new Map<string, MenuItem[]>();
+  const arg = servicesArg(services);
+  for (const { pluginId, decl, action } of serviceEntries("services.context", services))
+    addGrouped(out, groups, pluginId, decl.submenu, { kind: "action", action, arg });
+  return flattenSingleGroups(out);
+}
+
+export function pluginServiceActions(services: readonly ServiceContext[]): ServiceItemAction[] {
+  const arg = servicesArg(services);
+  return serviceEntries("services.toolbar", services).map(({ pluginId, action }) => {
+    const a = getAction(action)!;
+    const plugin = usePlugins.getState().plugins.find((p) => p.id === pluginId);
+    return {
+      id: action,
+      title: a.title,
+      icon: a.icon ?? pluginIconName(pluginId, plugin?.icon ?? null),
+      run: () => void executeAction(action, arg),
+    };
+  });
 }
 
 function projectMenu(pluginId: string, decl: MenuDecl, plugin: PluginInfo): () => void {
@@ -511,6 +581,18 @@ export function defineViewUiPoints(): () => void {
       title: "Editor Panels",
       project: ({ pluginId, decl }) => projectEditorPanel(pluginId, decl),
     }),
+    defineUiPoint<OverlayDecl>("overlays", {
+      title: "Overlays",
+      project: ({ pluginId, decl }) => projectOverlay(pluginId, decl),
+    }),
+    defineUiPoint<DialogDecl>("dialogs", {
+      title: "Dialogs",
+      project: ({ pluginId, decl }) => projectDialog(pluginId, decl),
+    }),
+    defineUiPoint<RunAnythingDecl>("runAnything", {
+      title: "Run Anything",
+      project: ({ pluginId, decl }) => projectRunAnything(pluginId, decl),
+    }),
     defineUiPoint<MarkerIconDecl>("markerIcons", {
       title: "Marker Icons",
       project: ({ pluginId, decl }) => projectMarkerIcon(pluginId, decl),
@@ -592,6 +674,7 @@ export function startViewUi(openInput: (input: ReturnType<typeof customEditorInp
       icon: pluginContentEditorIcon,
       document: pluginContentEditorDocument,
     }),
+    registerServiceSelectionItems({ id: "plugins", menu: pluginServiceMenuItems, actions: pluginServiceActions }),
     registerMenuGroup({
       id: "plugins",
       menus: ["editor", "projectView", "editorTab", "problems", "searchResults"],

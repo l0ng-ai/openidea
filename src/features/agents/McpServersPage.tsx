@@ -206,6 +206,7 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
   const [importScope, setImportScope] = useState<McpScope>("user");
   const [overwriteExisting, setOverwriteExisting] = useState(false);
   const [menuAnchor, setMenuAnchor] = useState<{ server: McpServer; el: HTMLElement } | null>(null);
+  const [addMenu, setAddMenu] = useState<HTMLElement | null>(null);
   const [editing, setEditing] = useState<{
     mode: "add" | "edit";
     editorTab?: "form" | "json";
@@ -533,58 +534,10 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
 
   return (
     <div className={page.page}>
-      <div className={page.header}>
-        <h2 className={page.title}>
-          <T>MCP Connections</T>
-        </h2>
-        <div className={page.headerActions}>
-          <Button
-            variant="primary"
-            onClick={() =>
-              setEditing({
-                mode: "add",
-                editorTab: "form",
-                scope: tab === "workspace" ? "workspace" : "user",
-              })
-            }
-          >
-            <Icon name="plus" size={14} /> <T>Add Server</T>
-          </Button>
-          {backend.saveJson && (
-            <Button
-              variant="secondary"
-              onClick={() =>
-                setEditing({
-                  mode: "add",
-                  editorTab: "json",
-                  scope: tab === "workspace" ? "workspace" : "user",
-                })
-              }
-            >
-              <Icon name="file-json" size={14} /> <T>Add from JSON</T>
-            </Button>
-          )}
-          <Button
-            variant="secondary"
-            disabled={importing}
-            title={tx("Import MCP servers from .mcp.json and .vscode/mcp.json")}
-            onClick={() => void importFromProject()}
-          >
-            <T>Import from Project</T>
-          </Button>
-          <Button variant="secondary" onClick={() => void openExternalUrl(MCP_BROWSE_URL)}>
-            <Icon name="web" size={14} /> <T>Browse</T>
-          </Button>
-        </div>
-      </div>
-
       <p className={page.lead}>
-        <T>
-          An open standard that lets AI use external tools and services. MCP servers provide tools for file operations,
-          databases, APIs, and more.
-        </T>{" "}
+        <T>MCP servers give agents tools for files, databases, APIs and more.</T>{" "}
         <button type="button" className={page.link} onClick={() => void openExternalUrl(MCP_DOCS_URL)}>
-          <T>Learn more about MCP servers</T>
+          <T>Learn more</T>
         </button>
       </p>
 
@@ -629,13 +582,32 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
           />
         </div>
 
-        <SearchField
-          className={page.search}
-          value={query}
-          onChange={setQuery}
-          placeholder={tx("Type to search...")}
-          aria-label={tx("Search MCP servers")}
-        />
+        <div className={page.searchRow}>
+          <SearchField
+            className={page.search}
+            value={query}
+            onChange={setQuery}
+            placeholder={tx("Type to search...")}
+            aria-label={tx("Search MCP servers")}
+          />
+          <Button
+            onClick={() =>
+              setEditing({
+                mode: "add",
+                editorTab: "form",
+                scope: tab === "workspace" ? "workspace" : "user",
+              })
+            }
+          >
+            <T>Add Server…</T>
+          </Button>
+          <IconButton
+            icon="more"
+            title={tx("More Actions")}
+            aria-haspopup="menu"
+            onClick={(e) => setAddMenu(e.currentTarget)}
+          />
+        </div>
       </div>
 
       {error && (
@@ -668,14 +640,11 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
               </span>
             </div>
             <span className={styles.hint}>
-              <T>
-                Exposes OpenIDEA's code intelligence, diagnostics, refactorings, and run configurations to coding
-                agents. Can also be toggled per session from the composer MCP menu.
-              </T>
+              <T>OpenIDEA's code intelligence, diagnostics, refactorings and run configurations.</T>
             </span>
           </div>
-          <Button variant="secondary" onClick={() => void executeAction("file.settings", IDE_MCP_SETTINGS_PAGE)}>
-            <Icon name="settings" size={13} /> <T>IDE MCP Settings</T>
+          <Button size="small" onClick={() => void executeAction("file.settings", IDE_MCP_SETTINGS_PAGE)}>
+            <T>IDE MCP Settings</T>
           </Button>
         </div>
       )}
@@ -718,10 +687,7 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
 
                 {!isCollapsed && scope === "workspace" && (
                   <p className={styles.sectionNote}>
-                    <T>
-                      Servers added to the project's settings file outside OpenIDEA stay off until you turn them on
-                      here.
-                    </T>
+                    <T>Servers added to the settings file outside OpenIDEA stay off until turned on here.</T>
                   </p>
                 )}
 
@@ -932,7 +898,7 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
                                     )
                                   ) : (
                                     <span className={styles.hint}>
-                                      <T>Click Test Connection to run MCP handshake and inspect available tools.</T>
+                                      <T>Test the connection to list the server's tools.</T>
                                     </span>
                                   )}
                                 </div>
@@ -941,7 +907,7 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
                               <div className={page.drawerFooter}>
                                 <div className={page.drawerButtons}>
                                   <Button
-                                    variant="secondary"
+                                    size="small"
                                     onClick={() =>
                                       setEditing({
                                         mode: "edit",
@@ -951,21 +917,20 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
                                       })
                                     }
                                   >
-                                    <Icon name="edit" size={12} /> <T>Configure…</T>
+                                    <T>Configure…</T>
                                   </Button>
                                   {backend.testServer && (
                                     <Button
-                                      variant="secondary"
+                                      size="small"
                                       disabled={isProbing || server.unapproved}
                                       onClick={() => void probeServer(server)}
                                     >
-                                      <Icon name="refresh" size={12} />{" "}
                                       <T>{probe && !probe.ok ? "Retry Connection" : "Test Connection"}</T>
                                     </Button>
                                   )}
                                 </div>
-                                <Button variant="ghost" onClick={() => void removeServer(server)}>
-                                  <Icon name="trash" size={12} /> <T>Delete Server</T>
+                                <Button size="small" variant="ghost" onClick={() => void removeServer(server)}>
+                                  <T>Delete Server</T>
                                 </Button>
                               </div>
                             </div>
@@ -980,20 +945,15 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
           })}
 
           {tab === "all" && unimportedCount > 0 && (
-            <div className={styles.notice}>
-              <span className={styles.noticeMain}>
-                <Icon name="plugin" size={14} />
-                <span>
-                  {formatMessage(tx("Detected {count} MCP servers in external agent config directories ({sources})."), {
-                    count: unimportedCount,
-                    sources: sources.map((s) => s.label).join(", "),
-                  })}
-                </span>
-              </span>
-              <Button variant="secondary" onClick={() => setTab("discovered")}>
+            <p className={page.lead}>
+              {formatMessage(tx("Found {count} MCP servers in other agents' configs ({sources})."), {
+                count: unimportedCount,
+                sources: sources.map((s) => s.label).join(", "),
+              })}{" "}
+              <button type="button" className={page.link} onClick={() => setTab("discovered")}>
                 <T>Review & Import</T>
-              </Button>
-            </div>
+              </button>
+            </p>
           )}
         </div>
       )}
@@ -1014,6 +974,38 @@ export function McpServersPage({ backend = defaultMcpBackend }: { backend?: McpB
           onRefresh={load}
           onImportSelected={() => void importSelections(selectedImportList, importScope, overwriteExisting)}
           onQuickImport={(sourceId, name, scope) => void importSelections([{ sourceId, name }], scope, true)}
+        />
+      )}
+
+      {addMenu && (
+        <Menu
+          open
+          anchor={addMenu}
+          placement="bottom-end"
+          onClose={() => setAddMenu(null)}
+          aria-label={tx("More Actions")}
+          items={[
+            ...(backend.saveJson
+              ? [
+                  {
+                    label: tx("Add from JSON…"),
+                    run: () =>
+                      setEditing({
+                        mode: "add",
+                        editorTab: "json",
+                        scope: tab === "workspace" ? "workspace" : "user",
+                      }),
+                  },
+                ]
+              : []),
+            {
+              label: tx("Import from Project"),
+              disabled: importing,
+              run: () => void importFromProject(),
+            },
+            { kind: "separator" as const },
+            { label: tx("Browse MCP Servers"), run: () => void openExternalUrl(MCP_BROWSE_URL) },
+          ]}
         />
       )}
 
