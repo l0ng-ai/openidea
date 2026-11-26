@@ -69,9 +69,12 @@ async function loadUserFont(name: string, alias: string): Promise<void> {
   const buffer = await invoke<ArrayBuffer>("user_font_data", { family: name });
   const headerLength = new DataView(buffer).getUint32(0, true);
   const start = 4 + headerLength;
-  const faces: { weight: number; style: string; offset: number; length: number }[] = JSON.parse(
-    new TextDecoder().decode(buffer.slice(4, start)),
-  );
+  const faces: {
+    weight: number;
+    style: string;
+    offset: number;
+    length: number;
+  }[] = JSON.parse(new TextDecoder().decode(buffer.slice(4, start)));
   await Promise.all(
     faces.map(async ({ weight, style, offset, length }) => {
       const face = new FontFace(alias, buffer.slice(start + offset, start + offset + length), {
@@ -306,8 +309,11 @@ export async function fontsLoaded(family: string, size: number): Promise<void> {
   }
 }
 
+/** The theme's platform fallback stack from tokens.css (the Windows CJK faces, else the system UI font). */
+const UI_PLATFORM_FALLBACK = "var(--ui-platform-fonts, var(--ui-system-fonts))";
+
 /** Bundled aliases also apply when selected for the interface; `fallback` covers glyphs `family` lacks (empty = none). */
 export function uiFontFamily(family: string, fallback = ""): string {
   const fb = familyName(fallback);
-  return [...familyFaces(family), ...(fb ? familyFaces(fb) : []), "system-ui", "sans-serif"].join(", ");
+  return [...familyFaces(family), ...(fb ? familyFaces(fb) : []), UI_PLATFORM_FALLBACK].join(", ");
 }

@@ -7,6 +7,7 @@ import { useProject } from "@/platform/project";
 import { Channel } from "@tauri-apps/api/core";
 import type {
   ActiveTheme,
+  RunAnythingItem,
   CapabilityInfo,
   CatalogPlugin,
   ClipboardAnswer,
@@ -84,6 +85,10 @@ export interface PluginsBackend {
     /** Aborting rejects the call and cancels that backend request. */
     signal?: AbortSignal,
   ): Promise<string | null>;
+  /** Run Anything entries of the plugin declaring `prefix`, for the field's text (API 1.18). */
+  runAnythingSuggest(pluginId: string, prefix: string, text: string): Promise<RunAnythingItem[]>;
+  /** Runs a Run Anything line starting with the plugin's `prefix` (API 1.18): whether it claimed it. */
+  runAnythingRun(pluginId: string, prefix: string, line: string): Promise<boolean>;
   /** Workbench events plugins subscribed to (see `eventKinds`). */
   postEvents(events: WorkbenchEvent[]): Promise<void>;
   /** Kinds of workbench events plugins want; re-fetch on `subscriptionsChanged`. */
@@ -236,6 +241,8 @@ export const tauriPluginsBackend: PluginsBackend = {
     await call(commands.pluginUninstall(id));
   },
   reload: (id) => call(commands.pluginReload(id)),
+  runAnythingSuggest: (pluginId, prefix, text) => call(commands.pluginRunAnythingSuggest(pluginId, prefix, text)),
+  runAnythingRun: (pluginId, prefix, line) => call(commands.pluginRunAnythingRun(pluginId, prefix, line)),
   runCommand: async (pluginId, commandId, arg, editor, paths, settingsScope, commandChain, signal) => {
     signal?.throwIfAborted();
     const request = signal ? nextRequestId() : null;
@@ -665,6 +672,8 @@ export function createMemoryPluginsBackend(
       emit({ type: "commandsChanged" });
     },
     reload: async (id) => find(id),
+    runAnythingSuggest: async () => [],
+    runAnythingRun: async () => false,
     runCommand: async (pluginId, commandId) => {
       const p = find(pluginId);
       if (p.status !== "active" && p.status !== "inactive")

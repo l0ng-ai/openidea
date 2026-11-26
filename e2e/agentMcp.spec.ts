@@ -312,7 +312,6 @@ test("manages multi-level MCP servers in Settings and per-session overrides via 
   await sessionPopup.getByRole("button", { name: "MCP Connections…", exact: true }).click();
   const settingsDialog = page.getByRole("dialog", { name: "Settings", exact: true });
   await expect(settingsDialog).toBeVisible();
-  await expect(settingsDialog.getByRole("heading", { name: "MCP Connections", exact: true })).toBeVisible();
   await expect(settingsDialog.getByRole("treeitem", { name: "MCP Connections", exact: true })).toHaveAttribute(
     "aria-selected",
     "true",
@@ -324,11 +323,9 @@ test("manages multi-level MCP servers in Settings and per-session overrides via 
   await expect(settingsDialog.getByText("pull_request_read")).toBeVisible();
 
   if (screenshotDir) {
-    await settingsDialog
-      .getByRole("heading", { name: "MCP Connections", exact: true })
-      .evaluate((el) => el.scrollIntoView({ block: "start" }));
     await settingsDialog.screenshot({ path: `${screenshotDir}/mcp-hub-levels.png` });
-    await settingsDialog.getByRole("button", { name: "Add from JSON" }).click();
+    await settingsDialog.getByRole("button", { name: "More Actions" }).click();
+    await page.getByRole("menuitem", { name: "Add from JSON…" }).click();
     const addDialog = page.getByRole("dialog", { name: "Add MCP Server" });
     await expect(addDialog).toBeVisible();
     await addDialog.screenshot({ path: `${screenshotDir}/mcp-hub-add-json.png` });

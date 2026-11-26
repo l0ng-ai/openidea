@@ -21,6 +21,7 @@ import {
   type LaunchConfig,
   type RunId,
   type RunConfig,
+  type Scope,
   type StackFrame,
   type ThreadInfo,
   type Variable,
@@ -1347,22 +1348,48 @@ async function loadThreads(id: DebugSessionId) {
   }
 }
 
+export interface FrameLocals {
+  scopes: Scope[];
+  /** Variables of the first non-expensive scope. */
+  locals: Variable[];
+}
+
+let frameLocalsMemo: { key: string; frames: readonly StackFrame[] | undefined; value: Promise<FrameLocals> } | null =
+  null;
+
+/**
+ * Scopes and first-scope variables of `frameId` at the current stop. Inline values and the Variables view
+ * ask for the same frame on every stop; they share one request, since an adapter may take seconds to
+ * format a large local (#6170).
+ */
+export function frameLocals(id: DebugSessionId, frameId: number): Promise<FrameLocals> {
+  const { stopSeq, variablesEpoch, sessions } = useDebug.getState();
+  const key = `${id}:${frameId}:${stopSeq}:${variablesEpoch}`;
+  // Every stop loads a new stack: a stop counter that starts over cannot hand out an old answer.
+  const frames = sessions[id]?.frames;
+  if (frameLocalsMemo?.key !== key || frameLocalsMemo.frames !== frames) {
+    const value = (async () => {
+      const scopes = await call(commands.debugScopes(id, frameId));
+      const scope = scopes.find((sc) => !sc.expensive);
+      const locals = scope ? await call(commands.debugVariables(id, scope.variablesReference)) : [];
+      return { scopes, locals };
+    })();
+    frameLocalsMemo = { key, frames, value };
+  }
+  return frameLocalsMemo.value;
+}
+
 /** Locals of `frameId` (first non-expensive scope) for inline values. */
 async function loadLocals(id: DebugSessionId, frameId: number) {
   const frames = useDebug.getState().sessions[id]?.frames;
   const values: Record<string, string> = Object.create(null);
   const variables: Record<string, Variable> = Object.create(null);
   try {
-    const scopes = await call(commands.debugScopes(id, frameId));
-    const scope = scopes.find((sc) => !sc.expensive);
-    if (scope) {
-      const vars = await call(commands.debugVariables(id, scope.variablesReference));
-      for (const v of vars)
-        if (v.name && !Object.hasOwn(values, v.name)) {
-          values[v.name] = v.value;
-          variables[v.name] = v;
-        }
-    }
+    for (const v of (await frameLocals(id, frameId)).locals)
+      if (v.name && !Object.hasOwn(values, v.name)) {
+        values[v.name] = v.value;
+        variables[v.name] = v;
+      }
   } catch {
     // No inline values.
   }
