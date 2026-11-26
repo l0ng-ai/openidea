@@ -269,6 +269,14 @@ describe("Find in Files popup", () => {
     expect(useFindPopup.getState().directory).toBe("/p/src/main");
   });
 
+  it("shows the Directory scope's full path, not one relative to the project root", async () => {
+    useProject.setState({ project: { root: "/p", name: "p", trusted: true, isGit: false, settings: {} } });
+    render(<FindInFilesOverlay />);
+    act(() => showFindPopup(false, { query: "order", directory: "/p/src/main" }));
+    await settle();
+    expect(screen.getByRole("textbox", { name: "Directory" })).toHaveValue("/p/src/main");
+  });
+
   it.each([false, true])("waits for a directory instead of searching the project (replace=%s)", async (replace) => {
     useProject.setState({ project: { root: "/p", name: "p", trusted: true, isGit: false, settings: {} } });
     render(<FindInFilesOverlay />);
