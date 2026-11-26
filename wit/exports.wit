@@ -98,6 +98,33 @@ interface run-anything-provider {
     run: func(project: string, prefix: string, line: string) -> bool;
 }
 
+/// Optional completion in the fields of this plugin's own run configurations, in
+/// the Run/Debug Configurations dialog (API 1.18).
+interface run-configuration-completion {
+    record completion-item {
+        /// What the list shows, such as `build`.
+        label: string,
+        /// Grey text after the label, such as the file the entry comes from.
+        detail: option<string>,
+        /// The text that replaces `[replace-start, replace-end)` (default: `label`).
+        insert: option<string>,
+        /// UTF-16 offsets into `text`; the caret ends after the inserted text.
+        replace-start: u32,
+        replace-end: u32,
+    }
+    /// Completions for `field` of the configuration `config` (its id as this plugin
+    /// reported it) in `project`. `field` is `arguments` today: the field splits like a
+    /// shell command line (whitespace separates arguments, `'` and `"` quote). Later
+    /// IDEs may ask for other fields, so answer none for a field you don't know.
+    /// `text` is the field as typed and `caret` a UTF-16 offset into it. Replace only
+    /// the token being completed, so the other options, quoted values and arguments
+    /// after `--` stay as they are. Answer from what the plugin already knows (no
+    /// process per keystroke): the IDE asks while the user types, keeps the first 200
+    /// items, drops an item whose range is outside `text`, and drops an answer that
+    /// comes after the text changed or takes longer than 300 ms.
+    complete: func(project: string, config: string, field: string, text: string, caret: u32) -> list<completion-item>;
+}
+
 /// Optional pre-launch gate for targets owned by this plugin (API 1.5).
 interface run-target-validation {
     enum operation { run, test }

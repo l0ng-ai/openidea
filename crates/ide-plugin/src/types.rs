@@ -1142,3 +1142,18 @@ pub struct RunAnythingItem {
     /// The line Tab completes and Enter runs; `label` when absent.
     pub line: Option<String>,
 }
+
+/// Most completions kept from one `run-configuration-completion.complete` answer.
+pub const MAX_RUN_CONFIG_COMPLETIONS: usize = 200;
+
+/// A completion for a field of a plugin's own run configuration (API 1.18).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RunConfigCompletion {
+    pub label: String,
+    pub detail: Option<String>,
+    /// Replaces the UTF-16 range `[replace_start, replace_end)` of the field's text.
+    pub insert: String,
+    pub replace_start: u32,
+    pub replace_end: u32,
+}

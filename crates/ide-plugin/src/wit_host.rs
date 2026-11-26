@@ -3336,6 +3336,11 @@ pub(crate) mod run_anything_bindings {
     wasmtime::component::bindgen!({ world: "run-anything-exports", path: "../../wit" });
 }
 
+/// The optional `run-configuration-completion` export (API 1.18), bound on its own when present.
+pub(crate) mod run_config_completion_bindings {
+    wasmtime::component::bindgen!({ world: "run-configuration-completion-exports", path: "../../wit" });
+}
+
 pub(crate) mod run_target_validation_bindings {
     wasmtime::component::bindgen!({ world: "run-target-validator", path: "../../wit" });
 }

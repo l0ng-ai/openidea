@@ -470,6 +470,12 @@ matching SDK. Plugins for 1.17 and earlier keep working. New in 1.18:
   launches can pass a per-invocation override via
   `host::start_run_with_options` (`run.start-with-options`). User-saved
   overrides win over per-invocation overrides, which win over plugin defaults.
+- **Completion in a configuration's Arguments field.** The optional
+  `run-configuration-completion` export (`RunConfigurationCompletion`, registration
+  `run_configuration_completion`) completes the Arguments field of the plugin's own
+  run configurations in **Run | Edit Configurations…**: each item replaces one UTF-16
+  range, so the other arguments stay as typed. See
+  [Completing configuration arguments](#completing-configuration-arguments).
   PTY is rejected for `test` configurations, `debug` launches requesting `Pty`,
   remote run targets, and redirected `stdin` files. See
   [Output transport: pipes or PTY](#output-transport-pipes-or-pty-api-118).
@@ -973,6 +979,7 @@ then run `openidea-plugin check`.
 | `RunConfigurations::configurations(root)`                                                                      | export `run-configurations.configurations`   | API 1.4: optional `plugin-run-configurations` world; SDK registration `run_configurations`. Full project list, refreshed on configuration listing.                                                                                                                                                                                                        |
 | `LaunchConfigurations::launch_configurations(root)`                                                            | export `launch-configurations`               | API 1.9: optional `plugin-launch-configurations` world; SDK registration `launch_configurations`. The same list with `env` and `debugger`; preferred over `run-configurations`.                                                                                                                                                                           |
 | `ExecutionConfigurations::execution_configurations(root)`                                                      | export `execution-configurations`            | API 1.18: optional `plugin-execution-configurations` world; SDK registration `execution_configurations`. Adds a default `output_mode` (`Pipes` or `Pty`); preferred over `launch-configurations` and `run-configurations`.                                                                                                                                |
+| `RunConfigurationCompletion::complete(project, config, field, text, caret)`                                    | export `run-configuration-completion`        | API 1.18: optional `plugin-run-configuration-completion` world; SDK registration `run_configuration_completion`. Completes the Arguments field (`field = "arguments"`) of the plugin's own configurations; items replace a UTF-16 range; 200 items, 300 ms.                                                                                               |
 | `TestResults::parse(config, chunk)`                                                                            | export `test-results.parse`                  | API 1.4: optional `plugin-test-results` world; SDK registration `test_results`. Bounded output batches for `framework = "plugin"`; failures use built-in parsers.                                                                                                                                                                                         |
 | `TestResults::select_tests(config, tests)`                                                                     | export `test-results.select-tests`           | API 1.4: full replacement argv for test-tree name paths, or `None` when unsupported (the SDK default). Enables rerunning failed tests and running tree selections.                                                                                                                                                                                        |
 | `host::open_location(path, line, column)`                                                                      | `views.open-location`                        | Opens a file inside the project in an editor of the invoking window, the caret at `line`/`column` (0-based, UTF-16): a view's links to code. Needs `project.read`.                                                                                                                                                                                        |
@@ -1491,6 +1498,39 @@ can read it via `project.generation()` (API 1.18). If a plugin attempts to publi
 with an older generation after the project generation has moved forward, the registration is rejected with `Error::Stale`. When
 a project closes, in-flight work and queued events for that project are cancelled and dropped, run targets and configurations
 under that root are withdrawn, and `project-closed` (`Event::ProjectClosed`) is delivered to subscribed plugins.
+
+### Completing configuration arguments
+
+A configuration a plugin provides (a `[[contributes.runDetectors]]` entry or one from a
+configurations export) can have its Arguments field completed by that plugin in
+**Run | Edit Configurations…**, also after the user overrode it there. Export
+`run-configuration-completion` (API 1.18):
+
+```rust
+impl RunConfigurationCompletion for MyPlugin {
+    fn complete(&mut self, project: &str, config: &str, field: &str, text: &str, caret: u32)
+        -> Vec<RunConfigurationCompletionItem> {
+        if field != "arguments" { return Vec::new(); }
+        // Find the argument under `caret` (UTF-16 offsets) and offer task names for it.
+        // …
+    }
+}
+register_plugin!(MyPlugin, run_configuration_completion);
+```
+
+- **What the plugin gets.** `config` is the configuration's id as the plugin reported it,
+  `field` is `arguments` (answer none for a field you don't know: later IDEs may ask for more),
+  `text` is the field as typed and `caret` a UTF-16 offset into it. The field splits like a
+  shell command line: whitespace separates arguments, `'` and `"` quote.
+- **What it answers.** Each item has a `label`, an optional `detail` (grey, such as the file a
+  task comes from), an optional `insert` (default: `label`) and the UTF-16 range
+  `replace_start..replace_end` it replaces. Replace only the argument being completed, so the
+  other options, quoted values and the arguments after `--` stay as they are.
+- **Limits.** The IDE asks while the user types (and on Ctrl+Space). Answer from what the plugin
+  already knows, without starting a process per keystroke. It keeps the first 200 items, drops
+  items whose range is outside the text, and drops an answer slower than 300 ms or one for text
+  that has changed since. A configuration the plugin no longer provides for the project (its
+  program revoked, the plugin stopped) is not completed. A failure leaves the field as it is.
 
 ### Watching paths outside the project
 

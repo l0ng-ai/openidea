@@ -1486,6 +1486,53 @@ impl PluginHost {
         })
     }
 
+    /// Completions (API 1.18) for `field` of the plugin run configuration `config_id`
+    /// (`plugin:<plugin>:<id>`, also a user's override of one), as `window`'s project
+    /// currently has it, for the field's `text` and UTF-16 `caret`: from what the owning
+    /// plugin already knows, within 300 ms.
+    pub fn run_configuration_complete(
+        &self,
+        window: &str,
+        root: &Path,
+        config_id: &str,
+        field: &str,
+        text: &str,
+        caret: u32,
+    ) -> IdeResult<Vec<ide_plugin::RunConfigCompletion>> {
+        if text.len() > 16 * 1024 || caret as usize > text.encode_utf16().count() || field.len() > 64 {
+            return Err(IdeError::invalid("the field text or caret is out of range"));
+        }
+        if !self.run_detection().detect(root).iter().any(|c| c.id == config_id && c.kind == "plugin") {
+            return Err(IdeError::not_found("this plugin configuration is no longer provided"));
+        }
+        let owner = self
+            .plugins
+            .read()
+            .keys()
+            .filter(|id| {
+                config_id.strip_prefix(ide_run::EXTERNAL_PREFIX).is_some_and(|rest| rest.starts_with(&format!("{id}:")))
+            })
+            .max_by_key(|id| id.len())
+            .cloned()
+            .ok_or_else(|| IdeError::not_found("the plugin owning this configuration is not loaded"))?;
+        let own = config_id[ide_run::EXTERNAL_PREFIX.len() + owner.len() + 1..].to_owned();
+        let invocation = Invocation {
+            client: Some(window.to_owned()),
+            workspace_root: Some(root.to_path_buf()),
+            ..Default::default()
+        };
+        let (field, text) = (field.to_owned(), text.to_owned());
+        let budget = Duration::from_millis(300);
+        self.code_call_with_budget(
+            &owner,
+            invocation,
+            "completing a run configuration field",
+            None,
+            Some(budget),
+            move |rt, inv| rt.run_configuration_complete(&own, &field, &text, caret, inv, budget),
+        )
+    }
+
     fn declared_run_anything(&self, id: &str, prefix: &str) -> IdeResult<()> {
         if self.ui.items(ui_points::RUN_ANYTHING, Some(id)).iter().any(|d| d.key == prefix) {
             Ok(())
