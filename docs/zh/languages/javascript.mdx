@@ -84,6 +84,12 @@ Vue、Astro 和 Angular 服务器也会使用这里选择的版本。TypeScript 
 
 这些页面上，**格式化工具** 可选 **自动（优先语言服务器）** 或工具本身，**保存时运行** 控制保存时格式化，**启用的语言** 限定工具处理哪些语言。
 
+选 **自动** 时，位于该工具自身配置之下的 JavaScript、TypeScript 文件（Prettier 配置文件或 `package.json` 里的 `prettier` 键、oxfmt 配置、Biome 配置）由该工具格式化，而不是语言服务器；前提是该工具已安装（`npm install` 之前仍由语言服务器格式化）。这时 **设置 › 编辑器 › 常规 › 保存时重新格式化代码** 也会运行该工具。
+
+### 代码样式
+
+**设置 › 编辑器 › 代码样式 › JavaScript** 和 **TypeScript** 有 **空格**（逗号后、运算符两侧、花括号内等）和 **标点**（分号：保持原样、使用或不使用；引号：与文件一致、单引号或双引号）两个标签页。它们和其他代码样式设置一起按项目保存，并发送给 TypeScript 服务器：服务器将其用于 **重新格式化代码**，以及它添加的代码，包括快速修复、自动导入、重构和 **优化导入**。JSX 文件跟随 JavaScript，TSX 文件跟随 TypeScript。启用 EditorConfig 支持时，项目 `.editorconfig` 中设置的 `quote_type` 或 IntelliJ 属性 `ij_typescript_use_semicolon_after_statement`、`ij_typescript_use_double_quotes`、`ij_typescript_space_after_comma`、`ij_typescript_spaces_within_object_literal_braces` 等（JavaScript 用 `ij_javascript_*`）优先。tsserver 没有尾随逗号选项，尾随逗号保持原样。
+
 ### Biome 检查
 
 在 Biome 项目中，Biome 的诊断显示在编辑器和“问题”工具窗口里，`⌥⏎` / `Alt+Enter` 提供它的快速修复和抑制。Biome 的安全修复（`source.fixAll.biome`）随 **代码 › 代码清理** 运行；开启 **设置 › 工具 › 保存时操作 › 运行代码清理** 后，保存时也会运行。Biome 的格式化器开启时，它的全部修复也会格式化文件。

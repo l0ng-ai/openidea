@@ -83,6 +83,12 @@ The Astro and Angular servers also run from the project's own `node_modules/.bin
 
 On these pages, **Formatting provider** chooses between **Automatic (language server first)** and the tool itself, **Run on save** formats on save, and **Enabled languages** limits which languages the tool handles.
 
+With **Automatic**, a JavaScript or TypeScript file below the tool's own configuration (a Prettier configuration file or `prettier` key in `package.json`, an oxfmt configuration, or Biome's) is formatted by that tool rather than by the language server, once the tool is installed (before `npm install`, the language server formats). **Settings › Editor › General › Reformat code on save** then runs the tool too.
+
+### Code style
+
+**Settings › Editor › Code Style › JavaScript** and **TypeScript** have **Spaces** (after commas, around operators, within braces and so on) and **Punctuation** (semicolons: keep, use or don't use; quotes: as in the file, single or double). They are saved per project with the other code style settings and sent to the TypeScript server, which applies them to **Reformat Code** and to the code it adds: quick fixes, auto-imports, refactorings and **Optimize Imports**. JSX files follow JavaScript and TSX files TypeScript. When EditorConfig support is on, the project's `.editorconfig` comes first where it sets `quote_type` or the IntelliJ properties `ij_typescript_use_semicolon_after_statement`, `ij_typescript_use_double_quotes`, `ij_typescript_space_after_comma`, `ij_typescript_spaces_within_object_literal_braces` and the like (`ij_javascript_*` for JavaScript). tsserver has no trailing-comma option, so trailing commas stay as written.
+
 ### Biome lint
 
 In a Biome project, Biome's diagnostics show in the editor and the Problems tool window, and `⌥⏎` / `Alt+Enter` offers its quick fixes and suppressions. Biome's safe fixes (`source.fixAll.biome`) run with **Code › Code Cleanup** and, when **Settings › Tools › Actions on Save › Run code cleanup** is on, on save. When Biome's formatter is enabled, its fix-all formats the file too.

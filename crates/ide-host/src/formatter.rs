@@ -77,6 +77,69 @@ fn biome_formats(file: &Path) -> bool {
     }
 }
 
+const PRETTIER_CONFIGS: [&str; 18] = [
+    ".prettierrc",
+    ".prettierrc.json",
+    ".prettierrc.json5",
+    ".prettierrc.yaml",
+    ".prettierrc.yml",
+    ".prettierrc.toml",
+    ".prettierrc.js",
+    ".prettierrc.cjs",
+    ".prettierrc.mjs",
+    ".prettierrc.ts",
+    ".prettierrc.cts",
+    ".prettierrc.mts",
+    "prettier.config.js",
+    "prettier.config.cjs",
+    "prettier.config.mjs",
+    "prettier.config.ts",
+    "prettier.config.cts",
+    "prettier.config.mts",
+];
+
+/// A Prettier configuration applies to `file`: a configuration file or a `prettier` key in a
+/// `package.json` above it.
+fn prettier_configured(file: &Path) -> bool {
+    PRETTIER_CONFIGS.iter().any(|name| formatter::find_up(file, Path::new(name)).is_some())
+        || file.ancestors().skip(1).any(|dir| {
+            std::fs::read_to_string(dir.join("package.json"))
+                .ok()
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+                .is_some_and(|v| v.get("prettier").is_some())
+        })
+}
+
+/// The languages whose server formats in the IDE's code style (`ts_code_style`).
+const CODE_STYLE_LANGUAGES: [&str; 4] = ["javascript", "javascriptreact", "typescript", "typescriptreact"];
+
+/// In Automatic mode, the project's own configuration of `tool` wins over the TypeScript server,
+/// whose output follows the IDE's code style. Not before the tool is installed (`resolves`): a fresh
+/// clone keeps formatting with the server until `npm install`.
+fn project_takes_over(tool: ExternalFormatter, language: &str, file: &Path, resolves: impl FnOnce() -> bool) -> bool {
+    CODE_STYLE_LANGUAGES.contains(&language) && project_configured(tool, file) && resolves()
+}
+
+/// Format on save runs the external tool: its own setting, or the editor's when the tool takes over
+/// from the language server (Black, dprint, or a project configuration), so saving keeps formatting.
+fn runs_on_save(tool: ExternalFormatter, run_on_save: bool, takes_over: bool, format_on_save: bool) -> bool {
+    run_on_save
+        || ((matches!(tool, ExternalFormatter::Black | ExternalFormatter::Dprint) || takes_over) && format_on_save)
+}
+
+/// The project configures `tool`. Every formatter needs an arm. dprint is chosen before this check
+/// (`dprint_project`), so it never reaches it.
+fn project_configured(tool: ExternalFormatter, file: &Path) -> bool {
+    match tool {
+        ExternalFormatter::Prettier => prettier_configured(file),
+        ExternalFormatter::Oxfmt => {
+            OXFMT_CONFIGS.iter().any(|name| formatter::find_up(file, Path::new(name)).is_some())
+        }
+        ExternalFormatter::Biome => biome_formats(file),
+        ExternalFormatter::Ruff | ExternalFormatter::Black | ExternalFormatter::Dprint => false,
+    }
+}
+
 /// The `pyproject.toml` Black reads for `file`, in the project root Black finds: the nearest folder
 /// with `.git`, `.hg`, or a `pyproject.toml` that has `[tool.black]` (one without it is skipped).
 /// `None` when that root has no `pyproject.toml`: Black then reads the user's configuration.
@@ -611,18 +674,26 @@ async fn provider_edits(
     if selected.is_none() {
         selected = external_tool(options.tool, language.as_ref(), &snap.path, &settings.languages)?;
     }
+    let mut takes_over = false;
     // Black is selected only when configured or preferred: the Ruff server's formatting doesn't replace it.
     if let Some(tool) = selected
         && options.tool.is_none()
         && tool != ExternalFormatter::Dprint
         && tool != ExternalFormatter::Black
         && !settings.languages.formatter(tool).prefer
-        && match doc {
-            Some(doc) => project.lsp.can_format(doc).await?,
-            None => project.lsp.can_format_text(&snap.path, &snap.language).await,
-        }
     {
-        selected = None;
+        takes_over = project_takes_over(tool, snap.language.as_str(), &snap.path, || {
+            let custom = ide_sdk::apply::setting_path(&project.root, &settings.languages.formatter(tool).path);
+            Tools::new(&host.local_data_dir).formatter_command(tool.name(), &snap.path, custom.as_deref()).is_ok()
+        });
+        if !takes_over
+            && match doc {
+                Some(doc) => project.lsp.can_format(doc).await?,
+                None => project.lsp.can_format_text(&snap.path, &snap.language).await,
+            }
+        {
+            selected = None;
+        }
     }
     let Some(selected) = selected else {
         if options.on_save && !settings.editor.format_on_save {
@@ -644,10 +715,8 @@ async fn provider_edits(
         .map_err(|e| IdeError::internal(e.to_string()));
     };
     let tool_settings = settings.languages.formatter(selected);
-    // Black and dprint take over from the language server in their projects, so Format on save runs them too.
-    let runs_on_save = tool_settings.run_on_save
-        || (matches!(selected, ExternalFormatter::Black | ExternalFormatter::Dprint) && settings.editor.format_on_save);
-    if options.on_save && !runs_on_save {
+    if options.on_save && !runs_on_save(selected, tool_settings.run_on_save, takes_over, settings.editor.format_on_save)
+    {
         return Ok(None);
     }
     host.require_trust(window)?;
@@ -814,7 +883,7 @@ pub async fn python_import_edits(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ExternalFormatter::{Biome, Black, Oxfmt, Prettier, Ruff};
+    use ExternalFormatter::{Biome, Black, Dprint, Oxfmt, Prettier, Ruff};
     use ide_core::LanguageId;
     use ide_language::LanguageRegistry;
 
@@ -1180,6 +1249,55 @@ mod tests {
         settings.oxfmt.prefer = true;
         settings.oxfmt.languages.clear();
         assert_eq!(tool(None, "typescript", file, &settings).unwrap(), None);
+    }
+
+    #[test]
+    fn a_project_configuration_of_the_formatter_wins_over_the_language_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("a/src")).unwrap();
+        std::fs::create_dir_all(root.join("b/src")).unwrap();
+        std::fs::create_dir_all(root.join("c/src")).unwrap();
+        std::fs::write(root.join("a/.prettierrc.json"), "{}").unwrap();
+        std::fs::write(root.join("b/package.json"), r#"{ "prettier": { "semi": false } }"#).unwrap();
+        std::fs::write(root.join("c/package.json"), r#"{ "name": "c" }"#).unwrap();
+        std::fs::write(root.join("c/biome.json"), "{}").unwrap();
+        assert!(project_configured(Prettier, &root.join("a/src/app.ts")));
+        assert!(project_configured(Prettier, &root.join("b/src/app.ts")));
+        assert!(!project_configured(Prettier, &root.join("c/src/app.ts")));
+        assert!(project_configured(Biome, &root.join("c/src/app.ts")));
+        assert!(!project_configured(Oxfmt, &root.join("c/src/app.ts")));
+        std::fs::write(root.join("c/.oxfmtrc.json"), "{}").unwrap();
+        assert!(project_configured(Oxfmt, &root.join("c/src/app.ts")));
+    }
+
+    #[test]
+    fn only_the_typescript_server_languages_give_way_to_an_installed_project_formatter() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".prettierrc"), "{}").unwrap();
+        let file = |name: &str| dir.path().join(name);
+        for language in ["typescript", "typescriptreact", "javascript", "javascriptreact"] {
+            assert!(project_takes_over(Prettier, language, &file("a.ts"), || true), "{language}");
+        }
+        for language in ["json", "css", "html", "yaml", "markdown", "vue"] {
+            assert!(!project_takes_over(Prettier, language, &file("a.json"), || true), "{language}");
+        }
+        // Configured but not installed yet (before `npm install`): the language server formats.
+        assert!(!project_takes_over(Prettier, "typescript", &file("a.ts"), || false));
+        // No configuration: the tool isn't even looked up.
+        assert!(!project_takes_over(Biome, "typescript", &file("a.ts"), || panic!("resolved")));
+    }
+
+    #[test]
+    fn format_on_save_keeps_running_when_the_project_formatter_takes_over() {
+        // Format on save formatted with the language server before; the tool that replaces it does too.
+        assert!(runs_on_save(Prettier, false, true, true));
+        assert!(!runs_on_save(Prettier, false, true, false));
+        assert!(runs_on_save(Black, false, false, true));
+        assert!(runs_on_save(Dprint, false, false, true));
+        // Selected by the settings, not taking over: only its own Run on save.
+        assert!(!runs_on_save(Prettier, false, false, true));
+        assert!(runs_on_save(Prettier, true, false, false));
     }
 
     #[test]

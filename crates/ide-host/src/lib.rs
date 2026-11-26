@@ -27,6 +27,7 @@ mod requests;
 pub mod rpc;
 pub mod shell_env;
 pub mod trust;
+mod ts_code_style;
 mod tsc_watch;
 pub mod web_server;
 

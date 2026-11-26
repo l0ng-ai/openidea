@@ -9140,6 +9140,12 @@ export type LanguageCodeStyle_Deserialize = {
 	keywordCase?: string | null,
 	/**  SQL › Case › Identifiers (unquoted names): `upper` | `lower` | `keep`. */
 	identifierCase?: string | null,
+	/**  JavaScript / TypeScript › Punctuation › Semicolons: `ignore` | `insert` | `remove`. */
+	semicolons?: string | null,
+	/**  JavaScript / TypeScript › Punctuation › Quotes: `auto` | `single` | `double`. */
+	quotes?: string | null,
+	/**  JavaScript / TypeScript › Spaces, by tsserver format option (`insertSpaceAfterCommaDelimiter`). */
+	spaces?: { [key in string]: boolean },
 };
 
 /**  Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit). */
@@ -9164,6 +9170,12 @@ export type LanguageCodeStyle_Serialize = {
 	keywordCase?: string | null,
 	/**  SQL › Case › Identifiers (unquoted names): `upper` | `lower` | `keep`. */
 	identifierCase?: string | null,
+	/**  JavaScript / TypeScript › Punctuation › Semicolons: `ignore` | `insert` | `remove`. */
+	semicolons?: string | null,
+	/**  JavaScript / TypeScript › Punctuation › Quotes: `auto` | `single` | `double`. */
+	quotes?: string | null,
+	/**  JavaScript / TypeScript › Spaces, by tsserver format option (`insertSpaceAfterCommaDelimiter`). */
+	spaces?: { [key in string]: boolean },
 };
 
 /**  Language identifier, e.g. `rust`, `typescript`, `kotlin`. Matches LSP `languageId`. */

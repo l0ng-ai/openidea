@@ -905,7 +905,7 @@ pub fn native_tsdk(root: &Path, s: &Settings) -> Option<PathBuf> {
 const PYTHON_SERVERS: [&str; 8] =
     ["basedpyright", "pyright", "ty", "pyrefly", "pylsp", "jedi-language-server", "ruff", "djlsp"];
 
-pub(crate) fn merge(base: &mut Value, layer: Value) {
+pub fn merge(base: &mut Value, layer: Value) {
     match (base, layer) {
         (Value::Object(base), Value::Object(layer)) => {
             for (k, v) in layer {
