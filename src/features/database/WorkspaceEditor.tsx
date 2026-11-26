@@ -28,6 +28,8 @@ import { identName, inLiteral, lex } from "./sql/lexer";
 import { loadCompletion, loadSources, useDatabase } from "./store";
 import { DUCKDB_JDBC_CLASS, vendorOf } from "./vendors";
 import {
+  workspaceJoinColumnOptions,
+  workspaceJoinColumnTarget,
   workspaceJoinQuery,
   workspaceSourceAliasError,
   workspaceSourceNames,
@@ -97,6 +99,28 @@ function complete(bindings: () => { config: Configuration; references: SourceRef
     const parsed = lex(sql, "postgres");
     const state = inLiteral(parsed, context.pos);
     if (state === "string" || state === "comment") return null;
+    const { config, references } = bindings();
+    const { names, aliases, labels } = references;
+    const target = workspaceJoinColumnTarget(sql, names, aliases, parsed);
+    if (target && config[target.source]) {
+      const current = projectRequest();
+      const id = config[target.source];
+      const catalog = useDatabase.getState().completion[id] ?? (await loadCompletion(id));
+      const latest = bindings();
+      if (
+        !current() ||
+        context.aborted ||
+        (context.view && context.view.state.doc !== context.state.doc) ||
+        !catalog ||
+        latest.config.left !== config.left ||
+        latest.config.right !== config.right
+      )
+        return null;
+      const updated = workspaceJoinColumnTarget(sql, latest.references.names, latest.references.aliases, parsed);
+      if (updated?.source !== target.source || updated.schema !== target.schema || updated.table !== target.table)
+        return null;
+      return { from: target.from, options: workspaceJoinColumnOptions(target, catalog), filter: false };
+    }
     const hash = parsed.tokens.findLastIndex((token) => token.text === "#");
     if (hash < 0) return null;
     const tokens = parsed.tokens.slice(hash + 1);
@@ -104,8 +128,6 @@ function complete(bindings: () => { config: Configuration; references: SourceRef
     const from = parsed.tokens[hash]!.from;
     const prefix = sql.slice(from);
     if (/\s$/.test(prefix) && state !== "quoted") return null;
-    const { config, references } = bindings();
-    const { names, aliases, labels } = references;
     if (tokens.length < 2) {
       const typed = tokens[0]?.text.toLowerCase() ?? "";
       return {
@@ -132,6 +154,7 @@ function complete(bindings: () => { config: Configuration; references: SourceRef
     if (
       !current() ||
       context.aborted ||
+      (context.view && context.view.state.doc !== context.state.doc) ||
       latest.config[side] !== id ||
       !catalog ||
       workspaceSourceSide(name, latest.references.names, latest.references.aliases) !== side

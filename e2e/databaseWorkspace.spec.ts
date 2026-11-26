@@ -10,20 +10,31 @@ async function setupWorkspace(page: Page) {
       { id: "accounts", name: "Accounts · PostgreSQL", driver: "postgres" },
       { id: "events", name: "Events · ClickHouse", driver: "clickhouse" },
     ];
-    const table = (schema: string, name: string) => ({ schema, name, kind: "table", columns: [] });
+    const table = (schema: string, name: string, ...keys: string[]) => ({
+      schema,
+      name,
+      kind: "table",
+      columns: keys.map((name) => ({
+        name,
+        dataType: "BIGINT",
+        nullable: false,
+        primaryKey: false,
+        hasDefault: false,
+      })),
+    });
     const completion = {
       accounts: {
         defaultSchema: "public",
         tables: [
-          table("public", "customers"),
-          table("legacy", "customers"),
+          table("public", "customers", "id", "join_key"),
+          table("legacy", "customers", "archived_id"),
           { ...table("public", "customers_view"), kind: "view" },
         ],
         foreignKeys: [],
       },
       events: {
         defaultSchema: "events",
-        tables: [table("events", "purchases")],
+        tables: [table("events", "purchases", "customer_id", "join_key")],
         foreignKeys: [],
       },
     };
@@ -175,7 +186,7 @@ test("completes preferred aliases and pages the same workspace result", async ({
   );
   const ok = settings.getByRole("button", { name: "OK", exact: true });
   await expect(ok).toBeDisabled();
-  await rightAlias.clear();
+  await rightAlias.fill("events");
   await expect(ok).toBeEnabled();
   await page.screenshot({ path: info.outputPath("workspace-aliases.png"), animations: "disabled" });
   await ok.click();
@@ -184,11 +195,11 @@ test("completes preferred aliases and pages the same workspace result", async ({
   const context = workspace.getByRole("button", {
     name: /Configure Sources.*Accounts.*PostgreSQL.*Events.*ClickHouse.*DuckDB JDBC/,
   });
-  await expect(context).toHaveText("acct ↔ Events · ClickHouse");
+  await expect(context).toHaveText("acct ↔ events");
   await workspace.getByRole("button", { name: "Insert JOIN" }).click();
   const left = "#acct";
   await expect(editor).toContainText(left + ".public.customers");
-  await expect(editor).toContainText('#"Events · ClickHouse".events.purchases');
+  await expect(editor).toContainText("#events.events.purchases");
   const selection = () => page.evaluate(() => window.getSelection()?.toString());
   expect(await selection()).toBe("public");
   await editor.press("Tab");
@@ -202,9 +213,11 @@ test("completes preferred aliases and pages the same workspace result", async ({
   await editor.press("Escape");
 
   await editor.press("Meta+A");
-  await page.keyboard.insertText("SELECT * FROM #");
+  await page.keyboard.insertText("SELECT *\nFROM #");
   await editor.press("Control+Space");
-  await expect(page.getByRole("option", { name: '#"Events · ClickHouse"', exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("option", { name: /^#events/ }).getByText("Events · ClickHouse", { exact: true }),
+  ).toBeVisible();
   await expect(page.getByRole("option", { name: /^#left/ })).toHaveCount(0);
   await expect(page.getByRole("option", { name: /^#right/ })).toHaveCount(0);
   const accountOption = page.getByRole("option", { name: /^#acct/ });
@@ -216,10 +229,20 @@ test("completes preferred aliases and pages the same workspace result", async ({
   await expect(page.getByRole("option", { name: /customers_view/ })).toHaveCount(0);
   await page.screenshot({ path: info.outputPath("workspace-completion.png"), animations: "disabled" });
   await page.getByRole("option", { name: /public\.customers/ }).click();
-  await page.keyboard.insertText(" a\nJOIN #right.events.");
+  await page.keyboard.insertText(" AS a\nJOIN #events.events.");
   await editor.press("Control+Space");
-  await page.getByRole("option", { name: /#right\.events\.purchases/ }).click();
-  await page.keyboard.insertText(" b ON a.id = b.customer_id");
+  await page.getByRole("option", { name: /#events\.events\.purchases/ }).click();
+  await page.keyboard.insertText(" AS b\n  ON a.");
+  await editor.press("Control+Space");
+  await expect(page.getByRole("option", { name: /archived_id|customer_id/ })).toHaveCount(0);
+  const keyOption = (name: string) => page.getByRole("option").filter({ has: page.getByText(name, { exact: true }) });
+  await expect(keyOption("id")).toBeVisible();
+  await keyOption("id").click();
+  await page.keyboard.insertText(" = b.");
+  await editor.press("Control+Space");
+  await expect(keyOption("customer_id")).toBeVisible();
+  await page.screenshot({ path: info.outputPath("workspace-keys.png"), animations: "disabled" });
+  await keyOption("customer_id").click();
   await editor.press("Meta+Enter");
 
   const grid = workspace.getByRole("grid");
