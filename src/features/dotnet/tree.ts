@@ -5,13 +5,18 @@
  * groups of a build. The model comes from the one shared workspace scan
  * (`ensureDotnetModel`, the scan the NuGet window and context actions share);
  * roots re-register in place on change (as External Libraries does) and nothing
- * registers while the model is empty. Discovery states (loading / empty /
- * failure) are the second slice of #5635.
+ * registers while the model is empty. The scan starts only when the file index
+ * shows .NET files (a cheap index lookup, retried once indexing finishes), so a
+ * workspace without .NET pays nothing on open. Discovery states (loading /
+ * empty / failure) are the second slice of #5635.
  */
 import type { DotnetWorkspace } from "@/platform/dotnet";
+import { tx } from "@/platform/i18n";
+import { call, commands, onIdeEvent } from "@/platform/ipc";
 import { basename, useProject } from "@/platform/project";
 import { registerProjectViewRoot, type ProjectViewRootContribution } from "@/workbench/contributions";
 import { ensureDotnetModel, useDotnet } from "./store";
+import { isDotnetProjectPath, isDotnetSolutionPath } from "./target";
 
 const ICON = "project-dotnet";
 
@@ -25,6 +30,23 @@ const solutionName = (path: string) => {
   return dot > 0 ? name.slice(0, dot) : name;
 };
 
+/** File-index queries for the candidate check: the solutions by extension, `proj` fuzzy-matches every project kind. */
+const CANDIDATE_QUERIES = [".sln", ".slnx", "proj"];
+const CANDIDATE_LIMIT = 10000;
+
+/**
+ * Whether the file index holds .NET files. The index's search is fuzzy (`proj`
+ * matches `App.csproj`), so the hits are matched by extension exactly. Cheap:
+ * index lookups, no tree walk — unlike `dotnetWorkspace`, which reads every
+ * directory and evaluates every project with MSBuild.
+ */
+async function dotnetCandidates(): Promise<string[]> {
+  const hits = await Promise.all(CANDIDATE_QUERIES.map((q) => call(commands.findFiles(q, CANDIDATE_LIMIT))));
+  return [...new Set(hits.flat().map((hit) => hit.path))].filter(
+    (path) => isDotnetSolutionPath(path) || isDotnetProjectPath(path),
+  );
+}
+
 /** One group per solution (a leaf per project), standalone projects as roots of their own. */
 export function treeRoots(model: DotnetWorkspace): ProjectViewRootContribution[] {
   if (!model.projects.length && !model.solutions.length) return [];
@@ -36,7 +58,7 @@ export function treeRoots(model: DotnetWorkspace): ProjectViewRootContribution[]
     if (!solution.projects.length) continue;
     roots.push({
       id: solutionId(solution.path),
-      label: `Solution '${solutionName(solution.path)}'`,
+      label: tx`Solution '${solutionName(solution.path)}'`,
       icon: ICON,
       beforeProject: true,
       children: solution.projects.map(leaf),
@@ -59,10 +81,13 @@ export function treeRoots(model: DotnetWorkspace): ProjectViewRootContribution[]
 export function activateTree(): () => void {
   let disposals: (() => void)[] = [];
   let shown = "";
+  // An empty index while it was still building: one retry when indexing finishes.
+  let retryWhenIndexed = false;
   const clear = () => {
     const prev = disposals;
     disposals = [];
     shown = "";
+    retryWhenIndexed = false;
     prev.reverse().forEach((d) => d());
   };
   const sync = () => {
@@ -76,16 +101,39 @@ export function activateTree(): () => void {
     disposals = roots.map((root) => registerProjectViewRoot(root));
     prev.reverse().forEach((d) => d());
   };
+  /**
+   * Starts the one shared scan only when the file index shows .NET files — the
+   * scan itself stays behind `ensureDotnetModel`, which the NuGet window and
+   * the context actions share. Without candidates (and with indexing done) the
+   * workspace has no .NET and pays nothing; the model still loads on demand.
+   */
+  const scanIfDotnet = async () => {
+    let dotnet = false;
+    try {
+      dotnet = (await dotnetCandidates()).length > 0;
+      if (!dotnet && !(await call(commands.indexStatus())).indexing) return;
+    } catch {
+      return;
+    }
+    if (dotnet) void ensureDotnetModel();
+    else retryWhenIndexed = true;
+  };
   const subscriptions = [
     useDotnet.subscribe(sync),
     useProject.subscribe((s, prev) => {
       if (s.project?.root === prev.project?.root) return;
       // Another project's solutions must not show while this one is scanned.
       clear();
-      if (s.project) void ensureDotnetModel();
+      if (s.project) void scanIfDotnet();
+    }),
+    // A fresh open raced the index: candidates may be there once indexing ends.
+    onIdeEvent("indexState", (event) => {
+      if (event.indexing || !retryWhenIndexed) return;
+      retryWhenIndexed = false;
+      void scanIfDotnet();
     }),
   ];
-  if (useProject.getState().project) void ensureDotnetModel();
+  if (useProject.getState().project) void scanIfDotnet();
   return () => {
     clear();
     subscriptions.forEach((d) => d());
