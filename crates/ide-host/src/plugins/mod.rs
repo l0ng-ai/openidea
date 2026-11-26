@@ -211,6 +211,7 @@ const LATENCY_WINDOW: usize = 128;
 /// Events waiting for one plugin (from one window).
 struct EventQueue {
     since: Instant,
+    last_event: Instant,
     events: Vec<WorkbenchEvent>,
     files_source: Option<files_changed::Source>,
 }
@@ -220,6 +221,8 @@ const MAX_QUEUED_EVENTS: usize = 500;
 /// How long events for a plugin that is not running are collected before it
 /// is activated to receive them.
 const IDLE_BATCH: Duration = Duration::from_secs(2);
+/// Maximum delay for debounced events before forcing delivery.
+const MAX_DEBOUNCE_WAIT: Duration = Duration::from_secs(5);
 
 struct LoadedPlugin {
     pkg: Package,
@@ -1809,6 +1812,52 @@ impl PluginHost {
         self.forget_web_ptys(label);
     }
 
+    /// A project closed (or the last window for it detached). Closes the project
+    /// generation, drops queued events for that window and project, cancels in-flight
+    /// actor work for it, withdraws run targets and run configurations, and delivers
+    /// `project-closed` to subscribed plugins.
+    pub fn project_closed(&self, root: &Path, window: &str) {
+        self.shared.close_project_generation(root);
+        self.withdraw_project_run_targets(root);
+        self.shared.run_configurations.write().retain(|(_, r), _| r != root);
+
+        let root_ipc = ide_core::ipc_path::to_ipc(root);
+        {
+            let mut queues = self.queues.lock();
+            queues.retain(|(_, client), q| {
+                if client.as_deref() == Some(window) {
+                    return false;
+                }
+                q.events.retain(|e| {
+                    if let WorkbenchEvent::FilesChanged(f) = e
+                        && f.project.as_deref() == Some(&root_ipc)
+                    {
+                        return false;
+                    }
+                    true
+                });
+                !q.events.is_empty()
+            });
+        }
+
+        let plugins = self.plugins.read();
+        for p in plugins.values() {
+            {
+                let mut batches = p.batches.lock();
+                batches.files_pending.retain(|(client, ws_root), _| {
+                    client.as_deref() != Some(window) && ws_root.as_deref() != Some(root)
+                });
+            }
+            if let Some(actor) = p.runtime.lock().as_ref() {
+                actor.cancel_soft();
+            }
+        }
+        drop(plugins);
+
+        self.post_events(None, vec![WorkbenchEvent::ProjectClosed(root_ipc)]);
+        self.flush_events();
+    }
+
     /// The user cancelled a plugin task (`task_id` from `TaskStarted`).
     pub fn cancel_task(&self, task_id: &str) -> bool {
         task_id.parse().is_ok_and(|id| self.shared.cancel_task(id))
@@ -1998,9 +2047,11 @@ impl PluginHost {
             }
             let queue = queues.entry((p.id().to_owned(), client.map(str::to_owned))).or_insert_with(|| EventQueue {
                 since: now,
+                last_event: now,
                 events: Vec::new(),
                 files_source: None,
             });
+            queue.last_event = now;
             if let Some(source) = &source {
                 if !queue.files_source.as_ref().is_some_and(|old| old.same(source)) {
                     queue.events.retain(|e| !matches!(e, WorkbenchEvent::FilesChanged(_)));
@@ -2042,21 +2093,74 @@ impl PluginHost {
         let due: Vec<(QueueKey, EventQueue)> = {
             let mut queues = self.queues.lock();
             let plugins = self.plugins.read();
-            let keys: Vec<_> = queues
-                .iter()
-                .filter(|((id, _), q)| {
-                    let running =
-                        plugins.get(id).is_some_and(|p| p.runtime.lock().as_ref().is_some_and(|a| a.is_alive()));
-                    running
+            let subs = self.shared.subscriptions.lock();
+            let mut due = Vec::new();
+            let mut keys_to_remove = Vec::new();
+
+            for (key, q) in queues.iter_mut() {
+                let (id, _client) = key;
+                let running = plugins.get(id).is_some_and(|p| p.runtime.lock().as_ref().is_some_and(|a| a.is_alive()));
+                let has_files = q.events.iter().any(|e| matches!(e, WorkbenchEvent::FilesChanged(_)));
+                let has_scheduled = q.events.iter().any(|e| matches!(e, WorkbenchEvent::Scheduled));
+                let debounce = subs.paths.get(id).and_then(|p| p.get("files-changed")).and_then(|f| f.debounce);
+
+                let (files_due, files_debouncing) = if has_files {
+                    if let Some(debounce) = debounce {
+                        let elapsed = now.saturating_duration_since(q.last_event) >= debounce
+                            || now.saturating_duration_since(q.since) >= MAX_DEBOUNCE_WAIT;
+                        (elapsed, !elapsed)
+                    } else {
+                        (true, false)
+                    }
+                } else {
+                    (false, false)
+                };
+
+                let other_events_due = (running
+                    || now.saturating_duration_since(q.since) >= IDLE_BATCH
+                    || q.events.len() >= MAX_QUEUED_EVENTS / 2
+                    || has_scheduled)
+                    && q.events.iter().any(|e| !matches!(e, WorkbenchEvent::FilesChanged(_)));
+
+                if files_debouncing {
+                    if other_events_due {
+                        let mut other_events = Vec::new();
+                        q.events.retain(|e| {
+                            if matches!(e, WorkbenchEvent::FilesChanged(_)) {
+                                true
+                            } else {
+                                other_events.push(e.clone());
+                                false
+                            }
+                        });
+                        due.push((
+                            key.clone(),
+                            EventQueue {
+                                since: q.since,
+                                last_event: q.last_event,
+                                events: other_events,
+                                files_source: None,
+                            },
+                        ));
+                    }
+                } else {
+                    let is_due = files_due
+                        || running
                         || now.saturating_duration_since(q.since) >= IDLE_BATCH
                         || q.events.len() >= MAX_QUEUED_EVENTS / 2
-                        || q.events
-                            .iter()
-                            .any(|e| matches!(e, WorkbenchEvent::FilesChanged(_) | WorkbenchEvent::Scheduled))
-                })
-                .map(|(k, _)| k.clone())
-                .collect();
-            keys.into_iter().filter_map(|k| queues.remove(&k).map(|q| (k, q))).collect()
+                        || has_scheduled;
+                    if is_due {
+                        keys_to_remove.push(key.clone());
+                    }
+                }
+            }
+
+            for k in keys_to_remove {
+                if let Some(q) = queues.remove(&k) {
+                    due.push((k, q));
+                }
+            }
+            due
         };
         let mut changed = false;
         for ((id, client), queue) in due {
@@ -2081,9 +2185,10 @@ impl PluginHost {
     pub fn wait_events(&self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         loop {
-            let busy = self.plugins.read().values().any(|p| p.batches.lock().pending > 0);
+            self.flush_events_at(Instant::now());
+            let busy =
+                self.plugins.read().values().any(|p| p.batches.lock().pending > 0) || !self.queues.lock().is_empty();
             if !busy {
-                self.flush_events_at(Instant::now());
                 return true;
             }
             if Instant::now() >= deadline {
@@ -2125,12 +2230,20 @@ impl PluginHost {
             && queue.events.iter().any(|e| !matches!(e, WorkbenchEvent::FilesChanged(_)))
         {
             let (files, other) = queue.events.into_iter().partition(|e| matches!(e, WorkbenchEvent::FilesChanged(_)));
-            let changed =
-                self.deliver(id, client.clone(), EventQueue { since: queue.since, events: other, files_source: None });
+            let changed = self.deliver(
+                id,
+                client.clone(),
+                EventQueue { since: queue.since, last_event: queue.last_event, events: other, files_source: None },
+            );
             return self.deliver(
                 id,
                 client,
-                EventQueue { since: queue.since, events: files, files_source: queue.files_source },
+                EventQueue {
+                    since: queue.since,
+                    last_event: queue.last_event,
+                    events: files,
+                    files_source: queue.files_source,
+                },
             ) | changed;
         }
         let Ok(plugin) = self.get(id) else { return false };
@@ -2451,12 +2564,15 @@ impl PluginHost {
             let restricted = p.dev_root.as_deref().is_some_and(|root| !(self.project_policy.read())(root));
             if due && !restricted && self.startup_finished.load(Ordering::Acquire) {
                 // Activates it if needed and calls `handle([scheduled])`.
-                self.queues
-                    .lock()
-                    .entry((p.id().to_owned(), None))
-                    .or_insert_with(|| EventQueue { since: now, events: Vec::new(), files_source: None })
-                    .events
-                    .push(WorkbenchEvent::Scheduled);
+                let mut q = self.queues.lock();
+                let queue = q.entry((p.id().to_owned(), None)).or_insert_with(|| EventQueue {
+                    since: now,
+                    last_event: now,
+                    events: Vec::new(),
+                    files_source: None,
+                });
+                queue.last_event = now;
+                queue.events.push(WorkbenchEvent::Scheduled);
             }
         }
         if changed {
