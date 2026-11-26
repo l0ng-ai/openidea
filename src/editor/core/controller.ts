@@ -59,7 +59,7 @@ import { isUntitledUri, untitledTitle } from "@/platform/virtualDocs";
 import { isRemoteWindow, projectLocation } from "@/platform/remote";
 import { auxiliaryWindow } from "@/platform/auxWindow";
 import { fileIconName, showContextMenu, type MenuItem } from "@/ui";
-import { ownFileColor } from "@/platform/fileColors";
+import { FILE_COLOR_NAMES, ownFileColor } from "@/platform/fileColors";
 import { canOpenWithSystemApp, canRevealInFileManager, fileManagerName } from "@/platform/fileManager";
 import {
   activateTab,
@@ -2430,8 +2430,9 @@ export class EditorController implements SlotHost {
       { kind: "separator" },
       ...(path
         ? ([
-            { label: "File Color", submenu: fileColorMenuItems(path) },
-            { kind: "separator" },
+            ...(inProject && path !== project!.root
+              ? ([{ label: "File Color", submenu: fileColorMenuItems(path) }, { kind: "separator" }] as MenuItem[])
+              : []),
             {
               label: "Copy Path/Reference…",
               submenu: [
@@ -2521,36 +2522,22 @@ export class EditorController implements SlotHost {
 }
 
 /**
- * File Color submenu of a file tab: the project view's File Color entries
- * (features/project-tree) as action items carrying the path, so the tab menu
- * never imports the feature that owns the model.
+ * File Color submenu of a file tab: the project view's File Color rows as action items carrying
+ * the path (features/project-tree owns the model and the titles), so both menus agree.
  */
 function fileColorMenuItems(path: string): MenuItem[] {
   const { project, settings } = useProject.getState();
-  const rel = project ? relativePath(project.root, path) : null;
-  const current = rel && rel !== path ? ownFileColor(rel, false, settings)?.toLowerCase() : null;
+  const current = project ? ownFileColor(relativePath(project.root, path), false, settings)?.toLowerCase() : null;
   return [
-    // Same colour rows as the project view's File Color submenu; each row references the
-    // action of that name (features/project-tree, registerProjectActions) with the path as
-    // the argument. English labels are kept in sync with LABELS in
-    // features/project-tree/fileColor.ts so both menus agree.
-    ...[
-      ["blue", "Blue"],
-      ["green", "Green"],
-      ["orange", "Orange"],
-      ["rose", "Rose"],
-      ["violet", "Violet"],
-      ["yellow", "Yellow"],
-      ["gray", "Gray"],
-    ].map(([name, label]): MenuItem => ({
+    ...FILE_COLOR_NAMES.map((name): MenuItem => ({
       kind: "action",
       action: `file.${name}`,
       arg: path,
-      label,
       checked: current === name,
     })),
-    ...(current ? [{ kind: "action" as const, action: "file.clearColor", arg: path, label: "Clear File Color" }] : []),
-    { kind: "action", action: "file.editColors", label: "Edit File Colors…" },
+    { kind: "separator" },
+    ...(current ? [{ kind: "action" as const, action: "file.clearColor", arg: path }] : []),
+    { kind: "action", action: "file.editColors" },
   ];
 }
 

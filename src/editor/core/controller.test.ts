@@ -446,7 +446,7 @@ describe("EditorController", () => {
     ipc.isTauri.mockReturnValue(true);
     const disposeActions = registerProjectActions();
     try {
-      ctrl = new EditorController(createMemoryBackend({ "/p/a.ts": "", "/p/b.ts": "" }));
+      ctrl = new EditorController(createMemoryBackend({ "/p/a.ts": "", "/p/b.ts": "", "/elsewhere/c.ts": "" }));
       ctrl.start();
       await ctrl.openFile("/p/a.ts", { focus: false });
       const pane = () => useTabs.getState().panes[useTabs.getState().activePane]!;
@@ -454,7 +454,7 @@ describe("EditorController", () => {
       const entry = raw.find((i) => "label" in i && i.label === "File Color");
       expect(entry).toBeDefined();
       const items = resolveMenuItems((entry as { submenu: typeof raw }).submenu);
-      expect(items.map((i) => i.label)).toEqual([
+      expect(items.filter((i) => i.kind === "item").map((i) => i.label)).toEqual([
         "Blue",
         "Green",
         "Orange",
@@ -468,6 +468,10 @@ describe("EditorController", () => {
       await vi.waitFor(() => expect(ipc.settingsSet).toHaveBeenCalledTimes(2));
       expect(ipc.settingsSet).toHaveBeenNthCalledWith(1, "project", "scopes", expect.stringContaining('"file:a.ts"'));
       expect(ipc.settingsSet).toHaveBeenNthCalledWith(2, "project", "fileColors", expect.stringContaining("blue"));
+      // A file outside the project has no File Color, as in the project view.
+      await ctrl.openFile("/elsewhere/c.ts", { focus: false });
+      const outside = pane().tabs.find((t) => t.input.path === "/elsewhere/c.ts")!;
+      expect(ctrl.tabMenu(pane().id, outside).some((i) => "label" in i && i.label === "File Color")).toBe(false);
       ipc.isTauri.mockReturnValue(false);
       useProject.setState({ project: null, settings: null });
     } finally {
