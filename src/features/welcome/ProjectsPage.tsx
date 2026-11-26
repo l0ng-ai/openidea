@@ -1,17 +1,19 @@
-/** Welcome › Projects: search, New Project / Open / Clone Repository / Remote Development, and the recent projects list. */
+/**
+ * Welcome › Projects and Files: stacked primary actions (Open, New ▾, Clone Repository,
+ * Remote Development), search field, and the recent projects / groups list.
+ */
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import clsx from "clsx";
 import { executeAction, useActions } from "@/platform/actions";
-import { shortcutLabel } from "@/platform/keymap";
+import { tx } from "@/platform/i18n";
+import type { RecentProjectGroup } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { useRemoteProgress } from "@/platform/remote";
 import { stageLabel } from "@/features/remote-dev/model";
 import {
-  Button,
   HighlightedText,
   Icon,
   IconButton,
-  Kbd,
   Menu,
   type MenuItem,
   SearchField,
@@ -21,161 +23,88 @@ import {
   showContextMenu,
   T,
 } from "@/ui";
-import { askRemoveRecent, groupMenu, ProjectBadge, recentMenu, unavailableTitle } from "./RecentList";
-import { openRecent, recentRows, setGroupExpanded, useRecent, type RecentMatch, type RecentRow } from "./recent";
 import { projectWindowOverride } from "@/workbench/projectWindow";
-import type { RecentProjectGroup } from "@/platform/ipc";
+import { askNewGroup, askRemoveRecent, groupMenu, ProjectBadge, recentMenu, unavailableTitle } from "./RecentList";
+import { openRecent, recentRows, setGroupExpanded, useRecent, type RecentMatch, type RecentRow } from "./recent";
 import styles from "./Welcome.module.css";
-import { tx } from "@/platform/i18n";
 
-function HeaderButtons() {
-  const canClone = useActions((s) => s.actions.has("vcs.clone"));
-  const canRemote = useActions((s) => s.actions.has("remote.connect"));
+function ActionStack() {
+  const actions = useActions((s) => s.actions);
   const opening = useProject((s) => s.opening);
-  const canCreate = useActions((s) => s.actions.has("file.newProject"));
-  const openKey = shortcutLabel("file.openProject");
-  const [moreOpen, setMoreOpen] = useState(false);
-  const more = useRef<HTMLButtonElement>(null);
-  const primary = [
-    { id: "file.newProject", label: "New Project", icon: "plus", available: canCreate, disabled: opening },
-    {
-      id: "file.openProject",
-      label: "Open",
-      icon: "folder-open",
-      title: openKey ? tx`Open (${openKey})` : undefined,
-      available: true,
-      disabled: opening,
-    },
-    { id: "vcs.clone", label: "Clone Repository", icon: "branch", available: canClone },
-    { id: "remote.connect", label: "Remote Development", icon: "remote", available: canRemote, disabled: opening },
-  ];
-  const secondary: MenuItem[] = [
-    { kind: "action", action: "file.newUntitled", label: "New File", disabled: opening },
-    { kind: "action", action: "file.openFile", label: "Open File", disabled: opening },
-  ];
+  const canCreate = actions.has("file.newProject");
+  const canNewFile = actions.has("file.newUntitled");
+  const canNewMarkdown = actions.has("file.newMarkdownFile");
+  const canClone = actions.has("vcs.clone");
+  const canRemote = actions.has("remote.connect");
+  const [newOpen, setNewOpen] = useState(false);
+  const newRef = useRef<HTMLButtonElement>(null);
+
+  const newItems = useMemo<MenuItem[]>(() => {
+    const items: MenuItem[] = [];
+    if (canCreate) items.push({ kind: "action", action: "file.newProject", label: "New Project…", disabled: opening });
+    if (canNewFile) items.push({ kind: "action", action: "file.newUntitled", label: "New File", disabled: opening });
+    if (canNewMarkdown)
+      items.push({ kind: "action", action: "file.newMarkdownFile", label: "New Markdown File", disabled: opening });
+    if (items.length) items.push({ kind: "separator" });
+    items.push({ id: "newGroup", label: "New Project Group…", icon: "folder", run: () => void askNewGroup() });
+    return items;
+  }, [canCreate, canNewFile, canNewMarkdown, opening]);
+
   return (
-    <div className={styles.headerButtons} role="group" aria-label={tx("Project actions")}>
-      {primary.map(
-        ({ id, label, title, icon, available, disabled }) =>
-          available && (
-            <Button
-              key={id}
-              size="small"
-              icon={icon}
-              className={styles.headerAction}
-              title={title ?? label}
-              aria-label={tx(label)}
-              disabled={disabled}
-              onClick={() => void executeAction(id)}
-            >
-              <span className={styles.headerActionLabel}>{tx(label)}</span>
-            </Button>
-          ),
-      )}
-      <IconButton
-        ref={more}
-        icon="more"
-        title="More Actions"
+    <div className={styles.actionStack} role="group" aria-label={tx("Project actions")}>
+      <button
+        type="button"
+        className={styles.actionButton}
+        disabled={opening}
+        onClick={() => void executeAction("file.openProject")}
+      >
+        <Icon name="folder-open" size={16} />
+        <span className={styles.actionLabel}>
+          <T>Open</T>
+        </span>
+      </button>
+      <button
+        ref={newRef}
+        type="button"
+        className={styles.actionButton}
         aria-haspopup="menu"
-        aria-expanded={moreOpen}
-        onClick={() => setMoreOpen((open) => !open)}
-      />
+        aria-expanded={newOpen}
+        onClick={() => setNewOpen((v) => !v)}
+      >
+        <Icon name="plus" size={16} />
+        <span className={styles.actionLabel}>
+          <T>New</T>
+        </span>
+        <Icon name="chevron-down" size={12} className={styles.actionChevron} />
+      </button>
       <Menu
-        open={moreOpen}
-        onClose={() => setMoreOpen(false)}
-        anchor={more}
-        items={secondary}
-        placement="bottom-end"
-        aria-label="More Actions"
+        open={newOpen}
+        onClose={() => setNewOpen(false)}
+        anchor={newRef}
+        items={newItems}
+        placement="bottom-start"
+        aria-label="New"
       />
-    </div>
-  );
-}
-
-/** Shown when there are no recent projects (IntelliJ's empty welcome). */
-function Landing() {
-  const canCreate = useActions((s) => s.actions.has("file.newProject"));
-  const canClone = useActions((s) => s.actions.has("vcs.clone"));
-  const canRemote = useActions((s) => s.actions.has("remote.connect"));
-  const opening = useProject((s) => s.opening);
-  const shortcut = shortcutLabel("file.openProject");
-  return (
-    <div className={styles.landing}>
-      <div className={styles.landingTitle}>
-        <T>Welcome to OpenIDEA</T>
-      </div>
-      <p className={styles.landingText}>
-        {canCreate && canClone
-          ? tx("Create a project, open a folder from disk or clone a repository from version control.")
-          : canClone
-            ? tx("Open a folder from disk or clone a repository from version control.")
-            : tx("Open a folder from disk.")}
-        <br />
-        <T>You can also drop a folder onto this window.</T>
-      </p>
-      <div className={styles.landingActions}>
-        <button type="button" className={styles.landingAction} onClick={() => void executeAction("file.newUntitled")}>
-          <span className={styles.landingIcon}>
-            <Icon name="file-new" size={20} />
+      {canClone && (
+        <button type="button" className={styles.actionButton} onClick={() => void executeAction("vcs.clone")}>
+          <Icon name="branch" size={16} />
+          <span className={styles.actionLabel}>
+            <T>Clone Repository</T>
           </span>
-          <T>New File</T>
         </button>
-        {canCreate && (
-          <button
-            type="button"
-            className={styles.landingAction}
-            disabled={opening}
-            onClick={() => void executeAction("file.newProject")}
-          >
-            <span className={styles.landingIcon}>
-              <Icon name="plus" size={20} />
-            </span>
-            <T>New Project</T>
-          </button>
-        )}
+      )}
+      {canRemote && (
         <button
           type="button"
-          className={styles.landingAction}
+          className={styles.actionButton}
           disabled={opening}
-          onClick={() => void executeAction("file.openProject")}
+          onClick={() => void executeAction("remote.connect")}
         >
-          <span className={styles.landingIcon}>
-            <Icon name="folder-open" size={20} />
-          </span>
-          <T>Open</T>
-        </button>
-        <button type="button" className={styles.landingAction} onClick={() => void executeAction("file.openFile")}>
-          <span className={styles.landingIcon}>
-            <Icon name="file" size={20} />
-          </span>
-          <T>Open File</T>
-        </button>
-        {canClone && (
-          <button type="button" className={styles.landingAction} onClick={() => void executeAction("vcs.clone")}>
-            <span className={styles.landingIcon}>
-              <Icon name="branch" size={20} />
-            </span>
-            <T>Clone Repository</T>
-          </button>
-        )}
-        {canRemote && (
-          <button
-            type="button"
-            className={styles.landingAction}
-            disabled={opening}
-            onClick={() => void executeAction("remote.connect")}
-          >
-            <span className={styles.landingIcon}>
-              <Icon name="remote" size={20} />
-            </span>
+          <Icon name="remote" size={16} />
+          <span className={styles.actionLabel}>
             <T>Remote Development</T>
-          </button>
-        )}
-      </div>
-      {shortcut && (
-        <div className={styles.landingHint}>
-          <T>Open a folder</T> <Kbd>{shortcut}</Kbd>
-        </div>
+          </span>
+        </button>
       )}
     </div>
   );
@@ -361,9 +290,6 @@ export function ProjectsPage() {
   const items = useMemo(() => recentRows(projects, groups, query, home), [projects, groups, query, home]);
   const current = Math.max(0, Math.min(active, items.length - 1));
 
-  if (!loaded) return null;
-  if (projects.length === 0) return <Landing />;
-
   const optionId = (i: number) => `${baseId}-p${i}`;
 
   const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
@@ -412,7 +338,8 @@ export function ProjectsPage() {
 
   return (
     <div className={styles.projects}>
-      <div className={styles.header}>
+      <ActionStack />
+      <div className={styles.searchHeader}>
         <SearchField
           ref={search}
           variant="bare"
@@ -424,13 +351,12 @@ export function ProjectsPage() {
           placeholder="Search projects"
           aria-label="Search projects"
           aria-controls={`${baseId}-list`}
-          aria-activedescendant={items.length ? optionId(current) : undefined}
+          aria-activedescendant={loaded && items.length ? optionId(current) : undefined}
           autoFocus={!isPopupOpen()}
           data-autofocus
           onKeyDown={onKeyDown}
           className={styles.search}
         />
-        <HeaderButtons />
       </div>
       <div
         id={`${baseId}-list`}
@@ -440,29 +366,40 @@ export function ProjectsPage() {
         className={styles.projectList}
         onKeyDown={onKeyDown}
       >
-        {items.map((row, i) =>
-          row.kind === "group" ? (
-            <GroupRow
-              key={`group:${row.group.name}`}
-              group={row.group}
-              count={row.count}
-              id={optionId(i)}
-              selected={i === current}
-              onSelect={() => setActive(i)}
-            />
-          ) : (
-            <ProjectRow
-              key={row.m.project.path}
-              m={row.m}
-              id={optionId(i)}
-              selected={i === current}
-              nested={row.group !== null}
-              onSelect={() => setActive(i)}
-              onOpen={(e) => void openRecent(row.m.project, projectWindowOverride(e))}
-            />
-          ),
+        {loaded &&
+          items.map((row, i) =>
+            row.kind === "group" ? (
+              <GroupRow
+                key={`group:${row.group.name}`}
+                group={row.group}
+                count={row.count}
+                id={optionId(i)}
+                selected={i === current}
+                onSelect={() => setActive(i)}
+              />
+            ) : (
+              <ProjectRow
+                key={row.m.project.path}
+                m={row.m}
+                id={optionId(i)}
+                selected={i === current}
+                nested={row.group !== null}
+                onSelect={() => setActive(i)}
+                onOpen={(e) => void openRecent(row.m.project, projectWindowOverride(e))}
+              />
+            ),
+          )}
+        {loaded && projects.length === 0 && (
+          <div className={styles.emptyProjects}>
+            <div>
+              <T>No recent projects</T>
+            </div>
+            <div className={styles.emptyHint}>
+              <T>Drop a folder here to open it</T>
+            </div>
+          </div>
         )}
-        {items.length === 0 && (
+        {loaded && projects.length > 0 && items.length === 0 && (
           <div className={styles.noMatches}>
             <T>No matching projects</T>
           </div>

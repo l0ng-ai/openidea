@@ -56,7 +56,7 @@ export function CliEditor({ input }: { input: EditorInput }) {
           <p className={styles.note}>
             <T>Starts a login shell where the session was.</T>
           </p>
-          <Button variant="primary" disabled={!project?.root} onClick={() => void startTab(input)}>
+          <Button variant="primary" disabled={!project?.root && !data.cwd} onClick={() => void startTab(input)}>
             <T>Start</T>
           </Button>
         </div>

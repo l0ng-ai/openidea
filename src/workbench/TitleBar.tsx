@@ -3,6 +3,7 @@ import { useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { useActions } from "@/platform/actions";
 import { isWebMode } from "@/platform/webBridge";
+import { tx } from "@/platform/i18n";
 import { shortcutLabel, useKeymap } from "@/platform/keymap";
 import { basename, useProject } from "@/platform/project";
 import { BarButton, Icon, IconButton, Menu, type MenuItem, showContextMenu, T } from "@/ui";
@@ -100,6 +101,48 @@ function ProjectButton() {
         open && <Slot component={Popup} anchor={ref} onClose={() => setOpen(false)} />
       ) : (
         <Menu open={open} onClose={() => setOpen(false)} anchor={ref} items={items} aria-label="Project" />
+      )}
+    </>
+  );
+}
+
+/** Top-left switcher in the Home window ("OpenIDEA Home ▾"), opening the project switcher. */
+function HomeButton() {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLButtonElement>(null);
+  const actions = useActions((s) => s.actions);
+  const Popup = useWorkbenchSlots((s) => s.projectPopup);
+  const items = useMemo<MenuItem[]>(() => {
+    const list: MenuItem[] = [];
+    if (actions.has("file.newProject")) list.push({ kind: "action", action: "file.newProject", label: "New Project…" });
+    list.push({ kind: "action", action: "file.openProject", label: "Open…" });
+    if (actions.has("vcs.clone")) list.push({ kind: "action", action: "vcs.clone", label: "Clone Repository…" });
+    if (actions.has("remote.connect"))
+      list.push({ kind: "action", action: "remote.connect", label: "Remote Development…" });
+    return list;
+  }, [actions]);
+  return (
+    <>
+      <BarButton
+        ref={ref}
+        variant="title"
+        className={styles.widget}
+        data-toolbar-icon-dropdown=""
+        aria-label={tx("OpenIDEA Home")}
+        aria-haspopup={Popup ? "dialog" : "menu"}
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <Icon name="home" size={16} className={styles.homeIcon} />
+        <span className={styles.widgetText} data-toolbar-label="">
+          <T>OpenIDEA Home</T>
+        </span>
+        <Icon name="chevron-down" size={12} className={styles.chevron} />
+      </BarButton>
+      {Popup ? (
+        open && <Slot component={Popup} anchor={ref} onClose={() => setOpen(false)} />
+      ) : (
+        <Menu open={open} onClose={() => setOpen(false)} anchor={ref} items={items} aria-label="OpenIDEA Home" />
       )}
     </>
   );
@@ -212,6 +255,47 @@ export function gearMenuItems(
   ];
 }
 
+export function homeGearMenuItems(
+  themeId: string,
+  keymapId: string,
+  customKeymaps: string[],
+  preview?: ThemePreview,
+): MenuItem[] {
+  const restore = preview && (() => preview.restore());
+  return [
+    { kind: "action", action: "file.settings" },
+    { kind: "action", action: "settings.keymap" },
+    { kind: "action", action: "plugins.settings" },
+    { kind: "action", action: "plugins.installFromDisk" },
+    { kind: "separator" },
+    {
+      id: "gear.theme",
+      label: "Theme",
+      submenu: [
+        ...themeItems(themeId, preview),
+        { kind: "separator" },
+        { kind: "action", action: "settings.appearance" },
+      ],
+    },
+    {
+      id: "gear.keymap",
+      label: "Keymap",
+      onActive: restore,
+      submenu: [
+        ...keymapItems(keymapId, customKeymaps),
+        { kind: "separator" },
+        { kind: "action", action: "settings.keymap", label: "Configure Keymap…" },
+      ],
+    },
+    { kind: "separator" },
+    { kind: "action", action: "help.keymapReference" },
+    { kind: "action", action: "help.showLog" },
+    { kind: "action", action: "app.checkForUpdates" },
+    { kind: "separator" },
+    { kind: "action", action: "app.about" },
+  ];
+}
+
 /** Toolbar entries and the customization menu, from the saved layout. */
 function useToolbar() {
   const map = useContributions((s) => s.titleItems);
@@ -226,7 +310,7 @@ function useToolbar() {
   return { map, shown, menu };
 }
 
-function GearButton({ customize }: { customize: MenuItem[] }) {
+function GearButton({ customize, home = false }: { customize: MenuItem[]; home?: boolean }) {
   const iconSize = useChromeIconSize();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLButtonElement>(null);
@@ -238,31 +322,31 @@ function GearButton({ customize }: { customize: MenuItem[] }) {
   useContributedThemes((s) => s.themes);
   // One preview per opening: a theme shown from it goes away with the menu unless chosen.
   const preview = useMemo(() => (open ? themePreview() : undefined), [open]);
-  const items = gearMenuItems(
-    currentThemeChoice(),
-    typeof settings?.keymap === "string" ? settings.keymap : preset,
-    customs && typeof customs === "object" ? Object.keys(customs) : [],
-    customize,
-    preview,
-  );
+  const themeId = currentThemeChoice();
+  const keymapId = typeof settings?.keymap === "string" ? settings.keymap : preset;
+  const customKeymaps = customs && typeof customs === "object" ? Object.keys(customs) : [];
+  const items = home
+    ? homeGearMenuItems(themeId, keymapId, customKeymaps, preview)
+    : gearMenuItems(themeId, keymapId, customKeymaps, customize, preview);
   const close = () => {
     setOpen(false);
     // A chosen theme runs right after the menu closes: let it choose first.
     queueMicrotask(() => preview?.end());
   };
+  const label = home ? "Manage" : "IDE and Project Settings";
   return (
     <>
       <IconButton
         ref={ref}
         icon="settings"
-        title="IDE and Project Settings"
+        title={label}
         iconSize={iconSize}
         className={styles.tool}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => (open ? close() : setOpen(true))}
       />
-      <Menu open={open} onClose={close} anchor={ref} items={items} aria-label="IDE and Project Settings" />
+      <Menu open={open} onClose={close} anchor={ref} items={items} aria-label={label} />
     </>
   );
 }
@@ -316,6 +400,7 @@ export function TitleBar({
   compact = false,
   dialog = false,
   lightEdit = false,
+  home = false,
   title,
 }: {
   minimal?: boolean;
@@ -323,18 +408,21 @@ export function TitleBar({
   compact?: boolean;
   dialog?: boolean;
   lightEdit?: boolean;
+  home?: boolean;
   title?: string;
 }) {
   const overlay = usePlatform((s) => s.overlayTitleBar);
   const frameless = usePlatform((s) => s.framelessTitleBar);
   const showMainMenu = frameless || isWebMode();
   const windowButtons = usePlatform((s) => s.windowButtons);
+  const actions = useActions((s) => s.actions);
+  const iconSize = useChromeIconSize();
   const { map, shown, menu } = useToolbar();
   const [menuExpanded, setMenuExpanded] = useState(false);
   const separateMenu = useProject((s) => s.settings?.appearance?.mainMenuStyle === "toolbar");
   const [bar, setBar] = useState<HTMLElement | null>(null);
   useNativeTitlebar(bar);
-  const toolbar = !minimal && !lightEdit && !compact && !bare;
+  const toolbar = !minimal && !lightEdit && !compact && !bare && !home;
   useToolbarLabelWidth(toolbar ? bar : null);
   const centered = toolbar && !menuExpanded && !minimal && shown.center.length > 0;
   useToolbarCenter(bar, centered);
@@ -377,6 +465,7 @@ export function TitleBar({
     >
       {frameless && <WindowControls side="left" dialog={dialog} />}
       {showMainMenu && !minimal && !separateMenu && <MainMenu onExpandedChange={setMenuExpanded} />}
+      {home && <HomeButton />}
       {title && (
         <span className={styles.windowTitle} {...windowDragRegion}>
           {typeof title === "string" ? <T>{title}</T> : title}
@@ -403,7 +492,17 @@ export function TitleBar({
           {toolbar && !menuExpanded && <ContributedToolbar slot="mainToolbar" />}
           {!menuExpanded && (
             <div className={styles.tools}>
-              <GearButton customize={menu} />
+              {home && actions.has("navigate.searchEverywhere") && (
+                <IconButton
+                  icon="search"
+                  action="navigate.searchEverywhere"
+                  title="Search Everywhere"
+                  shortcut={shortcutLabel("navigate.searchEverywhere") ?? "⇧⇧"}
+                  iconSize={iconSize}
+                  className={styles.tool}
+                />
+              )}
+              <GearButton customize={menu} home={home} />
             </div>
           )}
         </>

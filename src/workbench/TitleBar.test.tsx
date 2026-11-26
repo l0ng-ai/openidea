@@ -11,7 +11,7 @@ import { commands, type Settings } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { usePlatform } from "@/platform/platformInfo";
 import { useThemeOverride } from "./theme";
-import { customizeToolbarItems, gearMenuItems, TitleBar } from "./TitleBar";
+import { customizeToolbarItems, gearMenuItems, homeGearMenuItems, TitleBar } from "./TitleBar";
 
 let disposers: Array<() => void> = [];
 afterEach(() => {
@@ -245,5 +245,43 @@ describe("compact window header", () => {
     document.title = "ignored";
     render(<TitleBar compact lightEdit title="notes.txt" />);
     expect(document.querySelector("header[data-titlebar='compact']")!.textContent).toBe("notes.txt");
+  });
+});
+
+describe("home title bar", () => {
+  it("shows OpenIDEA Home switcher, Search Everywhere when registered, and Manage gear menu", async () => {
+    const dispose = registerActions([
+      { id: "navigate.searchEverywhere", title: "Search Everywhere", run: () => {} },
+      { id: "file.settings", title: "Settings…", run: () => {} },
+    ]);
+    try {
+      render(<TitleBar home />);
+      expect(screen.getByRole("button", { name: "OpenIDEA Home" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Search Everywhere" })).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Manage" }));
+      expect(await screen.findByRole("menu", { name: "Manage" })).toBeInTheDocument();
+      expect(screen.getByText("Settings…")).toBeInTheDocument();
+    } finally {
+      dispose();
+    }
+  });
+
+  it("builds Home Manage gear menu items without project toolbar customization", () => {
+    const items = homeGearMenuItems("dark", "intellij-macos", []);
+    expect(items.map((i) => ("action" in i ? i.action : "label" in i ? i.label : i.kind))).toEqual([
+      "file.settings",
+      "settings.keymap",
+      "plugins.settings",
+      "plugins.installFromDisk",
+      "separator",
+      "Theme",
+      "Keymap",
+      "separator",
+      "help.keymapReference",
+      "help.showLog",
+      "app.checkForUpdates",
+      "separator",
+      "app.about",
+    ]);
   });
 });

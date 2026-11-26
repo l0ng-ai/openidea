@@ -40,8 +40,8 @@ import { ContextMenuHost, resolveMenuItems } from "@/ui";
 import { registerSettingsPage } from "@/workbench/contributions";
 import { MessagesHost } from "@/workbench/messages";
 import { projectInitials } from "@/workbench/projectColor";
+import { useThemeOverride } from "@/workbench/theme";
 import { handleListKey } from "./ProjectsPage";
-import { customizeView } from "./CustomizePage";
 import { RecentList, recentMenu } from "./RecentList";
 import { filterRecent, useRecent } from "./recent";
 import { WelcomeView } from "./WelcomeView";
@@ -77,22 +77,31 @@ beforeEach(() => {
     p("delta", "/Users/me/repo/delta"),
     p("py-demo", "/tmp/py-demo"),
   ];
-  settingsSet.mockReset().mockImplementation(async () => ({ status: "ok", data: { appearance: {} } as Settings }));
+  settingsSet.mockReset().mockImplementation(async (_scope, key: string, raw: string) => {
+    const val = JSON.parse(raw);
+    const cur = useProject.getState().settings ?? ({ appearance: { theme: "light" } } as Settings);
+    if (key === "keymap") return { status: "ok", data: { ...cur, keymap: val } };
+    if (key.startsWith("appearance.")) {
+      const prop = key.slice("appearance.".length);
+      return { status: "ok", data: { ...cur, appearance: { ...cur.appearance, [prop]: val } } };
+    }
+    return { status: "ok", data: cur };
+  });
   removeRecentProject.mockReset().mockResolvedValue({ status: "ok", data: null });
   openProject.mockReset().mockResolvedValue({});
   useRecent.setState({ projects: [], loaded: false, home: null, version: null, opening: null });
   useProject.setState({ project: null, settings: { appearance: { theme: "light" } } as Settings, opening: false });
+  useThemeOverride.setState({ theme: null });
 });
 
 afterEach(() => {
   localStorage.clear();
 });
 
-describe("Welcome › Projects", () => {
-  it("shows brand, version and project rows with badges, ~ paths and branches", async () => {
+describe("Welcome › Projects and Files", () => {
+  it("shows Projects and Files panel, stacked actions and project rows with badges, ~ paths and branches", async () => {
     await renderWelcome();
-    expect(screen.getByText("OpenIDEA")).toBeTruthy();
-    expect(screen.getByText("1.2.3")).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Projects and Files" })).toBeTruthy();
     const rows = screen.getAllByRole("option");
     expect(rows).toHaveLength(3);
     expect(within(rows[0]!).getByText(projectInitials("acme-api"))).toBeTruthy();
@@ -100,6 +109,7 @@ describe("Welcome › Projects", () => {
     expect(within(rows[0]!).getByText("dev")).toBeTruthy();
     expect(within(rows[2]!).getByText("/tmp/py-demo")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Open" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "New" })).toBeTruthy();
   });
 
   it("shows a project whose folder is gone as unavailable", async () => {
@@ -159,34 +169,33 @@ describe("Welcome › Projects", () => {
     dispose();
   });
 
-  it("opens in a new window with Shift or Ctrl, in this one with Alt, over 'Open project in'", async () => {
-    const chosen: unknown[] = [];
-    const dispose = registerActions([
-      { id: "file.openRecentProject", title: "Open Recent Project", run: (c) => void chosen.push(c.arg) },
-    ]);
-    await renderWelcome();
-    const acme = { path: "/Users/me/repo/acme-api" };
-    const row = () => screen.getAllByRole("option")[0]!;
-    const search = screen.getByLabelText("Search projects");
-    for (const mod of [{ shiftKey: true }, { ctrlKey: true }]) {
+  it.each([{ shiftKey: true }, { ctrlKey: true }])(
+    "opens in a new window with %o, in this one with Alt, over 'Open project in'",
+    async (mod) => {
+      const chosen: unknown[] = [];
+      const dispose = registerActions([
+        { id: "file.openRecentProject", title: "Open Recent Project", run: (c) => void chosen.push(c.arg) },
+      ]);
+      await renderWelcome();
+      const acme = { path: "/Users/me/repo/acme-api" };
+      const row = () => screen.getAllByRole("option")[0]!;
+      const search = screen.getByLabelText("Search projects");
       fireEvent.click(row(), mod);
-      // oxlint-disable-next-line no-await-in-loop -- each modifier's result is asserted before the next one is exercised
       await act(async () => {});
       expect(chosen.at(-1)).toEqual({ ...acme, window: "new" });
       fireEvent.keyDown(search, { key: "Enter", ...mod });
-      // oxlint-disable-next-line no-await-in-loop -- the Enter result is asserted before the next modifier is exercised
       await act(async () => {});
       expect(chosen.at(-1)).toEqual({ ...acme, window: "new" });
-    }
-    fireEvent.click(row(), { altKey: true });
-    await act(async () => {});
-    expect(chosen.at(-1)).toEqual({ ...acme, window: "same" });
-    fireEvent.keyDown(search, { key: "Enter", altKey: true });
-    await act(async () => {});
-    expect(chosen.at(-1)).toEqual({ ...acme, window: "same" });
-    expect(openProject).not.toHaveBeenCalled();
-    dispose();
-  });
+      fireEvent.click(row(), { altKey: true });
+      await act(async () => {});
+      expect(chosen.at(-1)).toEqual({ ...acme, window: "same" });
+      fireEvent.keyDown(search, { key: "Enter", altKey: true });
+      await act(async () => {});
+      expect(chosen.at(-1)).toEqual({ ...acme, window: "same" });
+      expect(openProject).not.toHaveBeenCalled();
+      dispose();
+    },
+  );
 
   it("gives File › Open Recent the same modifier keys", async () => {
     const chosen: unknown[] = [];
@@ -270,34 +279,115 @@ describe("Welcome › Projects", () => {
     }
   });
 
-  it("shows the landing page without recent projects", async () => {
+  it("keeps the stacked actions and workspace quick actions when there are no recent projects", async () => {
     recent = [];
     await renderWelcome();
-    expect(screen.getByText("Welcome to OpenIDEA")).toBeTruthy();
-    expect(screen.queryByLabelText("Search projects")).toBeNull();
+    expect(screen.getByText("No recent projects")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "New Markdown File" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open File" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open Terminal" })).toBeTruthy();
+  });
+
+  it("opens the New dropdown with project, file, markdown file and group options", async () => {
+    const dispose = registerActions([
+      { id: "file.newProject", title: "New Project…", run: () => {} },
+      { id: "file.newUntitled", title: "New File", run: () => {} },
+      { id: "file.newMarkdownFile", title: "New Markdown File", run: () => {} },
+    ]);
+    try {
+      await renderWelcome();
+      fireEvent.click(screen.getByRole("button", { name: "New" }));
+      const menu = await screen.findByRole("menu", { name: "New" });
+      for (const label of ["New Project…", "New File", "New Markdown File", "New Project Group…"]) {
+        expect(within(menu).getByRole("menuitem", { name: label })).toBeTruthy();
+      }
+    } finally {
+      dispose();
+    }
   });
 });
 
-describe("Welcome › navigation", () => {
-  it("lists Plugins only when the plugins settings page is contributed, and embeds it", async () => {
+describe("Welcome › workspace, panels and footer", () => {
+  it("collapses and restores Projects and Files, and toggles Notifications", async () => {
+    await renderWelcome();
+    const panel = () => screen.queryByRole("region", { name: "Projects and Files" });
+    expect(panel()).not.toBeNull();
+
+    fireEvent.click(within(panel()!).getByRole("button", { name: "Hide" }));
+    expect(panel()).toBeNull();
+
+    const stripe = screen.getByRole("complementary", { name: "Left tool window stripe" });
+    fireEvent.click(within(stripe).getByRole("button", { name: "Projects and Files" }));
+    expect(panel()).not.toBeNull();
+
+    const rightStripe = screen.getByRole("complementary", { name: "Right tool window stripe" });
+    expect(screen.queryByRole("region", { name: "Notifications" })).toBeNull();
+    fireEvent.click(within(rightStripe).getByRole("button", { name: "Notifications" }));
+    expect(screen.getByRole("region", { name: "Notifications" })).toBeTruthy();
+  });
+
+  it("runs New Markdown File, Open File and Open Terminal from the workspace canvas", async () => {
+    const ran: string[] = [];
+    const dispose = registerActions([
+      { id: "file.newMarkdownFile", title: "New Markdown File", run: () => void ran.push("md") },
+      { id: "file.openFile", title: "Open File", run: () => void ran.push("open") },
+      { id: "terminal.openStandalone", title: "Open Terminal", run: () => void ran.push("term") },
+    ]);
+    try {
+      await renderWelcome();
+      fireEvent.click(screen.getByRole("button", { name: "New Markdown File" }));
+      fireEvent.click(screen.getByRole("button", { name: "Open File" }));
+      fireEvent.click(screen.getByRole("button", { name: "Open Terminal" }));
+      expect(ran).toEqual(["md", "open", "term"]);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("opens Plugins via plugins.settings when registered, or inline when only the page is contributed", async () => {
     await renderWelcome();
     expect(screen.queryByRole("button", { name: "Plugins" })).toBeNull();
-    const dispose = registerSettingsPage({ id: "plugins", title: "Plugins", component: () => <div>plugin page</div> });
+
+    const disposePage = registerSettingsPage({
+      id: "plugins",
+      title: "Plugins",
+      component: () => <div>plugin page</div>,
+    });
     await act(async () => {});
     fireEvent.click(screen.getByRole("button", { name: "Plugins" }));
     expect(screen.getByText("plugin page")).toBeTruthy();
-    act(() => dispose());
-    expect(screen.getByRole("button", { name: "Projects" }).getAttribute("aria-current")).toBe("page");
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByText("plugin page")).toBeNull();
+
+    let opened = 0;
+    const disposeAction = registerActions([{ id: "plugins.settings", title: "Plugins…", run: () => void opened++ }]);
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: "Plugins" }));
+    expect(opened).toBe(1);
+    disposeAction();
+    disposePage();
   });
 
-  it("Customize writes the global settings keys", async () => {
+  it("switches Theme, Sync with OS, and Keymap from the workspace footer", async () => {
     await renderWelcome();
-    fireEvent.click(screen.getByRole("button", { name: "Customize" }));
-    fireEvent.click(screen.getByRole("radio", { name: "Purple" }));
-    fireEvent.click(screen.getByRole("checkbox", { name: "Sync with OS" }));
+    fireEvent.click(screen.getByRole("button", { name: /Theme: Islands Light/ }));
+    const themeMenu = await screen.findByRole("menu", { name: "Theme" });
+    fireEvent.click(within(themeMenu).getByRole("menuitemcheckbox", { name: "Islands Dark" }));
     await act(async () => {});
-    expect(settingsSet).toHaveBeenCalledWith("global", "appearance.accent", '"#955ae0"');
+    expect(settingsSet).toHaveBeenCalledWith("global", "appearance.theme", '"dark"');
+
+    fireEvent.click(screen.getByRole("button", { name: /Theme:/ }));
+    const themeMenu2 = await screen.findByRole("menu", { name: "Theme" });
+    fireEvent.click(within(themeMenu2).getByRole("menuitemcheckbox", { name: "Sync with OS" }));
+    await act(async () => {});
     expect(settingsSet).toHaveBeenCalledWith("global", "appearance.syncWithOs", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: /Keymap: macOS/ }));
+    const keymapMenu = await screen.findByRole("menu", { name: "Keymap" });
+    fireEvent.click(within(keymapMenu).getByRole("menuitemcheckbox", { name: "VS Code (macOS)" }));
+    await act(async () => {});
+    expect(settingsSet).toHaveBeenCalledWith("global", "keymap", '"vscode-macos"');
   });
 });
 
@@ -322,21 +412,5 @@ describe("helpers", () => {
     expect(
       handleListKey({ key: "Enter", metaKey: false, shiftKey: false }, { items: [], current: 0, caretAtEnd: true }),
     ).toBeNull();
-  });
-
-  it("derives the Customize view from partial settings", () => {
-    expect(customizeView(null)).toMatchObject({
-      theme: "light",
-      syncWithOs: false,
-      fontSize: 13,
-      keymap: "intellij-macos",
-    });
-    expect(
-      customizeView({
-        appearance: { theme: "system", useCustomFont: true, uiFontSize: 15 },
-        keymap: "vscode-macos",
-      } as Settings),
-    ).toMatchObject({ theme: "light", syncWithOs: true, fontSize: 15, keymap: "vscode-macos" });
-    expect(customizeView({ appearance: { uiFontSize: 15 } } as Settings).fontSize).toBe(13);
   });
 });

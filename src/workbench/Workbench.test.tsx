@@ -546,7 +546,7 @@ describe("workbench shell", () => {
     });
     useProject.setState({ project: null });
     const { unmount } = render(<Workbench />);
-    expect(screen.getByRole("button", { name: /Open/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open…" })).toBeInTheDocument();
     act(() =>
       useProject.setState({
         project: { root: "/shell", name: "shell-demo", trusted: true, isGit: false, settings: {} },

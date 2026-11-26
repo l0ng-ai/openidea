@@ -543,6 +543,8 @@ export function createMemoryBackend(files: Record<string, string> = {}): MemoryB
         d.refs++;
         return info(d);
       }
+      const extDot = key.lastIndexOf(".");
+      const ext = extDot > key.lastIndexOf("/") ? key.slice(extDot + 1).toLowerCase() : "";
       const d: MemDoc = {
         id: nextId++,
         path: key,
@@ -554,7 +556,7 @@ export function createMemoryBackend(files: Record<string, string> = {}): MemoryB
         lineEnding: "lf",
         hasBom: false,
         readOnly: false,
-        language: "plaintext",
+        language: EXT_LANG[ext] ?? "plaintext",
         uri: key,
       };
       docs.set(d.id, d);

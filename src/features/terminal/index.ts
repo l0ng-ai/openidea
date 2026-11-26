@@ -6,7 +6,7 @@
 import { createElement } from "react";
 import { registerActions } from "@/platform/actions";
 import { commands, isTauri, onIdeEvent } from "@/platform/ipc";
-import { useProject } from "@/platform/project";
+import { openLightEditUntitled, useProject } from "@/platform/project";
 import { isRemoteWindow, parseRemoteLocation, projectLocation } from "@/platform/remote";
 import { useSystemFontStore } from "@/platform/systemFonts";
 import { onWorkflowSettingsChange } from "@/platform/workflowSettings";
@@ -31,6 +31,7 @@ import {
   moveEditorToTerminal,
   moveTerminalToEditor,
   openNewTerminalInEditor,
+  openStandaloneTerminal,
   splitCliTab,
 } from "./cli";
 import { installTerminalKeys } from "./keys";
@@ -217,6 +218,25 @@ export function activate(): () => void {
         // ⌘T is VCS Update elsewhere; in the terminal it opens a tab, as in IDEA.
         keyWhen: "terminalFocus",
         run: () => openNewTab(),
+      },
+      {
+        id: "terminal.openStandalone",
+        title: "Open Terminal",
+        category: "Terminal",
+        icon: "terminal",
+        keywords: ["shell", "console", "home", "welcome"],
+        run: async () => {
+          if (useProject.getState().project?.root) {
+            await openNewTab();
+            return;
+          }
+          const cwd = isTauri() ? await import("@tauri-apps/api/path").then((m) => m.homeDir()).catch(() => "/") : "/";
+          if (!useProject.getState().lightEdit) {
+            if (isTauri()) await openLightEditUntitled();
+            else useProject.setState({ lightEdit: true });
+          }
+          await openStandaloneTerminal(cwd);
+        },
       },
       {
         id: "terminal.newInEditor",

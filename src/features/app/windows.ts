@@ -588,6 +588,19 @@ export function windowActions(): Action[] {
       },
     },
     {
+      id: "file.newMarkdownFile",
+      title: "New Markdown File",
+      category: t("app.category.file"),
+      icon: "file-md",
+      keywords: ["markdown", "md", "new", "untitled", "file", "light edit"],
+      run: async () => {
+        if (desktopOnly()) return;
+        const s = useProject.getState();
+        if (!s.project && !s.lightEdit) await openLightEditUntitled();
+        await editorService().openUntitled?.({ focus: true, extension: "md" });
+      },
+    },
+    {
       // Files and folders dropped on the Welcome screen.
       id: "file.openPaths",
       title: "Open Paths",
