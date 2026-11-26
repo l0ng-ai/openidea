@@ -405,7 +405,7 @@ export function CodeBreadcrumbs({
   ) => {
     e.preventDefault();
     if (outline)
-      showContextMenu(e, [{ id: "chooseSymbol", label: "Choose a symbol", run: () => chooseSiblings(i, crumb) }]);
+      showContextMenu(e, [{ id: "chooseSymbol", label: "Choose Symbol…", run: () => chooseSiblings(i, crumb) }]);
   };
   return (
     <BreadcrumbStrip
@@ -422,7 +422,6 @@ export function CodeBreadcrumbs({
           className={styles.crumbButton}
           tooltip={item.detail ?? item.name}
           aria-current={i === chain.length - 1 ? "location" : undefined}
-          aria-haspopup={outline ? "listbox" : undefined}
           onClick={() => navigate(item)}
           onContextMenu={(e) => crumbMenu(i, e.currentTarget, e)}
         >

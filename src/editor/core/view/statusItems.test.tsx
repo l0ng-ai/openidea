@@ -329,7 +329,7 @@ describe("code breadcrumb symbol chooser", () => {
     const crumbs = screen.getAllByRole("button");
     // The last crumb is the innermost symbol (place).
     const place = crumbs[crumbs.length - 1]!;
-    expect(place.getAttribute("aria-haspopup")).toBe("listbox");
+    expect(place.getAttribute("aria-haspopup")).toBeNull();
     fireEvent.click(place);
     await waitFor(() => expect(openFile).toHaveBeenCalledWith(PATH, { selection: { line: 2, col: 0 } }));
     // No chooser opened with the click: that belongs to the context menu / Alt+Down.
@@ -344,7 +344,7 @@ describe("code breadcrumb symbol chooser", () => {
     fireEvent.contextMenu(crumbs[crumbs.length - 1]!);
     const menuItem = useContextMenuStore
       .getState()
-      .menu?.items.find((i) => "label" in i && i.label === "Choose a symbol") as { run?: () => void } | undefined;
+      .menu?.items.find((i) => "label" in i && i.label === "Choose Symbol…") as { run?: () => void } | undefined;
     expect(menuItem?.run).toBeTruthy();
     act(() => menuItem!.run!());
     const list = await screen.findByRole("listbox", { name: "Orders" });
