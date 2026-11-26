@@ -762,6 +762,12 @@ impl Host {
         if let Some(cmd) = post_start {
             self.environment.spawn_post_start(cmd, project.root.clone(), project.sink.clone());
         }
+        if project.is_trusted() {
+            let p = project.clone();
+            self.runtime.spawn_blocking(move || {
+                crate::github_auth::apply_to_project(&p);
+            });
+        }
         crate::ops::sdk::container_python::ensure(self, &project);
         Ok(project)
     }

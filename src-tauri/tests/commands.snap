@@ -318,6 +318,8 @@ gh_pr_prepare_diff                           trusted            desktop      bin
 gh_pr_review                                 trusted            desktop      bindings async
 gh_pr_review_comments                        trusted            desktop      bindings async
 gh_pr_view                                   trusted            desktop      bindings async
+gh_project_account_status                    outside_restricted project_host bindings async
+gh_set_project_account                       outside_restricted project_host bindings async
 git_credential_forget                        always             desktop      bindings sync
 git_credentials                              always             desktop      bindings sync
 gradle_dependencies                          trusted            project_host bindings async

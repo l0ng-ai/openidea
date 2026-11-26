@@ -10647,5 +10647,11 @@
   "Checking sign-in status…": "正在检查登录状态…",
   "Sign in above to view and choose models available for this account.": "请在上方登录以查看并选择此账户可用的模型。",
   "Click Apply to load the models available for the selected account.": "点击“应用”以加载所选账户可用的模型。",
-  "Loading models for this account…": "正在加载此账户的模型…"
+  "Loading models for this account…": "正在加载此账户的模型…",
+  "Account": "账户",
+  "Automatic ({activeLogin})": "自动（{activeLogin}）",
+  "Use {suggested} for this project": "对此项目使用 {suggested}",
+  "GitHub account: @{activeLogin}": "GitHub 账户：@{activeLogin}",
+  "Uses GitHub CLI's active account without setting GH_TOKEN in the project environment.": "使用 GitHub CLI 当前活动账户，不在项目环境中设置 GH_TOKEN。",
+  "Passes this account's GH_TOKEN to processes started in this project (terminals, agents, Git, and run configurations).": "将此账户的 GH_TOKEN 传递给此项目中启动的进程（终端、智能体、Git 和运行配置）。"
 }

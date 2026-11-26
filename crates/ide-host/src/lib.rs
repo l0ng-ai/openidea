@@ -12,6 +12,7 @@ pub mod diagnostics_store;
 mod direnv;
 pub mod environment;
 mod formatter;
+pub mod github_auth;
 mod java_runtime;
 mod kotlin_bridge;
 pub mod mcp;
@@ -419,6 +420,7 @@ impl Host {
             self.environment.project_closed();
             if self.windows_for_root(&project.root).is_empty() {
                 self.environment.direnv_closed(&project.root);
+                crate::github_auth::clear_project_env(&project);
             }
         }
         if let Some(bridge) = &project.kotlin_bridge {

@@ -795,6 +795,13 @@ export const commands = {
 	ghPrReview: (repo: string | null, number: number, event: ReviewEvent, body: string) => typedError<null, IdeError>(__TAURI_INVOKE("gh_pr_review", { repo, number, event, body })),
 	ghPrReviewComments: (repo: string | null, number: number) => typedError<PrReviewComment[], IdeError>(__TAURI_INVOKE("gh_pr_review_comments", { repo, number })),
 	ghPrView: (repo: string | null, number: number) => typedError<PullRequestDetails, IdeError>(__TAURI_INVOKE("gh_pr_view", { repo, number })),
+	/**  Reads the GitHub CLI (`gh`) keyring accounts and which account applies to `window`'s project. */
+	ghProjectAccountStatus: () => typedError<GhProjectAccountStatus, IdeError>(__TAURI_INVOKE("gh_project_account_status")),
+	/**
+	 *  Sets `vcs.github.account` for `window`'s project (or globally when no project is open),
+	 *  updates the project's `GH_TOKEN` environment immediately, and returns the updated status.
+	 */
+	ghSetProjectAccount: (account: string) => typedError<GhProjectAccountStatus, IdeError>(__TAURI_INVOKE("gh_set_project_account", { account })),
 	/**  Forgets the credential of `key` (a `git_credentials` entry). */
 	gitCredentialForget: (key: string) => __TAURI_INVOKE<void>("git_credential_forget", { key }),
 	/**  Settings › Git › Saved credentials: `scheme://host` of every saved entry. */
@@ -7717,6 +7724,24 @@ login: string | null } |
 /**  The project has no GitHub remote (or is not a git repository). */
 { kind: "notGitHub"; message: string } | { kind: "error"; message: string };
 
+/**  An authenticated `github.com` account stored in GitHub CLI (`gh`). */
+export type GhKeyringAccount = {
+	login: string,
+	active: boolean,
+};
+
+/**  GitHub CLI accounts available on this machine and which one applies to the project. */
+export type GhProjectAccountStatus = {
+	ghInstalled: boolean,
+	accounts: GhKeyringAccount[],
+	/**  Value of `vcs.github.account` (`""` = Automatic). */
+	configuredAccount: string,
+	/**  Account login currently used (`configured_account` if signed in, else `gh`'s active account). */
+	effectiveAccount: string | null,
+	/**  Non-active `gh` account with access to this project's GitHub remote when `configured_account` is empty. */
+	suggestedAccount: string | null,
+};
+
 export type GhRepo = {
 	/**  `owner/name`. */
 	nameWithOwner: string,
@@ -7845,6 +7870,15 @@ export type GitSigningConfig = {
 export type GitSigningEdit = {
 	enabled: boolean | null,
 	key: string | null,
+};
+
+/**  Settings › Version Control › GitHub (`vcs.github`). */
+export type GithubSettings = {
+	/**
+	 *  GitHub CLI (`gh`) account login on `github.com` explicitly chosen for this project.
+	 *  Empty means automatic (`gh`'s own active account, with no `GH_TOKEN` injected).
+	 */
+	account?: string,
 };
 
 export type GoBuildTags = {
@@ -14586,6 +14620,8 @@ export type VcsSettings = {
 	issueNavigation?: IssueLink[],
 	/**  Directory Mappings: repository roots added to or excluded from the detected ones. */
 	mappings?: VcsMappings,
+	/**  Settings › Version Control › GitHub: per-project GitHub CLI account selection. */
+	github?: GithubSettings,
 };
 
 /**  The tool that creates a new Python environment in "Add Python Interpreter". */
