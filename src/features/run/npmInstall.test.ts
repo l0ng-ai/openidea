@@ -17,7 +17,7 @@ vi.mock("./store", () => run);
 import { emitLocalIdeEvent, type IdeEvent, type RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { provideNotificationService } from "@/workbench/contributions";
-import { installDue, registerNpmInstall } from "./npmInstall";
+import { installDue, isWorkspaceMember, pnpmWorkspacePackages, registerNpmInstall } from "./npmInstall";
 
 const ok = <T>(data: T) => Promise.resolve({ status: "ok" as const, data });
 const err = () => Promise.resolve({ status: "error" as const, error: { kind: "notFound", message: "" } });
@@ -175,4 +175,66 @@ it("leaves packages without dependencies and untrusted projects alone", async ()
   dispose = registerNpmInstall();
   await settle();
   expect(notify).not.toHaveBeenCalled();
+});
+
+it("reads members from pnpm-workspace.yaml `packages` only and matches them with exclusions", () => {
+  expect(pnpmWorkspacePackages("onlyBuiltDependencies:\n  - esbuild\n")).toEqual([]);
+  expect(pnpmWorkspacePackages("packages:\n  - 'apps/*'\n  - \"!apps/legacy\" # old\ncatalog:\n  - x\n")).toEqual([
+    "apps/*",
+    "!apps/legacy",
+  ]);
+  const patterns = ["apps/*", "!apps/legacy", "libs/**"];
+  expect(isWorkspaceMember("apps/web", patterns)).toBe(true);
+  expect(isWorkspaceMember("apps/legacy", patterns)).toBe(false);
+  expect(isWorkspaceMember("apps/web/nested", patterns)).toBe(false);
+  expect(isWorkspaceMember("libs/a/b", patterns)).toBe(true);
+  expect(isWorkspaceMember("fixtures/app", patterns)).toBe(false);
+  expect(isWorkspaceMember("", [])).toBe(true);
+});
+
+it("keeps a dependency change pending when a dev server writes node_modules/.vite", async () => {
+  write("/p/package.json", 1_000, pkg({ react: "^19.0.0" }));
+  write("/p/package-lock.json", 1_000);
+  write("/p/node_modules/.package-lock.json", 2_000);
+  write("/p/node_modules/react/package.json", 2_000);
+  await open();
+  write("/p/package.json", 60_000, pkg({ react: "^19.1.0" }));
+  await fsChanged("/p/package.json");
+  expect(titles()).toEqual(["Dependencies changed since the last install"]);
+  expire.mockClear();
+
+  write("/p/node_modules/.vite/deps/react.js", 70_000);
+  emitLocalIdeEvent({ type: "excludedDirsChanged", dirs: ["/p/node_modules/.vite"] } as unknown as IdeEvent);
+  await settle();
+  expect(expire).not.toHaveBeenCalled();
+  // Still due on the next look: the change was not taken as installed.
+  dispose();
+  notify.mockClear();
+  await open();
+  expect(titles()).toEqual(["Dependencies changed since the last install"]);
+});
+
+it("takes bun's package folders as the install when node_modules has no marker", async () => {
+  write("/p/package.json", 1_000, pkg({ react: "^19.0.0" }));
+  write("/p/bun.lock", 2_500);
+  write("/p/node_modules/react/package.json", 2_000);
+  write("/p/node_modules/.cache/x", 90_000);
+  await open();
+  expect(notify).not.toHaveBeenCalled();
+  write("/p/bun.lock", 60_000);
+  await fsChanged("/p/bun.lock");
+  expect(titles()).toEqual(["Dependencies changed since the last install"]);
+});
+
+it("checks packages right under the project root, each on its own outside a pnpm `packages` list", async () => {
+  write("/p/package.json", 1_000, pkg());
+  write("/p/pnpm-workspace.yaml", 1_000, "onlyBuiltDependencies:\n  - esbuild\n");
+  write("/p/web/package.json", 1_000, pkg({ react: "^19.0.0" }));
+  write("/p/node_modules/.modules.yaml", 2_000);
+  await open();
+  expect(titles()).toEqual(["Dependencies are not installed"]);
+  expect(notify.mock.calls[0]![0]).toMatchObject({
+    key: "npm-install:/p/web",
+    body: "Run 'npm install' in 'web' to install them.",
+  });
 });

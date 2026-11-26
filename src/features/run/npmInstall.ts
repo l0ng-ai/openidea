@@ -86,11 +86,63 @@ const listDir = async (dir: string) =>
 const newest = (times: Array<number | null | undefined>) =>
   times.reduce<number | null>((max, t) => (typeof t === "number" && (max === null || t > max) ? t : max), null);
 
-const declaresWorkspaces = async (dir: string) =>
-  !!(await readJson(`${dir}/package.json`))?.workspaces ||
-  (await call(commands.fsEntryKind(`${dir}/pnpm-workspace.yaml`)).catch(() => null)) === "file";
+/** The `packages` items of `pnpm-workspace.yaml` (pnpm also keeps its settings there). */
+export function pnpmWorkspacePackages(yaml: string): string[] {
+  const items: string[] = [];
+  let inPackages = false;
+  for (const line of yaml.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    if (!/^[\s-]/.test(line)) {
+      inPackages = trimmed.startsWith("packages:");
+      continue;
+    }
+    const item = inPackages && trimmed.startsWith("-") ? trimmed.slice(1).split(" #")[0]!.trim() : "";
+    if (item) items.push(item.replace(/^['"]|['"]$/g, ""));
+  }
+  return items;
+}
 
-/** Where the package in `dir` installs: the nearest enclosing workspace root in the project, else `dir`. */
+/** The member patterns `dir` declares (`workspaces` in `package.json` or `pnpm-workspace.yaml` `packages`), `[]` when it is no workspace root. */
+async function workspacePatterns(dir: string): Promise<string[]> {
+  const [pkg, yaml] = await Promise.all([
+    readJson(`${dir}/package.json`),
+    call(commands.fsReadText(`${dir}/pnpm-workspace.yaml`)).catch(() => null),
+  ]);
+  const ws = pkg?.workspaces as { packages?: unknown } | unknown[] | undefined;
+  const listed = Array.isArray(ws) ? ws : Array.isArray(ws?.packages) ? ws.packages : [];
+  return [...listed, ...pnpmWorkspacePackages(yaml ?? "")]
+    .filter((p): p is string => typeof p === "string")
+    .map((p) => p.replace(/^(!?)\.\//, "$1").replace(/\/+$/, ""));
+}
+
+const globRegex = (glob: string) =>
+  new RegExp(
+    `^${glob
+      .split(/(\*\*\/?|\*)/)
+      .map((part) =>
+        part === "**/"
+          ? "(.*/)?"
+          : part === "**"
+            ? ".*"
+            : part === "*"
+              ? "[^/]*"
+              : part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"),
+      )
+      .join("")}$`,
+  );
+
+/** Whether the folder at `rel` (relative to the workspace root) is a member by `patterns` (`!` excludes). */
+export function isWorkspaceMember(rel: string, patterns: readonly string[]): boolean {
+  if (rel === "") return true;
+  let member = false;
+  for (const p of patterns)
+    if (p.startsWith("!")) {
+      if (globRegex(p.slice(1)).test(rel)) member = false;
+    } else if (globRegex(p).test(rel)) member = true;
+  return member;
+}
+
 /** `dir` and its ancestors inside the project, nearest first. */
 function upTo(dir: string, projectRoot: string): string[] {
   const dirs: string[] = [];
@@ -101,9 +153,10 @@ function upTo(dir: string, projectRoot: string): string[] {
 /** Where the package in `dir` installs: the outermost enclosing workspace root in the project, else `dir`. */
 async function installRoot(dir: string, projectRoot: string): Promise<string> {
   const dirs = upTo(dir, projectRoot);
-  // ponytail: an ancestor declaring workspaces is taken as this package's, without matching its patterns.
-  const workspaces = await Promise.all(dirs.map(declaresWorkspaces));
-  return dirs.findLast((_, i) => workspaces[i]) ?? dir;
+  const patterns = await Promise.all(dirs.map(workspacePatterns));
+  return (
+    dirs.findLast((d, i) => patterns[i]!.length > 0 && isWorkspaceMember(dir.slice(d.length + 1), patterns[i]!)) ?? dir
+  );
 }
 
 /** By install root: the members whose `package.json` changed this session. */
@@ -122,17 +175,17 @@ async function inspect(root: string) {
     files.has(".yarn") ? listDir(`${root}/.yarn`) : new Map(),
     readJson(`${root}/package.json`),
   ]);
-  const pnp = files.get(".pnp.cjs");
+  const pnp = files.get(".pnp.cjs") ?? files.get(".pnp.js");
+  const marked = newest([
+    pnp?.mtimeMs,
+    yarn.get("install-state.gz")?.mtimeMs,
+    ...MARKERS.map((m) => modules.get(m)?.mtimeMs),
+  ]);
+  // Without a marker (bun), the newest package folder: not `node_modules` itself, which tools such as
+  // Vite (`.vite`) or Prisma (`.prisma`) touch without installing anything.
+  const packages = newest([...modules.values()].filter((e) => !e.name.startsWith(".")).map((e) => e.mtimeMs));
   const installedAt =
-    nodeModules || pnp
-      ? newest([
-          nodeModules?.mtimeMs,
-          pnp?.mtimeMs,
-          yarn.get("install-state.gz")?.mtimeMs,
-          resolvedAt.get(root),
-          ...MARKERS.map((m) => modules.get(m)?.mtimeMs),
-        ])
-      : null;
+    nodeModules || pnp ? newest([marked ?? packages ?? nodeModules?.mtimeMs, resolvedAt.get(root)]) : null;
   const lockAt = newest(LOCKS.map((l) => files.get(l)?.mtimeMs));
   const memberPaths = [...(members.get(root) ?? [])].filter((p) => p !== `${root}/package.json`);
   const pkgs = [
@@ -148,9 +201,9 @@ async function inspect(root: string) {
   const editedAt = newest(
     pkgs.filter((p) => baseline[p.path] !== undefined && baseline[p.path] !== p.signature).map((p) => p.mtime),
   );
-  const hasDeps =
-    !!rootPkg?.workspaces ||
-    pkgs.some((p) => DEP_FIELDS.some((f) => Object.keys((p.json?.[f] as object | undefined) ?? {}).length > 0));
+  const hasDeps = pkgs.some((p) =>
+    DEP_FIELDS.some((f) => Object.keys((p.json?.[f] as object | undefined) ?? {}).length > 0),
+  );
   const due = installDue({ hasDeps, installedAt, lockAt, editedAt });
   if (!due)
     writeStore((s) => {
@@ -268,45 +321,55 @@ async function installForActive(arg: unknown) {
 const recheck = () => members.forEach((_, root) => check(root));
 
 const WATCHED = /\/(package\.json|package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?)$/;
-const INSTALL_OUTPUT = /\/(node_modules|\.yarn)(\/|$)|\/\.pnp\.cjs$/;
+const INSTALL_OUTPUT = /\/(node_modules|\.yarn)(\/|$)|\/\.pnp\.c?js$/;
 
 /** The `package.json` of each workspace member, so its dependencies are known before an edit. */
 async function workspaceMembers(root: string): Promise<string[]> {
-  const [pkg, yaml] = await Promise.all([
-    readJson(`${root}/package.json`),
-    call(commands.fsReadText(`${root}/pnpm-workspace.yaml`)).catch(() => null),
-  ]);
-  const ws = pkg?.workspaces as { packages?: unknown } | unknown[] | undefined;
-  const listed = Array.isArray(ws) ? ws : Array.isArray(ws?.packages) ? ws.packages : [];
-  // ponytail: every `- item` of pnpm-workspace.yaml; items that are not folders simply match nothing.
-  const fromYaml = [...(yaml ?? "").matchAll(/^\s*-\s*['"]?([^'"#\s]+)/gm)].map((m) => m[1]!);
+  const patterns = await workspacePatterns(root);
   // ponytail: `dir/*` and literal folders, the usual layouts; deeper globs are picked up on their first change.
-  const patterns = [...listed, ...fromYaml].filter((p): p is string => typeof p === "string" && !p.startsWith("!"));
   const dirs = (
     await Promise.all(
       patterns.map(async (p) => {
-        const base = `${root}/${p.replace(/\/\*$/, "").replace(/^\.\//, "")}`;
+        if (p.startsWith("!")) return [];
+        const base = `${root}/${p.replace(/\/\*$/, "")}`;
         if (!p.endsWith("/*")) return p.includes("*") ? [] : [base];
         const entries = await listDir(base);
         return [...entries.values()].filter((e) => e.kind === "dir").map((e) => `${base}/${e.name}`);
       }),
     )
-  ).flat();
+  )
+    .flat()
+    .filter((d) => isWorkspaceMember(d.slice(root.length + 1), patterns));
   const kinds = await Promise.all(dirs.map((d) => call(commands.fsEntryKind(`${d}/package.json`)).catch(() => null)));
   return dirs.filter((_, i) => kinds[i] === "file").map((d) => `${d}/package.json`);
+}
+
+/** The project's package folders: its root and the folders right under it (`web/`, `frontend/`…). */
+async function packageDirs(projectRoot: string): Promise<string[]> {
+  // ponytail: one level deep; deeper packages are checked on their first change.
+  const children = [...(await listDir(projectRoot)).values()].filter(
+    (e) => e.kind === "dir" && !e.ignored && !e.excluded && !e.name.startsWith(".") && e.name !== "node_modules",
+  );
+  const dirs = [projectRoot, ...children.map((e) => `${projectRoot}/${e.name}`)];
+  const kinds = await Promise.all(dirs.map((d) => call(commands.fsEntryKind(`${d}/package.json`)).catch(() => null)));
+  return dirs.filter((_, i) => kinds[i] === "file");
 }
 
 async function open() {
   members.clear();
   resolvedAt.clear();
   notified.clear();
-  const root = useProject.getState().project?.root;
-  if (!root) return;
-  const found = await workspaceMembers(root);
-  if (useProject.getState().project?.root !== root) return;
-  if (!members.has(root)) members.set(root, new Set());
-  for (const path of [`${root}/package.json`, ...found]) members.get(root)!.add(path);
-  check(root);
+  const projectRoot = useProject.getState().project?.root;
+  if (!projectRoot) return;
+  const dirs = await packageDirs(projectRoot);
+  const roots = new Set(await Promise.all(dirs.map((d) => installRoot(d, projectRoot))));
+  const found = await Promise.all([...roots].map(async (root) => [root, await workspaceMembers(root)] as const));
+  if (useProject.getState().project?.root !== projectRoot) return;
+  for (const [root, paths] of found) {
+    if (!members.has(root)) members.set(root, new Set());
+    for (const path of [`${root}/package.json`, ...paths]) members.get(root)!.add(path);
+    check(root);
+  }
 }
 
 export function registerNpmInstall(): () => void {
