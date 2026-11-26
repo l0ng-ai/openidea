@@ -103,6 +103,25 @@ describe("List", () => {
     expect(options()[0]).toHaveAttribute("aria-selected", "true");
   });
 
+  it("keeps a visible hovered row in place and still scrolls to keyboard selections", () => {
+    const rows = Array.from({ length: 40 }, (_, i) => `Item ${i}`);
+    render(<List items={rows} getKey={(r) => r} renderItem={(r) => r} rowHeight={20} hoverSelects />);
+    const list = screen.getByRole("listbox");
+    Object.defineProperty(list, "clientHeight", { value: 200 });
+    Object.defineProperty(list, "scrollHeight", { value: 800 });
+    list.scrollTop = 20;
+    fireEvent.scroll(list);
+    // A browser can move the viewport before delivering the corresponding scroll event.
+    list.scrollTop = 0;
+    const scroll = vi.spyOn(list, "scrollTo");
+    const hovered = screen.getByRole("option", { name: "Item 4" });
+    fireEvent.pointerMove(hovered);
+    expect(hovered).toHaveAttribute("aria-selected", "true");
+    expect(scroll).not.toHaveBeenCalled();
+    fireEvent.keyDown(list, { key: "End" });
+    expect(scroll).toHaveBeenCalledOnce();
+  });
+
   it("highlights matched characters in rows", () => {
     renderList();
     const first = screen.getAllByRole("option")[0]!;

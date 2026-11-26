@@ -182,6 +182,28 @@ pub static TOOLS: &[ToolSpec] = &[
         homepage: "https://github.com/devcontainers/cli",
     },
     ToolSpec {
+        name: "gh",
+        display: "GitHub CLI",
+        kind: Cli,
+        commands: &["gh"],
+        method: Method::Release {
+            source: ReleaseSource::GitHub { repo: "cli/cli" },
+            assets: &[
+                rule(Mac, Arm64, "gh_*_macOS_arm64.zip"),
+                rule(Mac, X64, "gh_*_macOS_amd64.zip"),
+                rule(Linux, Arm64, "gh_*_linux_arm64.tar.gz"),
+                rule(Linux, X64, "gh_*_linux_amd64.tar.gz"),
+                rule(Windows, Arm64, "gh_*_windows_arm64.zip"),
+                rule(Windows, X64, "gh_*_windows_amd64.zip"),
+            ],
+            locate: &["gh"],
+        },
+        fallback: None,
+        version: ver("gh"),
+        needs: &[],
+        homepage: "https://cli.github.com",
+    },
+    ToolSpec {
         name: "oxfmt",
         display: "oxfmt",
         kind: Formatter,
@@ -191,6 +213,17 @@ pub static TOOLS: &[ToolSpec] = &[
         version: ver("oxfmt"),
         needs: NODE,
         homepage: "https://oxc.rs/docs/guide/usage/formatter",
+    },
+    ToolSpec {
+        name: "dprint",
+        display: "dprint",
+        kind: Formatter,
+        commands: &["dprint"],
+        method: Method::Npm { packages: &["dprint"] },
+        fallback: None,
+        version: ver("dprint"),
+        needs: NODE,
+        homepage: "https://dprint.dev",
     },
     ToolSpec {
         name: "oxlint",
@@ -1355,7 +1388,7 @@ mod tests {
                 known.insert((d.adapter.clone(), d.command.clone()));
             }
         }
-        // The host selects the formatter of each file (Prettier, oxfmt or Biome) and runs its own CLIs.
+        // The host selects the formatter of each file (Prettier, oxfmt, Biome or dprint) and runs its own CLIs.
         for t in TOOLS.iter().filter(|t| !matches!(t.kind, Plugin | Formatter | Cli)) {
             assert!(
                 known.contains(&(t.name.to_string(), t.commands[0].to_string())),
@@ -1471,5 +1504,57 @@ mod tests {
         assert_eq!(select_asset(&names, rules, win_x64), Some("kotlin-server-263.7084.0.win.zip"));
         let win_arm = Platform { os: Windows, arch: Arm64 };
         assert_eq!(select_asset(&names, rules, win_arm), Some("kotlin-server-263.7084.0-aarch64.win.zip"));
+    }
+
+    #[test]
+    fn gh_release_picks_portable_archive_for_every_supported_platform() {
+        use crate::platform::{Platform, select_asset};
+        let names = [
+            "gh_2.106.0_checksums.txt",
+            "gh_2.106.0_linux_386.deb",
+            "gh_2.106.0_linux_386.tar.gz",
+            "gh_2.106.0_linux_amd64.deb",
+            "gh_2.106.0_linux_amd64.rpm",
+            "gh_2.106.0_linux_amd64.tar.gz",
+            "gh_2.106.0_linux_arm64.deb",
+            "gh_2.106.0_linux_arm64.tar.gz",
+            "gh_2.106.0_linux_armv6.tar.gz",
+            "gh_2.106.0_macOS_amd64.zip",
+            "gh_2.106.0_macOS_arm64.zip",
+            "gh_2.106.0_macOS_universal.pkg",
+            "gh_2.106.0_windows_386.zip",
+            "gh_2.106.0_windows_amd64.msi",
+            "gh_2.106.0_windows_amd64.zip",
+            "gh_2.106.0_windows_arm64.msi",
+            "gh_2.106.0_windows_arm64.zip",
+        ];
+        let spec = find("gh").unwrap();
+        assert_eq!(spec.kind, Cli);
+        let rules = spec.asset_rules();
+        for (os, arch, expected) in [
+            (Mac, Arm64, "gh_2.106.0_macOS_arm64.zip"),
+            (Mac, X64, "gh_2.106.0_macOS_amd64.zip"),
+            (Linux, Arm64, "gh_2.106.0_linux_arm64.tar.gz"),
+            (Linux, X64, "gh_2.106.0_linux_amd64.tar.gz"),
+            (Windows, Arm64, "gh_2.106.0_windows_arm64.zip"),
+            (Windows, X64, "gh_2.106.0_windows_amd64.zip"),
+        ] {
+            assert_eq!(select_asset(&names, rules, Platform { os, arch }), Some(expected));
+        }
+
+        let Method::Release { locate, .. } = &spec.method else { unreachable!() };
+        let tmp = tempfile::tempdir().unwrap();
+        let unix_bin = tmp.path().join("gh_2.106.0_macOS_arm64/bin/gh");
+        std::fs::create_dir_all(unix_bin.parent().unwrap()).unwrap();
+        std::fs::write(&unix_bin, "").unwrap();
+        let unix_names: Vec<String> = locate.iter().map(|n| (*n).to_owned()).collect();
+        assert_eq!(crate::archive::locate(tmp.path(), &unix_names), Some(unix_bin));
+
+        let win_dir = tempfile::tempdir().unwrap();
+        let win_bin = win_dir.path().join("bin/gh.exe");
+        std::fs::create_dir_all(win_bin.parent().unwrap()).unwrap();
+        std::fs::write(&win_bin, "").unwrap();
+        let win_names: Vec<String> = locate.iter().map(|n| format!("{n}.exe")).collect();
+        assert_eq!(crate::archive::locate(win_dir.path(), &win_names), Some(win_bin));
     }
 }

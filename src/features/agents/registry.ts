@@ -7,14 +7,17 @@ import type {
   AcpImportOutcome,
   AgentCliOffer,
   AgentCliUpdateResult,
+  AgentLoginEvent,
   AgentModelCatalog,
   AgentProvider,
   AgentRegistry,
+  CopilotAuthStatus,
   CustomAgentInput,
   InstallEvent,
   RegistryAgent,
   RegistryDistribution,
   RequestId,
+  TerminalId,
 } from "@/bindings";
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
@@ -32,8 +35,12 @@ export interface CommandsBackend {
   updateCli(id: string, offer: AgentCliOffer, request: RequestId): Promise<AgentCliUpdateResult>;
   cancel(request: RequestId): void;
   providers(): Promise<AgentProvider[]>;
-  refreshModels?(id: string, model: string | null): Promise<AgentModelCatalog>;
+  copilotAuthStatus?(): Promise<CopilotAuthStatus>;
+  loginSpawn?(id: string, cols: number, rows: number, onEvent: (e: AgentLoginEvent) => void): Promise<TerminalId>;
+  ghLoginSpawn?(cols: number, rows: number, onEvent: (e: AgentLoginEvent) => void): Promise<TerminalId>;
+  refreshModels?(id: string, model: string | null, force?: boolean): Promise<AgentModelCatalog>;
   set(id: string, command: string | null): Promise<void>;
+  setAdditionalArgs(id: string, args: string[]): Promise<void>;
   setEnv(id: string, env: Record<string, string>): Promise<void>;
   chooseExecutable(title: string, current?: string, location?: "desktop"): Promise<string | null>;
   saveCustom(input: CustomAgentInput): Promise<void>;
@@ -60,7 +67,20 @@ export const tauriCommands: CommandsBackend = {
   updateCli: (id, offer, request) => call(commands.agentCliUpdate(id, offer, request)),
   cancel: tauriRegistry.cancel,
   providers: () => call(commands.agentProviders()),
-  refreshModels: (id, model) => call(commands.agentRefreshModels(id, false, model)),
+  copilotAuthStatus: () => call(commands.agentCopilotAuthStatus()),
+  loginSpawn: async (id, cols, rows, onEvent) => {
+    const channel = new Channel<AgentLoginEvent>();
+    channel.onmessage = onEvent;
+    const info = await call(commands.agentLoginSpawn(id, cols, rows, channel));
+    return info.id;
+  },
+  ghLoginSpawn: async (cols, rows, onEvent) => {
+    const channel = new Channel<AgentLoginEvent>();
+    channel.onmessage = onEvent;
+    const info = await call(commands.agentGhLoginSpawn(cols, rows, channel));
+    return info.id;
+  },
+  refreshModels: (id, model, force = false) => call(commands.agentRefreshModels(id, force, model)),
   chooseExecutable: async (title, current, location) => {
     if (location !== "desktop") return choosePath({ title, defaultPath: current, directory: false });
     const picked = await open({ title, defaultPath: current || undefined, directory: false, multiple: false });
@@ -68,6 +88,9 @@ export const tauriCommands: CommandsBackend = {
   },
   set: async (id, command) => {
     await call(commands.agentSetCommand(id, command));
+  },
+  setAdditionalArgs: async (id, args) => {
+    await call(commands.agentSetAdditionalArgs(id, args));
   },
   setEnv: async (id, env) => {
     await call(commands.agentSetEnv(id, env));

@@ -195,3 +195,60 @@ it.each<ExportFormat>(["csv", "tsv", "sql", "markdown", "onerow"])("%s retains e
   const value = "9223372036854775807";
   expect(exportData(format, data(value))).toContain(value);
 });
+
+describe("SQL statements of rows (#6143)", () => {
+  const rows: ExportData = {
+    columns: [
+      { name: "id", type: "INTEGER", primaryKey: true },
+      { name: "name", type: "TEXT" },
+      { name: "note", type: "TEXT" },
+    ],
+    rows: [
+      ["2", "O'Hara", null],
+      ["1", "Ann", "x"],
+    ],
+    table: "people",
+    driver: "postgres",
+  };
+
+  it("writes one statement per row, in order, matching rows by the primary key", () => {
+    expect(exportData("sql", rows)).toBe(
+      [
+        `INSERT INTO people (id, name, note) VALUES (2, 'O''Hara', NULL);`,
+        `INSERT INTO people (id, name, note) VALUES (1, 'Ann', 'x');`,
+      ].join("\n"),
+    );
+    expect(exportData("sqlUpdates", rows)).toBe(
+      [
+        `UPDATE people SET name = 'O''Hara', note = NULL WHERE id = 2;`,
+        `UPDATE people SET name = 'Ann', note = 'x' WHERE id = 1;`,
+      ].join("\n"),
+    );
+    expect(exportData("sqlDeletes", rows)).toBe(
+      [`DELETE FROM people WHERE id = 2;`, `DELETE FROM people WHERE id = 1;`].join("\n"),
+    );
+    expect(exportData("where", rows)).toBe(`WHERE (id = 2) OR (id = 1)`);
+    expect(exportData("where", { ...rows, rows: rows.rows.slice(1) })).toBe(`WHERE id = 1`);
+  });
+
+  it("matches on every column, saying so, when no key is known, and writes IS NULL for a null", () => {
+    const keyless = { ...rows, columns: rows.columns.map((c) => ({ ...c, primaryKey: false })), rows: [rows.rows[0]!] };
+    expect(exportData("sqlDeletes", keyless)).toBe(
+      `-- No primary key is known: rows are matched on every column.\n` +
+        `DELETE FROM people WHERE id = 2 AND name = 'O''Hara' AND note IS NULL;`,
+    );
+    // A null key value too.
+    const nullKey = { ...rows, rows: [[null, "x", "y"]] };
+    expect(exportData("sqlDeletes", nullKey)).toBe(`DELETE FROM people WHERE id IS NULL;`);
+  });
+
+  it("escapes backslashes for drivers that read them, as SQL Inserts did", () => {
+    const d: ExportData = {
+      columns: [{ name: "p", type: "String" }],
+      rows: [["a\\b'"]],
+      table: "t",
+      driver: "clickhouse",
+    };
+    expect(exportData("sql", d)).toBe(`INSERT INTO t (p) VALUES ('a\\\\b''');`);
+  });
+});

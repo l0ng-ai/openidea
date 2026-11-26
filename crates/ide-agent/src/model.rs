@@ -612,6 +612,9 @@ pub struct AgentProvider {
     /// Executable and arguments actually launched, without flattening paths containing spaces.
     pub program: String,
     pub args: Vec<String>,
+    /// Settings-managed suffix of `args`; absent for launches that cannot be edited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub additional_args: Option<Vec<String>>,
     pub default_program: Option<String>,
     pub default_args: Vec<String>,
     pub login_hint: Option<String>,
@@ -620,6 +623,9 @@ pub struct AgentProvider {
     pub command_read_only_reason: Option<AgentCommandReadOnlyReason>,
     /// Whether the command was found (on `PATH`).
     pub installed: bool,
+    /// Whether OpenIDEA can run this agent's sign-in flow directly in an embedded terminal.
+    #[serde(default)]
+    pub can_sign_in: bool,
     /// The built-in command can be owned by a global npm package.
     #[serde(default)]
     pub can_check_cli_update: bool,
@@ -642,6 +648,34 @@ pub enum AgentCommandReadOnlyReason {
     PackageRunner,
     Registry,
     CustomAgent,
+}
+
+/// An authenticated `github.com` account stored in GitHub CLI (`gh`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct GhAuthAccount {
+    pub login: String,
+    pub active: bool,
+}
+
+/// GitHub Copilot's default sign-in status alongside the accounts available through `gh`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CopilotAuthStatus {
+    pub authenticated: bool,
+    pub login: Option<String>,
+    pub auth_type: Option<String>,
+    pub status_message: Option<String>,
+    pub gh_installed: bool,
+    pub gh_accounts: Vec<GhAuthAccount>,
+}
+
+/// Output and completion of an interactive sign-in PTY started by the IDE.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum AgentLoginEvent {
+    Output { data: String },
+    Exited { code: Option<i32> },
 }
 
 /// Where an agent comes from.
@@ -700,6 +734,10 @@ pub struct NewAgentTask {
     /// `!` command runs in it first.
     #[serde(default)]
     pub idle: bool,
+    /// A throwaway task (Generate Commit Message): it isn't saved, so it doesn't outlive a
+    /// restart, and the agent keeps no session history of its own for it.
+    #[serde(default)]
+    pub ephemeral: bool,
 }
 
 /// A file the task changed: against [`AgentTask::base_commit`], or against `HEAD` in the

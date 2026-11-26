@@ -73,6 +73,7 @@ pub struct Project {
     pub(crate) widget_preview: ide_flutter::ToolServer,
     pub(crate) kotlin_bridge: Option<Arc<crate::kotlin_bridge::KotlinBridge>>,
     pub(crate) phpstan: Option<Arc<crate::phpstan::Phpstan>>,
+    pub(crate) tsc_watch: Option<Arc<crate::tsc_watch::TscWatch>>,
     pub(crate) watcher: Arc<Watcher>,
     /// Watchers of the Project Structure content roots outside the project folder.
     pub(crate) content_watchers: Mutex<Vec<(PathBuf, Watcher)>>,
@@ -207,7 +208,9 @@ impl Host {
                 let root = member.as_ref().unwrap_or(window_root);
                 ide_sdk::apply::server_launch_overrides(cfg, &effective);
                 ide_sdk::apply::configure_server(cfg, root, server_root, &effective);
+                crate::ts_code_style::configure(cfg, server_root, &effective);
                 ide_sdk::apply::configure_vue_module_resolution(cfg, &data_dir);
+                ide_sdk::apply::configure_path_aliases(cfg, server_root, &data_dir);
                 let container_python = effective.languages.python.run_target().is_some();
                 crate::ops::sdk::container_python::configure_server(cfg, &data_dir, root, &effective);
                 // Attached dependency projects are source, so basedpyright/Pyright should
@@ -396,6 +399,8 @@ impl Host {
             trusted.clone(),
         );
         documents.add_observer(phpstan.clone());
+        let tsc_watch = crate::tsc_watch::TscWatch::new(root.clone(), settings.clone(), sink.clone(), trusted.clone());
+        documents.add_observer(tsc_watch.clone());
         let repos = Arc::new(RwLock::new(Repos::enclosing(&root)?));
         for repo in repos.read().all() {
             repo.set_execution_allowed(trusted.load(Ordering::Acquire));
@@ -690,6 +695,7 @@ impl Host {
             notebooks,
             kotlin_bridge: Some(kotlin_bridge),
             phpstan: Some(phpstan),
+            tsc_watch: Some(tsc_watch),
             watcher,
             content_watchers: Mutex::new(content_watchers),
             lsp_watchers: Mutex::new(Vec::new()),
@@ -749,6 +755,9 @@ impl Host {
         }
         if let Some(phpstan) = &project.phpstan {
             phpstan.start(&self.runtime);
+        }
+        if let Some(watch) = &project.tsc_watch {
+            watch.apply(&self.runtime);
         }
         if let Some(cmd) = post_start {
             self.environment.spawn_post_start(cmd, project.root.clone(), project.sink.clone());
@@ -950,6 +959,7 @@ impl Host {
             notebooks,
             kotlin_bridge: None,
             phpstan: None,
+            tsc_watch: None,
             watcher: Arc::new(watcher),
             content_watchers: Mutex::new(Vec::new()),
             lsp_watchers: Mutex::new(Vec::new()),

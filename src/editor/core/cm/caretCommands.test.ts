@@ -1,7 +1,7 @@
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { EditorSelection, EditorState, StateEffect } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { indentService, type LanguageSupport } from "@codemirror/language";
+import { codeFolding, foldEffect, indentService, type LanguageSupport } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
 import { addCursorAbove, insertBlankLine, selectLine, toggleTabFocusMode } from "@codemirror/commands";
 import {
@@ -14,9 +14,11 @@ import {
   nextParagraphBoundary,
   previousParagraphBoundary,
   scrollDown,
+  scrollDownAndMove,
   scrollToBottom,
   scrollToTop,
   scrollUp,
+  scrollUpAndMove,
   selectPageBottom,
   selectPageTop,
   selectParagraphForward,
@@ -248,6 +250,104 @@ describe("Move Caret to Page Top / Bottom", () => {
     selectPageBottom(view);
     expect(view.state.selection.main.anchor).toBe(anchor);
     expect([lineOf(view), columnOf(view)]).toEqual([[5], [7]]);
+  });
+});
+
+describe("Scroll Up / Down and Move if Necessary", () => {
+  /** jsdom has no layout: a scroller `height` line heights tall, scrolled to `top` line heights. */
+  function scroller(view: EditorView, top: number, height: number) {
+    const line = view.lineBlockAt(0).height;
+    let px = top * line;
+    Object.defineProperty(view.scrollDOM, "scrollTop", {
+      configurable: true,
+      get: () => px,
+      set: (v: number) => (px = Math.max(0, v)),
+    });
+    Object.defineProperty(view, "documentTop", { configurable: true, get: () => -px });
+    Object.defineProperty(view.scrollDOM, "clientHeight", { configurable: true, get: () => height * line });
+    return () => px / line;
+  }
+  const lines = (marked: Record<number, string>) =>
+    Array.from({ length: 10 }, (_, i) => marked[i] ?? `line ${i} text`).join("\n");
+  const lineOf = (view: EditorView) => view.state.selection.ranges.map((r) => view.state.doc.lineAt(r.head).number - 1);
+  const columnOf = (view: EditorView) =>
+    view.state.selection.ranges.map((r) => r.head - view.state.doc.lineAt(r.head).from);
+
+  it("scrolls one line and keeps a caret that stays in view where it is", () => {
+    const view = make(lines({ 4: "line 4 te|xt" }));
+    const top = scroller(view, 2, 4);
+    const before = view.state.selection;
+    expect(scrollDownAndMove(view)).toBe(true);
+    expect(top()).toBe(3);
+    expect(view.state.selection.eq(before)).toBe(true);
+    expect(scrollUpAndMove(view)).toBe(true);
+    expect(top()).toBe(2);
+    expect(view.state.selection.eq(before)).toBe(true);
+  });
+
+  it("brings a caret that scrolls off the top down to the first line, keeping its column", () => {
+    const view = make(lines({ 2: "line 2 te|xt" }));
+    scroller(view, 2, 4);
+    scrollDownAndMove(view);
+    expect([lineOf(view), columnOf(view)]).toEqual([[3], [9]]);
+  });
+
+  it("brings a caret that scrolls off the bottom up to the last line, keeping its column", () => {
+    const view = make(lines({ 5: "li|ne 5 text" }));
+    scroller(view, 2, 4);
+    scrollUpAndMove(view);
+    expect([lineOf(view), columnOf(view)]).toEqual([[4], [2]]);
+  });
+
+  it("moves a caret already out of view to the nearest edge", () => {
+    const view = make(lines({ 9: "line 9 |text" }));
+    scroller(view, 0, 4);
+    scrollDownAndMove(view);
+    expect([lineOf(view), columnOf(view)]).toEqual([[4], [7]]);
+  });
+
+  it("drops the selection of a caret it moves and keeps the others", () => {
+    const view = make(lines({ 0: "|line 0 text" }));
+    const at = (line: number, col: number) => view.state.doc.line(line + 1).from + col;
+    view.dispatch({
+      selection: EditorSelection.create(
+        [EditorSelection.range(at(2, 0), at(2, 4)), EditorSelection.range(at(4, 0), at(4, 4))],
+        1,
+      ),
+    });
+    scroller(view, 2, 4);
+    scrollDownAndMove(view);
+    expect(view.state.selection.ranges.map((r) => [r.anchor, r.head])).toEqual([
+      [at(3, 4), at(3, 4)],
+      [at(4, 0), at(4, 4)],
+    ]);
+    expect(view.state.selection.mainIndex).toBe(1);
+  });
+
+  it("keeps a caret at the end of a folded block the view shows", () => {
+    const view = make(lines({ 7: "line 7 text|" }));
+    const { doc } = view.state;
+    view.dispatch({
+      effects: [
+        StateEffect.appendConfig.of(codeFolding()),
+        foldEffect.of({ from: doc.line(6).to, to: doc.line(8).to }),
+      ],
+    });
+    expect(view.lineBlockAt(doc.line(8).to).from).toBe(doc.line(6).from);
+    const before = view.state.selection;
+    scroller(view, 1, 4);
+    scrollDownAndMove(view);
+    expect(view.state.selection.eq(before)).toBe(true);
+  });
+
+  it("only scrolls at the top of the file when the caret stays in view", () => {
+    const view = make(lines({ 1: "|line 1 text" }));
+    const top = scroller(view, 0, 4);
+    const before = view.state.selection;
+    scrollUpAndMove(view);
+    expect(top()).toBe(0);
+    expect(view.state.selection.eq(before)).toBe(true);
+    expect(view.state.doc.toString()).toBe(lines({}));
   });
 });
 

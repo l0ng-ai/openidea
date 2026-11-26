@@ -16,7 +16,7 @@ OpenIDEA 本身不带模型或账号：它启动你已安装并登录的 agent�
 | Claude Code    | `claude`                    | `claude`              |
 | Codex          | `codex app-server`          | `codex login`         |
 | Gemini CLI     | `gemini --experimental-acp` | `gemini`              |
-| GitHub Copilot | `copilot --acp`             | `copilot`             |
+| GitHub Copilot | `copilot --acp`             | `copilot login`       |
 | Cursor         | `cursor-agent acp`          | `cursor-agent login`  |
 | OpenCode       | `opencode acp`              | `opencode auth login` |
 | Qwen Code      | `qwen --experimental-acp`   | `qwen`                |
@@ -129,6 +129,10 @@ agent 运行过一个任务后，新任务会以它自动批准所有操作的�
 
 - **内置**：每个内置 agent 的可执行文件是否在 `PATH` 中找到、指定 **自定义可执行文件** 的输入框、传给 agent 进程的 **环境变量**（格式为 `NAME=value; OTHER=value`；这些值保存在系统凭据存储中）以及登录方式。改动对新会话生效。如果 agent 是 npm 全局安装（例如 Claude Code、Codex、Gemini CLI），**检查更新** 会与 npm 的最新稳定版比较，点击 **更新至…** 即可更新这份安装。
 - **ACP 注册表**：[ACP Registry](https://agentclientprotocol.com) 中发布的 agent，可以搜索、**安装**、**更新** 和 **移除**。安装的 agent 保存在 OpenIDEA 的数据目录中；注册表提供 SHA-256 时会校验下载内容。
+
+对于直接启动的内置 ACP agent（例如 OMP），**启动 › 附加实参**会追加到现有启动命令末尾。用空格分隔参数，含空格的值请加引号。点击**应用**保存，下一次启动进程时生效；命令预览显示已保存的结果。**重置附加参数**只清除此字段，不会改动可执行文件、环境变量或配置文件中手写的 `args`。
+
+对于 **GitHub Copilot**，**登录 › GitHub 账号**选择用于 AI 模型请求的 Copilot 订阅所属 GitHub 账号——既可使用 Copilot CLI 自身的默认登录（**登录…**），也可选择已在 GitHub CLI 中登录的任意账号（**添加账户…**）。完成登录或点击**应用**后，**新任务**会加载该已验证账号对应的可用模型列表。
 
 **设置 › 智能体 › 聊天** 决定任务标题栏显示哪些信息：**上下文窗口用量**、**任务耗时**、**用量限额**（agent 报告时，例如 Claude Code）和 **会话花费**。
 

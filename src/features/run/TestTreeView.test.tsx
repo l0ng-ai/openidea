@@ -35,6 +35,8 @@ function results() {
 function Host(props: {
   onRunTests?: (ids: string[], debug: boolean) => void;
   canRunTests?: (ids: string[]) => boolean | Promise<boolean>;
+  onUpdateSnapshots?: (ids: string[]) => void;
+  canUpdateSnapshots?: (ids: string[]) => boolean;
 }) {
   return (
     <>
@@ -100,6 +102,21 @@ describe("TestTreeView", () => {
     );
   });
 
+  it("context menu: Update Snapshot on a snapshot mismatch and its suite, not on other failures", () => {
+    const onUpdateSnapshots = vi.fn();
+    const canUpdateSnapshots = vi.fn((ids: string[]) => ids[0] !== "other");
+    render(<Host onUpdateSnapshots={onUpdateSnapshots} canUpdateSnapshots={canUpdateSnapshots} />);
+    fireEvent.contextMenu(screen.getByText("MathTest"));
+    fireEvent.click(screen.getByText("Update Snapshot"));
+    expect(onUpdateSnapshots).toHaveBeenCalledWith(["MathTest"]);
+    fireEvent.contextMenu(screen.getByText("subs()"));
+    fireEvent.click(screen.getByText("Update Snapshot"));
+    expect(onUpdateSnapshots).toHaveBeenLastCalledWith(["MathTest\u0000subs()"]);
+    canUpdateSnapshots.mockReturnValue(false);
+    fireEvent.contextMenu(screen.getByText("subs()"));
+    expect(screen.queryByText("Update Snapshot")).toBeNull();
+  });
+
   it("context menu: Diagnose with Agent passes the selected failure to the agents action (#4716)", async () => {
     // Offered only while the agents feature provides the action.
     render(<Host />);
@@ -149,6 +166,28 @@ describe("TestTreeView", () => {
       }
     },
   );
+});
+
+it("shows Rerun Automatically only where watch mode applies", () => {
+  const { unmount } = render(<Host />);
+  expect(screen.queryByRole("button", { name: "Rerun Automatically" })).toBeNull();
+  unmount();
+  const toggle = vi.fn();
+  render(
+    <TestTreeView
+      results={results()}
+      version={1}
+      cwd="/p"
+      selected={null}
+      onSelect={() => {}}
+      running
+      rerunAutomatically={{ on: true, toggle }}
+    />,
+  );
+  const button = screen.getByRole("button", { name: "Rerun Automatically" });
+  expect(button.getAttribute("aria-pressed")).toBe("true");
+  fireEvent.click(button);
+  expect(toggle).toHaveBeenCalledOnce();
 });
 
 describe("Previous / Next Failed Test", () => {

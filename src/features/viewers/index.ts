@@ -1,7 +1,7 @@
 /**
  * Non-text editors and the Markdown preview: images open in an image viewer,
  * binary and very large files in a read-only hex view (both through file
- * editor providers consulted by `openFile`), and Markdown files get IDEA's
+ * editor providers consulted by `openFile`), and Markdown and SVG files get IDEA's
  * Editor / Editor and Preview / Preview layouts around the text editor.
  */
 import { registerActions, type Action } from "@/platform/actions";
@@ -15,6 +15,7 @@ import {
   registerEditorKind,
   registerExternalFileOpenHandler,
   registerFileEditorProvider,
+  registerMenuGroup,
   registerTextEditorWrapper,
   textEditorWrapperFor,
   useTextEditorWrappers,
@@ -28,13 +29,18 @@ import {
   imageInput,
   isImagePath,
   isMarkdownPath,
+  isSvgPath,
   wantsHexView,
 } from "./fileKinds";
 import { ImageViewer, toggleChessboard, useImageViewers } from "./ImageViewer";
 import { HexViewer } from "./HexViewer";
 import { registerMarkdownLiveSource } from "./markdown/live";
-import { setMarkdownMode, useMarkdownSourceHidden, type MarkdownMode } from "./markdown/modes";
+import { setMarkdownMode, useMarkdownModes, useMarkdownSourceHidden } from "./markdown/modes";
+import type { LayoutMode } from "./layoutModes";
+import { registerSvgLiveSource } from "./svg/live";
+import { SvgLayoutActions, svgModes } from "./svg/SvgEditor";
 import { MarkdownLayoutActions } from "./markdown/MarkdownLayoutActions";
+import { canExtractImages, extractImages, EXTRACT_IMAGES, EXTRACT_IMAGES_TITLE } from "./markdown/extractImages";
 
 const titleOf = (input: EditorInput) => basename(input.path ?? input.key);
 const iconOf = (input: EditorInput) => fileIconName(titleOf(input));
@@ -63,25 +69,49 @@ function imageActions(): Action[] {
   ];
 }
 
+/**
+ * The tab whose layout an Editor Only / Editor and Preview / Preview Only action sets: the one its
+ * tab button passes, else the focused editor's when it's a Markdown or SVG file.
+ */
+function layoutTarget(arg: unknown): { tabId: string; set: (tabId: string, mode: LayoutMode) => void } | null {
+  if (typeof arg === "string") {
+    return { tabId: arg, set: svgModes.useModes.getState().byTab[arg] ? svgModes.set : setMarkdownMode };
+  }
+  const editor = activeEditor();
+  const path = editor?.ctx.path ?? "";
+  if (!editor?.tabId) return null;
+  if (isSvgPath(path)) return { tabId: editor.tabId, set: svgModes.set };
+  if (isMarkdownPath(path) || useMarkdownModes.getState().byTab[editor.tabId])
+    return { tabId: editor.tabId, set: setMarkdownMode };
+  return null;
+}
+
 function markdownActions(): Action[] {
-  const mode = (id: string, title: string, m: MarkdownMode, icon: string): Action => ({
+  const mode = (id: string, title: string, m: LayoutMode, icon: string): Action => ({
     id,
     title,
     category: "Markdown",
     icon,
-    keywords: ["markdown", "preview", "layout"],
-    when: "textEditorActive && editorLangId == markdown",
+    keywords: ["markdown", "svg", "preview", "layout"],
+    when: "textEditorActive",
+    enabled: ({ arg }) => !!layoutTarget(arg),
     run: ({ arg }) => {
-      // The tab's layout buttons pass their tab; the keyboard acts on the focused editor's.
-      const editor = activeEditor();
-      const tabId = typeof arg === "string" ? arg : isMarkdownPath(editor?.ctx.path ?? "") ? editor?.tabId : undefined;
-      if (tabId) setMarkdownMode(tabId, m);
+      const target = layoutTarget(arg);
+      target?.set(target.tabId, m);
     },
   });
   return [
     mode("markdown.editorOnly", "Editor Only", "editor", "editor-only"),
     mode("markdown.editorAndPreview", "Editor and Preview", "split", "editor-preview"),
     mode("markdown.previewOnly", "Preview Only", "preview", "preview-only"),
+    {
+      id: EXTRACT_IMAGES,
+      title: EXTRACT_IMAGES_TITLE,
+      category: "Markdown",
+      when: "textEditorActive && !editorReadOnly",
+      enabled: () => canExtractImages(),
+      run: extractImages,
+    },
   ];
 }
 
@@ -133,6 +163,21 @@ export function activate(): () => void {
       useSourceHidden: useMarkdownSourceHidden,
     }),
     registerMarkdownLiveSource(),
+    registerTextEditorWrapper({
+      id: "viewers.svg",
+      fallback: true,
+      matches: isSvgPath,
+      component: lazyComponent(() => import("./svg/SvgEditor").then((m) => m.SvgEditor)),
+      tabActions: SvgLayoutActions,
+      useSourceHidden: svgModes.useSourceHidden,
+    }),
+    registerSvgLiveSource(),
+    registerMenuGroup({
+      id: EXTRACT_IMAGES,
+      menus: ["editor"],
+      items: (_menu, { paths: [path] }) =>
+        path === activeEditor()?.ctx.path && canExtractImages() ? [{ kind: "action", action: EXTRACT_IMAGES }] : [],
+    }),
     registerActions([...imageActions(), ...markdownActions()]),
   ];
   return () => disposers.reverse().forEach((d) => d());

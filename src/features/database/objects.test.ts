@@ -8,6 +8,8 @@ import {
   canModifyTable,
   createDatabaseSql,
   createSchemaSql,
+  commentsSupported,
+  createTableCommentSql,
   createTableSql,
   draftOf,
   dropDatabaseSql,
@@ -188,6 +190,7 @@ describe("database object SQL", () => {
       notNull: false,
       default: "0",
       primaryKey: false,
+      comment: "",
       dropped: false,
     });
     expect(alterTableSql("sqlite", "main", "users", "people", d)).toEqual([
@@ -206,6 +209,71 @@ describe("database object SQL", () => {
     expect(alterTableSql("mysql", "app", "users", "users", p)).toEqual([
       "alter table app.users change column name name varchar(40) default '' not null;",
     ]);
+  });
+});
+
+describe("table and column comments", () => {
+  const commented = [col("id", "INTEGER", { primaryKey: true }), col("note", "TEXT", { comment: "Free text" })];
+
+  it("sets, changes and clears comments per engine", () => {
+    const p = commented.map(draftOf);
+    p[0] = { ...p[0]!, comment: "Order's id" };
+    p[1] = { ...p[1]!, comment: "" };
+    const table = { original: "", value: "Orders" };
+    expect(alterTableSql("postgres", "public", "t", "t", p, table)).toEqual([
+      "comment on table public.t is 'Orders';",
+      "comment on column public.t.id is 'Order''s id';",
+      "comment on column public.t.note is null;",
+    ]);
+    expect(alterTableSql("oracle", "HR", "T", "T", p, { original: "Old", value: "" })).toEqual([
+      "comment on table HR.T is '';",
+      "comment on column HR.T.\"id\" is 'Order''s id';",
+      "comment on column HR.T.\"note\" is '';",
+    ]);
+    expect(alterTableSql("snowflake", "HR", "T", "T", p, { original: "Old", value: "" })).toEqual([
+      "alter table HR.T unset comment;",
+      "comment on column HR.T.\"id\" is 'Order''s id';",
+      'alter table HR.T alter column "note" unset comment;',
+    ]);
+    // MySQL keeps a column's comment in its definition.
+    expect(alterTableSql("mysql", "app", "t", "t", p, { original: "", value: "a\\b" })).toEqual([
+      "alter table app.t change column id id INTEGER comment 'Order''s id';",
+      "alter table app.t change column note note TEXT;",
+      "alter table app.t comment = 'a\\\\b';",
+    ]);
+    expect(alterTableSql("sqlite", "main", "t", "t", p, table)).toEqual([]);
+  });
+
+  it("keeps an unchanged comment, and comments a renamed column by its new name", () => {
+    const p = commented.map(draftOf);
+    expect(alterTableSql("postgres", "public", "t", "t", p, { original: "Orders", value: "Orders" })).toEqual([]);
+    // A MySQL change of type keeps the column's comment.
+    p[1] = { ...p[1]!, dataType: "varchar(40)" };
+    expect(alterTableSql("mysql", "app", "t", "t", p)).toEqual([
+      "alter table app.t change column note note varchar(40) comment 'Free text';",
+    ]);
+    p[1] = { ...commented.map(draftOf)[1]!, name: "body", comment: "Body" };
+    expect(alterTableSql("postgres", "public", "t", "renamed", p)).toEqual([
+      "alter table public.t rename column note to body;",
+      "comment on column public.t.body is 'Body';",
+      "alter table public.t rename to renamed;",
+    ]);
+  });
+
+  it("comments a new table", () => {
+    const d = commented.map((c) => ({ ...draftOf(c, 0), original: null }));
+    expect(createTableSql("mysql", "app", "t", d, "Orders")).toBe(
+      "create table app.t\n(\n    id INTEGER,\n    note TEXT comment 'Free text',\n    primary key (id)\n)\ncomment = 'Orders';\n",
+    );
+    expect(createTableCommentSql("mysql", "app", "t", d, "Orders")).toEqual([]);
+    expect(createTableCommentSql("postgres", "public", "t", d, "Orders")).toEqual([
+      "comment on table public.t is 'Orders';",
+      "comment on column public.t.note is 'Free text';",
+    ]);
+    expect(createTableCommentSql("postgres", "public", "t", d, "")).toEqual([
+      "comment on column public.t.note is 'Free text';",
+    ]);
+    expect(commentsSupported("sqlite")).toBe(false);
   });
 });
 
@@ -248,6 +316,7 @@ describe("oracle object SQL", () => {
       notNull: false,
       default: "SYSDATE",
       primaryKey: false,
+      comment: "",
       dropped: false,
     } satisfies ColumnDraft);
     expect(alterTableSql("oracle", "HR", "EMPLOYEES", "EMPLOYEES", p)).toEqual([
@@ -344,6 +413,7 @@ describe("snowflake object SQL", () => {
       notNull: false,
       default: "CURRENT_DATE",
       primaryKey: false,
+      comment: "",
       dropped: false,
     } satisfies ColumnDraft);
     expect(alterTableSql("snowflake", "HR", "EMP", "STAFF", p)).toEqual([

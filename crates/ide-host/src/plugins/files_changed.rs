@@ -28,11 +28,21 @@ pub(super) fn retain_live(events: &mut Vec<WorkbenchEvent>, source: Option<&Sour
     }
 }
 
+/// Queues `incoming`, folding a filesystem batch into the queued one it continues:
+/// the project batch, or the watched-paths batch of the same project.
 pub(super) fn append(events: &mut Vec<WorkbenchEvent>, incoming: Vec<WorkbenchEvent>) {
     for event in incoming {
-        if let WorkbenchEvent::FilesChanged(batch) = &event
-            && let Some(WorkbenchEvent::FilesChanged(previous)) =
-                events.iter_mut().find(|e| matches!(e, WorkbenchEvent::FilesChanged(_)))
+        let previous = events.iter_mut().find_map(|queued| match (queued, &event) {
+            (WorkbenchEvent::FilesChanged(previous), WorkbenchEvent::FilesChanged(_)) => Some(previous),
+            (WorkbenchEvent::WatchedFilesChanged(previous), WorkbenchEvent::WatchedFilesChanged(batch))
+                if previous.project == batch.project =>
+            {
+                Some(previous)
+            }
+            _ => None,
+        });
+        if let (WorkbenchEvent::FilesChanged(batch) | WorkbenchEvent::WatchedFilesChanged(batch), Some(previous)) =
+            (&event, previous)
         {
             use std::collections::BTreeMap;
             #[derive(Clone, Copy)]

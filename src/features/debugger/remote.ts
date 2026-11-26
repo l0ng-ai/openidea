@@ -196,8 +196,9 @@ export const pythonRemoteType: RunConfigTypeContribution = {
 // ---------------------------------------------------------------------------
 // Attach to Node.js (inspector)
 
+/** How to start the remote side; with Reconnect automatically, under nodemon, which restarts it on save. */
 export function nodeInspectCommand(p: Params): string {
-  return `node --inspect=0.0.0.0:${portOf(p, 9229)} app.js`;
+  return `${p.restart === "true" ? "nodemon" : "node"} --inspect=0.0.0.0:${portOf(p, 9229)} app.js`;
 }
 
 export const nodeRemoteType: RunConfigTypeContribution = {
@@ -217,6 +218,12 @@ export const nodeRemoteType: RunConfigTypeContribution = {
       control: "output",
       mono: true,
       value: nodeInspectCommand,
+    },
+    {
+      key: "restart",
+      label: "Reconnect automatically",
+      control: "checkbox",
+      hint: "When the process restarts (nodemon, node --watch, tsx watch), attach to it again with the same breakpoints",
     },
     localRootField,
     remoteRootField("e.g. /usr/src/app"),
@@ -407,6 +414,7 @@ export function remoteAttachConfig(rc: RunConfig, root: string): LaunchConfig | 
         port: portOf(p, 9229),
         ...(map ? { localRoot: map.local, remoteRoot: map.remote } : {}),
         skipFiles: skip ? ["<node_internals>/**", "**/node_modules/**"] : [],
+        ...(p.restart === "true" ? { restart: true } : {}),
       });
     case PHP_REMOTE:
       return requestBase(rc, "php-debug", root, "launch", {
@@ -418,10 +426,23 @@ export function remoteAttachConfig(rc: RunConfig, root: string): LaunchConfig | 
   }
 }
 
-/** What a session of `rc` shows while nothing is suspended, when it waits for the debuggee to connect. */
-export function remoteWaitingNote(rc: Pick<RunConfig, "kind" | "params"> | undefined): string | null {
+/** Attach to Node.js with Reconnect automatically: js-debug attaches each restarted process in a new child session. */
+export const reconnects = (rc: Pick<RunConfig, "kind" | "params"> | undefined) =>
+  rc?.kind === NODE_REMOTE && rc.params?.restart === "true";
+
+/**
+ * What a session of `rc` shows while nothing is suspended, when it waits for the debuggee to connect.
+ * `reconnecting`: the process it attached to has ended and none is attached yet.
+ */
+export function remoteWaitingNote(
+  rc: Pick<RunConfig, "kind" | "params"> | undefined,
+  reconnecting = false,
+): string | null {
+  const p = rc?.params ?? {};
+  if (reconnects(rc))
+    return reconnecting ? tx`Waiting to reconnect to Node.js on ${serverAddress(hostOf(p), portOf(p, 9229))}` : null;
   if (rc?.kind !== PHP_REMOTE) return null;
-  return tx`Listening for Xdebug on port ${portOf(rc.params ?? {}, 9003)}`;
+  return tx`Listening for Xdebug on port ${portOf(p, 9003)}`;
 }
 
 /** What a Remote JVM Debug configuration attaches to (before the listen mode relay). */

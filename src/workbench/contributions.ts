@@ -171,6 +171,11 @@ export interface EditorKindContribution {
   /** The input that shows this tab where it is now when Back returns to it, e.g. a diff at its caret. */
   navigationInput?(input: EditorInput): EditorInput;
   /**
+   * Whether Back/Forward can still navigate to this input (`open`: a tab with its key is open).
+   * Defaults to true; return false to skip deleted tasks or closed ephemeral sessions.
+   */
+  canNavigate?(input: EditorInput, open: boolean): boolean;
+  /**
    * "Open in New Window" on its tabs: moves the tab to a lightweight window of this project
    * (`EditorService.openInWindow`) with whatever state it carries. False when it stayed here.
    */
@@ -305,6 +310,8 @@ export interface ServiceProviderContribution {
   /** Toolbar buttons for a selected node of this provider. */
   actions?(item: ServiceTreeItem): ServiceItemAction[];
   menu?(item: ServiceTreeItem): MenuItem[];
+  /** The service a node stands for, as other contributors see it (plugins' Services menus); null for groups. */
+  context?(item: ServiceTreeItem): ServiceContext | null;
   /** Double click / Enter. */
   activate?(item: ServiceTreeItem): void;
   /** Jump to Source (F4 / ⌘↓); a provider without it activates the node instead. */
@@ -321,6 +328,43 @@ export interface ServiceProviderContribution {
   addMenu?(): MenuItem[];
   /** Optional sibling display ordering; does not move services between groups. */
   reorder?: TreeReorder<ServiceTreeItem>;
+}
+
+/** A selected Services node as contributors outside its provider see it. */
+export interface ServiceContext {
+  /** The provider's id: `run`, `docker`. */
+  provider: string;
+  /** Stable within the provider: a run configuration's id, a container's id. */
+  id: string;
+  /** `spring-boot`, `application`, … (a run configuration's kind), `docker-container`. */
+  kind: string;
+  name: string;
+  running: boolean;
+  /** When a run configuration backs the service. */
+  runConfigurationId?: string;
+}
+
+/**
+ * Entries other features add to the Services tree's context menu and toolbar for the
+ * selected services (all of which have a {@link ServiceContext}).
+ */
+export interface ServiceSelectionContribution {
+  id: string;
+  menu?(services: ServiceContext[]): MenuItem[];
+  actions?(services: ServiceContext[]): ServiceItemAction[];
+}
+
+const serviceSelectionItems = new Map<string, ServiceSelectionContribution>();
+
+export function registerServiceSelectionItems(c: ServiceSelectionContribution): () => void {
+  serviceSelectionItems.set(c.id, c);
+  return () => {
+    if (serviceSelectionItems.get(c.id) === c) serviceSelectionItems.delete(c.id);
+  };
+}
+
+export function serviceSelectionContributions(): ServiceSelectionContribution[] {
+  return [...serviceSelectionItems.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
 
 export const useServiceProviders = create<{ providers: Map<string, ServiceProviderContribution> }>(() => ({
@@ -662,6 +706,8 @@ export async function openFileExternally(path: string): Promise<boolean> {
 export interface TextEditorWrapperContribution {
   keepAlive?: boolean;
   id: string;
+  /** Yields to any other wrapper matching the file (a plugin's editor for `*.diagram.svg`). */
+  fallback?: boolean;
   matches(path: string): boolean;
   component: ComponentType<{ path: string; tabId: string; children: ReactNode; actionsInTabs?: boolean }>;
   /** Layout controls in the tab strip; the wrapper supplies a floating fallback when tabs are hidden. */
@@ -689,8 +735,13 @@ export function textEditorWrapperFor(
   wrappers: ReadonlyMap<string, TextEditorWrapperContribution>,
   path: string,
 ): TextEditorWrapperContribution | undefined {
-  for (const w of wrappers.values()) if (w.matches(path)) return w;
-  return undefined;
+  let fallback: TextEditorWrapperContribution | undefined;
+  for (const w of wrappers.values()) {
+    if (!w.matches(path)) continue;
+    if (!w.fallback) return w;
+    fallback ??= w;
+  }
+  return fallback;
 }
 
 /**
@@ -1743,6 +1794,13 @@ export interface RunExecutorContribution {
   supports(config: RunConfig): boolean;
   /** Plans the launch; null when it can't run (the executor has said why). */
   prepare(config: RunConfig): Promise<ExecutorLaunch | null>;
+  /**
+   * The launch starts under the debugger (a plugin's "Debug with …"): no Run before-launch
+   * pass of its own, and `finished` / `beforeStop` are not called.
+   */
+  debug?: boolean;
+  /** `prepare` handles a configuration on a run target itself (no container check before it). */
+  checksTarget?: boolean;
 }
 
 export const useRunExecutors = create<{ executors: Map<string, RunExecutorContribution> }>(() => ({

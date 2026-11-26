@@ -162,6 +162,29 @@ impl Repo {
         blob_at(&repo, &indexed, rev)
     }
 
+    /// Raw bytes of the selected commit or index entry, bounded before loading its blob.
+    pub fn file_bytes_at_bounded(&self, path: &Path, rev: &str, max: usize) -> IdeResult<Option<Vec<u8>>> {
+        let _scope = self.execution_scope();
+        let repo = self.gix()?;
+        let given = self.given_rel_path(path)?;
+        let indexed = self.index_spelling(given.clone());
+        let Some((mode, id)) = revision_entry(&repo, &given, &indexed, rev)? else { return Ok(None) };
+        if !mode.is_blob_or_symlink() {
+            return Ok(None);
+        }
+        if let Some(header) = repo.try_find_header(id).map_err(gx)? {
+            if header.size() > max as u64 {
+                return Err(IdeError::invalid(format!("{} is too large to preview", path.display())));
+            }
+            return Ok(Some(repo.find_object(id).map_err(gx)?.detach().data));
+        }
+        // A partial clone may only have the tree. Keep Git's on-demand fetch under
+        // the repository's execution policy and cap the bytes captured from it.
+        let args = ["cat-file", "blob", &id.to_string()];
+        let out = crate::cli::run_bounded(self.root(), &args, &ide_core::CancellationToken::new(), max)?;
+        Ok(Some(out.stdout))
+    }
+
     pub fn diff_entry_at(&self, path: &Path, rev: &str) -> IdeResult<Option<DiffEntry>> {
         let _scope = self.execution_scope();
         let repo = self.gix()?;
@@ -183,14 +206,7 @@ impl Repo {
                 .and_then(|child| child.head().ok()?.1);
             return Ok(Some(DiffEntry { mode: "160000".into(), gitlink }));
         }
-        let entry = if !rev.starts_with(':') && indexed != given {
-            match entry_at(&repo, &given, rev)? {
-                Some(entry) => Some(entry),
-                None => entry_at(&repo, &indexed, rev)?,
-            }
-        } else {
-            entry_at(&repo, &indexed, rev)?
-        };
+        let entry = revision_entry(&repo, &given, &indexed, rev)?;
         Ok(entry.map(|(mode, id)| DiffEntry {
             mode: format!("{:o}", mode.value()),
             gitlink: mode.is_commit().then(|| id.to_string()),
@@ -332,6 +348,22 @@ pub(crate) fn worktree_mode(root: &Path, rel: &str) -> IdeResult<Option<String>>
 /// `160000`…), `None` when the path is absent there. Same `rev` rules as [`blob_at`].
 pub(crate) fn mode_at(repo: &gix::Repository, rel: &str, rev: &str) -> IdeResult<Option<String>> {
     Ok(entry_at(repo, rel, rev)?.map(|(mode, _)| format!("{:o}", mode.value())))
+}
+
+/// Prefer the spelling in the revision to a later case-only rename in the index.
+fn revision_entry(
+    repo: &gix::Repository,
+    given: &str,
+    indexed: &str,
+    rev: &str,
+) -> IdeResult<Option<(gix::objs::tree::EntryMode, gix::ObjectId)>> {
+    if !rev.starts_with(':')
+        && indexed != given
+        && let Some(entry) = entry_at(repo, given, rev)?
+    {
+        return Ok(Some(entry));
+    }
+    entry_at(repo, indexed, rev)
 }
 
 fn entry_at(

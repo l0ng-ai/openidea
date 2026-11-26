@@ -2,13 +2,18 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const ghAccountRepos = vi.fn();
+const toolsList = vi.fn();
 vi.mock("@/platform/ipc", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/platform/ipc")>()),
   isTauri: () => true,
-  commands: { ghAccountRepos: () => ghAccountRepos() },
+  commands: {
+    ghAccountRepos: () => ghAccountRepos(),
+    toolsList: () => toolsList(),
+  },
 }));
 
 import type { GhAccountRepo } from "@/bindings";
+import { registerAction } from "@/platform/actions";
 import { GitHubCloneSource, matchRepos } from "./GitHubCloneSource";
 
 const repo = (nameWithOwner: string, extra: Partial<GhAccountRepo> = {}): GhAccountRepo => ({
@@ -25,6 +30,7 @@ const repos = [repo("me/app", { private: true, description: "The app" }), repo("
 afterEach(() => {
   cleanup();
   ghAccountRepos.mockReset();
+  toolsList.mockReset();
 });
 
 describe("GitHub clone source", () => {
@@ -63,5 +69,22 @@ describe("GitHub clone source", () => {
     ghAccountRepos.mockResolvedValueOnce({ status: "ok", data: { kind: "ready", login: "me", repos } });
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(screen.getByRole("option", { name: /me\/app/ })).toBeInTheDocument());
+  });
+
+  it("installs GitHub CLI in-app when missing and reloads repositories", async () => {
+    const install = vi.fn().mockResolvedValue(undefined);
+    const dispose = registerAction({ id: "tools.install", title: "Install", run: install });
+    ghAccountRepos.mockResolvedValueOnce({ status: "ok", data: { kind: "notInstalled" } });
+    toolsList.mockResolvedValue({ status: "ok", data: [{ name: "gh", status: "installed" }] });
+    ghAccountRepos.mockResolvedValueOnce({ status: "ok", data: { kind: "ready", login: "me", repos } });
+    try {
+      render(<GitHubCloneSource url="" onUrl={() => {}} onClone={() => {}} disabled={false} />);
+      expect(await screen.findByText("GitHub CLI is not installed")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Install GitHub CLI" }));
+      await waitFor(() => expect(install).toHaveBeenCalledWith(expect.objectContaining({ arg: "gh" })));
+      await waitFor(() => expect(screen.getByRole("option", { name: /me\/app/ })).toBeInTheDocument());
+    } finally {
+      dispose();
+    }
   });
 });

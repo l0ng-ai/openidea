@@ -411,7 +411,8 @@ test("rename owns deletion and Cmd+Enter without editing the previously focused 
   await page.keyboard.press("Meta+a");
   const query = "SELECT 'keep this query';\nSELECT 2;";
   await page.keyboard.insertText(query);
-  await page.keyboard.press("Meta+ArrowUp");
+  // Caret on the first line (Cmd+Up is Jump to Navigation Bar, not a caret move).
+  await content.locator(".cm-line").first().click();
   await expect(content).toHaveText(query.replace("\n", ""));
 
   await choose(page, "Result 1", "Rename Tab");
@@ -439,8 +440,7 @@ test("rename owns deletion and Cmd+Enter without editing the previously focused 
   await expect(content).toHaveText(query.replace("\n", ""));
 
   // The editor's own Delete Line shortcut still works after the dialog closes.
-  await content.click();
-  await page.keyboard.press("Meta+ArrowUp");
+  await content.locator(".cm-line").first().click();
   await page.keyboard.press("Meta+Backspace");
   await expect(content.locator(".cm-line").filter({ hasText: /SELECT/ })).toHaveCount(1);
 });

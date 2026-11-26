@@ -47,7 +47,19 @@ public final class OpenIdeaJdbc {
 
     private static class UnsupportedUrl extends SQLException {}
 
-    private static class ReadOnlyUnavailable extends SQLException {}
+    private static class ReadOnlyUnavailable extends SQLException {
+        ReadOnlyUnavailable(String message) { super(message); }
+    }
+
+    static void checkDuckDbReadOnly(String key, String value) throws ReadOnlyUnavailable {
+        String option = key.trim();
+        String setting = value.trim().toLowerCase(Locale.ROOT);
+        if (("access_mode".equalsIgnoreCase(option) && !"read_only".equals(setting))
+                || ("duckdb.read_only".equalsIgnoreCase(option)
+                    && !Set.of("true", "1", "yes", "on").contains(setting))) {
+            throw new ReadOnlyUnavailable("A DuckDB connection option conflicts with Read-only. Check access_mode and duckdb.read_only.");
+        }
+    }
 
     void open(List<String> a, DataOutputStream out) throws Exception {
         String className = a.get(0), url = a.get(1);
@@ -56,12 +68,28 @@ public final class OpenIdeaJdbc {
         for (int i = 5; i < a.size(); i += 2) props.setProperty(a.get(i), a.get(i+1));
         if (!a.get(2).isEmpty()) props.setProperty("user", a.get(2));
         if (!a.get(3).isEmpty()) props.setProperty("password", a.get(3));
-        connection = driver.connect(url, props);
+        boolean readOnly = Boolean.parseBoolean(a.get(4));
+        boolean duckDbReadOnly = readOnly && className.equals("org.duckdb.DuckDBDriver") && url.startsWith("jdbc:duckdb:");
+        if (duckDbReadOnly) {
+            // DuckDB fixes its access mode at open, and options in the URL take precedence.
+            for (String key : props.stringPropertyNames()) checkDuckDbReadOnly(key, props.getProperty(key));
+            String[] parts = url.split(";");
+            for (int i = 1; i < parts.length; i++) {
+                String[] option = parts[i].split("=", 2);
+                if (option.length == 2) checkDuckDbReadOnly(option[0], option[1]);
+            }
+            props.setProperty("duckdb.read_only", "true");
+        }
+        try { connection = driver.connect(url, props); }
+        catch (SQLException e) {
+            if (!duckDbReadOnly) throw e;
+            throw new ReadOnlyUnavailable("DuckDB could not open in Read-only. Choose an existing database file and check the connection options.");
+        }
         if (connection == null) throw new UnsupportedUrl();
-        if (Boolean.parseBoolean(a.get(4))) {
+        if (readOnly && !duckDbReadOnly) {
             try { connection.setReadOnly(true); }
             catch (SQLException | UnsupportedOperationException e) {
-                throw new ReadOnlyUnavailable();
+                throw new ReadOnlyUnavailable("The JDBC driver rejected Read-only. Check the driver settings and database account privileges.");
             }
         }
         var m = connection.getMetaData();
@@ -306,7 +334,7 @@ public final class OpenIdeaJdbc {
                     && e.getMessage() != null && e.getMessage().matches("[A-Za-z0-9_.$/]+")) {
                 text(reply, "JDBC class " + e.getMessage() + " was not found. Check the driver class and include its dependency JARs.");
             } else if (e instanceof ReadOnlyUnavailable) {
-                text(reply, "The JDBC driver rejected Read-only. Check the driver settings and database account privileges.");
+                text(reply, e.getMessage());
             } else if (e instanceof UnsupportedUrl) {
                 text(reply, "The selected JDBC driver does not accept this URL");
             } else if (op.equals("open")) {

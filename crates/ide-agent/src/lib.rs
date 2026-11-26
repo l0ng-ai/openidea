@@ -33,6 +33,7 @@ pub use catalogs::AgentCatalogs;
 pub use cli_update::{AgentCliOffer, AgentCliUpdateResult};
 pub use external::ExternalSession;
 pub use model::*;
+pub use provider::{LoginLaunch, gh_authenticated_accounts, gh_login_launch};
 pub use skill_installer::{
     InstallRemoteSkillRequest, RemoteSkillBrowseResult, RemoteSkillCandidate, RemoteSkillFile, RemoteSkillPreview,
     SkillScanWarning, SkillScanWarningKind,
@@ -52,6 +53,49 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
+
+/// Resolves agent `id`'s interactive sign-in command without an open project.
+pub fn login_launch_without_project(
+    custom_agents_dir: Option<&Path>,
+    secrets: Option<&dyn EnvSecrets>,
+    cwd: &Path,
+    id: &str,
+) -> IdeResult<LoginLaunch> {
+    let spec = provider::load(custom_agents_dir, secrets)
+        .into_iter()
+        .find(|p| p.id == id)
+        .ok_or_else(|| IdeError::not_found(format!("unknown agent '{id}'")))?;
+    spec.login_launch(cwd, None)
+        .ok_or_else(|| IdeError::unavailable(format!("{} cannot be signed in directly from OpenIDEA", spec.name)))
+}
+
+/// Queries Copilot's default CLI sign-in status alongside authenticated `gh` accounts.
+pub async fn copilot_auth_status_with(
+    custom_agents_dir: Option<&Path>,
+    secrets: Option<&dyn EnvSecrets>,
+    cwd: &Path,
+) -> CopilotAuthStatus {
+    let copilot_spec = provider::load(custom_agents_dir, secrets).into_iter().find(|p| p.id == "copilot");
+    let cwd_buf = cwd.to_path_buf();
+    let cli_fut = async move {
+        let spec = copilot_spec?;
+        native::copilot::probe_auth_status(spec, cwd_buf).await
+    };
+    let gh_fut = tokio::task::spawn_blocking(provider::gh_authenticated_accounts);
+    let (cli, gh) = tokio::join!(cli_fut, gh_fut);
+    let (gh_installed, gh_accounts) = gh.unwrap_or((false, Vec::new()));
+    match cli {
+        Some(cli) => CopilotAuthStatus {
+            authenticated: cli.authenticated,
+            login: cli.login,
+            auth_type: cli.auth_type,
+            status_message: cli.status_message,
+            gh_installed,
+            gh_accounts,
+        },
+        None => CopilotAuthStatus { gh_installed, gh_accounts, ..CopilotAuthStatus::default() },
+    }
+}
 
 /// Receives the events of one project's tasks.
 pub type AgentSink = Arc<dyn Fn(AgentEvent) + Send + Sync>;
@@ -201,6 +245,8 @@ struct Shared {
     providers: RwLock<Vec<provider::ProviderSpec>>,
     /// Last probe of each provider.
     probes: Mutex<HashMap<String, AgentProbe>>,
+    /// `type: "terminal"` login arguments reported during `initialize`, by provider id.
+    terminal_auth_args: RwLock<HashMap<String, Vec<String>>>,
     /// Copilot CLI installs where `--headless` failed and fell back to `--acp`.
     copilot_acp_fallback: Mutex<HashSet<CopilotBinaryKey>>,
     /// [`IDLE_RELEASE`], in milliseconds (shorter in tests).
@@ -450,10 +496,42 @@ struct TaskFile {
     /// The user named the task: its agent's own title updates no longer replace it.
     #[serde(default, skip_serializing_if = "is_false")]
     title_renamed: bool,
+    /// [`NewAgentTask::ephemeral`]: the task file is never written, and new sessions ask the
+    /// agent not to save their history.
+    #[serde(default, skip_serializing_if = "is_false")]
+    ephemeral: bool,
+    /// Start the first session as a fork of a recorded native one (once).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending_native_fork: Option<ForkStart>,
+}
+
+/// A session to start as a fork of the recorded one: its source, and the id the host
+/// chooses for the fork (claude); codex assigns its own.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ForkStart {
+    source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target: Option<String>,
+}
+
+/// A canonical lowercase UUID, the only session id shape either native agent writes.
+fn canonical_uuid(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+            }
+        })
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct PendingModel {
+    /// Native Codex intent, including when this model cannot expose a Fast control.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    retained_service_tier: Option<AgentConfigChoice>,
     model: AgentConfigChoice,
     candidate: Option<AgentConfigValue>,
     options: Vec<AgentConfigOption>,
@@ -469,6 +547,11 @@ impl PendingModel {
         });
         wanted.push(self.model.clone());
         wanted.extend(self.choices.iter().cloned());
+        if let Some(choice) = &self.retained_service_tier
+            && !wanted.iter().any(|c| c.id == choice.id)
+        {
+            wanted.push(choice.clone());
+        }
     }
 }
 
@@ -502,6 +585,10 @@ struct TaskState {
     pending_rollback: u32,
     /// The user named the task; see `TaskFile::title_renamed`.
     title_renamed: bool,
+    /// [`NewAgentTask::ephemeral`].
+    ephemeral: bool,
+    /// See `TaskFile::pending_native_fork`: cleared once a session is established.
+    pending_native_fork: Option<ForkStart>,
     /// A turn is running or about to (prompts arriving now are queued).
     busy: bool,
     /// Background tasks the agent reported as running (`run_in_background` commands and
@@ -527,7 +614,12 @@ impl TaskState {
             }
             task.config.retain(|o| !config::is_per_model_option(o));
             task.config.extend(pending.options.iter().cloned().map(|mut option| {
-                if let Some(choice) = pending.choices.iter().find(|choice| choice.id == option.id) {
+                if let Some(choice) = pending
+                    .choices
+                    .iter()
+                    .chain(pending.retained_service_tier.iter())
+                    .find(|choice| choice.id == option.id)
+                {
                     option.current = Some(choice.value.clone());
                 }
                 option
@@ -660,6 +752,7 @@ impl AgentManager {
             known,
             providers,
             probes: Mutex::new(HashMap::new()),
+            terminal_auth_args: RwLock::new(HashMap::new()),
             copilot_acp_fallback: Mutex::new(HashSet::new()),
             idle_release_ms: AtomicU64::new(IDLE_RELEASE.as_millis() as u64),
             mcp_servers_hook: RwLock::new(None),
@@ -744,11 +837,14 @@ impl AgentManager {
         let specs = provider::load(self.shared.paths.custom_agents_dir.as_deref(), self.shared.env_secrets());
         let in_use: std::collections::HashSet<String> =
             self.tasks.read().values().map(|t| t.state.lock().task.provider.clone()).collect();
+        let terminal_auth = self.shared.terminal_auth_args.read();
         let list = specs
             .iter()
             .filter(|p| !provider::is_unlisted(p) || in_use.contains(&p.id))
             .map(|p| {
                 let mut info = provider::describe(p);
+                info.can_sign_in =
+                    p.can_sign_in(&self.shared.paths.project_root, terminal_auth.get(&p.id).map(Vec::as_slice));
                 let catalog = self.shared.paths.catalogs.cached(&self.shared, &p.id);
                 info.config = self.shared.config_for_new_task(catalog.config, &p.id);
                 info.thought_levels = self.shared.thought_levels_for_new_task(catalog.thought_levels, &p.id);
@@ -756,6 +852,7 @@ impl AgentManager {
                 info
             })
             .collect();
+        drop(terminal_auth);
         let mut prev = self.shared.providers.write();
         let mut probes = self.shared.probes.lock();
         probes.retain(|id, _| {
@@ -769,6 +866,35 @@ impl AgentManager {
         list
     }
 
+    /// Resolves the interactive sign-in command for agent `id`.
+    pub fn login_launch(&self, id: &str) -> IdeResult<LoginLaunch> {
+        let specs = provider::load(self.shared.paths.custom_agents_dir.as_deref(), self.shared.env_secrets());
+        let spec = specs
+            .into_iter()
+            .find(|p| p.id == id)
+            .ok_or_else(|| IdeError::not_found(format!("unknown agent '{id}'")))?;
+        let terminal_args = self.shared.terminal_auth_args.read().get(id).cloned();
+        let launch = spec.login_launch(&self.shared.paths.project_root, terminal_args.as_deref()).ok_or_else(|| {
+            IdeError::unavailable(format!("{} cannot be signed in directly from OpenIDEA", spec.name))
+        })?;
+        self.shared.paths.catalogs.clear_failed_cooldown(&self.shared, id);
+        Ok(launch)
+    }
+
+    /// Queries Copilot's default CLI sign-in status alongside authenticated `gh` accounts.
+    pub async fn copilot_auth_status(&self) -> CopilotAuthStatus {
+        let status = copilot_auth_status_with(
+            self.shared.paths.custom_agents_dir.as_deref(),
+            self.shared.env_secrets(),
+            &self.shared.paths.project_root,
+        )
+        .await;
+        if status.authenticated || !status.gh_accounts.is_empty() {
+            self.shared.paths.catalogs.clear_failed_cooldown(&self.shared, "copilot");
+        }
+        status
+    }
+
     /// Overrides built-in `id`'s command with `command` (the driver and arguments stay
     /// the built-in's) through its agent file, or returns it to auto-detection with `None`.
     pub fn set_builtin_command(&self, id: &str, command: Option<String>) -> IdeResult<()> {
@@ -778,12 +904,22 @@ impl AgentManager {
         provider::set_builtin_command(&dir, self.shared.env_secrets(), id, command.as_deref())
     }
 
+    /// Sets the extra arguments of a directly launched built-in ACP agent; empty resets them.
+    pub fn set_builtin_additional_args(&self, id: &str, args: Vec<String>) -> IdeResult<()> {
+        let Some(dir) = self.shared.paths.custom_agents_dir.as_deref() else {
+            return Err(IdeError::unavailable("there is no custom agents directory"));
+        };
+        provider::set_builtin_additional_args(dir, self.shared.env_secrets(), id, args)
+    }
+
     /// Sets the environment variables built-in `id` starts with; empty clears them.
     pub fn set_builtin_env(&self, id: &str, env: std::collections::BTreeMap<String, String>) -> IdeResult<()> {
         let Some(dir) = self.shared.paths.custom_agents_dir.clone() else {
             return Err(IdeError::unavailable("there is no custom agents directory"));
         };
-        provider::set_builtin_env(&dir, self.shared.env_secrets(), id, env)
+        provider::set_builtin_env(&dir, self.shared.env_secrets(), id, env)?;
+        self.shared.paths.catalogs.evict_if_idle(&self.shared, id);
+        Ok(())
     }
 
     /// Saves a new custom ACP agent through its agent file.
@@ -1023,6 +1159,94 @@ impl AgentManager {
             subagents: Vec::new(),
             pending_rollback: 0,
             title_renamed: true,
+            ephemeral: false,
+            pending_native_fork: None,
+        };
+        let handle = Task::restore(file, self.shared.clone());
+        self.tasks.write().insert(task.id.clone(), handle.clone());
+        handle.emit_task();
+        handle.persist();
+        Ok(task)
+    }
+
+    /// Forks a recorded external session into a new task: its first turn continues the
+    /// recording as the agent's own fork, under an id the host chooses. The session must
+    /// belong to this project and have been recorded in `cwd`.
+    pub fn fork_session(&self, provider: &str, session_id: &str, cwd: &Path) -> IdeResult<AgentTask> {
+        if !matches!(provider, "claude" | "codex") {
+            return Err(IdeError::invalid(format!("cannot fork {provider} sessions")));
+        }
+        if !canonical_uuid(session_id) {
+            return Err(IdeError::invalid("the recorded session has no canonical id"));
+        }
+        let spec = self.shared.spec(provider).ok_or_else(|| IdeError::invalid(format!("unknown agent {provider}")))?;
+        if self.imported_session_ids().contains(session_id) {
+            return Err(IdeError::invalid("that session is already a task"));
+        }
+        let found = self
+            .external_sessions()
+            .into_iter()
+            .find(|s| s.provider == provider && s.session_id == session_id)
+            .ok_or_else(|| IdeError::not_found(format!("unknown {provider} session {session_id}")))?;
+        let recorded = found
+            .cwd
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .ok_or_else(|| IdeError::invalid("the recorded session has no working directory"))?;
+        let canonical = |p: &Path| dunce::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        if canonical(cwd) != canonical(&recorded) {
+            return Err(IdeError::invalid("the session was recorded in another directory"));
+        }
+        let root = self.shared.paths.project_root.clone();
+        let config = self.shared.known_config(&spec.id);
+        let now = now_ms();
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        // The host names the fork's session id for claude; codex assigns its own.
+        let target = (provider == "claude").then(|| uuid::Uuid::new_v4().to_string());
+        let task = AgentTask {
+            project_root: Some(IpcPath(root)),
+            id,
+            title: found.title,
+            provider: spec.id.clone(),
+            model: model_of(&config),
+            status: AgentStatus::Ready,
+            isolation: Isolation::Local,
+            cwd: IpcPath(recorded),
+            branch: None,
+            base: None,
+            base_commit: None,
+            error: None,
+            created_ms: now,
+            updated_ms: now,
+            config,
+            commands: self.shared.known_commands(&spec.id),
+            usage: None,
+            queue: Vec::new(),
+            capabilities: self.shared.probes.lock().get(&spec.id).map(|p| p.capabilities).unwrap_or_default(),
+            resets_ms: None,
+            retry: None,
+            background: Box::default(),
+            mcp_overrides: BTreeMap::new(),
+            skill_overrides: BTreeMap::new(),
+            stats: Box::default(),
+        };
+        let file = TaskFile {
+            task: task.clone(),
+            session_id: target.clone(),
+            entries: Vec::new(),
+            wanted: Vec::new(),
+            pending_model: None,
+            pending_switch: None,
+            before: BTreeMap::new(),
+            saved: None,
+            touched: Some(BTreeSet::new()),
+            turn: None,
+            turns: Vec::new(),
+            subagents: Vec::new(),
+            pending_rollback: 0,
+            title_renamed: true,
+            ephemeral: false,
+            pending_native_fork: Some(ForkStart { source: session_id.to_owned(), target }),
         };
         let handle = Task::restore(file, self.shared.clone());
         self.tasks.write().insert(task.id.clone(), handle.clone());
@@ -1151,6 +1375,8 @@ impl AgentManager {
             subagents: Vec::new(),
             pending_rollback: 0,
             title_renamed: false,
+            ephemeral: req.ephemeral,
+            pending_native_fork: None,
         };
         let handle = Task::restore(file, self.shared.clone());
         handle.state.lock().busy = !req.idle;
@@ -1516,6 +1742,8 @@ impl AgentManager {
                 subagents: s.conversation.saved_subagents(),
                 pending_rollback: total - keep,
                 title_renamed: s.title_renamed,
+                ephemeral: s.ephemeral,
+                pending_native_fork: None,
             }
         };
         // Copying may have started the source's agent: it stops again once idle.
@@ -2386,7 +2614,7 @@ impl Task {
             turns.push(Some(Arc::new(last)));
         }
         let mut wanted = file.wanted;
-        let pending_model = file.pending_switch.or_else(|| {
+        let mut pending_model = file.pending_switch.or_else(|| {
             let id = file.pending_model?;
             let index = wanted.iter().position(|choice| choice.id == id)?;
             let model = wanted.remove(index);
@@ -2401,8 +2629,14 @@ impl Task {
                 .and_then(|o| o.values.iter().find(|v| v.value == model.value))
                 .cloned();
             let options = catalog.thought_levels.get(&model.value).cloned().unwrap_or_default();
-            Some(PendingModel { model, candidate, options, choices: Vec::new() })
+            Some(PendingModel { model, candidate, options, choices: Vec::new(), retained_service_tier: None })
         });
+        if let Some(pending) = &mut pending_model
+            && pending.retained_service_tier.is_none()
+            && shared.spec(&task.provider).is_some_and(|spec| spec.driver == provider::Driver::Codex)
+        {
+            pending.retained_service_tier = wanted.iter().find(|c| c.id == "service_tier").cloned();
+        }
         Arc::new(Self {
             id: task.id.clone(),
             shared,
@@ -2420,6 +2654,8 @@ impl Task {
                 turns,
                 pending_rollback: file.pending_rollback,
                 title_renamed: file.title_renamed,
+                ephemeral: file.ephemeral,
+                pending_native_fork: file.pending_native_fork,
                 busy: false,
                 background_tasks: Vec::new(),
                 shell_context: Vec::new(),
@@ -2675,7 +2911,9 @@ impl Task {
         let mut file = self.file.lock();
         // Read before the copy: whatever was asked for up to now is in it.
         let asked = self.saves_asked.load(Ordering::Acquire);
-        if file.deleted || file.saved >= asked {
+        // A throwaway task is never written: one its caller couldn't delete (a window closed
+        // while it ran) is gone after a restart.
+        if file.deleted || file.saved >= asked || self.state.lock().ephemeral {
             return;
         }
         let copy = {
@@ -2695,6 +2933,8 @@ impl Task {
                 subagents: s.conversation.saved_subagents(),
                 pending_rollback: s.pending_rollback,
                 title_renamed: s.title_renamed,
+                ephemeral: s.ephemeral,
+                pending_native_fork: s.pending_native_fork.clone(),
             }
         };
         let bytes = serde_json::to_vec(&copy);
@@ -2975,7 +3215,13 @@ impl Task {
                 .filter(|pending| pending.model.value == value)
                 .map(|pending| pending.choices)
                 .unwrap_or_default();
+            let retained_service_tier = self
+                .shared
+                .spec(&provider)
+                .filter(|spec| spec.driver == provider::Driver::Codex)
+                .and_then(|_| s.wanted.iter().find(|c| c.id == "service_tier").cloned());
             s.pending_model = Some(PendingModel {
+                retained_service_tier,
                 model: AgentConfigChoice { id: target.id, value },
                 candidate: Some(candidate),
                 options,
@@ -3345,6 +3591,14 @@ impl Task {
             let is_auth = matches!(&e, RpcError::Server { code, message, .. } if acp::auth_required(*code, message));
             SessionOpenError { message: self.describe(e), allow_acp_fallback: !is_auth }
         })?;
+        if let Some(args) = init.auth_methods.iter().find_map(|method| {
+            if method.get("type").and_then(Value::as_str) != Some("terminal") {
+                return None;
+            }
+            method.get("args")?.as_array()?.iter().map(|v| v.as_str().map(str::to_owned)).collect::<Option<Vec<_>>>()
+        }) {
+            self.shared.terminal_auth_args.write().insert(provider_id.to_owned(), args);
+        }
         let sign_in_message = spec.sign_in_message(&init.auth_methods);
         let can_load = init.load_session();
         let (capabilities, embedded) = capabilities_of(&init);
@@ -3357,66 +3611,116 @@ impl Task {
         let skills_delivery = self.stage_skills(stage_key(spec.driver), cwd).await;
         // Agents that compare canonical paths fail in a symlinked directory (macOS `/tmp`).
         let cwd_s = dunce::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf()).to_string_lossy().into_owned();
+        let pending_native_fork = self.state.lock().pending_native_fork.clone();
+
+        let mut opening_params = session_params(&cwd_s, &mcp_servers, skills_delivery.as_ref(), &roots);
+        if spec.driver == provider::Driver::Codex {
+            let s = self.state.lock();
+            let mut wanted = s.wanted.clone();
+            if let Some(pending) = pending_model {
+                pending.apply(&mut wanted, &s.task.config);
+            }
+            // Restore intent even when the resumed model cannot expose the Fast control.
+            if let Some(fast) =
+                wanted.iter().find(|c| c.id == "service_tier").and_then(|c| c.value.parse::<bool>().ok())
+            {
+                opening_params["_meta"]["openidea"]["codexFast"] = json!(fast);
+            }
+        }
 
         let mut tried_auth = false;
         let mut session = None;
-        let start_fresh = self.start_fresh.load(Ordering::Acquire);
-        if pending_model.is_some() && (saved.is_none() || !can_load || start_fresh) {
-            return Err(SessionOpenError {
-                message: "The agent does not support resuming this session.".into(),
-                allow_acp_fallback: false,
-            });
-        }
-        if let (Some(id), true, false) = (saved, can_load, start_fresh) {
-            // The replay goes before what this turn already showed (the user's message).
-            let shown = self.adopts_replay().then(|| self.take_entries());
-            self.replaying.store(true, Ordering::Release);
-            let mut params = session_params(&cwd_s, &mcp_servers, skills_delivery.as_ref(), &roots);
-            params["sessionId"] = json!(&id);
-            let loaded = self.request_with_auth(&peer, &init, &mut tried_auth, "session/load", params).await;
-            tokio::time::sleep(REPLAY_GRACE).await;
-            self.replaying.store(false, Ordering::Release);
-            if let Some(shown) = shown {
-                if loaded.is_ok() {
-                    self.adopting_replay.store(false, Ordering::Release);
-                    let changed = self.state.lock().conversation.end_turn(None);
-                    self.mark_dirty(changed);
-                } else {
-                    // A failed load may still have replayed part of it.
-                    self.take_entries();
-                }
-                for entry in shown {
-                    self.push_entry(entry);
+        if let Some(fork) = pending_native_fork {
+            if !capabilities.fork {
+                return Err(SessionOpenError {
+                    message: "the agent can't continue a recorded session".into(),
+                    allow_acp_fallback: false,
+                });
+            }
+            let mut params = opening_params.clone();
+            params["sessionId"] = json!(&fork.source);
+            if let Some(target) = &fork.target {
+                match params["_meta"].as_object_mut() {
+                    Some(meta) => {
+                        if let Some(openidea) = meta.entry("openidea").or_insert_with(|| json!({})).as_object_mut() {
+                            openidea.insert("forkSessionId".into(), json!(target));
+                        }
+                    }
+                    None => params["_meta"] = json!({ "openidea": { "forkSessionId": target } }),
                 }
             }
-            match loaded {
-                Ok(v) => session = Some((id, v)),
-                // Not silently: a new session would lose the conversation and replace the saved id.
-                Err(e) => {
-                    tracing::info!("agent task {}: session/load failed: {e}", self.id);
-                    if let Some(message) = self.sign_in_error(&e, Some(&sign_in_message)) {
-                        return Err(SessionOpenError { message, allow_acp_fallback: false });
+            let reply = self
+                .request_with_auth(&peer, &init, &mut tried_auth, "session/fork", params)
+                .await
+                .map_err(|e| SessionOpenError { message: self.describe(e), allow_acp_fallback: false })?;
+            let id = reply
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| SessionOpenError {
+                    message: "the agent returned no session".into(),
+                    allow_acp_fallback: false,
+                })?
+                .to_owned();
+            session = Some((id, reply));
+        } else {
+            let start_fresh = self.start_fresh.load(Ordering::Acquire);
+            if pending_model.is_some() && (saved.is_none() || !can_load || start_fresh) {
+                return Err(SessionOpenError {
+                    message: "The agent does not support resuming this session.".into(),
+                    allow_acp_fallback: false,
+                });
+            }
+            if let (Some(id), true, false) = (saved, can_load, start_fresh) {
+                // The replay goes before what this turn already showed (the user's message).
+                let shown = self.adopts_replay().then(|| self.take_entries());
+                self.replaying.store(true, Ordering::Release);
+                let mut params = opening_params.clone();
+                params["sessionId"] = json!(&id);
+                let loaded = self.request_with_auth(&peer, &init, &mut tried_auth, "session/load", params).await;
+                tokio::time::sleep(REPLAY_GRACE).await;
+                self.replaying.store(false, Ordering::Release);
+                if let Some(shown) = shown {
+                    if loaded.is_ok() {
+                        self.adopting_replay.store(false, Ordering::Release);
+                        let changed = self.state.lock().conversation.end_turn(None);
+                        self.mark_dirty(changed);
+                    } else {
+                        // A failed load may still have replayed part of it.
+                        self.take_entries();
                     }
-                    if pending_model.is_some() {
+                    for entry in shown {
+                        self.push_entry(entry);
+                    }
+                }
+                match loaded {
+                    Ok(v) => session = Some((id, v)),
+                    // Not silently: a new session would lose the conversation and replace the saved id.
+                    Err(e) => {
+                        tracing::info!("agent task {}: session/load failed: {e}", self.id);
+                        if let Some(message) = self.sign_in_error(&e, Some(&sign_in_message)) {
+                            return Err(SessionOpenError { message, allow_acp_fallback: false });
+                        }
+                        if pending_model.is_some() {
+                            return Err(SessionOpenError {
+                                message: format!(
+                                    "Couldn't reopen this conversation's {} session: {}",
+                                    spec.name,
+                                    self.describe(e)
+                                ),
+                                allow_acp_fallback: false,
+                            });
+                        }
+                        self.start_fresh.store(true, Ordering::Release);
                         return Err(SessionOpenError {
                             message: format!(
-                                "Couldn't reopen this conversation's {} session: {}",
+                                "Couldn't reopen this conversation's {} session: {}\n\nSend the message again to \
+                                 continue in a new session. The agent won't see the earlier conversation.",
                                 spec.name,
                                 self.describe(e)
                             ),
                             allow_acp_fallback: false,
                         });
                     }
-                    self.start_fresh.store(true, Ordering::Release);
-                    return Err(SessionOpenError {
-                        message: format!(
-                            "Couldn't reopen this conversation's {} session: {}\n\nSend the message again to \
-                             continue in a new session. The agent won't see the earlier conversation.",
-                            spec.name,
-                            self.describe(e)
-                        ),
-                        allow_acp_fallback: false,
-                    });
                 }
             }
         }
@@ -3424,7 +3728,10 @@ impl Task {
         let (session_id, result) = match session {
             Some(s) => s,
             None => {
-                let params = session_params(&cwd_s, &mcp_servers, skills_delivery.as_ref(), &roots);
+                let mut params = opening_params;
+                if self.state.lock().ephemeral {
+                    mark_ephemeral(&mut params);
+                }
                 let v = self.request_with_auth(&peer, &init, &mut tried_auth, "session/new", params).await.map_err(
                     |e| match self.sign_in_error(&e, Some(&sign_in_message)) {
                         Some(msg) => SessionOpenError { message: msg, allow_acp_fallback: false },
@@ -3535,7 +3842,10 @@ impl Task {
             if config::is_per_model_option(&o) && !model_options {
                 continue;
             }
-            let already = (known || explicit) && o.current.as_deref() == Some(choice.value.as_str());
+            // A displayed tier can be inherited. Preserve an explicit Fast/Standard choice
+            // even when it currently looks the same, so subsequent turns receive the override.
+            let already =
+                o.id != "service_tier" && (known || explicit) && o.current.as_deref() == Some(choice.value.as_str());
             if already || !o.values.iter().any(|v| v.value == choice.value) {
                 continue;
             }
@@ -3604,6 +3914,8 @@ impl Task {
             s.pending_model = None;
             s.task.capabilities = capabilities;
             s.session_id = Some(session_id.clone());
+            // The recorded session is forked (or the fork resumed): the one-shot intent is spent.
+            s.pending_native_fork = None;
             self.start_fresh.store(false, Ordering::Release);
             // The (re)started process runs nothing yet: whatever it reports next is all of it.
             s.background_tasks = Vec::new();
@@ -4480,6 +4792,15 @@ fn session_params(cwd: &str, mcp: &McpForSession, skills: Option<&skills::Delive
         params["_meta"] = json!({ "openidea": meta });
     }
     params
+}
+
+/// `_meta.openidea.ephemeral` of `session/new`: the native drivers start the session without
+/// saving it (Claude Code `--no-session-persistence`, Codex `ephemeral` threads).
+fn mark_ephemeral(params: &mut Value) {
+    if !params["_meta"]["openidea"].is_object() {
+        params["_meta"]["openidea"] = json!({});
+    }
+    params["_meta"]["openidea"]["ephemeral"] = json!(true);
 }
 
 fn is_false(b: &bool) -> bool {

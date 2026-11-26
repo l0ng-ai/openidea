@@ -128,6 +128,11 @@ export interface FileLink extends LinkPosition {
 }
 
 /** The file links on the `shown` lines (a collapsed fold hides its links), in output order. */
+/** A copy of a line the model may still append to (the open last line). */
+function copyLine(line: ConsoleLine): ConsoleLine {
+  return { ...line, spans: line.spans.map((span) => ({ ...span })) };
+}
+
 export function fileLinks(lines: readonly ConsoleLine[], shown: (index: number) => boolean): FileLink[] {
   const links: FileLink[] = [];
   lines.forEach((line, i) => {
@@ -257,7 +262,12 @@ export function ConsoleView({
 }: ConsoleViewProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
-  const lines = model.lines;
+  // Pause Output: the output so far stays on screen while the process keeps
+  // writing; resuming shows everything that arrived meanwhile.
+  const [paused, setPaused] = useState<readonly ConsoleLine[] | null>(null);
+  const lines = paused ?? model.lines;
+  const togglePaused = () =>
+    setPaused((p) => (p ? null : model.lines.map((l, i, all) => (i === all.length - 1 ? copyLine(l) : l))));
   const patterns = useWorkflowSettings((s) => s.console.foldPatterns);
   const logColors = useWorkflowSettings((s) => s.console.logColors);
   const consoleRules = compileConsoleRules(useConsoleRules((s) => s.providers));
@@ -539,7 +549,16 @@ export function ConsoleView({
         // Opens Settings › Console with the text added to the fold patterns, for OK / Cancel there.
         run: () => void executeAction("file.settings", `build.console#${foldText}`),
       },
-      { label: "Clear All", icon: "trash", disabled: !onClear, run: () => onClear?.() },
+      { label: "Pause Output", icon: "pause", checked: !!paused, run: togglePaused },
+      {
+        label: "Clear All",
+        icon: "trash",
+        disabled: !onClear,
+        run: () => {
+          setPaused(null);
+          onClear?.();
+        },
+      },
       ...(input
         ? [{ kind: "separator" } as const, { label: "Send EOF", shortcut: "⌃D", run: () => input.onEof() }]
         : []),

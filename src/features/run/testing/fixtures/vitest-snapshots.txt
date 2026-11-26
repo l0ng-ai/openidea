@@ -1,0 +1,98 @@
+
+ RUN  v2.1.9 /work/shop
+
+ ❯ a.test.js (4 tests | 4 failed) 8ms
+   × cart > file snap 5ms
+     → Snapshot `cart > file snap 1` mismatched
+   × cart > other snap 0ms
+     → Snapshot `cart > other snap 1` mismatched
+   × cart > inline snap 1ms
+     → Snapshot `cart > inline snap 1` mismatched
+   × cart > plain fail 1ms
+     → expected 1 to be 2 // Object.is equality
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  a.test.js > cart > file snap
+Error: Snapshot `cart > file snap 1` mismatched
+
+- Expected
++ Received
+
+  {
+-   "total": "one",
++   "total": "two",
+  }
+
+ ❯ a.test.js:4:50
+      2| const v = process.env.V || "one";
+      3| describe("cart", () => {
+      4|   test("file snap", () => { expect({ total: v }).toMatchSnapshot(); });
+       |                                                  ^
+      5|   test("other snap", () => { expect({ other: v }).toMatchSnapshot(); }…
+      6|   test("inline snap", () => { expect(v).toMatchInlineSnapshot(`"one"`)…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/4]⎯
+
+ FAIL  a.test.js > cart > other snap
+Error: Snapshot `cart > other snap 1` mismatched
+
+- Expected
++ Received
+
+  {
+-   "other": "one",
++   "other": "two",
+  }
+
+ ❯ a.test.js:5:51
+      3| describe("cart", () => {
+      4|   test("file snap", () => { expect({ total: v }).toMatchSnapshot(); });
+      5|   test("other snap", () => { expect({ other: v }).toMatchSnapshot(); }…
+       |                                                   ^
+      6|   test("inline snap", () => { expect(v).toMatchInlineSnapshot(`"one"`)…
+      7|   test("plain fail", () => { if (process.env.V) expect(1).toBe(2); });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/4]⎯
+
+ FAIL  a.test.js > cart > inline snap
+Error: Snapshot `cart > inline snap 1` mismatched
+
+Expected: ""one""
+Received: ""two""
+
+ ❯ a.test.js:6:41
+      4|   test("file snap", () => { expect({ total: v }).toMatchSnapshot(); });
+      5|   test("other snap", () => { expect({ other: v }).toMatchSnapshot(); }…
+      6|   test("inline snap", () => { expect(v).toMatchInlineSnapshot(`"one"`)…
+       |                                         ^
+      7|   test("plain fail", () => { if (process.env.V) expect(1).toBe(2); });
+      8| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/4]⎯
+
+ FAIL  a.test.js > cart > plain fail
+AssertionError: expected 1 to be 2 // Object.is equality
+
+- Expected
++ Received
+
+- 2
++ 1
+
+ ❯ a.test.js:7:59
+      5|   test("other snap", () => { expect({ other: v }).toMatchSnapshot(); }…
+      6|   test("inline snap", () => { expect(v).toMatchInlineSnapshot(`"one"`)…
+      7|   test("plain fail", () => { if (process.env.V) expect(1).toBe(2); });
+       |                                                           ^
+      8| });
+      9| 
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/4]⎯
+
+  Snapshots  3 failed
+ Test Files  1 failed (1)
+      Tests  4 failed (4)
+   Start at  14:45:28
+   Duration  486ms (transform 18ms, setup 0ms, collect 7ms, tests 8ms, environment 0ms, prepare 82ms)
+

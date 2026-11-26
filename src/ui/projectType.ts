@@ -36,6 +36,8 @@ export const PROJECT_TYPES = {
   godot: { name: "Godot", icon: "file-godot", markers: ["project.godot"] },
   cmake: { name: "CMake", icon: "file-cmake", markers: ["CMakeLists.txt"] },
   make: { name: "Make", icon: "file-makefile", markers: ["Makefile", "makefile", "GNUmakefile"] },
+  // Before .NET: the `.sln` a UE project generates belongs to the project, not to C#.
+  unreal: { name: "Unreal Engine", icon: "file-cpp", markers: [/^[^/]+\.uproject$/i] },
   dotnet: { name: ".NET", icon: "file-csharp", markers: [/^[^/]+\.(?:[cf]sproj|slnx?)$/i] },
 } as const satisfies Record<string, ProjectTypeDefinition>;
 

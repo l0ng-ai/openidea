@@ -1,14 +1,17 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DataSource, DbJdbcDriver, ProjectInfo } from "@/platform/ipc";
+import { registerHostPathChooser } from "@/platform/choosePath";
 import { useProject } from "@/platform/project";
+import { useRemote } from "@/platform/remote";
 import { SourceDialog } from "./SourceDialog";
+import { DatabaseDialogs } from "./Dialogs";
 import { JdbcDriverProfiles } from "./JdbcDriverProfiles";
 import { sourceIcon, sourceLabel } from "./model";
 import { newMenu, nodeMenu } from "./treeMenu";
 import { useDatabase } from "./store";
 
-const backend = vi.hoisted(() => ({ call: vi.fn(), saveSource: vi.fn(), pick: vi.fn() }));
+const backend = vi.hoisted(() => ({ call: vi.fn(), saveSource: vi.fn(), pick: vi.fn(), pickNew: vi.fn() }));
 vi.mock("@/platform/ipc", async (importOriginal) => {
   const real = await importOriginal<typeof import("@/platform/ipc")>();
   const request =
@@ -21,6 +24,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     commands: {
       ...real.commands,
       dbJdbcDrivers: request("list"),
+      clipboardText: request("clipboard"),
       dbJdbcDriverClasses: request("classes"),
       dbApproveJdbcSource: request("approve"),
       dbSaveJdbcDriver: request("save"),
@@ -33,7 +37,7 @@ vi.mock("./store", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./store")>()),
   saveSource: backend.saveSource,
 }));
-vi.mock("@/platform/dialog", () => ({ open: backend.pick }));
+vi.mock("@/platform/dialog", () => ({ open: backend.pick, save: backend.pickNew }));
 
 const driver: DbJdbcDriver = {
   id: "example-driver",
@@ -55,8 +59,314 @@ beforeEach(() => {
   );
   backend.saveSource.mockResolvedValue(undefined);
   backend.pick.mockResolvedValue(driver.jars);
+  backend.pickNew.mockResolvedValue(null);
   useDatabase.setState({ sources: [], dialog: null, loaded: true });
   useProject.setState({ project: null });
+});
+
+describe("DuckDB data sources", () => {
+  const duckdb: DbJdbcDriver = {
+    id: "duckdb-driver",
+    vendor: "duckdb",
+    name: "DuckDB JDBC",
+    jars: ["/local/duckdb_jdbc.jar"],
+    className: "org.duckdb.DuckDBDriver",
+    urlTemplate: "jdbc:duckdb:{file}",
+  };
+  const startDuckDb = () => {
+    const dialog = render(<SourceDialog initial={null} />);
+    select("Data source type", "DuckDB");
+    return dialog;
+  };
+
+  it("offers DuckDB in the new data source menu", () => {
+    const dataSource = newMenu().find((item) => "label" in item && item.label === "Data Source");
+    expect(dataSource && "submenu" in dataSource && dataSource.submenu).toEqual(
+      expect.arrayContaining([expect.objectContaining({ label: "DuckDB", icon: "db-duckdb" })]),
+    );
+  });
+
+  function openFromMenu(label: string) {
+    const entry = newMenu().find((item) => "label" in item && item.label === label);
+    if (!entry || !("run" in entry) || !entry.run) throw new Error(`Missing menu entry: ${label}`);
+    act(entry.run);
+  }
+
+  it.each([
+    { file: "/tmp/warehouse.DUCKDB", type: "DuckDB" },
+    { file: "/tmp/warehouse.db", type: "SQLite" },
+  ])("opens $file as $type from the File action", async ({ file, type }) => {
+    backend.pick.mockResolvedValueOnce(file);
+    render(<DatabaseDialogs />);
+    openFromMenu("Data Source from File…");
+    const picker = await screen.findByRole("button", { name: "Data source type" });
+    expect(picker).toHaveTextContent(type);
+    expect(screen.getByLabelText("File:")).toHaveValue(file);
+    expect(backend.saveSource).not.toHaveBeenCalled();
+  });
+
+  it.each(["Data Source from URL…", "Import from Clipboard"])(
+    "opens the named JDBC URL draft from %s without approving, saving or connecting",
+    async (action) => {
+      const url = "jdbc:duckdb:/tmp/quarter end.duckdb;threads=1";
+      const unassigned = { ...duckdb, vendor: null };
+      backend.call.mockImplementation(async ([op]) => (op === "list" ? [unassigned] : op === "clipboard" ? url : "OK"));
+      render(<DatabaseDialogs />);
+      openFromMenu(action);
+      if (action === "Data Source from URL…") {
+        const fromUrl = within(await screen.findByRole("dialog", { name: "Data Source from URL" }));
+        fireEvent.change(fromUrl.getByLabelText("URL:"), { target: { value: url } });
+        fireEvent.click(fromUrl.getByRole("button", { name: "OK" }));
+      }
+      const dialog = within(await screen.findByRole("dialog", { name: "New Data Source" }));
+      expect(dialog.getByRole("button", { name: "Data source type" })).toHaveTextContent("DuckDB");
+      expect(dialog.getByRole("button", { name: "JDBC URL", pressed: true })).toBeVisible();
+      expect(dialog.getByLabelText("URL:")).toHaveValue(url);
+      await dialog.findByText(/Add the official DuckDB JDBC JAR/);
+      expect(dialog.getByRole("button", { name: "OK" })).toBeDisabled();
+      expect(dialog.getByRole("button", { name: "Test Connection" })).toBeDisabled();
+      expect(backend.call.mock.calls.map(([request]) => request[0])).not.toContain("approve");
+      expect(backend.call.mock.calls.map(([request]) => request[0])).not.toContain("test");
+      expect(backend.saveSource).not.toHaveBeenCalled();
+    },
+  );
+
+  it("guides missing JARs through the existing profile manager and trust prompt", async () => {
+    startDuckDb();
+    await screen.findByText(/Add the official DuckDB JDBC JAR/);
+    expect(screen.getByRole("button", { name: "OK" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Connection driver" }));
+    expect(within(screen.getByRole("listbox")).queryByText("Built-in")).toBeNull();
+    fireEvent.keyDown(screen.getByRole("listbox"), { key: "Escape" });
+    fireEvent.click(screen.getByRole("button", { name: "Manage Drivers…" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add…" }));
+    expect(screen.getByLabelText("Driver class:")).toHaveValue(duckdb.className);
+    expect(screen.getByLabelText("URL template:")).toHaveValue(duckdb.urlTemplate);
+    backend.pick.mockResolvedValueOnce(duckdb.jars);
+    fireEvent.click(screen.getByRole("button", { name: "Add JARs…" }));
+    await screen.findByText("duckdb_jdbc.jar");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Trust and Save" }));
+    await waitFor(() =>
+      expect(backend.call).toHaveBeenCalledWith([
+        "save",
+        expect.objectContaining({ vendor: "duckdb", className: duckdb.className, jars: duckdb.jars }),
+      ]),
+    );
+  });
+
+  it.each([
+    { action: "Browse…", method: backend.pick, path: "/tmp/existing file.duckdb" },
+    { action: "New File…", method: backend.pickNew, path: "/tmp/new.duckdb" },
+  ])("saves and reopens a database file chosen with $action", async ({ action, method, path }) => {
+    backend.call.mockImplementation(async ([op]) => (op === "list" ? [driver, duckdb] : "OK"));
+    method.mockResolvedValueOnce(path);
+    const view = startDuckDb();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Connection driver" })).toHaveTextContent(duckdb.name),
+    );
+    fireEvent.click(screen.getByRole("button", { name: action }));
+    await waitFor(() => expect(screen.getByLabelText("File:")).toHaveValue(path));
+    const url = `jdbc:duckdb:${path}`;
+    expect(screen.getByLabelText("URL:")).toHaveValue(url);
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+    await waitFor(() =>
+      expect(backend.saveSource).toHaveBeenCalledWith(
+        expect.objectContaining({
+          driver: "jdbc",
+          vendor: "duckdb",
+          jdbcDriver: duckdb.id,
+          file: path,
+          url,
+          urlOnly: false,
+        }),
+        undefined,
+        undefined,
+      ),
+    );
+    const [source] = backend.saveSource.mock.calls[0]!;
+    view.unmount();
+    render(<SourceDialog initial={source} />);
+    expect(screen.getByRole("button", { name: "File", pressed: true })).toBeVisible();
+    expect(screen.getByLabelText("File:")).toHaveValue(path);
+  });
+
+  it.each([
+    { mode: "In memory", url: "jdbc:duckdb:", urlOnly: false },
+    { mode: "JDBC URL", url: "jdbc:duckdb:/tmp/custom.duckdb", urlOnly: true },
+  ])("saves and reopens a source in $mode mode", async ({ mode, url, urlOnly }) => {
+    const second = { ...duckdb, id: "second-driver", name: "DuckDB JDBC 2" };
+    backend.call.mockImplementation(async ([op]) => (op === "list" ? [driver, duckdb, second] : "OK"));
+    const view = startDuckDb();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Manage Drivers…" })).toBeEnabled());
+    select("Connection driver", second.name);
+    fireEvent.click(screen.getByRole("button", { name: mode }));
+    if (urlOnly) {
+      fireEvent.change(screen.getByLabelText("URL:"), { target: { value: "jdbc:other:local" } });
+      expect(screen.getByRole("button", { name: "OK" })).toBeDisabled();
+      fireEvent.change(screen.getByLabelText("URL:"), { target: { value: url } });
+    }
+    expect(screen.queryByLabelText("File:")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+    await waitFor(() =>
+      expect(backend.saveSource).toHaveBeenCalledWith(
+        expect.objectContaining({ driver: "jdbc", vendor: "duckdb", jdbcDriver: second.id, file: null, url, urlOnly }),
+        undefined,
+        undefined,
+      ),
+    );
+    const [source] = backend.saveSource.mock.calls[0]!;
+    view.unmount();
+    render(<SourceDialog initial={source} />);
+    expect(screen.getByRole("button", { name: mode, pressed: true })).toBeVisible();
+    expect(screen.getByLabelText("URL:")).toHaveValue(url);
+  });
+
+  it("starts the explicit JDBC URL draft from the file currently in the form", async () => {
+    backend.call.mockImplementation(async ([op]) => (op === "list" ? [duckdb] : "OK"));
+    render(
+      <SourceDialog
+        initial={{
+          driver: "jdbc",
+          vendor: "duckdb",
+          jdbcDriver: duckdb.id,
+          file: "/tmp/previous.duckdb",
+          url: "jdbc:duckdb:/tmp/previous.duckdb",
+        }}
+      />,
+    );
+    await waitFor(() => expect(screen.getByRole("button", { name: "Go to Driver" })).toBeEnabled());
+    fireEvent.change(screen.getByLabelText("File:"), { target: { value: "/tmp/current.duckdb" } });
+    fireEvent.click(screen.getByRole("button", { name: "JDBC URL" }));
+    expect(screen.getByLabelText("URL:")).toHaveValue("jdbc:duckdb:/tmp/current.duckdb");
+  });
+
+  it.each([
+    { draft: "generated", authoredUrl: null, expected: "jdbc:duckdb:/tmp/selected.duckdb" },
+    {
+      draft: "user-authored",
+      authoredUrl: "jdbc:duckdb:/tmp/explicit.duckdb;threads=2",
+      expected: "jdbc:duckdb:/tmp/explicit.duckdb;threads=2",
+    },
+  ])("handles a $draft JDBC URL draft after choosing a new file", async ({ authoredUrl, expected }) => {
+    backend.call.mockImplementation(async ([op]) => (op === "list" ? [duckdb] : "OK"));
+    backend.pick.mockResolvedValueOnce("/tmp/selected.duckdb");
+    render(
+      <SourceDialog
+        initial={{
+          driver: "jdbc",
+          vendor: "duckdb",
+          jdbcDriver: duckdb.id,
+          file: "/tmp/original.duckdb",
+          url: "jdbc:duckdb:/tmp/original.duckdb",
+        }}
+      />,
+    );
+    await waitFor(() => expect(screen.getByRole("button", { name: "Go to Driver" })).toBeEnabled());
+    const urlMode = screen.getByRole("button", { name: "JDBC URL" });
+    const fileMode = screen.getByRole("button", { name: "File" });
+    fireEvent.click(urlMode);
+    expect(screen.getByLabelText("URL:")).toHaveValue("jdbc:duckdb:/tmp/original.duckdb");
+    if (authoredUrl) fireEvent.change(screen.getByLabelText("URL:"), { target: { value: authoredUrl } });
+
+    fireEvent.click(fileMode);
+    fireEvent.click(screen.getByRole("button", { name: "Browse…" }));
+    await waitFor(() => expect(screen.getByLabelText("File:")).toHaveValue("/tmp/selected.duckdb"));
+    fireEvent.click(urlMode);
+    expect(screen.getByLabelText("URL:")).toHaveValue(expected);
+
+    fireEvent.click(screen.getByRole("button", { name: "In memory" }));
+    fireEvent.click(urlMode);
+    expect(screen.getByLabelText("URL:")).toHaveValue(authoredUrl ?? "jdbc:duckdb:");
+    fireEvent.click(fileMode);
+    fireEvent.click(urlMode);
+    fireEvent.click(screen.getByRole("button", { name: "OK" }));
+    await waitFor(() =>
+      expect(backend.saveSource).toHaveBeenCalledWith(
+        expect.objectContaining({ url: expected, urlOnly: true }),
+        undefined,
+        undefined,
+      ),
+    );
+  });
+
+  it("rejects a database path the JDBC driver would parse as URL properties", async () => {
+    backend.call.mockImplementation(async ([op]) => (op === "list" ? [duckdb] : "OK"));
+    startDuckDb();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Connection driver" })).toHaveTextContent(duckdb.name),
+    );
+    fireEvent.change(screen.getByLabelText("File:"), { target: { value: "/tmp/actual.duckdb;different" } });
+    expect(screen.getByText("DuckDB database paths cannot contain semicolons.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Test Connection" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "OK" })).toBeDisabled();
+  });
+
+  it("browses and selects a new destination on the project host in a remote window", async () => {
+    const choose = vi
+      .fn()
+      .mockResolvedValueOnce(["/srv/project/existing.duckdb"])
+      .mockResolvedValueOnce(["/srv/project/new.duckdb"]);
+    const unregister = registerHostPathChooser(choose);
+    useRemote.setState({ session: { root: "/srv/project", os: "linux", commands: [] } as never });
+    useProject.setState({ project: { root: "/srv/project" } as ProjectInfo });
+    try {
+      backend.call.mockImplementation(async ([op]) => (op === "list" ? [duckdb] : "OK"));
+      startDuckDb();
+      fireEvent.click(screen.getByRole("button", { name: "Browse…" }));
+      await waitFor(() => expect(screen.getByLabelText("File:")).toHaveValue("/srv/project/existing.duckdb"));
+      expect(choose).toHaveBeenCalledWith(expect.objectContaining({ defaultPath: "/srv/project" }));
+      fireEvent.click(screen.getByRole("button", { name: "New File…" }));
+      await waitFor(() => expect(screen.getByLabelText("File:")).toHaveValue("/srv/project/new.duckdb"));
+      expect(choose).toHaveBeenCalledWith(expect.objectContaining({ save: true }));
+      expect(backend.pick).not.toHaveBeenCalled();
+      expect(backend.pickNew).not.toHaveBeenCalled();
+    } finally {
+      unregister();
+      useRemote.setState({ session: null });
+    }
+  });
+
+  it("requires write access for in-memory databases", async () => {
+    backend.call.mockImplementation(async ([op]) => (op === "list" ? [duckdb] : "OK"));
+    render(
+      <SourceDialog
+        initial={{
+          driver: "jdbc",
+          vendor: "duckdb",
+          jdbcDriver: duckdb.id,
+          url: "jdbc:duckdb::memory:;threads=1",
+          urlOnly: true,
+          readOnly: true,
+        }}
+      />,
+    );
+    await screen.findByText("Turn off Read-only in Options to use an in-memory DuckDB database.");
+    expect(screen.getByRole("button", { name: "Test Connection" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("tab", { name: "Options" }));
+    const readOnly = screen.getByRole("checkbox", { name: "Read-only" });
+    fireEvent.click(readOnly);
+    expect(readOnly).toBeDisabled();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Test Connection" })).toBeEnabled());
+  });
+
+  it("keeps an existing generic DuckDB JDBC source generic", async () => {
+    const legacy = { ...duckdb, vendor: null };
+    backend.call.mockImplementation(async ([op]) => (op === "list" ? [legacy] : "OK"));
+    render(<SourceDialog initial={{ driver: "jdbc", jdbcDriver: legacy.id, url: "jdbc:duckdb:" }} />);
+    const test = screen.getByRole("button", { name: "Test Connection" });
+    await waitFor(() => expect(test).toBeEnabled());
+    expect(screen.getByRole("button", { name: "Data source type" })).toHaveTextContent("Custom JDBC");
+    fireEvent.click(test);
+    await waitFor(() =>
+      expect(backend.call).toHaveBeenCalledWith([
+        "test",
+        expect.objectContaining({ driver: "jdbc", vendor: "", jdbcDriver: legacy.id, url: "jdbc:duckdb:" }),
+        null,
+        null,
+      ]),
+    );
+  });
 });
 
 describe("custom JDBC data sources", () => {

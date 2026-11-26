@@ -1,0 +1,13 @@
+{
+  "name": "openidea-fixture-cart",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OpenIDEA QA fixture: Jasmine specs for a small shopping cart module",
+  "type": "module",
+  "scripts": {
+    "test": "jasmine"
+  },
+  "devDependencies": {
+    "jasmine": "^5.13.0"
+  }
+}

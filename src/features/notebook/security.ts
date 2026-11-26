@@ -217,9 +217,25 @@ function htmlRoot(html: string, markdown = false): HTMLElement {
   return root;
 }
 
-export function staticOutputDocument(html: string): string {
+export interface OutputPalette {
+  fg: string;
+  bg: string;
+  border: string;
+  headerBg: string;
+  scheme: "light" | "dark";
+}
+
+const CSS_COLOR = /^(#[0-9a-f]{3,8}|rgba?\([\d\s.,%/]+\)|[a-z]+)$/i;
+
+export function staticOutputDocument(html: string, palette?: OutputPalette): string {
   const root = htmlRoot(html);
-  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${OUTPUT_CSP}"><style>body{margin:8px;font:13px system-ui,sans-serif;color:#222;background:white;overflow-wrap:anywhere}table{border-collapse:collapse;max-width:100%}th,td{padding:4px 8px;border:1px solid #ddd;text-align:left}pre{white-space:pre-wrap}img{max-width:100%;height:auto}</style></head><body>${root.innerHTML}</body></html>`;
+  const safe = (c: string, fallback: string) => (CSS_COLOR.test(c.trim()) ? c.trim() : fallback);
+  const fg = safe(palette?.fg ?? "", "#222");
+  const bg = safe(palette?.bg ?? "", "white");
+  const border = safe(palette?.border ?? "", "#ddd");
+  const headerBg = safe(palette?.headerBg ?? "", "transparent");
+  const scheme = palette?.scheme ?? "light";
+  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${OUTPUT_CSP}"><style>body{margin:8px;font:13px system-ui,sans-serif;color:${fg};background:${bg};color-scheme:${scheme};overflow-wrap:anywhere}table{border-collapse:collapse;max-width:100%}th,td{padding:4px 8px;border:1px solid ${border};text-align:left}th{background:${headerBg}}pre{white-space:pre-wrap}img{max-width:100%;height:auto}</style></head><body>${root.innerHTML}</body></html>`;
 }
 
 const markdown = new Marked({ gfm: true }).use(mathExtension());

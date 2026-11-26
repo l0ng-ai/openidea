@@ -1,5 +1,6 @@
 //! Tree-sitter driven structure: outline, folding, symbol tags, selection ranges, highlighting.
 
+mod bundler_aliases;
 mod cache;
 mod configuration;
 mod external;
@@ -21,6 +22,7 @@ mod vue;
 mod web;
 
 use crate::{FoldRange, LanguageConfig, LanguageRegistry, ScriptRegion, SymbolTag};
+pub use bundler_aliases::bundler_aliases;
 pub use cache::{MAX_CACHED_TREES, SyntaxCache, SyntaxCacheStats};
 pub use configuration::ConfigurationKey;
 pub use external::{ExternalFold, ExternalSymbol, ExternalSyntax, ExternalToken, set_external_syntax};

@@ -120,6 +120,18 @@ async function searchRuby(pattern: string, files?: string[]) {
   return out.sort((a, b) => a.relPath.localeCompare(b.relPath));
 }
 
+/** 1-based line declaring the JS test (or suite) with this describe chain and name. */
+export async function declarationLine(path: string, test: string[]): Promise<number | undefined> {
+  try {
+    const { detectRunTargets } = await import("./targets");
+    const text = await call(commands.fsReadText(path));
+    const found = detectRunTargets(text, path).find((t) => t.path.join("\u0000") === test.join("\u0000"));
+    return found ? found.line + 1 : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function openTarget(target: FileTarget, cwd: string, focus = true): Promise<void> {
   if (!isTauri()) return;
   if (target.resolve === "rubyTest") {
@@ -161,7 +173,8 @@ export async function openTarget(target: FileTarget, cwd: string, focus = true):
     });
     return;
   }
-  const selection = target.line ? { line: target.line - 1, col: Math.max(0, (target.col ?? 1) - 1) } : undefined;
+  const line = target.line ?? (target.test ? await declarationLine(path, target.test) : undefined);
+  const selection = line ? { line: line - 1, col: Math.max(0, (target.col ?? 1) - 1) } : undefined;
   await editorService().openFile(path, { selection, focus });
 }
 

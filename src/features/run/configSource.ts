@@ -25,6 +25,7 @@ const SOURCE_KINDS = new Set([
   "ruby",
   "shell",
   "npm",
+  "node",
   "bun",
   "gradle",
   "maven",
@@ -115,6 +116,8 @@ export async function configSource(config: RunConfig): Promise<ConfigSource | nu
       return file(at(p.target?.split("::")[0]));
     case "ruby":
       return file(at(p.script));
+    case "node":
+      return file(at(p.file));
     case "shell":
       return p.mode === "file" ? file(at(p.path)) : null;
     case "npm":

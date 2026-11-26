@@ -155,13 +155,14 @@ pub(crate) fn is_fast_option(id: &str) -> bool {
 }
 
 /// Whether an option's available values and default belong to the selected model
-/// (`thought_level`, `context_tier`, and `model_config` options like `context` and `fast`)
+/// (`thought_level`, `context_tier`, and `model_config` options like `context`, `fast` and `service_tier`)
 /// rather than the provider as a whole.
 pub(crate) fn is_per_model_option(o: &AgentConfigOption) -> bool {
     matches!(o.category.as_deref(), Some("thought_level" | "context_tier" | "model_config"))
         || matches!(o.id.as_str(), "effort" | "reasoning_effort" | "thinking" | "reasoning")
         || is_fast_option(&o.id)
         || is_context_option(&o.id)
+        || o.id == "service_tier"
 }
 
 /// A `configOptions` array; only select options are kept (the UI shows them as dropdowns).
@@ -529,6 +530,15 @@ mod tests {
         ]}));
         ask_for_approvals(&mut c);
         assert_eq!(ids(&c), [("allow_all", Some("off")), ("approval", Some("ask"))]);
+    }
+
+    #[test]
+    fn service_tier_is_per_model() {
+        let options = options_of(&json!({ "configOptions": [
+            { "id": "service_tier", "type": "select", "currentValue": "false",
+              "options": [{ "value": "false" }, { "value": "true" }] }
+        ] }));
+        assert!(is_per_model_option(&options[0]));
     }
 
     #[test]

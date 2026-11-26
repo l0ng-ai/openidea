@@ -1,13 +1,15 @@
 /** Actions of the project view (Find Action, keymap, other features via `executeAction`). */
 import { activeEditor } from "@/editor/api";
-import { getAction, registerActions, type Action } from "@/platform/actions";
+import { executeAction, getAction, registerActions, type Action } from "@/platform/actions";
 import { getContext } from "@/platform/context";
+import { FILE_COLOR_NAMES } from "@/platform/fileColors";
 import { canRevealInFileManager, revealInFileManagerLabel } from "@/platform/fileManager";
 import { dirname, useProject } from "@/platform/project";
 import { showContextMenu, type MenuItem } from "@/ui";
 import { maybeEditorService, menuGroupItems, toolWindowService } from "@/workbench/contributions";
 import { OPTION_LABELS, SORT_LABELS, flipToggle, isToggled } from "./HeaderActions";
 import { compareTarget, newMenuItems, revealLabel } from "./contextMenu";
+import { LABELS, setFileColor } from "./fileColor";
 import { openNewPopup } from "./newPopupModel";
 import type { ProjectNode } from "./model";
 import {
@@ -111,7 +113,9 @@ function showProjectView(focus: boolean) {
 export function selectInProjectView(path?: string | null, focus = true, expand = false) {
   const target = path ?? maybeEditorService()?.activePath() ?? null;
   if (!target) return false;
-  if (!modeShows(target)) setViewMode("project");
+  // Hidden from the Project pane (Show Scratches and Consoles off), a scratch shows in its own pane.
+  if (!modeShows(target))
+    setViewMode(modeShows(target, "project") || !modeShows(target, "scratches") ? "project" : "scratches");
   showProjectView(focus);
   return revealPath(target, focus, true, expand);
 }
@@ -587,5 +591,28 @@ export function registerProjectActions(): () => void {
     ...toggles,
     ...modes,
     ...sorts,
+    // File Color of a single path (the project view's submenu; the editor tab menu references
+    // these ids with a path argument instead of importing this feature).
+    ...FILE_COLOR_NAMES.map((name): Action => ({
+      id: `file.${name}`,
+      title: LABELS[name],
+      category: "Project View",
+      hidden: true,
+      run: ({ arg }) => void setFileColor(String(arg), false, name),
+    })),
+    {
+      id: "file.clearColor",
+      title: "Clear File Color",
+      category: "Project View",
+      hidden: true,
+      run: ({ arg }) => void setFileColor(String(arg), false, null),
+    },
+    {
+      id: "file.editColors",
+      title: "Edit File Colors…",
+      category: "Project View",
+      hidden: true,
+      run: () => void executeAction("file.settings", "fileColors"),
+    },
   ]);
 }

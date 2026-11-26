@@ -344,6 +344,14 @@ describe("loose files (LightEdit)", () => {
     expect(fsReadDir).toHaveBeenCalledWith("/x/a.txt");
     expect(lightEditOpen).toHaveBeenCalledWith("/x/a.txt");
   });
+
+  it("opens the folder of a dropped .uproject instead of the file", async () => {
+    windowOpenProject.mockResolvedValue(ok({ kind: "current" }));
+    await openPaths(["/work/Game/Game.uproject"], async () => false);
+    expect(windowOpenFiles).not.toHaveBeenCalled();
+    expect(lightEditOpen).not.toHaveBeenCalled();
+    expect(openProject).toHaveBeenCalledWith("/work/Game");
+  });
 });
 
 describe("Open Containing Folder as Project", () => {

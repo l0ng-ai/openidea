@@ -169,7 +169,13 @@ export function List<T>({
 
   const viewportHeight = virtualizer.scrollRect?.height;
   useEffect(() => {
-    if (active >= 0 && active < items.length) virtualizer.scrollToIndex(active, { align: "auto" });
+    if (active < 0 || active >= items.length) return;
+    const viewport = scrollRef.current;
+    const row = virtualizer.getVirtualItems().find((item) => item.index === active);
+    // The browser can scroll before the virtualizer receives the new offset.
+    if (viewport && row && row.start >= viewport.scrollTop && row.end <= viewport.scrollTop + viewport.clientHeight)
+      return;
+    virtualizer.scrollToIndex(active, { align: "auto" });
   }, [active, items.length, viewportHeight, virtualizer]);
 
   // Options are virtualised: expose position / count of selectable rows (or the table row index)

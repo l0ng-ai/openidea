@@ -1,0 +1,83 @@
+---
+title: Web 服务器模式
+description: 在浏览器中使用 OpenIDEA：服务器监听可配置的地址和端口，可以直接访问，也可以放在反向代理后面。
+---
+
+`openidea-server --web` 让 OpenIDEA 以不带桌面窗口的 Web 应用运行。服务器托管构建好的前端，并通过同一个 HTTP + WebSocket 端口提供完整的 IDE 后端：文件、搜索、语言服务器的代码智能、终端、Git、运行和调试、设置。
+
+## 构建
+
+先构建前端和 `openidea-server`：
+
+```bash
+pnpm install
+pnpm build
+cargo build --release -p ide-host --bin openidea-server
+```
+
+## 运行
+
+在仓库目录或容器中，最简单的方式是启动脚本：
+
+```bash
+./scripts/start-web.sh
+```
+
+它默认监听 `127.0.0.1:8080`（在容器中设置 `OPENIDEA_HOST=0.0.0.0`，端口用 `OPENIDEA_PORT` 修改），自动找到 `openidea-server`、构建好的 `dist/` 和工作区目录，并把设置和缓存放在 `~/.openidea`（放在工作区之外，索引和下载的工具不会被当作项目文件监视）。
+
+也可以直接运行 `openidea-server --web`（默认 `127.0.0.1:8080`）：
+
+```bash
+./target/release/openidea-server --web \
+  --host 0.0.0.0 \
+  --port 8080 \
+  --web-dir ./dist \
+  --project /path/to/workspace
+```
+
+然后在浏览器中打开 `http://localhost:8080/`。
+
+## 命令行选项和环境变量
+
+| 选项                     | 环境变量                 | 默认值                     | 说明                                            |
+| ------------------------ | ------------------------ | -------------------------- | ----------------------------------------------- |
+| `--host <addr>`          | `OPENIDEA_HOST`          | `127.0.0.1`                | 监听地址（容器中用 `0.0.0.0`）                  |
+| `--port <port>`          | `OPENIDEA_PORT`          | `8080`                     | HTTP 和 WebSocket 共用的端口                    |
+| `--base-path <prefix>`   | `OPENIDEA_BASE_PATH`     | _（自动）_                 | 反向代理的 URL 前缀                             |
+| `--web-dir <dir>`        | `OPENIDEA_WEB_DIR`       | 自动查找 `dist/`           | 构建好的前端目录                                |
+| `--project <path>`       | `OPENIDEA_WORKSPACE_DIR` | _（无）_                   | 启动时自动打开的工作区                          |
+| `--home <dir>`           | `OPENIDEA_SERVER_HOME`   | `~/.openidea`              | 保存设置、索引和缓存的目录                      |
+| `--token <secret\|auto>` | `OPENIDEA_WEB_TOKEN`     | `auto`（随机令牌）         | 浏览器和 WebSocket 会话需要的访问令牌           |
+| `--no-auth`              | `OPENIDEA_WEB_NO_AUTH`   | _（关闭）_                 | 关闭内置令牌认证（仅用于已做认证的反向代理后）  |
+| `--no-trust-project`     | —                        | _（自动信任 `--project`）_ | 打开 `--project` 时询问是否信任，而不是自动信任 |
+
+## 反向代理和子路径
+
+Web 模式使用相对的资源地址，WebSocket 地址（`api/ws`）也按当前页面解析。无论反向代理去掉还是保留路径前缀，静态资源和接口都能找到：
+
+- **直接访问**：`http://localhost:8080/`
+- **去掉前缀的代理**：`https://proxy.example/ide/` → 后端收到 `/` 和 `/api/ws`
+- **保留前缀的代理**：`https://proxy.example/user/session/123/` → 后端收到 `/user/session/123/` 和 `/user/session/123/api/ws`
+
+### 健康检查
+
+`GET /api/health`（在任何代理前缀下也可以访问，例如 `.../api/health`）返回 `200 OK` 和 JSON 状态，不需要认证，可用于容器的就绪和存活探针。
+
+## 认证和安全
+
+Web 模式**默认需要认证**：
+
+- `openidea-server --web` 默认只监听 `127.0.0.1`，除非传入 `--token <secret>` 或 `--no-auth`，否则生成一个随机访问令牌。
+- 启动时服务器打印一个带 `?token=...` 的链接。打开它会设置一个限定路径的 `HttpOnly; SameSite=Lax` Cookie（在 HTTPS 代理后还带 `Secure`），并跳转到不含令牌的地址。未认证的访问者看到登录页。
+- WebSocket 升级（`/api/ws`）校验 `Origin` 与 `Host` / `X-Forwarded-Host` 同源，防止跨站 WebSocket 劫持。
+- 如果反向代理已经认证每个请求，用 `--no-auth` 或 `OPENIDEA_WEB_NO_AUTH=1` 关闭内置认证。不要在没有认证的情况下暴露服务器：任何能访问它的人都能读写文件、运行命令。
+
+## 会话和浏览器标签页
+
+- **状态在服务器上**：打开的项目、终端、后台运行和语言服务器都在 `openidea-server` 中，而不在标签页里。刷新页面或短暂断线不会中断正在运行的进程，连接会自动恢复。如果服务器本身重启了，标签页会重新加载，因为之前显示的内容已经不存在。
+- **未保存的修改**：编辑器中有未保存的修改时，关闭或刷新标签页前浏览器会提示。
+- **每个窗口只有一个活动标签页**：在第二个标签页打开同一个服务器窗口时，新标签页接管，旧标签页暂停并显示**接管会话**按钮，避免两边同时编辑。相互独立的服务器实例（例如同一代理域名下的两个工作区容器）各自独立，Cookie 也限定在各自路径下，可以同时使用。
+
+## 持久化存储和容器
+
+在临时容器中，把 `OPENIDEA_SERVER_HOME` 指向挂载的持久卷，并放在项目目录之外（例如 `/home/openidea/.openidea`），这样设置、最近项目和索引在重启后保留，也不会被当作项目文件监视或索引。

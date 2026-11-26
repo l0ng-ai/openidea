@@ -4,7 +4,14 @@
  * Preview of the SQL they run), Remove Data Source, Data Source from URL, and the Quick Documentation popup.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { call, commands, type DbColumnInfo, type DbDriver, type DbTableGrant } from "@/platform/ipc";
+import {
+  call,
+  commands,
+  type DbColumnInfo,
+  type DbDriver,
+  type DbTableDetails,
+  type DbTableGrant,
+} from "@/platform/ipc";
 import { highlightInto } from "@/editor/lsp/markdown";
 import {
   Button,
@@ -14,6 +21,7 @@ import {
   Input,
   Popup,
   Icon,
+  SearchField,
   Select,
   T,
   Tabs,
@@ -27,6 +35,8 @@ import {
   canAlterColumn,
   createDatabaseSql,
   createSchemaSql,
+  commentsSupported,
+  createTableCommentSql,
   createTableSql,
   draftOf,
   dropDatabaseSql,
@@ -52,6 +62,7 @@ import {
   renameDatabase,
   loadDetails,
   loadGrants,
+  loadTables,
   openSourceDialog,
   readableDdl,
   refresh,
@@ -538,6 +549,7 @@ function blankColumn(driver: DbDriver, n: number): ColumnDraft {
     notNull: false,
     default: "",
     primaryKey: false,
+    comment: "",
     dropped: false,
   };
 }
@@ -551,7 +563,8 @@ function ModifyTableDialog(props: ModifyProps) {
     if (table && !details) void loadDetails(id, schema, table);
   }, [details, id, schema, table]);
   if (!table) return <ModifyTableForm {...props} initial={null} />;
-  if (details?.status === "ok") return <ModifyTableForm {...props} initial={details.value.columns} />;
+  if (details?.status === "ok")
+    return <ModifyTableForm {...props} initial={details.value.columns} details={details.value} />;
   return (
     <Dialog
       open
@@ -565,6 +578,64 @@ function ModifyTableDialog(props: ModifyProps) {
   );
 }
 
+/** A read-only row of the Modify Table list (a key, foreign key, index or trigger). */
+interface ObjectRow {
+  key: string;
+  name: string;
+  detail: string;
+}
+
+/**
+ * The groups after Columns, as DataGrip lists them: the primary key of the columns as edited,
+ * then the foreign keys, indexes and triggers the table has (shown, not edited here).
+ */
+function objectGroups(
+  columns: readonly ColumnDraft[],
+  details: DbTableDetails | null | undefined,
+): Array<{ id: string; label: string; icon: string; rows: ObjectRow[] }> {
+  const pk = columns.filter((c) => c.primaryKey && !c.dropped).map((c) => c.name);
+  const list = (names: readonly string[]) => `(${names.join(", ")})`;
+  return [
+    {
+      id: "keys",
+      label: "Keys",
+      icon: "db-key",
+      rows: pk.length ? [{ key: "primary", name: "PRIMARY KEY", detail: list(pk) }] : [],
+    },
+    {
+      id: "foreignKeys",
+      label: "Foreign Keys",
+      icon: "db-foreign-key",
+      rows: (details?.foreignKeys ?? []).map((fk, i) => ({
+        key: `fk-${i}`,
+        name: list(fk.columns),
+        detail: `→ ${fk.refTable} ${list(fk.refColumns)}`,
+      })),
+    },
+    {
+      id: "indexes",
+      label: "Indexes",
+      icon: "db-index",
+      rows: (details?.indexes ?? []).map((ix) => ({
+        key: `ix-${ix.name}`,
+        name: ix.name,
+        // `UNIQUE` is SQL, not UI text.
+        detail: ix.unique ? ["UNIQUE", list(ix.columns)].join(" ") : list(ix.columns),
+      })),
+    },
+    {
+      id: "triggers",
+      label: "Triggers",
+      icon: "db-trigger",
+      rows: (details?.triggers ?? []).map((t) => ({
+        key: `tr-${t.name}`,
+        name: t.name,
+        detail: `${t.timing} ${t.events}`.toUpperCase(),
+      })),
+    },
+  ];
+}
+
 function ModifyTableForm({
   id,
   schema,
@@ -572,7 +643,8 @@ function ModifyTableForm({
   focusColumn,
   addColumn,
   initial,
-}: ModifyProps & { initial: DbColumnInfo[] | null }) {
+  details,
+}: ModifyProps & { initial: DbColumnInfo[] | null; details?: DbTableDetails }) {
   const driver = driverOf(id);
   const [name, setName] = useState(table ?? "table_name");
   const [columns, setColumns] = useState<ColumnDraft[]>(() => {
@@ -587,11 +659,19 @@ function ModifyTableForm({
     return columns[Math.max(0, focus)]?.key ?? null;
   });
   const { busy, runAndClose } = useRunner();
+  const comments = commentsSupported(driver);
+  const [comment, setComment] = useState(details?.comment ?? "");
 
   const statements = useMemo(() => {
-    if (!table) return [createTableSql(driver, schema, name.trim() || "table_name", columns)];
-    return alterTableSql(driver, schema, table, name, columns);
-  }, [columns, driver, schema, table, name]);
+    if (!table) {
+      const created = name.trim() || "table_name";
+      return [
+        createTableSql(driver, schema, created, columns, comment),
+        ...createTableCommentSql(driver, schema, created, columns, comment),
+      ];
+    }
+    return alterTableSql(driver, schema, table, name, columns, { original: details?.comment ?? "", value: comment });
+  }, [columns, driver, schema, table, name, comment, details?.comment]);
 
   const current = columns.find((c) => c.key === selected) ?? null;
   const patch = (p: Partial<ColumnDraft>) =>
@@ -611,6 +691,28 @@ function ModifyTableForm({
     }
   };
   const locked = !!current && !canAlterColumn(driver, current);
+  // The list's filter (names and types) and its collapsed groups.
+  const [filter, setFilter] = useState("");
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
+  const query = filter.trim().toLowerCase();
+  const matches = (...texts: string[]) => !query || texts.some((t) => t.toLowerCase().includes(query));
+  const shownColumns = columns.filter((c) => matches(c.name, c.dataType));
+  const groups = objectGroups(columns, details)
+    .map((g) => ({ ...g, rows: g.rows.filter((r) => matches(r.name, r.detail)) }))
+    .filter((g) => g.rows.length);
+  const toggleGroup = (group: string) =>
+    setCollapsed((c) => {
+      const next = new Set(c);
+      if (!next.delete(group)) next.add(group);
+      return next;
+    });
+  const groupHeader = (group: string, label: string, count: number) => (
+    <div className={styles.modifyGroup} onMouseDown={() => toggleGroup(group)}>
+      <Icon name={collapsed.has(group) ? "chevron-right" : "chevron-down"} size={12} />
+      <span>{tx(label)}</span>
+      <span className={styles.treeType}>{count}</span>
+    </div>
+  );
   const showGrants = !!table && grantsSupported(driver);
   const [tab, setTab] = useState<"columns" | "grants">("columns");
   const title = table ? `Modify Table ${table}` : "Create Table";
@@ -628,7 +730,14 @@ function ModifyTableForm({
           label: "OK",
           role: "default",
           disabled: busy || !statements.length || !name.trim(),
-          onClick: () => void runAndClose(id, statements),
+          onClick: () =>
+            void runAndClose(id, statements).then((ok) => {
+              if (!ok) return;
+              // The tree and the next Modify Table show the table as it now is.
+              const final = name.trim();
+              void loadDetails(id, schema, final);
+              if (final !== table) void loadTables(id, schema);
+            }),
         },
       ]}
     >
@@ -646,6 +755,19 @@ function ModifyTableForm({
           />
           <span className={styles.formHint}>{schema}</span>
         </div>
+        {comments && (
+          <div className={styles.formRow}>
+            <label className={styles.formLabel} htmlFor="db-table-comment">
+              <T>Comment:</T>
+            </label>
+            <Input
+              id="db-table-comment"
+              className={styles.fill}
+              value={comment}
+              onChange={(e) => setComment(e.target.value)}
+            />
+          </div>
+        )}
         {showGrants && (
           <Tabs
             variant="compact"
@@ -672,21 +794,52 @@ function ModifyTableForm({
                   disabled={!current}
                   onClick={remove}
                 />
+                <SearchField
+                  variant="bare"
+                  className={styles.modifyFilter}
+                  value={filter}
+                  onChange={setFilter}
+                  placeholder="Filter by name or type"
+                  aria-label="Filter columns"
+                />
               </div>
               <div role="listbox" aria-label={tx("Columns")} className={styles.modifyList}>
-                {columns.map((c) => (
-                  <div
-                    key={c.key}
-                    role="option"
-                    aria-selected={c.key === selected}
-                    tabIndex={-1}
-                    className={styles.modifyItem}
-                    data-dropped={c.dropped || undefined}
-                    onMouseDown={() => setSelected(c.key)}
-                  >
-                    <Icon name={c.primaryKey ? "db-column-key" : "db-column"} size={16} />
-                    <span className={styles.nodeLabel}>{c.name || "<unnamed>"}</span>
-                    <span className={styles.treeType}>{c.dataType}</span>
+                <div role="group" aria-label={tx("Columns")}>
+                  {groupHeader("columns", "Columns", shownColumns.length)}
+                  {!collapsed.has("columns") &&
+                    shownColumns.map((c) => (
+                      <div
+                        key={c.key}
+                        role="option"
+                        aria-selected={c.key === selected}
+                        tabIndex={-1}
+                        className={styles.modifyItem}
+                        data-dropped={c.dropped || undefined}
+                        onMouseDown={() => setSelected(c.key)}
+                      >
+                        <Icon name={c.primaryKey ? "db-column-key" : "db-column"} size={16} />
+                        <span className={styles.nodeLabel}>{c.name || "<unnamed>"}</span>
+                        <span className={styles.treeType}>{c.dataType}</span>
+                      </div>
+                    ))}
+                </div>
+                {groups.map((g) => (
+                  <div key={g.id} role="group" aria-label={tx(g.label)}>
+                    {groupHeader(g.id, g.label, g.rows.length)}
+                    {!collapsed.has(g.id) &&
+                      g.rows.map((r) => (
+                        <div
+                          key={r.key}
+                          role="option"
+                          aria-selected={false}
+                          aria-disabled
+                          className={styles.modifyItem}
+                        >
+                          <Icon name={g.icon} size={16} />
+                          <span className={styles.nodeLabel}>{r.name}</span>
+                          <span className={styles.treeType}>{r.detail}</span>
+                        </div>
+                      ))}
                   </div>
                 ))}
               </div>
@@ -746,6 +899,19 @@ function ModifyTableForm({
                     disabled={current.dropped || locked}
                     onChange={(e) => patch({ default: e.target.value })}
                   />
+                  {comments && (
+                    <>
+                      <label className={styles.formLabel} htmlFor="db-col-comment">
+                        <T>Column comment</T>
+                      </label>
+                      <Input
+                        id="db-col-comment"
+                        value={current.comment}
+                        disabled={current.dropped || locked}
+                        onChange={(e) => patch({ comment: e.target.value })}
+                      />
+                    </>
+                  )}
                   {locked && (
                     <>
                       <span />
@@ -869,7 +1035,7 @@ function SourceUrlDialog() {
     if (!parsed) return;
     closeDialog();
     const s = parsed.source;
-    const name = s.driver === "sqlite" ? s.name : `${s.database || s.user || "db"}@${s.host}`;
+    const name = s.name ?? (s.driver === "jdbc" ? undefined : `${s.database || s.user || "db"}@${s.host}`);
     openSourceDialog(null, { ...s, name }, parsed.password);
   };
   return (
@@ -899,7 +1065,7 @@ function SourceUrlDialog() {
         <span className={styles.formHint}>
           {url.trim() && !parsed
             ? tx("Not a URL of PostgreSQL, MySQL, SQLite or a compatible database")
-            : "postgresql://, mysql://, mariadb://, redshift://, tidb://…, jdbc:…, sqlite:path"}
+            : "postgresql://, mysql://, mariadb://, redshift://, tidb://…, jdbc:…, sqlite:path, jdbc:duckdb:path"}
         </span>
       </div>
     </Dialog>

@@ -575,7 +575,8 @@ export function keepMessageAfterCommit(committed: string, clear: boolean, finish
     finished.root &&
     (active || (finished.text !== null && readDraft(finished.root, finished.list) === finished.text))
   ) {
-    writeDraft(finished.root, finished.list, clear ? "" : null);
+    // Clear drops it. Otherwise the message left in the field is the next draft, including after a restart.
+    writeDraft(finished.root, finished.list, clear ? "" : messageAfterCommit(committed, false) || null);
   }
   if (!active) return;
   const message = messageAfterCommit(committed, clear);

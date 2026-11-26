@@ -8,6 +8,7 @@ import { jvmModuleDir } from "@/platform/javaLaunch";
 import { djangoLabel, djangoTestsOf, hasDjangoTests } from "./djangoTypes";
 import { inGradleModule } from "./gradleModuleTests";
 import { systemPython } from "./pythonTypes";
+import { cypressSelection, isCypressComponentSpec } from "./testing/cypress";
 import { phpunitArgs } from "./testing/phpunit";
 import { frameworkFor } from "./testing";
 import { goTestParts } from "./goArguments";
@@ -55,7 +56,7 @@ const stem = (p: string) => (p.split("/").pop() ?? p).replace(/\.[^.]+$/, "");
 /** Kinds whose test configs can run a file of this extension. */
 function testKinds(relPath: string): string[] {
   if (/\.cs$/i.test(relPath)) return ["dotnet-test"];
-  if (/\.[cm]?[jt]sx?$/.test(relPath)) return ["npm", "deno", "bun", "node"];
+  if (/\.[cm]?[jt]sx?$/.test(relPath)) return ["npm", "deno", "bun", "node", "cypress"];
   if (/\.py$/.test(relPath)) return ["pytest", "python", "django-test"];
   if (/\.php$/.test(relPath)) return ["phpunit"];
   if (/_spec\.rb$/.test(relPath)) return ["rspec", "rake", "ruby"];
@@ -212,6 +213,16 @@ function byRunner(bases: RunConfig[], content: string): RunConfig[] {
 }
 
 /**
+ * Cypress specs (`*.cy.*`, files in `cypress/`) run on the project's Cypress configurations, however far, when it
+ * has any; other files never do, so they keep their runner (Vitest at the workspace root…) as before.
+ */
+function byCypress(candidates: RunConfig[], relPath: string): RunConfig[] {
+  const cypress = candidates.filter((c) => frameworkFor(c) === "cypress");
+  const spec = /\.cy\.[cm]?[jt]sx?$|(^|\/)cypress\//.test(relPath);
+  return spec && cypress.length ? cypress : candidates.filter((c) => !cypress.includes(c));
+}
+
+/**
  * Test configurations that can run `relPath` equally well (same, closest working
  * directory: `npm run test` and `npm run test:unit`…); the default one first.
  * `content` (the file's text) tells a Playwright spec from other JS tests.
@@ -224,7 +235,7 @@ export function testBasesFor(relPath: string, configs: RunConfig[], content?: st
     // `node` configurations run a file of their own; only Playwright's (`npx playwright test`) take a test file.
     .filter((c) => c.kind !== "node" || frameworkFor(c) === "playwright")
     .sort((a, b) => kinds.indexOf(a.kind) - kinds.indexOf(b.kind));
-  const best = allClosest(candidates, relPath);
+  const best = allClosest(byCypress(candidates, relPath), relPath);
   if (best.length) return content === undefined ? best : byRunner(best, content);
   const fallback = implicitPytest(relPath, configs);
   return fallback ? [fallback] : [];
@@ -243,6 +254,13 @@ export function testConfigFor(
   base ??= testBasesFor(relPath, configs, content)[0];
   if (!base) return null;
   const file = relToCwd(relPath, base);
+  if (frameworkFor(base) === "cypress") {
+    return derived(
+      base,
+      relPath,
+      cypressSelection(base, [file], { component: isCypressComponentSpec(relPath, content) }),
+    );
+  }
   switch (base.kind) {
     case "dotnet-test": {
       const methods = csharpTargets(content ?? "")

@@ -7,6 +7,7 @@ import userEvent from "@testing-library/user-event";
 import { caretOf, setCaret, textOf, typeChars, typeIn } from "./composerTesting";
 import chipStyles from "./ReferenceChip.module.css";
 import { FILES_DRAG, dragSession } from "@/ui";
+import { EDITOR_TAB_MIME, provideEditorService, type EditorService } from "@/workbench/contributions";
 import { useProject } from "@/platform/project";
 
 const findFiles = vi.fn();
@@ -121,6 +122,32 @@ describe("Composer dropped paths", () => {
       { path: "/p/src/dir", rel: "src/dir/" },
     ]);
     expect(textOf(box)).toBe("@src/a.ts @src/dir/ ");
+  });
+
+  it("references the file of an editor tab dragged onto it and ignores other tabs", () => {
+    provideEditorService({
+      tabInput: (_pane: string, tab: string) =>
+        tab === "file"
+          ? { kind: "file", key: "/p/src/a.ts", path: "/p/src/a.ts" }
+          : { kind: "agentSession", key: "agent:one", data: { task: "one" } },
+    } as unknown as EditorService);
+    const box = renderComposer();
+    const restore = document.elementFromPoint;
+    document.elementFromPoint = () => box;
+    try {
+      act(() => {
+        const other = dragSession({
+          type: EDITOR_TAB_MIME,
+          payload: JSON.stringify({ paneId: "p", tabId: "session" }),
+        });
+        expect(other.drop(0, 0)).toBe(false);
+        const file = dragSession({ type: EDITOR_TAB_MIME, payload: JSON.stringify({ paneId: "p", tabId: "file" }) });
+        expect(file.drop(0, 0)).toBe(true);
+      });
+    } finally {
+      document.elementFromPoint = restore;
+    }
+    expect(textOf(box)).toBe("@src/a.ts ");
   });
 
   it("deduplicates live references and allows a deleted reference to be dropped again", () => {

@@ -209,6 +209,16 @@ impl commands::Guest for Misbehave {
                 let editor = ctx.editor().ok_or_else(|| failed("no editor"))?;
                 editor.apply_edits(0, &[]).map(|_| None)
             }
+            // `agents.fork-session`: arg is "agent session-id cwd". Without the
+            // `agents` grant this is `denied`, not a trap.
+            "fork-session" => {
+                let arg = arg.unwrap_or_default();
+                let mut parts = arg.splitn(3, ' ');
+                let agent = parts.next().unwrap_or_default();
+                let session_id = parts.next().unwrap_or_default();
+                let cwd = parts.next().unwrap_or_default();
+                openidea::plugin::agents::fork_session(agent, session_id, cwd).map(Some)
+            }
             // The user gave up: not the plugin failing.
             "cancel" => Err(types::Error::Cancelled),
             // Event kinds are names: one this IDE doesn't know is refused.

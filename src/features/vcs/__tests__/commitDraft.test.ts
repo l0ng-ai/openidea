@@ -111,16 +111,23 @@ describe("commit message draft (#4423)", () => {
     expect(savedDraft("/b")).toBe("for b");
   });
 
-  it("is cleared by a successful commit, whether or not the message stays in the field", () => {
+  it("keeps the committed message across a restart unless clear is on", () => {
     type("feat: x");
     flushDraft();
     keepMessageAfterCommit("feat: x", false);
     flushDraft();
-    expect(savedDraft("/a")).toBe("");
+    expect(useCommit.getState().message).toBe("feat: x");
+    expect(savedDraft("/a")).toBe("feat: x");
+    dispose();
+    useCommit.setState({ message: "" });
+    dispose = installCommitMessages();
+    expect(useCommit.getState().message).toBe("feat: x");
+
     type("feat: y");
     flushDraft();
     keepMessageAfterCommit("feat: y", true);
     flushDraft();
+    expect(useCommit.getState().message).toBe("");
     expect(savedDraft("/a")).toBe("");
   });
 
@@ -152,7 +159,7 @@ describe("commit message draft (#4423)", () => {
     expect(message()).toBe("Legacy draft");
   });
 
-  it("clears the completed list's draft even if another list is selected while Git runs", () => {
+  it("leaves the kept message on the list that was committed while another list is selected", () => {
     const include = loadLists();
     type("Default draft");
     include("feature");
@@ -161,7 +168,7 @@ describe("commit message draft (#4423)", () => {
     include(DEFAULT_LIST_ID);
     keepMessageAfterCommit("Feature commit", false, pending);
     expect(message()).toBe("Default draft");
-    expect(savedDraft("/a", "feature")).toBe("");
+    expect(savedDraft("/a", "feature")).toBe("Feature commit");
   });
 
   it("keeps a newer draft written while the commit was running", () => {

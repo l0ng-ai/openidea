@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import type { AgentEntry, AgentEvent, AgentTask } from "@/bindings";
 import {
   dropOnEditor,
+  menuGroupItems,
   useContributions,
   useEditorTabTitles,
   type EditorInput,
@@ -593,5 +594,22 @@ describe("the diff of an agent change", () => {
     useAgents.setState({ changes: new Map([["one", [change("/project/a.ts")]]]) });
     await openChangeDiff(task("one"), "/project/c.ts");
     expect(backend.openInput.mock.lastCall![0].data.chain).toBeUndefined();
+  });
+});
+
+describe("Send to Agent menus", () => {
+  it("sends the selection from the editor and the files from an editor tab or the Project view", () => {
+    const dispose = activate();
+    try {
+      const send = (menu: "editor" | "editorTab" | "projectView", dirs?: boolean[]) =>
+        menuGroupItems(menu, { paths: ["/p/a.ts", "/p/src"].slice(0, dirs ? 2 : 1), dirs }).find(
+          (i) => "action" in i && i.action === "agents.sendToAgent",
+        );
+      expect(send("editor")).toMatchObject({ arg: undefined });
+      expect(send("editorTab")).toMatchObject({ arg: ["/p/a.ts"] });
+      expect(send("projectView", [false, true])).toMatchObject({ arg: ["/p/a.ts", "/p/src/"] });
+    } finally {
+      dispose();
+    }
   });
 });

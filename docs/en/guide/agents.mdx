@@ -16,7 +16,7 @@ These agents are built in. Install the agent's own CLI and sign in once in a ter
 | Claude Code    | `claude`                    | `claude`              |
 | Codex          | `codex app-server`          | `codex login`         |
 | Gemini CLI     | `gemini --experimental-acp` | `gemini`              |
-| GitHub Copilot | `copilot --acp`             | `copilot`             |
+| GitHub Copilot | `copilot --acp`             | `copilot login`       |
 | Cursor         | `cursor-agent acp`          | `cursor-agent login`  |
 | OpenCode       | `opencode acp`              | `opencode auth login` |
 | Qwen Code      | `qwen --experimental-acp`   | `qwen`                |
@@ -129,6 +129,10 @@ Tasks are saved per project and survive restarts. When the agent supports resumi
 
 - **Built-in**: for each built-in agent, whether its executable was found on `PATH`, a field to point at a **Custom executable**, **Environment variables** for the agent process (written as `NAME=value; OTHER=value`; the values are kept in the OS credential store) and how to sign in. Changes apply to new sessions. When the agent is a global npm install (such as Claude Code, Codex or Gemini CLI), **Check for updates** compares it with npm's latest stable release and **Update to…** updates that installation.
 - **ACP Registry**: agents published in the [ACP Registry](https://agentclientprotocol.com). Search, **Install**, **Update** and **Remove**. Installed agents are kept in OpenIDEA's data directory; downloads are checked against the registry's SHA-256 when it provides one.
+
+For a built-in ACP agent launched directly, such as OMP, **Launch › Additional arguments** appends arguments to its existing launch command. Separate arguments with spaces and quote values that contain spaces. **Apply** saves the arguments for the next process launch; the command preview shows the saved result. **Reset additional arguments** clears just this field, leaving the executable, environment and any hand-written `args` in the agent file alone.
+
+For **GitHub Copilot**, **Sign In › GitHub account** selects which GitHub account's Copilot subscription is used for AI model requests—either Copilot CLI's own default login (**Sign In…**) or any account signed into GitHub CLI (**Add account…**). **New Tasks** model options are loaded for the authenticated account after sign-in or **Apply**.
 
 **Settings › Agents › Chat** chooses what the task header shows: **Context window usage**, **Time spent on the task**, **Usage limits** (when the agent reports them, such as Claude Code) and **Session cost**.
 

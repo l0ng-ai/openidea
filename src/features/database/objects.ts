@@ -305,6 +305,8 @@ export interface ColumnDraft {
   /** SQL expression; empty for none. */
   default: string;
   primaryKey: boolean;
+  /** Empty for none. */
+  comment: string;
   dropped: boolean;
 }
 
@@ -317,6 +319,7 @@ export function draftOf(c: DbColumnInfo, key: number): ColumnDraft {
     notNull: !c.nullable,
     default: c.default ?? "",
     primaryKey: c.primaryKey,
+    comment: c.comment ?? "",
     dropped: false,
   };
 }
@@ -335,7 +338,61 @@ function columnDefinition(driver: DbDriver, c: ColumnDraft): string {
   let s = `${ident(driver, c.name)} ${c.dataType.trim() || fallback}`;
   if (c.default.trim()) s += ` default ${c.default.trim()}`;
   if (c.notNull && driver !== "clickhouse") s += " not null";
+  // MySQL keeps a column's comment in its definition: `change column` without it drops the comment.
+  if (driver === "mysql" && c.comment) s += ` comment ${commentLiteral(driver, c.comment)}`;
   return s;
+}
+
+/** Engines whose table and column comments the Modify Table dialog reads and edits. */
+export function commentsSupported(driver: DbDriver): boolean {
+  return driver === "postgres" || driver === "mysql" || driver === "oracle" || driver === "snowflake";
+}
+
+/** A comment as a string literal (MySQL and Snowflake read backslash escapes). */
+function commentLiteral(driver: DbDriver, text: string): string {
+  const escaped = driver === "mysql" || driver === "snowflake" ? text.replace(/\\/g, "\\\\") : text;
+  return `'${escaped.replace(/'/g, "''")}'`;
+}
+
+/** A table comment as the dialog started (`original`) and as edited. */
+export interface CommentEdit {
+  original: string;
+  value: string;
+}
+
+/**
+ * The statements setting the table's comment and its columns' (`comment on …` where the
+ * engine has it; MySQL's column comments are part of the definition, see `columnDefinition`).
+ * Columns are named as they end up; the table as it is (a rename comes after).
+ */
+function commentSql(
+  driver: DbDriver,
+  schema: string,
+  table: string,
+  columns: readonly ColumnDraft[],
+  comment: CommentEdit | undefined,
+): string[] {
+  if (!commentsSupported(driver)) return [];
+  const q = qualifiedName(driver, schema, table);
+  const out: string[] = [];
+  if (comment && comment.value !== comment.original) {
+    const v = comment.value;
+    if (driver === "mysql") out.push(`alter table ${q} comment = ${commentLiteral(driver, v)};`);
+    else if (!v && driver === "snowflake") out.push(`alter table ${q} unset comment;`);
+    else out.push(`comment on table ${q} is ${v || driver !== "postgres" ? commentLiteral(driver, v) : "null"};`);
+  }
+  if (driver === "mysql") return out;
+  for (const c of columns) {
+    const name = c.name.trim() || c.original?.name;
+    if (c.dropped || !name || c.comment === (c.original?.comment ?? "")) continue;
+    const col = ident(driver, name);
+    if (!c.comment && driver === "snowflake") out.push(`alter table ${q} alter column ${col} unset comment;`);
+    else
+      out.push(
+        `comment on column ${q}.${col} is ${c.comment || driver !== "postgres" ? commentLiteral(driver, c.comment) : "null"};`,
+      );
+  }
+  return out;
 }
 
 /** `create table` for New › Table. */
@@ -344,12 +401,32 @@ export function createTableSql(
   schema: string,
   name: string,
   columns: readonly ColumnDraft[],
+  comment = "",
 ): string {
   const live = columns.filter((c) => !c.dropped && c.name.trim());
   const keys = live.filter((c) => c.primaryKey).map((c) => ident(driver, c.name));
   const items = live.map((c) => `    ${columnDefinition(driver, c)}`);
   if (keys.length && driver !== "clickhouse") items.push(`    primary key (${keys.join(", ")})`);
-  return `create table ${qualifiedName(driver, schema, name)}\n(\n${items.join(",\n")}\n)${driver === "clickhouse" ? "\nengine = MergeTree\norder by tuple()" : ""};\n`;
+  const options =
+    driver === "clickhouse"
+      ? "\nengine = MergeTree\norder by tuple()"
+      : driver === "mysql" && comment
+        ? `\ncomment = ${commentLiteral(driver, comment)}`
+        : "";
+  return `create table ${qualifiedName(driver, schema, name)}\n(\n${items.join(",\n")}\n)${options};\n`;
+}
+
+/** The `comment on` statements following New › Table's `create table` (MySQL takes them inline). */
+export function createTableCommentSql(
+  driver: DbDriver,
+  schema: string,
+  name: string,
+  columns: readonly ColumnDraft[],
+  comment: string,
+): string[] {
+  if (driver === "mysql") return [];
+  const live = columns.filter((c) => !c.dropped && c.name.trim());
+  return commentSql(driver, schema, name, live, { original: "", value: comment });
 }
 
 /** Whether `alterTableSql` can express changing column `c` (SQLite only renames, adds and drops). */
@@ -360,7 +437,7 @@ export function canAlterColumn(driver: DbDriver, c: ColumnDraft): boolean {
 /**
  * The statements turning the table `table` into `name` with `columns`
  * (Modify Table): renames, added / dropped columns, and — PostgreSQL / MySQL /
- * Oracle / Snowflake — type, nullability and default changes.
+ * Oracle / Snowflake — type, nullability, default and comment changes, and the table's comment.
  */
 export function alterTableSql(
   driver: DbDriver,
@@ -368,6 +445,7 @@ export function alterTableSql(
   table: string,
   name: string,
   columns: readonly ColumnDraft[],
+  comment?: CommentEdit,
 ): string[] {
   if (!canModifyTable(driver)) return [];
   const out: string[] = [];
@@ -391,7 +469,10 @@ export function alterTableSql(
     }
     const renamed = c.name.trim() && c.name !== o.name;
     const changed =
-      c.dataType.trim() !== o.dataType || c.notNull !== !o.nullable || c.default.trim() !== (o.default ?? "").trim();
+      c.dataType.trim() !== o.dataType ||
+      c.notNull !== !o.nullable ||
+      c.default.trim() !== (o.default ?? "").trim() ||
+      (driver === "mysql" && c.comment !== (o.comment ?? ""));
     if (driver === "mysql" && (renamed || changed)) {
       out.push(`alter table ${q()} change column ${ident(driver, o.name)} ${columnDefinition(driver, c)};`);
       continue;
@@ -439,6 +520,7 @@ export function alterTableSql(
         `alter table ${q()} alter column ${col} ${c.default.trim() ? `set default ${c.default.trim()}` : "drop default"};`,
       );
   }
+  out.push(...commentSql(driver, schema, table, columns, comment));
   // Renamed last: the column statements above name the table as it was.
   if (name.trim() && name.trim() !== table)
     out.push(renameSql(driver, { kind: "table", schema, name: table }, name.trim()));

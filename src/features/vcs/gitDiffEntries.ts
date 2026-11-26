@@ -88,5 +88,5 @@ export function useGitDiffEntries(data: DiffData, cache?: DiffEntriesCache) {
       right: resolveSide(right, entries[2]),
     };
   }, [data, entries, left, middle, right]);
-  return { data: resolved, entries, loading: !!query && !hit && loaded?.query !== query };
+  return { data: resolved, entries, versions, loading: !!query && !hit && loaded?.query !== query };
 }

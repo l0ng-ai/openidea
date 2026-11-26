@@ -106,6 +106,67 @@ async function chooseEffort(effort: string) {
   fireEvent.click(within(list).getByRole("option", { name: effort }));
 }
 
+function codexWithFast(current = "false") {
+  const fast = { ...option("service_tier", "model_config", ["false", "true"], current), name: "Fast" };
+  const codex = {
+    ...backend.providers[0]!,
+    id: "codex",
+    name: "Codex",
+    config: [option("model", "model", ["big", "small", "plain"], "big"), fast],
+    thoughtLevels: { big: [fast], small: [{ ...fast, current: "false" }], plain: [] },
+  };
+  backend.providers = [codex];
+  useAgents.setState({ providers: [codex], draft: savedDraft({ provider: "codex", config: {} }) });
+}
+
+it.each(["false", "true"])("leaves an untouched Codex Fast default (%s) to the runtime", async (current) => {
+  codexWithFast(current);
+  render(<HomeEditor />);
+  fireEvent.click(settingsButton());
+  expect(screen.getByRole("switch", { name: "Fast" })).toHaveAttribute("aria-checked", current);
+  fireEvent.keyDown(document, { key: "Escape" });
+  fireEvent.click(screen.getByRole("button", { name: "Start" }));
+  await waitFor(() => expect(backend.create).toHaveBeenCalled());
+  expect(backend.create.mock.calls[0]![0].config).toEqual([{ id: "model", value: "big" }]);
+});
+
+it.each(["true", "false"])("sends an explicit Codex Fast selection (%s) before the first prompt", async (value) => {
+  codexWithFast();
+  render(<HomeEditor />);
+  fireEvent.click(settingsButton());
+  fireEvent.click(screen.getByRole("switch", { name: "Fast" }));
+  if (value === "false") fireEvent.click(screen.getByRole("switch", { name: "Fast" }));
+  expect(useAgents.getState().draft.thoughtLevels?.big?.service_tier).toBe(value);
+  fireEvent.keyDown(document, { key: "Escape" });
+  fireEvent.click(screen.getByRole("button", { name: "Start" }));
+  await waitFor(() => expect(backend.create).toHaveBeenCalled());
+  expect(backend.create.mock.calls[0]![0].config).toEqual([
+    { id: "model", value: "big" },
+    { id: "service_tier", value },
+  ]);
+});
+
+it("keeps Codex Fast choices per model and omits them for models without Fast", async () => {
+  codexWithFast();
+  render(<HomeEditor />);
+  fireEvent.click(settingsButton());
+  fireEvent.click(screen.getByRole("switch", { name: "Fast" }));
+  fireEvent.keyDown(document, { key: "Escape" });
+  await chooseModel("small");
+  fireEvent.click(settingsButton());
+  expect(screen.getByRole("switch", { name: "Fast" })).toHaveAttribute("aria-checked", "false");
+  fireEvent.keyDown(document, { key: "Escape" });
+  await chooseModel("big");
+  fireEvent.click(settingsButton());
+  expect(screen.getByRole("switch", { name: "Fast" })).toHaveAttribute("aria-checked", "true");
+  fireEvent.keyDown(document, { key: "Escape" });
+  await chooseModel("plain");
+  expect(screen.queryByRole("button", { name: /^Model settings:/ })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Start" }));
+  await waitFor(() => expect(backend.create).toHaveBeenCalled());
+  expect(backend.create.mock.calls[0]![0].config).toEqual([{ id: "model", value: "plain" }]);
+});
+
 it("switches model-specific levels and restores each draft effort before starting", async () => {
   render(<HomeEditor />);
   expect(modelButton()).toHaveTextContent("big");

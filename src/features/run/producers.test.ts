@@ -18,6 +18,7 @@ import {
   type ToolEnv,
 } from "./producers";
 import { clearInheritedMain, resolveCandidates, unresolvedCandidates } from "./inheritedMain";
+import { BUILTIN_TYPES, formParams, withParams } from "./types";
 
 afterEach(() => clearInheritedMain());
 
@@ -118,6 +119,38 @@ describe("single-file producers (scratches)", () => {
     expect(missing.config).toBeUndefined();
     expect(missing.missing!.body).toMatch(/22\.6\+.*Found Node\.js 20\.11\.0.*npm install -D tsx/);
     expect(produceContext(scratch("hi.js"), env({}))!.missing!.body).toMatch(/Node\.js was not found.*nodejs\.org/);
+  });
+
+  it("JavaScript and TypeScript file runs open in the Node.js form and stay editable (#6085)", () => {
+    const node = BUILTIN_TYPES.find((t) => t.id === "node")!;
+    const file = (name: string, e: ToolEnv = ALL) => produceContext(scratch(name), e)!.config!;
+    for (const name of ["hi.js", "hi.mjs", "hi.cjs"]) {
+      const c = file(name);
+      expect(c.kind).toBe("node");
+      expect(formParams(c, node)).toEqual({ interpreter: "/bin/node", nodeOptions: "", file: name, arguments: "" });
+    }
+    const edited = withParams(
+      file("hi.js"),
+      { ...formParams(file("hi.js"), node)!, nodeOptions: "--env-file=.env", arguments: "a 'b c'" },
+      node,
+    );
+    expect(edited).toMatchObject({
+      command: "/bin/node",
+      args: ["--env-file=.env", "hi.js", "a", "b c"],
+      cwd: SCRATCH,
+    });
+    expect(edited.id).toBe(`context:file:${SCRATCH}/hi.js`);
+    // TypeScript through type stripping or tsx keeps its command line in the form.
+    expect(formParams(file("hi.ts", env({ node: "22.6.0" })), node)).toMatchObject({
+      nodeOptions: "--experimental-strip-types",
+      file: "hi.ts",
+    });
+    expect(formParams(file("hi.ts", env({ node: "20.11.0", tsx: null })), node)).toMatchObject({
+      interpreter: "/bin/tsx",
+      file: "hi.ts",
+    });
+    // `npx tsx` (no tool lookup) is edited as a plain command and runs as before.
+    expect(formParams(file("hi.ts", OPTIMISTIC), node)).toBeNull();
   });
 
   it("type stripping versions", () => {
@@ -1276,6 +1309,88 @@ describe("Go test names (GoLand)", () => {
     expect(dir.name).toBe("go test example.com/fixture/internal/tests/...");
     expect(dir.config!.args).toEqual(["test", "./internal/tests/..."]);
     expect(dir.config!.name).toBe(dir.name);
+  });
+
+  describe("any package directory, like GoLand: 'go test <import path>/...'", () => {
+    const dirAt = (rel: string, configs = GO) =>
+      produceDirectory({ path: rel ? `${ROOT}/${rel}` : ROOT, root: ROOT, configs, goModule: modules });
+
+    it("a package and a folder of packages", () => {
+      const cart = dirAt("cart")!;
+      expect(cart.name).toBe("go test example.com/fixture/cart/...");
+      expect(cart.config).toMatchObject({ args: ["test", "./cart/..."], isTest: true, debugAdapter: "delve" });
+      expect(dirAt("internal/pricing")!.config!.args).toEqual(["test", "./internal/pricing/..."]);
+    });
+
+    it("the module root: the whole module", () => {
+      const all = dirAt("")!;
+      expect(all.name).toBe("go test example.com/fixture/...");
+      expect(all.config!.args).toEqual(["test", "./..."]);
+    });
+
+    it("a nested module's folder runs from that module", () => {
+      const nested = [
+        cfg({ id: "go:test:api", kind: "go", command: "go", args: ["test", "./..."], cwd: "api", isTest: true }),
+      ];
+      expect(dirAt("api", nested)!.config).toMatchObject({ args: ["test", "./..."], cwd: "api" });
+      expect(dirAt("api/cart", nested)!.config!.args).toEqual(["test", "./cart/..."]);
+      // Outside the only Go module.
+      expect(dirAt("web", nested)).toBeNull();
+    });
+
+    it("keeps the configuration's flags and program arguments, not its packages", () => {
+      const own = [
+        cfg({
+          id: "go:own",
+          kind: "go",
+          command: "go",
+          args: ["test", "-race", "./cart", "-args", "-v"],
+          isTest: true,
+        }),
+      ];
+      expect(dirAt("pricing", own)!.config!.args).toEqual(["test", "-race", "./pricing/...", "-args", "-v"]);
+    });
+
+    it("a Go Test form configuration gets the directory as its target", () => {
+      const form = [
+        cfg({
+          id: "go:form",
+          kind: "go",
+          command: "go",
+          args: ["test", "./..."],
+          isTest: true,
+          params: { goKind: "test", scope: "package", target: "./...", useTags: "true" },
+        }),
+      ];
+      expect(dirAt("cart", form)!.config!.params).toMatchObject({ scope: "directory", target: "./cart/..." });
+    });
+
+    it("folders go test skips, and folders of a closer non-Go test configuration, get nothing", () => {
+      for (const rel of ["testdata", "cart/testdata", ".github", "_tools", "vendor/example.com/lib"])
+        expect(dirAt(rel), rel).toBeNull();
+      const web = cfg({ id: "npm:test", kind: "npm", command: "npm", args: ["run", "test"], cwd: "web", isTest: true });
+      expect(dirAt("web/src", [...GO, web])).toBeNull();
+      // Without a Go test configuration, a plain folder still gets nothing.
+      expect(dirAt("cart", [GO[0]!])).toBeNull();
+    });
+
+    it("folders as close to other tests, and folders outside the project, get nothing", () => {
+      const npm = cfg({ id: "npm:test", kind: "npm", command: "npm", args: ["run", "test"], isTest: true });
+      const pytest = cfg({ id: "pytest", kind: "pytest", command: "pytest", isTest: true });
+      expect(dirAt("src", [...GO, npm])).toBeNull();
+      expect(dirAt("scripts", [...GO, pytest])).toBeNull();
+      const attached = { root: ROOT, configs: GO, goModule: modules, contentRoots: ["/work/web"] };
+      expect(produceDirectory({ ...attached, path: "/work/web" })).toBeNull();
+      expect(produceDirectory({ ...attached, path: "/work/web/src" })).toBeNull();
+    });
+
+    it("skipped names count inside the module only", () => {
+      const tools = [
+        cfg({ id: "go:test:tools", kind: "go", command: "go", args: ["test", "./..."], cwd: "_tools", isTest: true }),
+      ];
+      expect(dirAt("_tools/lint", tools)!.config).toMatchObject({ args: ["test", "./lint/..."], cwd: "_tools" });
+      expect(dirAt("_tools/testdata", tools)).toBeNull();
+    });
   });
 
   it("without go.mod read yet: the package clause", () => {
