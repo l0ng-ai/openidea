@@ -291,6 +291,7 @@
   "Create a DuckLake in '{directory}'? The directory must not already exist.": "要在“{directory}”中新建 DuckLake 吗？该目录必须尚不存在。",
   "DuckLake created. The data source opens it read-only.": "已创建 DuckLake。数据源将以只读方式打开它。",
   "DuckLake requires the official DuckDB JDBC driver.": "DuckLake 需要官方 DuckDB JDBC 驱动。",
+  "Update the remote OpenIDEA server to save DuckLake data sources.": "请更新远程 OpenIDEA 服务器以保存 DuckLake 数据源。",
   "Creating DuckLake…": "正在创建 DuckLake…",
   "In memory": "内存",
   "JDBC URL": "JDBC URL",

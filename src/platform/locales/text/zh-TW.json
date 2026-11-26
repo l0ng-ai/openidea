@@ -9384,6 +9384,7 @@
   "Create a DuckLake in '{directory}'? The directory must not already exist.": "要在「{directory}」中建立 DuckLake 嗎？此目錄必須尚未存在。",
   "DuckLake created. The data source opens it read-only.": "已建立 DuckLake。資料來源會以唯讀方式開啟它。",
   "DuckLake requires the official DuckDB JDBC driver.": "DuckLake 需要官方 DuckDB JDBC 驅動程式。",
+  "Update the remote OpenIDEA server to save DuckLake data sources.": "請更新遠端 OpenIDEA 伺服器以儲存 DuckLake 資料來源。",
   "Creating DuckLake…": "正在建立 DuckLake…",
   "Allow all optional permissions": "允許全部可選權限"
 }

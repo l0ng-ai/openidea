@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { DataSource, DbJdbcDriver, ProjectInfo } from "@/platform/ipc";
+import { IpcError, type DataSource, type DbJdbcDriver, type ProjectInfo } from "@/platform/ipc";
 import { registerHostPathChooser } from "@/platform/choosePath";
 import { useProject } from "@/platform/project";
 import { useRemote } from "@/platform/remote";
@@ -33,6 +33,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       clipboardText: request("clipboard"),
       dbJdbcDriverClasses: request("classes"),
       dbApproveJdbcSource: request("approve"),
+      dbApproveDucklakeSource: request("approveLake"),
       dbSaveJdbcDriver: request("save"),
       dbRemoveJdbcDriver: request("remove"),
       dbTest: request("test"),
@@ -127,7 +128,52 @@ describe("DuckDB data sources", () => {
     await waitFor(() => expect(save).toBeEnabled());
     fireEvent.click(save);
     await waitFor(() => expect(backend.saveSource).toHaveBeenCalledWith(source, null, undefined));
+    expect(backend.call).toHaveBeenCalledWith(["approveLake", source]);
     expect(backend.call.mock.calls.map(([request]) => request[0])).not.toContain("createLake");
+  });
+
+  it.each([
+    {
+      global: false,
+      kind: "protocol" as const,
+      message: "command db_approve_ducklake_source is not available remotely",
+      expected: "Update the remote OpenIDEA server to save DuckLake data sources.",
+    },
+    {
+      global: true,
+      kind: "protocol" as const,
+      message: "command db_approve_ducklake_source is not available remotely",
+      expected: "Update the remote OpenIDEA server to save DuckLake data sources.",
+    },
+    {
+      global: false,
+      kind: "invalidInput" as const,
+      message: "DuckLake requires a valid catalog file",
+      expected: "DuckLake requires a valid catalog file",
+    },
+  ])("stops before saving a DuckLake when $kind approval fails (global=$global)", async (entry) => {
+    backend.call.mockImplementation(async ([op]) => {
+      if (op === "approveLake") throw new IpcError({ kind: entry.kind, message: entry.message });
+      return op === "list" ? [duckdb] : undefined;
+    });
+    render(
+      <SourceDialog
+        initial={{
+          driver: "jdbc",
+          vendor: "duckdb",
+          jdbcDriver: duckdb.id,
+          url: "jdbc:duckdb:",
+          duckLake: { kind: "file", value: "/tmp/warehouse.ducklake" },
+          global: entry.global,
+        }}
+      />,
+    );
+    const save = screen.getByRole("button", { name: "OK" });
+    await waitFor(() => expect(save).toBeEnabled());
+    fireEvent.click(save);
+    expect(await screen.findByText(entry.expected)).toBeVisible();
+    expect(backend.call.mock.calls.map(([request]) => request[0])).toEqual(["list", "approveLake"]);
+    expect(backend.saveSource).not.toHaveBeenCalled();
   });
 
   it("restores the Lake secret and restricts data directory overrides to host paths", async () => {

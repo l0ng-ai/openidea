@@ -991,7 +991,9 @@ export function SourceDialog({
     setBusy("connecting");
     try {
       const source = { ...draft, properties: draft.properties?.filter((p) => p.name?.trim()) ?? [] };
-      if (jdbc && !source.global) await call(commands.dbApproveJdbcSource(source));
+      // An older host can discard DuckLake settings when saving a regular source.
+      if (source.duckLake) await call(commands.dbApproveDucklakeSource(source));
+      else if (jdbc && !source.global) await call(commands.dbApproveJdbcSource(source));
       if (source.externalTunnel) await call(commands.dbApproveExternalTunnel(source));
       await saveSource(
         source,
@@ -1000,7 +1002,17 @@ export function SourceDialog({
       );
       if (useDatabase.getState().dialog === dialog) closeDialog();
     } catch (e) {
-      setTest({ ok: false, text: e instanceof Error ? e.message : String(e) });
+      const unsupported =
+        draft.duckLake &&
+        e instanceof IpcError &&
+        e.kind === "protocol" &&
+        e.message === "command db_approve_ducklake_source is not available remotely";
+      const text = unsupported
+        ? tx("Update the remote OpenIDEA server to save DuckLake data sources.")
+        : e instanceof Error
+          ? e.message
+          : String(e);
+      setTest({ ok: false, text });
     } finally {
       setBusy(null);
     }
