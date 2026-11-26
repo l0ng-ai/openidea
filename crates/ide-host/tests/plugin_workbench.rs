@@ -6,6 +6,7 @@ use ide_host::{Host, HostConfig};
 use ide_plugin::TextQuery;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 struct Harness {
     host: Arc<Host>,
@@ -692,7 +693,7 @@ async fn plugin_run_output_mode_executes_pty_and_pipes_with_input_exit_and_stop(
     let (op_stop, info, _exit, _chunks) = launch_and_collect("pty-default|default|run", None, true).await;
     assert!(info.pty);
 
-    plugins.host().flush_events_at(std::time::Instant::now() + Duration::from_secs(3));
+    plugins.flush_events_at(std::time::Instant::now() + Duration::from_secs(3));
     for _ in 0..50 {
         if plugins.wait_events(Duration::from_millis(50)) {
             break;
