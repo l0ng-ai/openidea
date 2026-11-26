@@ -4440,7 +4440,6 @@ dependencies = [
  "serde_json",
  "specta",
  "tracing",
- "which",
 ]
 
 [[package]]

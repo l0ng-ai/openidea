@@ -557,6 +557,10 @@ impl Tools {
         &self.root
     }
 
+    pub(crate) fn http(&self) -> IdeResult<Http> {
+        Ok(Http::new(&self.system_path)?.with_gh_from(&self.child_path))
+    }
+
     /// [`Tools::command`] in the project directory.
     fn command_in_project(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
         let mut cmd = self.command(program);
@@ -902,7 +906,7 @@ impl Tools {
                     _ => (ToolStatus::Missing, None, None),
                 }
             }
-            _ => match self.which(main) {
+            _ => match self.which(main).or_else(|| self.found.get(main).cloned()) {
                 Some(path) => {
                     let version = self.query_version(spec, &path);
                     (ToolStatus::OnPath, Some(path), version)
@@ -1250,7 +1254,8 @@ impl Tools {
                 dotnet::SDK_DOWNLOAD_URL
             )));
         };
-        let pick = Http::new(&self.system_path)
+        let pick = self
+            .http()
             .and_then(|http| dotnet::pick_tool_version(package, sdk.major, |url| http.get_text(url, cancel)));
         match pick {
             Ok(dotnet::ToolPick::Latest) => Ok(None),
@@ -1542,7 +1547,7 @@ impl Tools {
         cancel: &CancellationToken,
         emit: Emit,
     ) -> IdeResult<()> {
-        let http = Http::new(&self.system_path)?;
+        let http = self.http()?;
         let message = match source {
             ReleaseSource::GitHubTag { tag, .. } => format!("Resolving release {tag}…"),
             _ => "Resolving the latest release…".into(),
@@ -1683,7 +1688,7 @@ impl Tools {
     fn latest_version(&self, method: Method, cancel: &CancellationToken) -> IdeResult<Option<String>> {
         match method {
             Method::Release { source, assets, .. } => {
-                let http = Http::new(&self.system_path)?;
+                let http = self.http()?;
                 Ok(Some(self.resolve_release(&http, source, assets, cancel)?.version))
             }
             Method::Npm { packages } => {
