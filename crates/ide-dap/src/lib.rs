@@ -1696,16 +1696,39 @@ impl DebugManager {
     }
 
     pub async fn stack_trace(&self, s: DebugSessionId, thread_id: i64) -> IdeResult<Vec<StackFrame>> {
+        const MAX_FRAMES: u64 = 400;
         let session = self.session(s)?;
         session.check_thread(thread_id)?;
-        let body = session
-            .conn
-            .request_timeout(
+        let request = |start: u64, levels: u64| {
+            session.conn.request_timeout(
                 "stackTrace",
-                json!({ "threadId": thread_id, "startFrame": 0, "levels": 400 }),
+                json!({ "threadId": thread_id, "startFrame": start, "levels": levels }),
                 REQUEST_TIMEOUT,
             )
-            .await?;
+        };
+        let frames_of = |mut body: Value| match body.get_mut("stackFrames").map(Value::take) {
+            Some(Value::Array(frames)) => frames,
+            _ => Vec::new(),
+        };
+        let raw = match request(0, MAX_FRAMES).await {
+            Ok(body) => frames_of(body),
+            // java-debug fails the whole request when one frame's source lookup throws (on Windows,
+            // a CGLIB proxy's `<generated>` source against `sourcePaths`): the frames come one at a
+            // time instead, without the ones it cannot describe.
+            // ponytail: one request per frame; page around the failing ones if deep stacks get slow.
+            Err(first @ DapError::Failed { .. }) => {
+                let Ok(top) = request(0, 1).await else { return Err(first.into()) };
+                let total = top.get("totalFrames").and_then(Value::as_u64).unwrap_or(MAX_FRAMES).min(MAX_FRAMES);
+                let mut raw = frames_of(top);
+                for start in 1..total {
+                    if let Ok(body) = request(start, 1).await {
+                        raw.extend(frames_of(body));
+                    }
+                }
+                raw
+            }
+            Err(e) => return Err(e.into()),
+        };
         let kotlin_lsp = session.kotlin_lsp_quirks().is_some();
         let frame = |f: &Value| {
             let mut frame = frame_from(f);
@@ -1717,7 +1740,7 @@ impl DebugManager {
             }
             frame
         };
-        Ok(body.get("stackFrames").and_then(Value::as_array).map(|f| f.iter().map(frame).collect()).unwrap_or_default())
+        Ok(raw.iter().map(frame).collect())
     }
 
     pub async fn scopes(&self, s: DebugSessionId, frame_id: i64) -> IdeResult<Vec<Scope>> {
