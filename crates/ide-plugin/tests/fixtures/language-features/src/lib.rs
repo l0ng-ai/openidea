@@ -95,7 +95,7 @@ impl LanguageFeatures for Fixture {
     }
     fn gutter_actions(&mut self, d: &Document) -> Vec<GutterAction> {
         // The project the action is for: the editor's, also when another project holds it.
-        let project = openidea_plugin::project_of(&d.path).and_then(|p| p.root().ok());
+        let project = openidea_plugin::host::project_of(&d.path).and_then(|p| p.root().ok());
         vec![GutterAction {
             line: 0,
             icon: Some("run".into()),
