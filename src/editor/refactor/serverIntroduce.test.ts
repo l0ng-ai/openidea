@@ -45,6 +45,23 @@ describe("introducedName", () => {
     expect(introducedName(before, after)?.name).toBe("fun_name");
   });
 
+  it("finds tsserver's extracted type alias and interface", () => {
+    const before = "function f(p: { a: string; b: number }) {}\n";
+    const alias = "type NewType = { a: string; b: number };\n\nfunction f(p: NewType) {}\n";
+    expect(spansText(alias, introducedName(before, alias)!.spans)).toEqual(["NewType", "NewType"]);
+    const iface = "interface NewType {\n    a: string;\n    b: number;\n}\n\nfunction f(p: NewType) {}\n";
+    expect(introducedName(before, iface)?.name).toBe("NewType");
+  });
+
+  it("finds tsserver's unique NewType_1 when NewType is taken", () => {
+    // typescript's Extract to typedef output, verbatim: `typedef` is inserted twice too.
+    const before =
+      "/** @typedef {object} NewType */\n\n/** @param {{ a: number, b: number, c: number }} p */\nfunction f(p) {}\n";
+    const after =
+      "/**\n* @typedef {{a: number;b: number;c: number;}} NewType_1\n*/\n\n/** @typedef {object} NewType */\n\n/** @param {NewType_1} p */\nfunction f(p) {}\n";
+    expect(spansText(after, introducedName(before, after)!.spans)).toEqual(["NewType_1", "NewType_1"]);
+  });
+
   it("is null without a new name used twice", () => {
     expect(introducedName("a + b", "(a + b)")).toBeNull();
     expect(introducedName("x", "x")).toBeNull();

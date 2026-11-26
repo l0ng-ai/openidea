@@ -178,6 +178,8 @@ struct Session {
     additional_dirs: Vec<String>,
     /// The staged skills' `--settings` JSON (`skillOverrides` for the native ones too).
     skills_settings: Option<String>,
+    /// `_meta.openidea.ephemeral`: `--no-session-persistence`, nothing saved under `~/.claude`.
+    ephemeral: bool,
     shim: Weak<Shim>,
     st: Mutex<State>,
     /// Serializes (re)starting the process.
@@ -376,6 +378,7 @@ impl Shim {
             skills_add_dir: skills.and_then(|s| s.get("claudeAddDir")).and_then(Value::as_str).map(PathBuf::from),
             additional_dirs: additional_dirs(params),
             skills_settings: skills.and_then(|s| s.get("claudeSettings")).and_then(Value::as_str).map(str::to_owned),
+            ephemeral: params.pointer("/_meta/openidea/ephemeral").and_then(Value::as_bool).unwrap_or(false),
             shim: Arc::downgrade(self),
             st: Mutex::new(State {
                 proc: None,
@@ -730,6 +733,9 @@ impl Session {
         }
         if let Some(settings) = &self.skills_settings {
             args.extend(["--settings".to_owned(), settings.clone()]);
+        }
+        if self.ephemeral {
+            args.push("--no-session-persistence".to_owned());
         }
         args.extend(start.args());
         let launch =

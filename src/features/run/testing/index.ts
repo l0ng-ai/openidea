@@ -60,7 +60,8 @@ export type Framework =
   | "zig"
   | "auto";
 
-type FrameworkConfig = Pick<RunConfig, "kind" | "command" | "args"> & Partial<Pick<RunConfig, "testRunner" | "env">>;
+type FrameworkConfig = Pick<RunConfig, "kind" | "command" | "args"> &
+  Partial<Pick<RunConfig, "testRunner" | "env" | "watch">>;
 
 export function frameworkFor(config: FrameworkConfig): Framework {
   const cmd = [config.command, ...config.args].join(" ");
@@ -176,7 +177,7 @@ export function createTestParser(config: FrameworkConfig): TestOutputParser {
     case "cargo":
       return cargoParser();
     case "js":
-      return jsParser();
+      return jsParser(!!config.watch);
     case "playwright":
       return playwrightParser();
     case "node-test":

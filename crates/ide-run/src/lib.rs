@@ -188,6 +188,10 @@ pub struct RunExtras {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[specta(optional)]
     pub test_runner: Option<String>,
+    /// Jest / Vitest "Watch for changes": the run stays alive and reruns the tests after each edit.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[specta(optional)]
+    pub watch: bool,
     /// The plugin executor a launch goes through ("Run with <title>"): the plugin's id. Set
     /// on the launched copy, not saved; the plugin's executor-bound Java agent loads only then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -217,6 +221,7 @@ impl Default for RunExtras {
             stop_command: None,
             target: None,
             test_runner: None,
+            watch: false,
             executor: None,
         }
     }

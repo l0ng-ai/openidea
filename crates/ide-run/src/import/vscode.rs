@@ -45,7 +45,7 @@ const COMMON: &[&str] = &["cwd", "env", "envFile"];
 const PYTHON_LAUNCH: &[&str] = &["program", "module", "args", "python", "pythonArgs"];
 const PYTHON_ATTACH: &[&str] = &["connect", "host", "port", "pathMappings"];
 const NODE_LAUNCH: &[&str] = &["program", "args", "runtimeExecutable", "runtimeArgs"];
-const NODE_ATTACH: &[&str] = &["address", "port", "localRoot", "remoteRoot"];
+const NODE_ATTACH: &[&str] = &["address", "port", "localRoot", "remoteRoot", "restart"];
 const NODE_TERMINAL: &[&str] = &["command"];
 const BROWSER_LAUNCH: &[&str] = &["url", "webRoot"];
 const DART_LAUNCH: &[&str] = &["program", "args", "toolArgs", "deviceId", "flutterMode"];
@@ -254,6 +254,10 @@ impl Cx<'_> {
         if obj.get("pathMappings").and_then(Value::as_array).is_some_and(|m| m.len() > 1) {
             ignored.push("pathMappings".into());
         }
+        // A restart policy's delays and attempts: the option reconnects with js-debug's defaults.
+        if handled.contains(&"restart") && obj.get("restart").is_some_and(Value::is_object) {
+            ignored.push("restart".into());
+        }
         ignored.sort();
         Ok(Found { config, members: Vec::new(), ignored })
     }
@@ -349,6 +353,10 @@ impl Cx<'_> {
         let port = self.string(obj, "port")?.unwrap_or_else(|| "9229".into());
         let mut c = config(name, "node-remote", String::new(), Vec::new(), Some("js-debug"));
         c.extras.params = BTreeMap::from([("host".into(), host), ("port".into(), port)]);
+        // Reconnect automatically: `true`, or a restart policy object (its delays are noted as ignored).
+        if matches!(obj.get("restart"), Some(Value::Bool(true) | Value::Object(_))) {
+            c.extras.params.insert("restart".into(), "true".into());
+        }
         self.roots(obj, &mut c)?;
         Ok(c)
     }

@@ -10333,6 +10333,11 @@ export type NewAgentTask = {
 	 *  `!` command runs in it first.
 	 */
 	idle?: boolean,
+	/**
+	 *  A throwaway task (Generate Commit Message): it isn't saved, so it doesn't outlive a
+	 *  restart, and the agent keeps no session history of its own for it.
+	 */
+	ephemeral?: boolean,
 };
 
 /**  The approvals new agent tasks start with. */
@@ -11482,6 +11487,8 @@ export type ProfileSpec =
  *  out when another one did.
  */
 { kind: "cpuProfiles"; dir: IpcPath; root: IpcPath } | 
+/**  One `.cpuprofile` the user opened (saved by `node --cpu-prof`, Chrome DevTools, CI). */
+{ kind: "cpuProfileFile"; path: IpcPath } | 
 /**
  *  Collapsed-stack files with extension `ext` in `dir`; relative frame files resolve
  *  against `base`. `jvm_root`: map JVM class frames to sources below it. For the
@@ -12545,6 +12552,8 @@ export type RunExtras_Deserialize = {
 	 *  test output parser and how a single test is selected.
 	 */
 	testRunner?: string | null,
+	/**  Jest / Vitest "Watch for changes": the run stays alive and reruns the tests after each edit. */
+	watch?: boolean,
 	/**
 	 *  The plugin executor a launch goes through ("Run with <title>"): the plugin's id. Set
 	 *  on the launched copy, not saved; the plugin's executor-bound Java agent loads only then.
@@ -12600,6 +12609,8 @@ export type RunExtras_Serialize = {
 	 *  test output parser and how a single test is selected.
 	 */
 	testRunner?: string | null,
+	/**  Jest / Vitest "Watch for changes": the run stays alive and reruns the tests after each edit. */
+	watch?: boolean,
 	/**
 	 *  The plugin executor a launch goes through ("Run with <title>"): the plugin's id. Set
 	 *  on the launched copy, not saved; the plugin's executor-bound Java agent loads only then.
