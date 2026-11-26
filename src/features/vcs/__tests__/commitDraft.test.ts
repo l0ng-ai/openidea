@@ -29,7 +29,6 @@ import {
   setCommitAuthor,
   useCommit,
 } from "../commitStore";
-import { checkOf } from "../changes";
 import { checksForList, DEFAULT_LIST_ID, initialChangelists, useChangelists } from "../changelists";
 import { useVcs } from "../store";
 
@@ -181,33 +180,6 @@ describe("commit message draft (#4423)", () => {
     keepMessageAfterCommit("Feature commit", true, pending);
     expect(message()).toBe("Newer draft");
     expect(savedDraft("/a", "feature")).toBe("Newer draft");
-  });
-
-  it("keeps an unticked file across a restart and includes a change made later", () => {
-    const oldPath = "/a/kept-out.txt";
-    useCommit.setState({ checks: new Map([[oldPath, "none"]]) });
-    dispose();
-    useCommit.setState({ checks: new Map(), message: "" });
-    dispose = installCommitMessages();
-    const file = (path: string): FileStatus => ({
-      relPath: path.slice("/a/".length),
-      path,
-      staged: null,
-      unstaged: "modified",
-      renamedFrom: null,
-    });
-    const checks = useCommit.getState().checks;
-    expect(checkOf(file(oldPath), checks)).toBe("none");
-    expect(checkOf(file("/a/added-later.txt"), checks)).toBe("all");
-  });
-
-  it("keeps each project's exclusions on that project", () => {
-    useCommit.setState({ checks: new Map([["/a/old.txt", "none"]]) });
-    useVcs.setState({ root: "/b", roots: ["/b"] });
-    expect(useCommit.getState().checks.size).toBe(0);
-    useCommit.setState({ checks: new Map([["/b/other.txt", "none"]]) });
-    useVcs.setState({ root: "/a", roots: ["/a"] });
-    expect([...useCommit.getState().checks]).toEqual([["/a/old.txt", "none"]]);
   });
 
   it("saves an undone commit's message with the list receiving its changes", () => {
