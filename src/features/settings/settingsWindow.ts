@@ -112,11 +112,10 @@ function installHistoryShortcuts(): () => void {
     if (!stroke) return;
     // Plain text fields keep their unmodified editing keys, as in the workbench
     // dispatcher; a shortcut with a command modifier still reaches the keymap.
-    const el = e.target as Element | null;
+    const el = e.target instanceof Element ? (e.target.closest(".cm-editor") ? null : (e.target as HTMLElement)) : null;
     if (
       el &&
       (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable) &&
-      !el.closest(".cm-editor") &&
       !(e.metaKey || e.ctrlKey || e.altKey)
     )
       return;
