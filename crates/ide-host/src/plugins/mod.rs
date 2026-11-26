@@ -1174,6 +1174,85 @@ impl PluginHost {
         self.info_of(id)
     }
 
+    /// Approves the host the plugin's `net:setting:<key>` grant derives from
+    /// the setting's value right now: the dialog when the user applies the
+    /// value in Settings, or the pending row's Approve action. On a remote
+    /// host the approval is kept for the session only, like `net:ask` (#3809).
+    pub fn approve_net_setting(&self, id: &str, setting: &str, http: bool) -> IdeResult<PluginInfo> {
+        let _guard = self.lifecycle.lock();
+        let plugin = self.get(id)?;
+        self.check_not_uninstalling(&plugin)?;
+        let cap = Capability::NetSetting { http, key: setting.to_owned() };
+        if !plugin.manifest().declares(&cap) {
+            return Err(IdeError::invalid(format!("plugin {id:?} does not declare {cap}")));
+        }
+        let api = api::PluginApi { pkg: plugin.pkg.clone(), shared: self.shared.clone() };
+        let value = api
+            .setting_value(setting)
+            .ok_or_else(|| IdeError::invalid(format!("setting {setting:?} holds no value")))?;
+        let host = api::setting_host(&value)
+            .map_err(IdeError::invalid)?
+            .ok_or_else(|| IdeError::invalid(format!("setting {setting:?} holds no host")))?;
+        let session_only = self.shared.net_hosts_session_only.load(std::sync::atomic::Ordering::Relaxed);
+        if !session_only {
+            let mut ledger = self.ledger.lock();
+            if !ledger.remember_setting_host(&plugin.subject(), &cap, &host) {
+                return Err(IdeError::invalid(format!("plugin {id:?} does not have {cap} granted")));
+            }
+            self.save_ledger(&ledger);
+        }
+        self.stop(&plugin);
+        if session_only {
+            self.shared.session_setting_hosts.lock().entry(id.to_owned()).or_default().insert(cap.to_string(), host);
+        }
+        if !self.state.lock().disabled.contains(id) {
+            self.start(&plugin);
+        }
+        // Plugins that need this one follow it: running again, or blocked while it can't run.
+        self.settle_dependents(id);
+        self.changed();
+        self.info_of(id)
+    }
+
+    /// The host a `net:setting:<key>` grant derives from `value` (a bare host
+    /// or a URL), for the approval dialog; an error refuses the value.
+    pub fn net_setting_host(&self, id: &str, setting: &str, value: &str) -> IdeResult<String> {
+        let plugin = self.get(id)?;
+        let cap = Capability::NetSetting { http: false, key: setting.to_owned() };
+        if !plugin.manifest().declares(&cap)
+            && !plugin.manifest().declares(&Capability::NetSetting { http: true, key: setting.to_owned() })
+        {
+            return Err(IdeError::invalid(format!("plugin {id:?} does not declare a setting grant for {setting:?}")));
+        }
+        api::setting_host(value)
+            .map_err(IdeError::invalid)?
+            .ok_or_else(|| IdeError::invalid(format!("{value:?} holds no host")))
+    }
+
+    /// Drops the approved host of a `net:setting:<key>` grant (its revoke
+    /// action, or the setting's value being cleared). Nothing recorded: still
+    /// fine, the state is already as asked.
+    pub fn forget_net_setting(&self, id: &str, setting: &str, http: bool) -> IdeResult<PluginInfo> {
+        let _guard = self.lifecycle.lock();
+        let plugin = self.get(id)?;
+        self.check_not_uninstalling(&plugin)?;
+        let cap = Capability::NetSetting { http, key: setting.to_owned() };
+        {
+            let mut ledger = self.ledger.lock();
+            ledger.forget_setting_host(&plugin.subject(), &cap);
+            self.save_ledger(&ledger);
+        }
+        self.shared.session_setting_hosts.lock().get_mut(id).map(|hosts| hosts.remove(&cap.to_string()));
+        self.stop(&plugin);
+        if !self.state.lock().disabled.contains(id) {
+            self.start(&plugin);
+        }
+        // Plugins that need this one follow it: running again, or blocked while it can't run.
+        self.settle_dependents(id);
+        self.changed();
+        self.info_of(id)
+    }
+
     /// Grants or revokes one declared capability (Settings › Plugins › Permissions).
     /// Revoking a required one stops the plugin until consent is given again.
     pub fn set_capability(&self, id: &str, capability: &str, granted: bool) -> IdeResult<PluginInfo> {
@@ -1191,6 +1270,10 @@ impl PluginHost {
                 return Err(IdeError::invalid(format!("plugin {id:?} has not been confirmed yet")));
             }
             ledger.set(&subject, &cap, granted);
+            if !granted {
+                // A session-only approval of a setting-derived host goes with its grant.
+                self.shared.session_setting_hosts.lock().get_mut(id).map(|hosts| hosts.remove(&cap.to_string()));
+            }
             if granted
                 && cap == Capability::JavaAgent
                 && let Some(jar) = agent_jar_grant(plugin.manifest(), plugin.dir())
@@ -2748,6 +2831,7 @@ impl PluginHost {
     fn prepare(&self, pkg: &Package) -> Result<ide_extension::PreparedSet, String> {
         plugin_icon(pkg)?;
         let mut set = self.registry.prepare(pkg)?;
+        check_setting_grants(pkg)?;
         for icon in [&pkg.manifest.icon, &pkg.manifest.icon_dark].into_iter().flatten() {
             if !set.files.contains(icon) {
                 set.files.push(icon.clone());
@@ -2906,7 +2990,7 @@ impl PluginHost {
             meta.declared_extra = set.capabilities.clone();
             meta.error = None;
         }
-        let (granted, pending) = match decision {
+        let (mut granted, pending) = match decision {
             Decision::Allowed { granted, pending } => (granted, pending),
             Decision::NeedsConfirmation { new, .. } => {
                 let mut meta = plugin.meta.lock();
@@ -2918,6 +3002,19 @@ impl PluginHost {
         };
         if let Err(e) = self.registry.commit(set) {
             return self.set_failed(plugin, e);
+        }
+        // Setting-derived network grants materialize their approved host while
+        // the setting holds it: `net:setting:server` acts as `net:<host>`, so
+        // the request path keeps its rules (`net_capability` / `covers`).
+        let api = api::PluginApi { pkg: plugin.pkg.clone(), shared: self.shared.clone() };
+        for (cap, approved, _pending) in api.net_setting_hosts(&plugin.subject()) {
+            if let Some(host) = approved {
+                match cap {
+                    Capability::NetSetting { http: false, key: _ } => granted.push(Capability::Net(host)),
+                    Capability::NetSetting { http: true, key: _ } => granted.push(Capability::NetHttp(host)),
+                    _ => {}
+                }
+            }
         }
         {
             let mut meta = plugin.meta.lock();
@@ -3374,6 +3471,21 @@ impl PluginHost {
             .filter(|g| g.confirmed && g.has(&Capability::NetAsk) && m.declares(&Capability::NetAsk))
             .map(|g| g.net_hosts.iter().cloned().collect())
             .unwrap_or_default();
+        // Setting-derived hosts, listed next to the `net:ask` ones: the
+        // approved host, and a pending one the setting now holds.
+        let net_settings = if m.capabilities.all().any(|c| matches!(c, Capability::NetSetting { .. })) {
+            let api = api::PluginApi { pkg: p.pkg.clone(), shared: self.shared.clone() };
+            api.net_setting_hosts(&p.subject())
+                .into_iter()
+                .filter(|(cap, ..)| grant.as_ref().is_some_and(|g| g.confirmed && g.has(cap)))
+                .map(|(cap, approved, pending)| {
+                    let Capability::NetSetting { http, key } = cap else { unreachable!() };
+                    types::PluginNetSetting { setting: key, http, host: approved, pending }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         PluginInfo {
             id: m.id.clone(),
             name: m.name.clone(),
@@ -3414,6 +3526,7 @@ impl PluginHost {
             has_code: m.wasm.is_some(),
             capabilities,
             net_hosts,
+            net_settings,
             contributions: self.registry.contributions(&m.id),
             activation: m.activation.iter().map(ToString::to_string).collect(),
             warnings: meta.warnings.clone(),
@@ -3440,6 +3553,37 @@ fn agent_jar_grant(manifest: &Manifest, dir: &Path) -> Option<BinaryGrant> {
     let path = java_agents::declared_jar(manifest, dir)?;
     let hash = ledger::file_hash(&path).map_err(|e| tracing::info!("java.agent: {}: {e}", path.display())).ok()?;
     Some(BinaryGrant { path, hash })
+}
+
+/// `net:setting:<key>` grants name a `string` setting of the plugin's own
+/// settings schema; checked like the other manifest checks, at install and
+/// start (#3809).
+fn check_setting_grants(pkg: &Package) -> Result<(), String> {
+    let derived: Vec<&Capability> =
+        pkg.manifest.capabilities.all().filter(|c| matches!(c, Capability::NetSetting { .. })).collect();
+    if derived.is_empty() {
+        return Ok(());
+    }
+    let mut strings = BTreeSet::new();
+    for decl in pkg.manifest.declarations(ui_points::SETTINGS) {
+        let decl = ui_points::settings(pkg, decl)?;
+        for property in decl.json.get("properties").and_then(|p| p.as_array()).into_iter().flatten() {
+            if property.get("type").and_then(|t| t.as_str()) == Some("string")
+                && let Some(key) = property.get("key").and_then(|k| k.as_str())
+            {
+                strings.insert(key.to_owned());
+            }
+        }
+    }
+    for cap in derived {
+        let Capability::NetSetting { http: _, key } = cap else { continue };
+        if !strings.contains(key.as_str()) {
+            return Err(format!(
+                "capability `{cap}` needs a `string` setting {key:?} in the plugin's own settings schema"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Consent / Settings: surface exact contributed JVM flags on the `java.agent` permission.
