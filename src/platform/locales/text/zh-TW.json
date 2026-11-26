@@ -9328,6 +9328,7 @@
   "Already in the project": "已在專案中",
   "{name} is inside the opened project, so its sources are already part of it.": "{name} 位於已開啟的專案內，其原始碼已屬於該專案。",
   "{name} has no pom.xml or Gradle build file. Attach it to this project as another root? Its source folders are detected automatically.": "{name} 沒有 pom.xml 或 Gradle 建置檔案。要將其作為另一個根附加到此專案嗎？其中的原始碼目錄會自動識別。",
+  "{name} has no pom.xml or Gradle build file, and a folder outside the project can't be attached as another root in this window. Move it into the project folder, or add a pom.xml or Gradle build file to it.": "{name} 沒有 pom.xml 或 Gradle 建置檔案，而且在此視窗中無法將專案外的資料夾附加為另一個根。請將其移到專案資料夾內，或為它新增 pom.xml 或 Gradle 建置檔案。",
   "Resets in {resetIn}": "{resetIn} 後重設",
   "NuGet Packages": "NuGet 包",
   "Refresh packages": "重新整理包清單",
