@@ -180,15 +180,17 @@ Console results are editable the same way when the query is a plain select from 
 
 ## Join tables from two data sources
 
-In a trusted project, open **Query Workspace** in the Database tree and choose two saved native PostgreSQL or ClickHouse sources. The workspace uses an [installed DuckDB JDBC driver](#duckdb) on the project host. Type `#` to complete a selected source by name, then `.` to complete a qualified table. For long or identical names, open **Configure Sources… › SQL aliases** and give each connection a short name such as `crm` or `events`. You can then write `#crm.public.customers`. Existing SQL that uses a unique connection name still works. The example below uses the stable aliases `#left` and `#right`, which also work when both sources have the same display name.
+In a trusted project, open **Query Workspace** in the Database tree and choose two saved native PostgreSQL or ClickHouse sources. The workspace uses an [installed DuckDB JDBC driver](#duckdb) on the project host. Type `#` to complete a selected source by name, then `.` to complete a qualified table. For long or identical names, open **Configure Sources… › SQL aliases** and give each connection a short name such as `crm` or `events`. Existing SQL can still refer to a unique connection name or to the stable positions `#left` and `#right`.
 
 ```sql
 SELECT *
-FROM #left.public.customers AS c
-JOIN #right.events.purchases AS p ON c.id = p.customer_id
+FROM #crm.public.customers AS c
+JOIN #events.events.purchases AS p ON c.id = p.customer_id
 ```
 
-Use the PostgreSQL schema in the saved database or the ClickHouse database name. Integer join columns can have different sizes and signs. Other join columns must have the same type, including precision and scale for decimals. **Run** reads each table through an independent read-only connection and joins the rows on the project host. You can cancel a run or page through its result. Paging uses the rows already returned.
+Use the PostgreSQL schema in the saved database or the ClickHouse database name. Integer join columns can have different sizes and signs. Other join columns must have the same type, including precision and scale for decimals. **Run** reads each table through an independent read-only connection and joins the rows on the project host. You can cancel a running query.
+
+Each run opens a fresh DuckDB in memory on the project host and stages the two inputs in temporary files. The files are removed when the engine closes. The editor keeps the result for paging. To keep temporary tables across SQL statements, create a [DuckDB data source](#duckdb) and select **In memory**. That database lasts until you disconnect.
 
 The workspace accepts one inner equality join between two tables. Each input is limited to 100,000 rows, 128 columns and a 16 MiB budget, with at most 1 MiB per value. Results are limited to 100,000 rows and the JDBC bridge's 16 MiB reply. Exceeding a limit ends the query with an error. Source profiles with startup scripts cannot be used.
 
