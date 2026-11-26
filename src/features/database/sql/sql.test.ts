@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { snippet } from "@codemirror/autocomplete";
-import type { DbCompletion, DbDriver } from "@/platform/ipc";
+import type { DbCompletion } from "@/platform/ipc";
 import { analyze, templateContexts, valuesSlot } from "./analyze";
 import { aliasFor, quoteIdent, sqlCandidates, type SqlCandidate } from "./complete";
 import { identName, inLiteral, lex } from "./lexer";
-import { DATA_TYPES, statementStarters } from "./dialect";
+import { DATA_TYPES, statementStarters, type SqlDriver } from "./dialect";
 import { bindParams, findParams } from "./params";
 import { SqlResolver } from "./resolve";
 import { jdbcDialect } from "../vendors";
@@ -69,13 +69,13 @@ const model: DbCompletion = {
 };
 
 /** Analysis at the `|` of `sql`. */
-function at(sql: string, driver: DbDriver = "sqlite") {
+function at(sql: string, driver: SqlDriver = "sqlite") {
   const pos = sql.indexOf("|");
   const text = sql.slice(0, pos) + sql.slice(pos + 1);
   return analyze(text, pos, driver);
 }
 
-function complete(sql: string, driver: DbDriver = "sqlite", m: DbCompletion = model): SqlCandidate[] {
+function complete(sql: string, driver: SqlDriver = "sqlite", m: DbCompletion = model): SqlCandidate[] {
   return sqlCandidates({ model: m, analysis: at(sql, driver), driver, sourceName: "shop" }).sort(
     (a, b) => b.boost - a.boost,
   );
@@ -96,6 +96,54 @@ const sf: DbCompletion = {
 };
 
 const labels = (c: SqlCandidate[], kind?: string) => c.filter((x) => !kind || x.kind === kind).map((x) => x.label);
+
+describe("DuckDB SQL", () => {
+  it("recognizes FROM-first query blocks and keeps their source columns in scope", () => {
+    expect(statementStarters("duckdb")).toContain("FROM");
+    expect(labels(complete("from orders |", "duckdb"), "keyword")).toContain("select");
+    expect(labels(complete("from orders select |", "duckdb"), "column")).toContain("total");
+    expect(labels(complete("from orders select |", "duckdb"), "keyword")).not.toContain("from");
+    const nested = at("select * from (from orders select |) as o", "duckdb");
+    expect(nested.refs.find((r) => r.name === "orders")?.depth).toBe(0);
+    expect(nested.fromInsert).toBeNull();
+  });
+
+  it("recognizes QUALIFY and suggests the window result alias", () => {
+    const sql = "select row_number() over (order by id) as WinRank from orders qualify |";
+    expect(at(sql, "duckdb").context).toEqual({ kind: "column", clause: "qualify" });
+    expect(at(sql, "duckdb").refs[0]?.alias).toBeNull();
+    expect(labels(complete(sql, "duckdb"))).toContain("WinRank");
+    expect(labels(complete(sql, "duckdb"), "keyword")).not.toContain("qualify");
+    expect(new SqlResolver(sql.replace("|", "winrank = 1"), "duckdb", model).problems()).toEqual([]);
+  });
+
+  it("completes EXCLUDE after a projection star and its list from catalog columns", () => {
+    expect(labels(complete("select * excl| from orders", "duckdb"), "keyword")).toContain("exclude");
+    expect(labels(complete("select id * ex| from orders", "duckdb"), "keyword")).not.toContain("exclude");
+    const candidates = complete("select o.* exclude (|) from orders o join users u on o.user_id = u.id", "duckdb");
+    expect(labels(candidates)).toContain("total");
+    expect(labels(candidates)).not.toContain("email");
+    expect(candidates.every((c) => c.kind === "column")).toBe(true);
+    expect(labels(complete("select * excl| from orders", "jdbc"), "keyword")).not.toContain("exclude");
+  });
+
+  it("completes table functions and preserves spelling of identifiers using DuckDB quoting", () => {
+    expect(labels(complete("from read_par|", "duckdb"), "function")).toContain("read_parquet");
+    expect(quoteIdent("MixedCase", "duckdb")).toBe("MixedCase");
+    expect(quoteIdent("qualify", "duckdb")).toBe('"qualify"');
+    expect(quoteIdent("exclude", "duckdb")).toBe("exclude");
+    expect(quoteIdent('a"b', "duckdb")).toBe('"a""b"');
+    const sql = 'from orders as "ÄÖrder" select "ÄörDER".|';
+    expect(labels(complete(sql, "duckdb"), "column")).toEqual([]);
+    expect(labels(complete(sql.replace("ÄörDER", "ÄÖrDER"), "duckdb"), "column")).toContain("total");
+  });
+
+  it("keeps nested comments and dollar-quoted SQL out of caret analysis", () => {
+    expect(at("select /* outer /* nested */ here| */ 1", "duckdb").context.kind).toBe("none");
+    expect(at("select $body$ from not_a_table; here| $body$", "duckdb").context.kind).toBe("none");
+    expect(at("select 5 // 2, | from orders", "duckdb").refs[0]?.name).toBe("orders");
+  });
+});
 
 describe("lexer", () => {
   it("reads ClickHouse backticks and escaped quotes without exposing literal parameters", () => {

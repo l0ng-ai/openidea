@@ -17,7 +17,8 @@ import {
 } from "@/editor/api";
 import { setFileDiagnostics } from "@/editor/lsp/diagnostics";
 import { showHint } from "@/editor/lsp/hint";
-import type { DbCompletion, DbCompletionTable, DbDriver } from "@/platform/ipc";
+import type { DbCompletion, DbCompletionTable } from "@/platform/ipc";
+import { sqlDriverOf, type SqlDriver } from "./sql/dialect";
 import { formatSql } from "./sql/format";
 import { editorPrefs, sqlCaseStyle } from "@/platform/editorSettings";
 import { SqlResolver, type SqlSymbol } from "./sql/resolve";
@@ -28,14 +29,14 @@ import { consoleSchema, consoleSource, revealInTree, sourceById, useDatabase } f
 const INSPECTIONS = "sql-inspections";
 const INSPECT_DELAY = 400;
 
-function sourceOf(path: string): { id: string | null; driver: DbDriver; model: DbCompletion | null } {
+function sourceOf(path: string): { id: string | null; driver: SqlDriver; model: DbCompletion | null } {
   const id = consoleSource(path);
   const model = id ? (useDatabase.getState().completion[id] ?? null) : null;
   // Unqualified names resolve in the console's active schema (IDEA's schema dropdown).
   const schema = consoleSchema(path);
   return {
     id,
-    driver: sourceById(id)?.driver ?? "sqlite",
+    driver: sqlDriverOf(sourceById(id)),
     model: model && schema ? { ...model, defaultSchema: schema } : model,
   };
 }

@@ -5,9 +5,9 @@
  * as lexical and forgiving as completion; names it cannot judge (unknown
  * tables' columns, dialect pseudo-columns) are left alone.
  */
-import type { DbCompletion, DbCompletionColumn, DbCompletionTable, DbDriver } from "@/platform/ipc";
+import type { DbCompletion, DbCompletionColumn, DbCompletionTable } from "@/platform/ipc";
 import { analyze, type TableRef } from "./analyze";
-import { CLAUSE_WORDS, DATA_TYPES, functions, isReserved, nameMatcher } from "./dialect";
+import { CLAUSE_WORDS, DATA_TYPES, functions, identifierKey, isReserved, nameMatcher, type SqlDriver } from "./dialect";
 import { identName, lex, type Lexed, type Token } from "./lexer";
 
 export type SqlSymbol =
@@ -61,7 +61,7 @@ export function findTable(
   model: DbCompletion | null,
   schema: string | null,
   name: string,
-  driver: DbDriver = "sqlite",
+  driver: SqlDriver = "sqlite",
 ): DbCompletionTable | undefined {
   const eq = nameMatcher(driver);
   const tables = model?.tables ?? [];
@@ -84,7 +84,7 @@ export class SqlResolver {
 
   constructor(
     readonly text: string,
-    readonly driver: DbDriver,
+    readonly driver: SqlDriver,
     readonly model: DbCompletion | null,
   ) {
     this.lexed = lex(text, driver);
@@ -143,7 +143,7 @@ export class SqlResolver {
     const name = identName(t);
     const span = { from: t.from, to: t.to };
     const a = analyze(this.text, t.from, this.driver, this.lexedFor(i));
-    const checked = CHECKED.has(a.verb);
+    const checked = CHECKED.has(a.verb) || (this.driver === "duckdb" && a.verb === "FROM");
     const loaded = !!this.model?.tables.length;
     const ctx = a.context;
     const qualifier = a.qualifier;
@@ -198,6 +198,7 @@ export class SqlResolver {
       case "afterInsertColumns":
         return null;
       case "column":
+      case "exclude":
       case "joinCondition":
         break;
     }
@@ -223,6 +224,7 @@ export class SqlResolver {
       (isReserved(t.text, this.driver) ||
         NOT_COLUMNS.has(t.upper) ||
         this.words.has(t.upper) ||
+        (this.driver === "duckdb" && t.upper === "EXCLUDE" && isP(prev, "*")) ||
         (this.driver === "snowflake" && (SNOWFLAKE_NOT_COLUMNS.has(t.upper) || t.upper.startsWith("METADATA$"))))
     )
       return null;
@@ -233,7 +235,9 @@ export class SqlResolver {
         prev.kind === "number" ||
         prev.kind === "string" ||
         isP(prev, ")") ||
-        (prev.kind === "word" && !CLAUSE_WORDS.has(prev.upper)))
+        (prev.kind === "word" &&
+          !CLAUSE_WORDS.has(prev.upper) &&
+          !(this.driver === "duckdb" && prev.upper === "QUALIFY")))
     )
       return null;
     for (const ref of a.refs) {
@@ -251,7 +255,7 @@ export class SqlResolver {
       clause !== "other" &&
       clause !== "values" &&
       clause !== "limit" &&
-      !this.outputAliases(i).has(this.driver === "clickhouse" ? name : name.toLowerCase());
+      !this.outputAliases(i).has(identifierKey(name, this.driver));
     return judged
       ? { ...span, symbol: null, problem: `Unable to resolve column '${name}'` }
       : { ...span, symbol: null };
@@ -313,7 +317,7 @@ export class SqlResolver {
         prev.kind === "number" ||
         prev.kind === "string"
       )
-        out.add(this.driver === "clickhouse" ? identName(t) : identName(t).toLowerCase());
+        out.add(identifierKey(identName(t), this.driver));
     }
     return out;
   }

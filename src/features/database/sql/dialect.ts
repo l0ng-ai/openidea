@@ -1,5 +1,14 @@
 /** Per-dialect SQL vocabulary: reserved words, statement starters and built-in functions. */
-import type { DbDriver } from "@/platform/ipc";
+import type { DataSource, DbDriver } from "@/platform/ipc";
+
+/** DuckDB speaks its own SQL over the generic JDBC transport. */
+export type SqlDriver = DbDriver | "duckdb";
+
+export function sqlDriverOf(source: Pick<DataSource, "driver" | "vendor" | "url"> | null | undefined): SqlDriver {
+  if (source?.driver === "jdbc" && (source.vendor === "duckdb" || /^jdbc:duckdb:/i.test(source.url?.trim() ?? "")))
+    return "duckdb";
+  return source?.driver ?? "sqlite";
+}
 
 export interface SqlFunction {
   name: string;
@@ -7,6 +16,7 @@ export interface SqlFunction {
   params: string;
   returns?: string;
   aggregate?: boolean;
+  table?: boolean;
 }
 
 /** Words that must be quoted when used as identifiers (the common core of the three dialects). */
@@ -29,13 +39,35 @@ const SNOWFLAKE_RESERVED = new Set(
   ).split(" "),
 );
 
-export function isReserved(word: string, driver?: DbDriver): boolean {
-  const upper = word.toUpperCase();
-  return RESERVED.has(upper) || (driver === "snowflake" && SNOWFLAKE_RESERVED.has(upper));
+// Public keyword categories from DuckDB 1.5's duckdb_keywords().
+const DUCKDB_RESERVED = new Set(
+  (
+    "ANALYSE ANALYZE ARRAY ASYMMETRIC BOTH DEFERRABLE DESCRIBE DO INITIALLY LAMBDA LATERAL LEADING ONLY " +
+    "PIVOT PIVOT_LONGER PIVOT_WIDER PLACING QUALIFY RETURNING SHOW SOME SUMMARIZE SYMMETRIC TRAILING UNPIVOT VARIADIC"
+  ).split(" "),
+);
+
+export function isReserved(word: string, driver?: SqlDriver): boolean {
+  const upper = sqlWordUpper(word, driver);
+  return (
+    RESERVED.has(upper) ||
+    (driver === "snowflake" && SNOWFLAKE_RESERVED.has(upper)) ||
+    (driver === "duckdb" && DUCKDB_RESERVED.has(upper))
+  );
 }
 
-export const nameMatcher = (driver: DbDriver) => (a: string | null | undefined, b: string | null | undefined) =>
-  !!a && !!b && (driver === "clickhouse" ? a === b : a.toLowerCase() === b.toLowerCase());
+export function sqlWordUpper(word: string, driver?: SqlDriver): string {
+  return driver === "duckdb" ? word.replace(/[a-z]/g, (letter) => letter.toUpperCase()) : word.toUpperCase();
+}
+
+export function identifierKey(name: string, driver: SqlDriver): string {
+  if (driver === "clickhouse") return name;
+  // DuckDB folds ASCII letters in quoted and unquoted names.
+  return driver === "duckdb" ? name.replace(/[A-Z]/g, (letter) => letter.toLowerCase()) : name.toLowerCase();
+}
+
+export const nameMatcher = (driver: SqlDriver) => (a: string | null | undefined, b: string | null | undefined) =>
+  !!a && !!b && identifierKey(a, driver) === identifierKey(b, driver);
 
 /** Clause keywords: a word in this set ends a table alias or expression. */
 export const CLAUSE_WORDS = new Set(
@@ -46,7 +78,7 @@ export const CLAUSE_WORDS = new Set(
   ).split(" "),
 );
 
-export function statementStarters(driver: DbDriver): string[] {
+export function statementStarters(driver: SqlDriver): string[] {
   if (driver === "clickhouse")
     return [
       "SELECT",
@@ -143,6 +175,23 @@ export function statementStarters(driver: DbDriver): string[] {
     "ROLLBACK",
   ];
   if (driver === "jdbc") return common;
+  if (driver === "duckdb")
+    return [
+      ...common,
+      "FROM",
+      "ATTACH",
+      "DETACH",
+      "USE",
+      "COPY",
+      "CREATE SCHEMA",
+      "CREATE MACRO",
+      "DESCRIBE",
+      "SHOW TABLES",
+      "SHOW DATABASES",
+      "SUMMARIZE",
+      "PIVOT",
+      "UNPIVOT",
+    ];
   if (driver === "sqlite") return [...common, "PRAGMA", "VACUUM", "ATTACH DATABASE", "REPLACE INTO", "CREATE TRIGGER"];
   if (driver === "mysql")
     return [
@@ -183,7 +232,7 @@ export function statementStarters(driver: DbDriver): string[] {
   ];
 }
 
-export function joinKeywords(driver: DbDriver): string[] {
+export function joinKeywords(driver: SqlDriver): string[] {
   const j = ["JOIN", "LEFT JOIN", "INNER JOIN", "CROSS JOIN", "RIGHT JOIN"];
   if (driver !== "mysql") j.push("FULL JOIN");
   if (driver === "postgres") j.push("JOIN LATERAL", "LEFT JOIN LATERAL");
@@ -193,7 +242,7 @@ export function joinKeywords(driver: DbDriver): string[] {
 }
 
 /** Comparison / predicate keywords of WHERE, ON and HAVING. */
-export function predicateKeywords(driver: DbDriver): string[] {
+export function predicateKeywords(driver: SqlDriver): string[] {
   const k = [
     "AND",
     "OR",
@@ -214,10 +263,40 @@ export function predicateKeywords(driver: DbDriver): string[] {
   if (driver === "sqlite") k.push("GLOB", "REGEXP");
   if (driver === "oracle") k.push("CONNECT BY PRIOR", "START WITH", "NOT IN", "IS NOT NULL");
   if (driver === "snowflake") k.push("ILIKE", "RLIKE", "REGEXP", "IS DISTINCT FROM", "ANY");
+  if (driver === "duckdb") k.push("ILIKE", "GLOB", "IS DISTINCT FROM", "SIMILAR TO");
   return k;
 }
 
-export const DATA_TYPES: Record<DbDriver, string[]> = {
+export const DATA_TYPES: Record<SqlDriver, string[]> = {
+  duckdb: [
+    "TINYINT",
+    "SMALLINT",
+    "INTEGER",
+    "BIGINT",
+    "HUGEINT",
+    "UTINYINT",
+    "USMALLINT",
+    "UINTEGER",
+    "UBIGINT",
+    "UHUGEINT",
+    "DECIMAL",
+    "FLOAT",
+    "DOUBLE",
+    "VARCHAR",
+    "BOOLEAN",
+    "DATE",
+    "TIME",
+    "TIMESTAMP",
+    "TIMESTAMPTZ",
+    "INTERVAL",
+    "BLOB",
+    "UUID",
+    "JSON",
+    "STRUCT",
+    "MAP",
+    "UNION",
+    "ARRAY",
+  ],
   jdbc: ["INTEGER", "BIGINT", "DECIMAL", "DOUBLE PRECISION", "VARCHAR", "BOOLEAN", "DATE", "TIME", "TIMESTAMP"],
   snowflake: [
     "NUMBER",
@@ -398,8 +477,38 @@ const COMMON: SqlFunction[] = [
   f("cast", "expr AS type"),
 ];
 
-const FUNCTIONS: Record<DbDriver, SqlFunction[]> = {
+const FUNCTIONS: Record<SqlDriver, SqlFunction[]> = {
   jdbc: COMMON,
+  duckdb: [
+    ...COMMON,
+    f("count_if", "condition", "bigint", true),
+    f("string_agg", "expr, delimiter", "varchar", true),
+    f("list", "expr", undefined, true),
+    f("arg_max", "arg, value", undefined, true),
+    f("arg_min", "arg, value", undefined, true),
+    f("approx_count_distinct", "expr", "bigint", true),
+    f("quantile_cont", "expr, fraction", undefined, true),
+    f("regexp_matches", "text, pattern", "boolean"),
+    f("date_trunc", "part, timestamp"),
+    f("date_diff", "part, start, end", "bigint"),
+    f("list_transform", "list, lambda"),
+    f("list_filter", "list, lambda"),
+    f("struct_pack", "name := expr, ...", "struct"),
+    f("json_extract", "json, path", "json"),
+    f("unnest", "value"),
+    f("row_number", "", "bigint"),
+    f("rank", "", "bigint"),
+    f("dense_rank", "", "bigint"),
+    f("lag", "expr, offset, default"),
+    f("lead", "expr, offset, default"),
+    { ...f("read_csv", "path, options..."), table: true },
+    { ...f("read_parquet", "path, options..."), table: true },
+    { ...f("read_json", "path, options..."), table: true },
+    { ...f("range", "start, stop, step"), table: true },
+    { ...f("generate_series", "start, stop, step"), table: true },
+    { ...f("duckdb_tables", ""), table: true },
+    { ...f("duckdb_columns", ""), table: true },
+  ],
   snowflake: [
     ...COMMON,
     f("listagg", "expr, delimiter", "varchar", true),
@@ -654,6 +763,6 @@ const FUNCTIONS: Record<DbDriver, SqlFunction[]> = {
   ],
 };
 
-export function functions(driver: DbDriver): SqlFunction[] {
+export function functions(driver: SqlDriver): SqlFunction[] {
   return FUNCTIONS[driver];
 }

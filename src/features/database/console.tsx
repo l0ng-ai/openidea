@@ -47,14 +47,7 @@ import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { createRoot } from "react-dom/client";
 import type { EditorDocContext } from "@/editor/api";
 import { iconNode, spinnerNode } from "@/ui/iconNode";
-import {
-  call,
-  commands,
-  type DbDriver,
-  type DbSessionContext,
-  type DbStatementOutcome,
-  type SqlStatement,
-} from "@/platform/ipc";
+import { call, commands, type DbSessionContext, type DbStatementOutcome, type SqlStatement } from "@/platform/ipc";
 import { shortcutLabel } from "@/platform/keymap";
 import { Icon, IconButton, Select, Toolbar, lazyComponent } from "@/ui";
 import { useProject } from "@/platform/project";
@@ -78,6 +71,8 @@ import {
   type SqlCandidate,
   type SqlCatalog,
 } from "./sql/complete";
+import { sqlDriverOf, type SqlDriver } from "./sql/dialect";
+import { duckdbLanguage } from "./sql/duckdbHighlight";
 import { WHOLE_FILE, sqlSupport, type SqlText } from "./sqlSupport";
 import { snowflakeLanguage } from "./sql/snowflakeHighlight";
 import {
@@ -1087,7 +1082,7 @@ function docNode(text: string): Node {
   return pre;
 }
 
-function applyCandidate(c: SqlCandidate, driver: DbDriver, sql: SqlText) {
+function applyCandidate(c: SqlCandidate, driver: SqlDriver, sql: SqlText) {
   return (view: EditorView, completion: Completion, from: number, to: number) => {
     // A selected template placeholder is replaced, as CodeMirror's own string completions do.
     const sel = view.state.selection.main;
@@ -1220,7 +1215,7 @@ export function completionSource(path: string, sql: SqlText = WHOLE_FILE): Compl
     const id = consoleSource(path);
     const current = id ? databaseRequest(id) : projectRequest();
     const source = sourceById(id);
-    const driver: DbDriver = source?.driver ?? "sqlite";
+    const driver = sqlDriverOf(source);
     // A custom JDBC source (`driver: "jdbc"`) says nothing about how its server folds
     // identifiers; its URL does (`jdbc:oracle:thin:@…`). Quoting follows that dialect.
     const dialect = driver === "jdbc" ? jdbcDialect(source?.url) : null;
@@ -1270,8 +1265,8 @@ export function completionSource(path: string, sql: SqlText = WHOLE_FILE): Compl
 
 const noKeywords: CompletionSource = (ctx) => ({ from: ctx.pos, options: [] });
 
-function driverOf(path: string): DbDriver {
-  return sourceById(consoleSource(path))?.driver ?? "sqlite";
+function editorDriverOf(path: string): SqlDriver {
+  return sqlDriverOf(sourceById(consoleSource(path)));
 }
 
 /**
@@ -1280,15 +1275,17 @@ function driverOf(path: string): DbDriver {
  */
 function dialectColours(path: string): Extension {
   const slot = new Compartment();
-  const colours = (driver: DbDriver): Extension =>
-    driver === "snowflake" ? Prec.high(snowflakeLanguage().extension) : [];
-  const initial = driverOf(path);
+  const colours = (driver: SqlDriver): Extension => {
+    if (driver === "duckdb") return Prec.high(duckdbLanguage().extension);
+    return driver === "snowflake" ? Prec.high(snowflakeLanguage().extension) : [];
+  };
+  const initial = editorDriverOf(path);
   return [
     slot.of(colours(initial)),
     ViewPlugin.define((view) => {
       let shown = initial;
       const stop = useDatabase.subscribe(() => {
-        const driver = driverOf(path);
+        const driver = editorDriverOf(path);
         if (driver === shown) return;
         shown = driver;
         view.dispatch({ effects: slot.reconfigure(colours(driver)) });
@@ -1301,7 +1298,7 @@ function dialectColours(path: string): Extension {
 /** Live template contexts at a position (`sql-statement` / `sql-query` / `sql-code`). */
 function templateContextsAt(path: string) {
   return (state: EditorState, pos: number): readonly string[] =>
-    templateContexts(analyze(state.doc.toString(), pos, driverOf(path)));
+    templateContexts(analyze(state.doc.toString(), pos, editorDriverOf(path)));
 }
 
 /**
@@ -1325,7 +1322,7 @@ function valuesInfo(path: string) {
     const sel = state.selection.main;
     if (!sel.empty) return null;
     const id = consoleSource(path);
-    const slot = valuesSlot(state.doc.toString(), sel.head, driverOf(path));
+    const slot = valuesSlot(state.doc.toString(), sel.head, editorDriverOf(path));
     if (!slot) return null;
     const table = id
       ? useDatabase
