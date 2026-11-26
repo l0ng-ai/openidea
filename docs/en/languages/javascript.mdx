@@ -22,6 +22,8 @@ OpenIDEA edits JavaScript (`.js`, `.mjs`, `.cjs`, `.jsx`) and TypeScript (`.ts`,
 
 The TypeScript servers start for a workspace marked by `tsconfig.json`, `jsconfig.json` or `package.json`. Files outside any `tsconfig.json` / `jsconfig.json` are still registered with tsserver, so loose scripts get code insight too.
 
+Path aliases from `vite.config.*` (`resolve.alias`), `rollup.config.*` (`@rollup/plugin-alias` `entries`) and `esbuild.config.*` (`alias`) in the workspace root are added to tsserver's `paths`, so imports such as `@/components/Button` resolve, navigate and complete. The configuration is read without running it: object and `[{ find, replacement }]` forms with string, `path.resolve(__dirname, …)` or `fileURLToPath(new URL(…, import.meta.url))` targets; aliases computed any other way are skipped. `paths` in `tsconfig.json` / `jsconfig.json` take priority. Aliases are read when the language server starts.
+
 Two behaviours differ from the servers' defaults: renaming a symbol never introduces an `import { a as b }` alias, and moving a file does not make the server rewrite imports on its own; the IDE asks for the import updates first and shows them as a preview you can undo.
 
 Inlay hints show parameter names at literal arguments, inferred variable types and enum member values; turn kinds off in **Settings › Editor › Inlay Hints**.

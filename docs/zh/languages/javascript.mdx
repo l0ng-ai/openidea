@@ -22,6 +22,8 @@ OpenIDEA 打开 JavaScript（`.js`、`.mjs`、`.cjs`、`.jsx`）和 TypeScript�
 
 TypeScript 服务器以 `tsconfig.json`、`jsconfig.json` 或 `package.json` 所在目录为工作区根。不属于任何 `tsconfig.json` / `jsconfig.json` 的文件也会注册给 tsserver，零散脚本同样有代码智能。
 
+工作区根目录下 `vite.config.*`（`resolve.alias`）、`rollup.config.*`（`@rollup/plugin-alias` 的 `entries`）和 `esbuild.config.*`（`alias`）中的路径别名会加入 tsserver 的 `paths`，`@/components/Button` 这类 import 可以解析、跳转和补全。配置文件不会被执行，只静态读取：支持对象和 `[{ find, replacement }]` 两种写法，目标可以是字符串、`path.resolve(__dirname, …)` 或 `fileURLToPath(new URL(…, import.meta.url))`；用其他方式计算的别名会被跳过。`tsconfig.json` / `jsconfig.json` 中的 `paths` 优先。别名在语言服务器启动时读取。
+
 有两处行为与服务器默认值不同：重命名符号时不会生成 `import { a as b }` 这样的别名；移动文件时服务器不会自行改写 import，而是由 IDE 先给出需要更新的 import，以预览形式展示，并可撤销。
 
 嵌入提示会显示字面量实参的参数名、推断出的变量类型和枚举成员的值；可以在 **设置 › 编辑器 › 嵌入提示** 中按类型关闭。

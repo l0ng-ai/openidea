@@ -208,6 +208,7 @@ impl Host {
                 ide_sdk::apply::server_launch_overrides(cfg, &effective);
                 ide_sdk::apply::configure_server(cfg, root, server_root, &effective);
                 ide_sdk::apply::configure_vue_module_resolution(cfg, &data_dir);
+                ide_sdk::apply::configure_path_aliases(cfg, server_root, &data_dir);
                 let container_python = effective.languages.python.run_target().is_some();
                 crate::ops::sdk::container_python::configure_server(cfg, &data_dir, root, &effective);
                 // Attached dependency projects are source, so basedpyright/Pyright should
