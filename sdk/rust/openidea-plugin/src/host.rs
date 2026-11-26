@@ -1038,6 +1038,15 @@ mod imp {
         )
         .map_err(error)
     }
+    pub fn open_terminal_session_in(key: &str, title: &str, cmd: &super::Command, cwd: &str) -> Result<String, Error> {
+        wit::views::open_terminal_session_in(
+            key,
+            title,
+            &wit::process::Command { program: cmd.program.clone(), args: cmd.args.clone(), env: cmd.env.clone() },
+            cwd,
+        )
+        .map_err(error)
+    }
     pub fn write_terminal(key: &str, text: &str) -> Result<(), Error> {
         wit::views::write_terminal(key, text).map_err(error)
     }
@@ -2210,6 +2219,12 @@ pub fn start_run_with_options(
 /// Opens/reuses a keyed, approved terminal with append-only environment variables.
 pub fn open_terminal_session(key: &str, title: &str, cmd: &Command) -> Result<String, Error> {
     imp::open_terminal_session(key, title, cmd)
+}
+/// [`open_terminal_session`] started in `cwd` (API 1.18): a directory of the window's
+/// project relative to its root (`""` is the root), which must exist and stay inside the
+/// project. Trust and the approved program stay the project's.
+pub fn open_terminal_session_in(key: &str, title: &str, cmd: &Command, cwd: &str) -> Result<String, Error> {
+    imp::open_terminal_session_in(key, title, cmd, cwd)
 }
 /// Writes to this plugin's running keyed terminal in the invoking window.
 pub fn write_terminal(key: &str, text: &str) -> Result<(), Error> {

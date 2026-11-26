@@ -81,6 +81,7 @@ const TEXT_KEYS: Record<string, readonly string[]> = {
   markerIcons: ["tooltip"],
   customEditors: ["title"],
   dialogs: ["title"],
+  runAnything: ["title"],
   statusBar: ["text", "tooltip"],
   settings: ["title"],
   fileTemplates: ["name"],
