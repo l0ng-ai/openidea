@@ -360,7 +360,7 @@ function PaneView({ paneId }: { paneId: string }) {
 
   const onFocus = () => {
     setContext("editorFocus", true);
-    if (!isActivePane) useTabs.setState((s) => ({ ...s, activePane: paneId }), true);
+    if (!isActivePane) ctrl.focusPane(paneId);
     ctrl.publishContext();
   };
   const onBlur = (e: FocusEvent) => {
