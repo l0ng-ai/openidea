@@ -6881,7 +6881,9 @@ export type EventKind = "document-changed" | "websocket-ready" | "file-closed" |
 /**  Problems of the window's files changed (a language server or a report). */
 "problems-changed" | 
 /**  A project was closed (or its window closed): the project root path. */
-"project-closed" | "scheduled";
+"project-closed" | 
+/**  Paths outside the project watched with `events.watch-paths` changed (API 1.18). */
+"watched-files-changed" | "scheduled";
 
 export type ExceptionClassBreakpoint = {
 	id: string,
@@ -14570,7 +14572,12 @@ export type WorkbenchEvent = { kind: "documentChanged"; value: DocumentChanged }
 /**  Problems of the window's files changed; plugins re-read `problems`. */
 { kind: "problemsChanged" } | 
 /**  A project closed (API 1.18); payload is the canonical absolute root path. */
-{ kind: "projectClosed"; value: string } | { kind: "scheduled" };
+{ kind: "projectClosed"; value: string } | 
+/**
+ *  Changes to paths outside the project watched with `events.watch-paths` (API 1.18);
+ *  `project` is the project the watch belongs to, `generation` is unset.
+ */
+{ kind: "watchedFilesChanged"; value: FilesChanged } | { kind: "scheduled" };
 
 export type WorkingTreeChange = {
 	path: string,

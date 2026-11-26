@@ -1684,7 +1684,46 @@ impl events::Host for StoreData {
         self.host.unsubscribe(&kind);
         Ok(())
     }
+
+    fn watch_paths(&mut self, paths: Vec<String>) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::Events) {
+            return Ok(Err(e));
+        }
+        if let Err(e) = self.host.require_api("watch-paths", 18) {
+            return Ok(Err(to_wit(e)));
+        }
+        let project = self.invocation.workspace_root.clone().filter(|root| self.host.projects().contains(root));
+        let (Some(client), Some(project)) = (self.client().map(str::to_owned), project) else {
+            return Ok(Err(wit::Error::Invalid("watch-paths needs a call that serves a window's project".into())));
+        };
+        if paths.len() > MAX_WATCHED_PATHS {
+            return Ok(Err(wit::Error::Invalid(format!("at most {MAX_WATCHED_PATHS} watched paths"))));
+        }
+        let real_project = dunce::canonicalize(&project).unwrap_or_else(|_| project.clone());
+        let mut resolved = Vec::with_capacity(paths.len());
+        for path in &paths {
+            let real = match self.granted_file(path) {
+                Ok(real) => real,
+                Err(e) => return Ok(Err(e)),
+            };
+            if real.starts_with(&real_project) {
+                return Ok(Err(wit::Error::Invalid(format!(
+                    "{path} is inside the project: subscribe to files-changed for it"
+                ))));
+            }
+            if !resolved.contains(&real) {
+                resolved.push(real);
+            }
+        }
+        if !resolved.is_empty() {
+            self.host.subscribe(EventKind::WatchedFilesChanged);
+        }
+        Ok(self.host.watch_paths(&client, &project, resolved).map_err(to_wit))
+    }
 }
+
+/// The most paths one plugin watches outside one project (`events.watch-paths`).
+const MAX_WATCHED_PATHS: usize = 32;
 
 impl tasks::Host for StoreData {
     fn begin(&mut self, title: String, cancellable: bool) -> wasmtime::Result<Resource<TaskRes>> {

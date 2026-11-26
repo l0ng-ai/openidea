@@ -84,7 +84,7 @@ mac = "Meta+Alt+C"
 | `on-event:<kind>`     | 发生该类型的工作台事件（见 [生命周期与事件](/zh/plugins/lifecycle)）。 |
 | `on-startup-finished` | 工作台就绪后不久。请谨慎使用。                                         |
 
-重复的事件会报错。部分事件类型需要更新的 API：`on-event:files-changed` 需要 `^1.3`；`file-closed`、`settings-changed`、`input-mode-changed`、`run-exited`、`terminal-exited` 和 `content-tab-action` 需要 `^1.4`。
+重复的事件会报错。部分事件类型需要更新的 API：`on-event:files-changed` 需要 `^1.3`；`file-closed`、`settings-changed`、`input-mode-changed`、`run-exited`、`terminal-exited` 和 `content-tab-action` 需要 `^1.4`；`project-closed` 和 `watched-files-changed` 需要 `^1.18`。
 
 ### 能力
 
@@ -117,7 +117,7 @@ optional = ["net:api.openai.com", "secrets"]
 | `markerIcons`       | `id`、`icon`、`iconDark?`、`markers?`、`tooltip?`（API 1.3）：装订区标记图标                | 否              | [语言功能](/zh/plugins/guides/language-features)                                                                                                       |
 | `editorPanels`      | `id`、`web`、`width`、`when?`（API 1.9；需要 `editor.read`）                                | 否              | [README：Editor panels](https://github.com/l0ng-ai/openidea/blob/main/plugins/README.md#editor-panels)                                                 |
 | `overlays`          | `id`、`web`、`width`、`height`、`anchor?`、`when?`、`interactive?`（API 1.18）              | 否              | [README：Overlays](https://github.com/l0ng-ai/openidea/blob/main/plugins/README.md#overlays)                                                           |
-| `runAnything`       | `prefix`、`title?`（API 1.18）                                                 | 否              | [README：Run Anything entries](https://github.com/l0ng-ai/openidea/blob/main/plugins/README.md#run-anything-entries-api-118)                           |
+| `runAnything`       | `prefix`、`title?`（API 1.18）                                                              | 否              | [README：Run Anything entries](https://github.com/l0ng-ai/openidea/blob/main/plugins/README.md#run-anything-entries-api-118)                           |
 | `dialogs`           | `id`、`title`、`web`、`width`、`height`（API 1.18）                                         | 否              | [README：Dialogs](https://github.com/l0ng-ai/openidea/blob/main/plugins/README.md#dialogs)                                                             |
 | `fileIcons`         | `id`、`patterns`、`icon`、`iconDark?`                                                       | 否              | [图标主题](/zh/plugins/guides/icon-themes)                                                                                                             |
 | `fileTemplates`     | `id`、`name`、`extension`、`path`；API 1.3：`fileName`、`variables`                         | 否              | [文件操作](/zh/plugins/guides/file-actions)                                                                                                            |

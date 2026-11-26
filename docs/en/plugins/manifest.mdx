@@ -84,7 +84,7 @@ Code is loaded lazily. Without `activation`, it loads the first time one of the 
 | `on-event:<kind>`     | A workbench event of that kind (see [Lifecycle and events](/en/plugins/lifecycle)). |
 | `on-startup-finished` | Shortly after the workbench is ready. Use sparingly.                                |
 
-Duplicates are an error. Some event kinds need a newer API: `on-event:files-changed` needs `^1.3`; `file-closed`, `settings-changed`, `input-mode-changed`, `run-exited`, `terminal-exited` and `content-tab-action` need `^1.4`.
+Duplicates are an error. Some event kinds need a newer API: `on-event:files-changed` needs `^1.3`; `file-closed`, `settings-changed`, `input-mode-changed`, `run-exited`, `terminal-exited` and `content-tab-action` need `^1.4`; `project-closed` and `watched-files-changed` need `^1.18`.
 
 ### Capabilities
 

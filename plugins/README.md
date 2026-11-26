@@ -456,6 +456,10 @@ matching SDK. Plugins for 1.17 and earlier keep working. New in 1.18:
   configurations from a superseded generation is rejected with `Error::Stale`.
 - `EventKind::ProjectClosed` (`project-closed`) notifies subscribed plugins when a project closes,
   after queued project events are dropped and project run targets and configurations are withdrawn.
+- **Files outside the project.** `host::watch_paths(&paths)` (`events.watch-paths`) watches files
+  and directories outside the window's project that an `fs.read` grant covers, delivered as
+  `Event::WatchedFilesChanged` (`watched-files-changed`). See
+  [Watching paths outside the project](#watching-paths-outside-the-project).
 - **Run output transport (`pipes` or `pty`).** Non-test plugin run
   configurations can request pseudo-terminal emulation (`OutputMode::Pty`,
   matching **Emulate terminal in output console**) instead of separate stdout
@@ -1424,22 +1428,23 @@ log/blame return empty lists and diff returns `None`.
 
 ### Events
 
-| Kind                 | Capability     | Delivered                                                                                                                                  |
-| -------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `document-changed`   | `events`       | API 1.6: a committed local edit as versioned UTF-16 replacements; `subscribe-paths` only, also needs `project.read` and `editor.read`      |
-| `websocket-ready`    | `events`       | API 1.6: a bounded host-owned WebSocket has frames or a final close state to drain                                                         |
-| `file-opened`        | `events`       | a file opens in an editor                                                                                                                  |
-| `file-closed`        | `events`       | API 1.4, `Event::Other`: JSON path string                                                                                                  |
-| `settings-changed`   | `events`       | API 1.4, `Event::Other`: JSON array of this plugin's changed setting keys (effective values)                                               |
-| `extensions-changed` | —              | API 1.5, `Event::Other`: JSON array of this plugin's extension points whose contributions changed                                          |
-| `input-mode-changed` | `events.input` | API 1.4, `Event::Other`: JSON `{path, mode, sub}` on focused Vim mode changes; `ctx.editor()` includes the document and current selections |
-| `files-changed`      | `events`       | debounced created, modified and removed paths in open projects (API 1.3)                                                                   |
-| `file-saved`         | `events`       | after the file is written                                                                                                                  |
-| `editor-focused`     | `events`       | the focused editor changes (path, or none)                                                                                                 |
-| `vcs-changed`        | `events`       | a repository's state changed (commit, checkout, fetch…; its root)                                                                          |
-| `action-performed`   | `events.input` | an IDE action ran: id, title, source (keyboard, menu, toolbar…), shortcut                                                                  |
-| `project-closed`     | `events`       | API 1.18: a project was closed or detached; JSON root path string (`Event::ProjectClosed`)                                                 |
-| `scheduled`          | —              | the `on-schedule` period elapsed                                                                                                           |
+| Kind                    | Capability     | Delivered                                                                                                                                  |
+| ----------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `document-changed`      | `events`       | API 1.6: a committed local edit as versioned UTF-16 replacements; `subscribe-paths` only, also needs `project.read` and `editor.read`      |
+| `websocket-ready`       | `events`       | API 1.6: a bounded host-owned WebSocket has frames or a final close state to drain                                                         |
+| `file-opened`           | `events`       | a file opens in an editor                                                                                                                  |
+| `file-closed`           | `events`       | API 1.4, `Event::Other`: JSON path string                                                                                                  |
+| `settings-changed`      | `events`       | API 1.4, `Event::Other`: JSON array of this plugin's changed setting keys (effective values)                                               |
+| `extensions-changed`    | —              | API 1.5, `Event::Other`: JSON array of this plugin's extension points whose contributions changed                                          |
+| `input-mode-changed`    | `events.input` | API 1.4, `Event::Other`: JSON `{path, mode, sub}` on focused Vim mode changes; `ctx.editor()` includes the document and current selections |
+| `files-changed`         | `events`       | debounced created, modified and removed paths in open projects (API 1.3)                                                                   |
+| `file-saved`            | `events`       | after the file is written                                                                                                                  |
+| `editor-focused`        | `events`       | the focused editor changes (path, or none)                                                                                                 |
+| `vcs-changed`           | `events`       | a repository's state changed (commit, checkout, fetch…; its root)                                                                          |
+| `action-performed`      | `events.input` | an IDE action ran: id, title, source (keyboard, menu, toolbar…), shortcut                                                                  |
+| `project-closed`        | `events`       | API 1.18: a project was closed or detached; JSON root path string (`Event::ProjectClosed`)                                                 |
+| `watched-files-changed` | `events`       | API 1.18: paths watched with `host::watch_paths` changed; JSON like `files-changed` with absolute paths (`Event::WatchedFilesChanged`)     |
+| `scheduled`             | —              | the `on-schedule` period elapsed                                                                                                           |
 
 Events are batched: a running plugin gets them within a fraction of a second,
 an idle one collects them for 2 s before it is woken, so frequent events
@@ -1486,9 +1491,34 @@ can read it via `project.generation()` (API 1.18). If a plugin attempts to publi
 with an older generation after the project generation has moved forward, the registration is rejected with `Error::Stale`. When
 a project closes, in-flight work and queued events for that project are cancelled and dropped, run targets and configurations
 under that root are withdrawn, and `project-closed` (`Event::ProjectClosed`) is delivered to subscribed plugins.
-Patterns use `/`, `*` stays within a directory, and `**` crosses
-directories. Up to 64 patterns of 1024 bytes each are accepted; absolute paths,
-parent traversal and malformed patterns fail without replacing the old filter.
+
+### Watching paths outside the project
+
+A build tool's configuration often includes files from outside the project (a shared Taskfile, a
+parent POM, a toolchain file). `host::watch_paths(&paths)` (API 1.18) watches them for the project of
+the window the call serves, replacing what the plugin watched for that project; an empty list stops.
+
+- **Within read grants.** Each path is absolute (or `~/…`), exists, and is covered by an
+  `fs.read:<path>` grant the user approved, checked where it really is: a link leading out of the
+  grant is `Denied`. Paths inside the project are `Invalid`, since `files-changed` reports them. At
+  most 32 paths.
+- **What is watched.** A file is watched where it is, across atomic saves, removal and re-creation.
+  A directory is watched for its own entries, not recursively; once it is removed it is reported
+  and no longer watched, so call again when it is back.
+- **Delivery.** Changes arrive as `Event::WatchedFilesChanged` (`watched-files-changed`) to the
+  window that asked, with `project` set to its project and absolute paths. Batches are debounced
+  and coalesced like `files-changed`, so read the files again rather than replaying steps; a rename
+  is the old path removed and the new one created. Calling `watch_paths` subscribes to the kind;
+  declare `activation = ["on-event:watched-files-changed"]` to be woken for it after a restart.
+- **Lifecycle.** Watches end when the project or its window closes, or when the plugin stops
+  (disabled, updated, or a grant revoked in Settings › Plugins). Idle reclaim keeps them, and a
+  change activates the plugin again.
+- **No remote freshness.** Nothing is watched over the network, and a watch grants no network
+  access. Files behind a URL (Task's remote Taskfiles, for example) need the plugin's own refresh
+  command.
+  Patterns use `/`, `*` stays within a directory, and `**` crosses
+  directories. Up to 64 patterns of 1024 bytes each are accepted; absolute paths,
+  parent traversal and malformed patterns fail without replacing the old filter.
 
 Register filters in `activate`, using a startup or command activation to install
 them before observing events. Patterns are ORed; another call replaces the same

@@ -171,11 +171,13 @@ pub enum EventKind {
     ProblemsChanged,
     /// A project was closed (or its window closed): the project root path.
     ProjectClosed,
+    /// Paths outside the project watched with `events.watch-paths` changed (API 1.18).
+    WatchedFilesChanged,
     Scheduled,
 }
 
 impl EventKind {
-    pub const ALL: [Self; 19] = [
+    pub const ALL: [Self; 20] = [
         Self::DocumentChanged,
         Self::WebsocketReady,
         Self::FileClosed,
@@ -194,6 +196,7 @@ impl EventKind {
         Self::VcsChanged,
         Self::ProblemsChanged,
         Self::ProjectClosed,
+        Self::WatchedFilesChanged,
         Self::Scheduled,
     ];
 
@@ -217,6 +220,7 @@ impl EventKind {
             Self::VcsChanged => "vcs-changed",
             Self::ProblemsChanged => "problems-changed",
             Self::ProjectClosed => "project-closed",
+            Self::WatchedFilesChanged => "watched-files-changed",
             Self::Scheduled => "scheduled",
         }
     }
@@ -379,6 +383,9 @@ pub enum WorkbenchEvent {
     ProblemsChanged,
     /// A project closed (API 1.18); payload is the canonical absolute root path.
     ProjectClosed(String),
+    /// Changes to paths outside the project watched with `events.watch-paths` (API 1.18);
+    /// `project` is the project the watch belongs to, `generation` is unset.
+    WatchedFilesChanged(FilesChanged),
     Scheduled,
 }
 
@@ -403,6 +410,7 @@ impl WorkbenchEvent {
             Self::VcsChanged(_) => EventKind::VcsChanged,
             Self::ProblemsChanged => EventKind::ProblemsChanged,
             Self::ProjectClosed(_) => EventKind::ProjectClosed,
+            Self::WatchedFilesChanged(_) => EventKind::WatchedFilesChanged,
             Self::Scheduled => EventKind::Scheduled,
         }
     }
