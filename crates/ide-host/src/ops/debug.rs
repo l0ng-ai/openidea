@@ -32,12 +32,19 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
     } else {
         None
     };
+    let mut config = config;
+    let enhanced = take_enhanced_redefinition(&mut config);
     let java_exec = java_exec_path(&config);
-    let agents = if is_jvm_launch(&config) {
+    let mut agents = if is_jvm_launch(&config) {
         ide_run::java_agent::current_for(java_exec.as_deref())
     } else {
-        Default::default()
+        ide_run::java_agent::Agents::default()
     };
+    match enhanced {
+        Some(Ok(option)) => agents.options.insert(0, option.to_owned()),
+        Some(Err(note)) => agents.notes.push(note),
+        None => {}
+    }
     let config = add_java_agents(config, &agents.options);
     let mut config = match_java_debug_encoding(start_java_attach_listener(config, cfg!(windows)), cfg!(windows));
     if config.adapter == "debugpy"
@@ -247,6 +254,21 @@ fn is_jvm_launch(config: &LaunchConfig) -> bool {
 fn java_exec_path(config: &LaunchConfig) -> Option<std::path::PathBuf> {
     let extra: serde_json::Value = serde_json::from_str(config.extra_json.as_deref()?).ok()?;
     extra.get("javaExec").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(std::path::PathBuf::from)
+}
+
+/// The configuration's Enhanced class redefinition (`enhancedClassRedefinition` in the launch
+/// extras, which this removes): for a JVM the debugger starts, JetBrains Runtime's flag, or the
+/// console line saying why the session runs without it.
+fn take_enhanced_redefinition(config: &mut LaunchConfig) -> Option<Result<&'static str, String>> {
+    let Some(serde_json::Value::Object(mut extra)) =
+        config.extra_json.as_deref().and_then(|e| serde_json::from_str(e).ok())
+    else {
+        return None;
+    };
+    let on = extra.remove("enhancedClassRedefinition")?.as_bool() == Some(true);
+    config.extra_json = Some(serde_json::Value::Object(extra).to_string());
+    (on && is_jvm_launch(config))
+        .then(|| ide_run::java_hotswap::enhanced_redefinition(java_exec_path(config).as_deref()))
 }
 
 /// Plugins' Java agents ([`ide_run::java_agent`]) after the configuration's VM options:
@@ -928,6 +950,49 @@ mod tests {
         }
         let config = launch("java-debug", "launch", serde_json::json!({"vmArgs": "-Xmx1g"}));
         assert_eq!(add_java_agents(config.clone(), &[]).extra_json, config.extra_json);
+    }
+
+    #[test]
+    fn enhanced_class_redefinition_is_taken_from_the_launch_extras() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jdk = |name: &str, implementor: &str| {
+            let home = tmp.path().join(name);
+            std::fs::create_dir_all(home.join("bin")).unwrap();
+            std::fs::write(home.join("release"), format!("IMPLEMENTOR=\"{implementor}\"\n")).unwrap();
+            std::fs::write(home.join("bin/java"), "").unwrap();
+            home.join("bin/java").to_string_lossy().into_owned()
+        };
+        let (jbr, temurin) = (jdk("jbr", "JetBrains s.r.o."), jdk("temurin", "Eclipse Adoptium"));
+        let extras = |config: &LaunchConfig| {
+            serde_json::from_str::<serde_json::Value>(config.extra_json.as_deref().unwrap()).unwrap()
+        };
+
+        let mut config = launch(
+            "java-debug",
+            "launch",
+            serde_json::json!({"javaExec": jbr, "vmArgs": "-Xmx1g", "enhancedClassRedefinition": true}),
+        );
+        assert_eq!(take_enhanced_redefinition(&mut config), Some(Ok(ide_run::java_hotswap::OPTION)));
+        assert!(extras(&config).get("enhancedClassRedefinition").is_none(), "not passed on to the adapter");
+        assert_eq!(extras(&config)["vmArgs"], "-Xmx1g");
+
+        let mut config =
+            launch("java-debug", "launch", serde_json::json!({"javaExec": temurin, "enhancedClassRedefinition": true}));
+        let note = take_enhanced_redefinition(&mut config).unwrap().unwrap_err();
+        assert!(note.contains("is not a JetBrains Runtime"), "{note}");
+        let mut config = launch("java-debug", "launch", serde_json::json!({"enhancedClassRedefinition": true}));
+        assert!(take_enhanced_redefinition(&mut config).unwrap().unwrap_err().contains("is unknown"));
+
+        // Off, absent, or not a JVM the debugger starts: nothing to add, and no note.
+        for (adapter, request, extra) in [
+            ("java-debug", "launch", serde_json::json!({"javaExec": jbr, "enhancedClassRedefinition": false})),
+            ("java-debug", "launch", serde_json::json!({"javaExec": jbr})),
+            ("java-debug", "attach", serde_json::json!({"javaExec": jbr, "enhancedClassRedefinition": true})),
+        ] {
+            let mut config = launch(adapter, request, extra);
+            assert_eq!(take_enhanced_redefinition(&mut config), None);
+            assert!(extras(&config).get("enhancedClassRedefinition").is_none());
+        }
     }
 
     #[test]
