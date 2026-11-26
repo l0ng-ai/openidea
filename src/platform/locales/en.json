@@ -320,6 +320,7 @@
   "menu.run.debug": "Debug",
   "menu.run.debugContext": "Debug Context Configuration",
   "menu.run.coverage": "Run with Coverage",
+  "menu.profiler.openSnapshot": "Open Profiler Snapshot…",
   "menu.run.profile": "Profile",
   "menu.coverage.hide": "Hide Coverage",
   "menu.debuggingActions": "Debugging Actions",

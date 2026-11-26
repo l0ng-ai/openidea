@@ -11482,6 +11482,8 @@ export type ProfileSpec =
  *  out when another one did.
  */
 { kind: "cpuProfiles"; dir: IpcPath; root: IpcPath } | 
+/**  One `.cpuprofile` the user opened (saved by `node --cpu-prof`, Chrome DevTools, CI). */
+{ kind: "cpuProfileFile"; path: IpcPath } | 
 /**
  *  Collapsed-stack files with extension `ext` in `dir`; relative frame files resolve
  *  against `base`. `jvm_root`: map JVM class frames to sources below it. For the

@@ -623,6 +623,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
             act("run.debugContext", "Debug Context Configuration"),
             act("run.coverage", "Run with Coverage"),
             act("run.profile", "Profile"),
+            act("profiler.openSnapshot", "Open Profiler Snapshot…"),
             act("run.stop", "Stop"),
             SEP,
             act("run.chooseConfig", "Run…"),
