@@ -88,9 +88,34 @@ async function loadUserFont(name: string, alias: string): Promise<void> {
   );
 }
 
+/**
+ * Linux: WebKitGTK looks a family up through fontconfig, and a rule that strongly aliases
+ * unknown families (CJK locales put Noto Sans CJK first) makes "JetBrains Mono" resolve to that
+ * proportional face instead of falling through to the bundled one (#5770). There the bundled
+ * face is named alone unless the native catalog lists an installed JetBrains Mono.
+ */
+let monoInstalled: boolean | null = null;
+const bundledMonoOnly = () => guessOs() === "linux" && monoInstalled !== true;
+const BUNDLED_MONO_STACK = '"JetBrains Mono Variable", ui-monospace, monospace';
+
+/** Records whether the system has JetBrains Mono installed (`installed`: the native catalog, not the bundled list). */
+export function noteInstalledFonts(installed: readonly string[], root?: HTMLElement): void {
+  monoInstalled = installed.some((name) => name.trim().toLowerCase() === BUNDLED_MONO_FAMILY.toLowerCase());
+  installMonoStack(root);
+}
+
+/** Overrides `--font-mono` with the bundled face alone where the system name can't be trusted (see above). */
+export function installMonoStack(root: HTMLElement | undefined = globalThis.document?.documentElement): void {
+  if (!root) return;
+  if (bundledMonoOnly()) root.style.setProperty("--font-mono", BUNDLED_MONO_STACK);
+  else root.style.removeProperty("--font-mono");
+}
+
 /** One resolver for primary, fallback and UI families, matching the bundled CSS registrations. */
 export function familyFaces(family: string): readonly string[] {
   const name = familyName(family);
+  if (name.toLowerCase() === BUNDLED_MONO_FAMILY.toLowerCase() && bundledMonoOnly())
+    return ['"JetBrains Mono Variable"'];
   const bundled = BUNDLED_FACES.get(name.toLowerCase());
   if (bundled) return bundled;
   if (!name || !isTauri() || guessOs() !== "macos" || typeof FontFace === "undefined") return [quoteFontFamily(name)];

@@ -274,7 +274,7 @@ export function DataView(props: DataViewProps) {
           column={columns[filterAt.col]?.name ?? ""}
           values={distinctValues(Math.min(rowCount, fixedRows), value, filterAt.col)}
           checked={filter.get(filterAt.col) ?? null}
-          onToggle={(all, v, on) => setFilter((f) => toggleFilterValue(f, filterAt.col, all, v, on))}
+          onToggle={(v, on) => setFilter((f) => toggleFilterValue(f, filterAt.col, v, on))}
           onClear={() =>
             setFilter((f) => {
               const next = new Map(f);
@@ -413,13 +413,12 @@ function FilterPopup(props: {
   column: string;
   values: Array<{ value: Cell; count: number }>;
   checked: ReadonlySet<Cell> | null;
-  onToggle: (all: Cell[], v: Cell, on: boolean) => void;
+  onToggle: (v: Cell, on: boolean) => void;
   onClear: () => void;
   onClearAll: () => void;
   onClose: () => void;
 }) {
   const [query, setQuery] = useState("");
-  const all = props.values.map((v) => v.value);
   const q = query.trim().toLowerCase();
   const list = q ? props.values.filter((v) => (v.value ?? "<null>").toLowerCase().includes(q)) : props.values;
   return (
@@ -443,8 +442,8 @@ function FilterPopup(props: {
         {list.map(({ value: v, count }) => (
           <div key={v ?? "\u0000null"} className={styles.filterValue}>
             <Checkbox
-              checked={props.checked ? props.checked.has(v) : true}
-              onChange={(on) => props.onToggle(all, v, on)}
+              checked={props.checked?.has(v) ?? false}
+              onChange={(on) => props.onToggle(v, on)}
               label={v === null ? <span className={styles.null}>&lt;null&gt;</span> : v}
             />
             <span className={styles.filterCount}>{count}</span>

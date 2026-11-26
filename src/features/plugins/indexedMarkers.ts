@@ -83,6 +83,21 @@ export function markersOf(
   );
 }
 
+/** Created once: every `EditorView.baseTheme` call mounts new CSS rules into the document. */
+const INDEXED_MARKERS_THEME = EditorView.baseTheme({
+  ".cm-plugin-mapping-button": {
+    border: "none",
+    padding: "0 2px",
+    background: "transparent",
+    color: "inherit",
+    cursor: "pointer",
+    height: "100%",
+    display: "flex",
+    alignItems: "center",
+  },
+  ".cm-plugin-mapping-button:focus-visible": { outline: "1px solid var(--accent)" },
+});
+
 export function indexedMarkers(path: string): Extension {
   return [
     markersField,
@@ -92,19 +107,7 @@ export function indexedMarkers(path: string): Extension {
       markers: (view) => view.state.field(markersField),
       reserve: (state) => state.field(markersField).size > 0,
     }),
-    EditorView.baseTheme({
-      ".cm-plugin-mapping-button": {
-        border: "none",
-        padding: "0 2px",
-        background: "transparent",
-        color: "inherit",
-        cursor: "pointer",
-        height: "100%",
-        display: "flex",
-        alignItems: "center",
-      },
-      ".cm-plugin-mapping-button:focus-visible": { outline: "1px solid var(--accent)" },
-    }),
+    INDEXED_MARKERS_THEME,
     ViewPlugin.fromClass(
       class {
         last: FileMarkers | undefined;

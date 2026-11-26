@@ -63,6 +63,7 @@ import { agentName } from "./agentConfig";
 import { archivedAgentSessions, closeAgentArchive } from "./agentRuns";
 import styles from "./Run.module.css";
 import { tx } from "@/platform/i18n";
+import { SERVICES_WINDOW } from "@/workbench/contributions";
 
 const TEST_SPLIT_DEFAULTS = {
   horizontal: { tests: 34, console: 66 },
@@ -117,10 +118,11 @@ export function SessionPanel({
   const hasFlutterActions = supportsHotReload(session.config);
   const reloadable = canHotReload(session, useFlutterRunApps());
   const canDumpThreads = isJvmRun(session.config);
-  // Eight standard buttons with group spacing and insets, then 24 px plus gap per extra button.
+  // Eight standard buttons with group spacing and insets, then 24 px plus gap per extra button
+  // (Rerun Failed Tests in a test run, else Up / Down the Stack Trace, which overflow with the toggles).
   const fullToolbarWidth =
     228 +
-    26 * (Number(hasTests) + Number(canUpdateApplication) + Number(canDumpThreads) + 2 * Number(hasFlutterActions));
+    26 * ((hasTests ? 1 : 2) + Number(canUpdateApplication) + Number(canDumpThreads) + 2 * Number(hasFlutterActions));
   useLayoutEffect(() => {
     const pane = body.current;
     if (!hasRuntime || !pane || (!showLifecycle && !hasTests)) return;
@@ -182,9 +184,18 @@ export function SessionPanel({
     { label: "Scroll to End", icon: "scroll-to-end", checked: follow, run: () => setFollow((v) => !v) },
     { label: "Soft-Wrap", icon: "soft-wrap", checked: softWrap, run: () => setWrapOverride(!softWrap) },
   ];
+  // IDEA's console toolbar names Previous / Next Occurrence after what they step through here.
+  const stackTraceActions = rt.tests
+    ? []
+    : [
+        { label: "Up the Stack Trace", icon: "arrow-up", action: "navigate.prevOccurrence" },
+        { label: "Down the Stack Trace", icon: "arrow-down", action: "navigate.nextOccurrence" },
+      ];
   const moreItems: MenuItem[] = [{ kind: "action", action: "run.editConfigs", arg: session.config.id }];
   if (overflowConsoleToggles) {
-    moreItems.unshift(...consoleToggles, { kind: "separator" });
+    moreItems.unshift(...stackTraceActions.map((a) => ({ kind: "action" as const, ...a })), ...consoleToggles, {
+      kind: "separator",
+    });
   }
   const stopButton = (
     <IconButton
@@ -228,6 +239,8 @@ export function SessionPanel({
           onFindOpenChange={setFindOpen}
           cwd={cwd}
           onClear={() => clearConsole(session.id)}
+          // A test run's Previous / Next Occurrence go through its failed tests.
+          occurrences={rt.tests ? undefined : showLifecycle ? "run" : SERVICES_WINDOW}
           input={
             !testModel && acceptsInput(session)
               ? {
@@ -327,10 +340,16 @@ export function SessionPanel({
                 pressed={findOpen}
                 onClick={() => setFindOpen((v) => !v)}
               />
-              {!overflowConsoleToggles &&
-                consoleToggles.map(({ label, icon, checked, run }) => (
-                  <IconButton key={label} icon={icon} title={label} pressed={checked} onClick={run} />
-                ))}
+              {!overflowConsoleToggles && (
+                <>
+                  {stackTraceActions.map(({ label, icon, action }) => (
+                    <IconButton key={label} icon={icon} title={label} action={action} />
+                  ))}
+                  {consoleToggles.map(({ label, icon, checked, run }) => (
+                    <IconButton key={label} icon={icon} title={label} pressed={checked} onClick={run} />
+                  ))}
+                </>
+              )}
             </>
           )}
           <IconButton icon="trash" title="Clear All" onClick={() => clearConsole(session.id)} />
