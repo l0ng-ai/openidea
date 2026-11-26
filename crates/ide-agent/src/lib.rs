@@ -824,6 +824,14 @@ impl AgentManager {
         provider::set_builtin_command(&dir, self.shared.env_secrets(), id, command.as_deref())
     }
 
+    /// Sets the extra arguments of a directly launched built-in ACP agent; empty resets them.
+    pub fn set_builtin_additional_args(&self, id: &str, args: Vec<String>) -> IdeResult<()> {
+        let Some(dir) = self.shared.paths.custom_agents_dir.as_deref() else {
+            return Err(IdeError::unavailable("there is no custom agents directory"));
+        };
+        provider::set_builtin_additional_args(dir, self.shared.env_secrets(), id, args)
+    }
+
     /// Sets the environment variables built-in `id` starts with; empty clears them.
     pub fn set_builtin_env(&self, id: &str, env: std::collections::BTreeMap<String, String>) -> IdeResult<()> {
         let Some(dir) = self.shared.paths.custom_agents_dir.clone() else {

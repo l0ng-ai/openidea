@@ -126,6 +126,7 @@ for line in sys.stdin:
         driver: crate::provider::Driver::Codex,
         command: script.to_string_lossy().into_owned(),
         args: Vec::new(),
+        additional_args_len: 0,
         env: Vec::new(),
         login_hint: String::new(),
         source: crate::AgentSource::Builtin,

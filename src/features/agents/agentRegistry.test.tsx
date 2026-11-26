@@ -421,6 +421,7 @@ class FakeCommands implements CommandsBackend {
   providers = vi.fn(async () => this.list);
   chooseExecutable = vi.fn(async () => "/chosen/agent");
   saveCustom = vi.fn(async () => {});
+  setAdditionalArgs = vi.fn<CommandsBackend["setAdditionalArgs"]>();
   removeCustom = vi.fn(async () => {});
   importAcp = vi.fn(async (): Promise<AcpImportOutcome[]> => []);
   pickAcpJson = vi.fn(async (): Promise<string | null> => null);
