@@ -75,6 +75,8 @@ import {
   cursorMatchBrace,
   cursorPageBottom,
   cursorPageTop,
+  cursorParagraphBackward,
+  cursorParagraphForward,
   scrollDown,
   scrollToCenter,
   scrollUp,
@@ -82,6 +84,8 @@ import {
   selectCodeBlockStart,
   selectPageBottom,
   selectPageTop,
+  selectParagraphBackward,
+  selectParagraphForward,
   splitLine,
 } from "./cm/caretCommands";
 import { isOverwrite, toggleOverwrite } from "./cm/overwrite";
@@ -1054,6 +1058,24 @@ export function registerEditorActions(): () => void {
       {
         category: "Editor Actions",
       },
+    ),
+    caret("editor.paragraphForward", "Move Caret Forward a Paragraph", (v) => cursorParagraphForward(v), {
+      category: "Editor Actions",
+    }),
+    caret("editor.paragraphBackward", "Move Caret Backward a Paragraph", (v) => cursorParagraphBackward(v), {
+      category: "Editor Actions",
+    }),
+    caret(
+      "editor.paragraphForwardWithSelection",
+      "Move Caret Forward a Paragraph with Selection",
+      (v) => selectParagraphForward(v),
+      { category: "Editor Actions" },
+    ),
+    caret(
+      "editor.paragraphBackwardWithSelection",
+      "Move Caret Backward a Paragraph with Selection",
+      (v) => selectParagraphBackward(v),
+      { category: "Editor Actions" },
     ),
     text("editor.contextInfo", "Context Info", (v) => showContextInfo(v), {
       category: "View",

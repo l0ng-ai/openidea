@@ -119,6 +119,15 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(k.unknownActions).toEqual([]);
   });
 
+  it("maps Move Caret Forward / Backward a Paragraph", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="P" parent="$default"><action id="EditorForwardParagraph"><keyboard-shortcut first-keystroke="alt shift CLOSE_BRACKET"/></action><action id="EditorBackwardParagraphWithSelection"><keyboard-shortcut first-keystroke="control alt shift OPEN_BRACKET"/></action></keymap>`,
+    );
+    expect(k.overrides["editor.paragraphForward"]).toEqual([normalizeBinding("Alt+Shift+]")]);
+    expect(k.overrides["editor.paragraphBackwardWithSelection"]).toEqual([normalizeBinding("Ctrl+Alt+Shift+[")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
   it("maps Swap Selection Boundaries", () => {
     const k = parseIdeaKeymap(
       `<keymap name="S" parent="$default"><action id="EditorSwapSelectionBoundaries"><keyboard-shortcut first-keystroke="control X" second-keystroke="control X"/></action></keymap>`,
