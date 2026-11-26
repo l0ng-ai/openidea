@@ -148,9 +148,10 @@ pub fn client_capabilities() -> Value {
                     "macro", "keyword", "modifier", "comment", "string", "number", "regexp",
                     "operator", "decorator"
                 ],
+                // The native TypeScript server only sends modifiers the client advertises.
                 "tokenModifiers": [
                     "declaration", "definition", "readonly", "static", "deprecated", "abstract",
-                    "async", "modification", "documentation", "defaultLibrary"
+                    "async", "modification", "documentation", "defaultLibrary", "local"
                 ],
                 "formats": ["relative"],
                 "overlappingTokenSupport": false,

@@ -44,7 +44,7 @@ export function PluginFormattersSection() {
               { value: "", label: tx("Automatic (language server first)") },
               ...choices
                 .filter((c) => c.languages.includes(language) || c.languages.includes("*"))
-                .map((c) => ({ value: c.id, label: c.name })),
+                .map((c) => ({ value: c.id, verbatim: true, label: c.name })),
               ...(selected?.[language] && !choices.some((c) => c.id === selected[language])
                 ? [{ value: selected[language]!, label: selected[language]! }]
                 : []),

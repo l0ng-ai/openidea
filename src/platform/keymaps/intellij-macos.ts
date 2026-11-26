@@ -75,6 +75,7 @@ export const intellijMacos: Record<string, string[]> = {
   "find.replaceInPath": ["Meta+Shift+R"],
   "find.usages": ["Alt+F7"],
   "find.showUsages": ["Meta+Alt+F7"],
+  "find.recentUsages": [],
   "find.highlightUsages": ["Meta+Shift+F7"],
 
   // Code
@@ -106,6 +107,7 @@ export const intellijMacos: Record<string, string[]> = {
   "code.deleteToLineEnd": [],
   "code.cutLineEnd": ["Ctrl+K"],
   "code.hungryBackspace": [],
+  "editor.swapSelectionBoundaries": [],
   "code.moveLineUp": ["Alt+Shift+Up"],
   "code.moveLineDown": ["Alt+Shift+Down"],
   "code.moveStatementUp": ["Meta+Shift+Up"],
@@ -128,6 +130,7 @@ export const intellijMacos: Record<string, string[]> = {
   "code.selectAllOccurrences": ["Ctrl+Meta+G"],
   "code.unselectOccurrence": ["Ctrl+Shift+G"],
   "code.addCaretsToLineEnds": ["Alt+Shift+G"],
+  "editor.selectLine": [],
   "code.startNewLine": ["Shift+Enter"],
   "code.startNewLineBefore": ["Meta+Alt+Enter"],
   // Before the HTTP / SQL consoles' ⌘↵ (Run), which wins there.
@@ -135,6 +138,8 @@ export const intellijMacos: Record<string, string[]> = {
   "editor.scrollToCenter": ["Ctrl+L"],
   "editor.scrollUp": [],
   "editor.scrollDown": [],
+  "editor.scrollToTop": [],
+  "editor.scrollToBottom": [],
   "editor.moveToPageTop": ["Meta+PageUp"],
   "editor.moveToPageBottom": ["Meta+PageDown"],
   "editor.moveToPageTopWithSelection": ["Meta+Shift+PageUp"],
@@ -143,6 +148,10 @@ export const intellijMacos: Record<string, string[]> = {
   "editor.codeBlockEnd": ["Meta+Alt+]"],
   "editor.codeBlockStartWithSelection": ["Meta+Alt+Shift+["],
   "editor.codeBlockEndWithSelection": ["Meta+Alt+Shift+]"],
+  "editor.paragraphForward": [],
+  "editor.paragraphBackward": [],
+  "editor.paragraphForwardWithSelection": [],
+  "editor.paragraphBackwardWithSelection": [],
   "editor.contextInfo": ["Ctrl+Shift+Q"],
   "navigate.customRegion": ["Meta+Alt+."],
   "code.expandToLevel1": ["Meta+* 1"],
@@ -195,6 +204,7 @@ export const intellijMacos: Record<string, string[]> = {
   "refactor.move": ["F6"],
   "refactor.safeDelete": ["Meta+Delete"],
   "refactor.extractInterface": [],
+  "refactor.extractTypeAlias": [],
   "refactor.pullMembersUp": [],
   "refactor.pushMembersDown": [],
 

@@ -9,7 +9,7 @@ import { confirm } from "@/workbench/messages";
 import { tx } from "@/platform/i18n";
 import { create } from "zustand";
 import { Channel } from "@tauri-apps/api/core";
-import { executeAction } from "@/platform/actions";
+import { executeAction, getAction, isActionEnabled } from "@/platform/actions";
 import { choosePath, choosePaths } from "@/platform/choosePath";
 import {
   call,
@@ -532,6 +532,18 @@ export async function importModuleFromExistingSources() {
         title: tx`Already in the project`,
         body: tx`${name} is inside the opened project, so its sources are already part of it.`,
         key: "module-import-inside",
+      });
+      return;
+    }
+    const attach = getAction("project.attachFolder");
+    if (!attach || !isActionEnabled(attach)) {
+      // Another root can't be attached here (a remote window): say so instead of offering it.
+      notifications().notify({
+        group: "tools",
+        level: "warning",
+        title: tx`Module was not imported`,
+        body: tx`${name} has no pom.xml or Gradle build file, and a folder outside the project can't be attached as another root in this window. Move it into the project folder, or add a pom.xml or Gradle build file to it.`,
+        key: "module-import-no-attach",
       });
       return;
     }

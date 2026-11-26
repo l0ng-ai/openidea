@@ -124,6 +124,25 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* A breadcrumb parent is a link back up the tree, like in IDEA. */
+.crumbLink {
+  min-width: 0;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+}
+.crumbLink:hover {
+  color: var(--link-hover);
+  text-decoration: underline;
+}
+.crumbLink:focus-visible {
+  outline: 2px solid var(--focus-ring, var(--accent));
+}
 .currentCrumb {
   flex: none;
   max-width: 100%;

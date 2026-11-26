@@ -36,7 +36,7 @@ import { baseExtensions, compartments, contributionExtensions } from "../cm/setu
 import { markdownImageFolds } from "../cm/folding";
 import { gutterMenuItems, inGutterMenuArea } from "../gutterMenu";
 import { offerMakeWritable } from "../fileAttributes";
-import type { DocModel } from "./document";
+import { restoresVcsText, type DocModel } from "./document";
 import type { WorkspaceHistoryTarget } from "./workspaceHistory";
 import { isNavigation } from "./navHistory";
 
@@ -326,7 +326,7 @@ export class EditorSlot {
         navigatedFrom = { line: line.number - 1, col: head - line.from };
       }
       if (tr.docChanged && !isExternalChange(tr) && !tr.annotation(transientChange)) {
-        this.model.onLocal(tr.changes, this);
+        this.model.onLocal(tr.changes, this, restoresVcsText(tr));
         if (
           tr.isUserEvent("input") ||
           tr.isUserEvent("delete") ||
@@ -351,7 +351,7 @@ export class EditorSlot {
     }
     const tr = "startState" in spec ? spec : this.stored.update(spec);
     this.stored = tr.state;
-    if (tr.docChanged) this.model.onLocal(tr.changes, this);
+    if (tr.docChanged) this.model.onLocal(tr.changes, this, restoresVcsText(tr));
     if (rewritesIndents(tr)) this.model.redetectIndent();
   }
 

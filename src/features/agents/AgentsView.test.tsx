@@ -8,7 +8,7 @@ import { confirm, confirmChecked, showError } from "@/workbench/messages";
 import { promptInput } from "@/workbench/inputDialogs";
 import { ContextMenuHost, dragSession, hideContextMenu } from "@/ui";
 import { AgentsHeaderActions, AgentsView } from "./AgentsView";
-import { SESSION_KIND, TASK_DRAG } from "./model";
+import { GROUP_DRAG, SESSION_KIND, TASK_DRAG } from "./model";
 import { usePlatform } from "@/platform/platformInfo";
 import { archiveTask, unarchiveTask, deleteTask, dockTask, openTask, useAgents } from "./store";
 import { taskActions, taskMenu, useAgentsHeaderMenu } from "./taskActions";
@@ -84,8 +84,11 @@ const row = (id: string) =>
   within(screen.getByRole("tree", { name: "Agent tasks" }))
     .getByText(id)
     .closest('[role="treeitem"]')!;
-const select = (id: string, modifiers: MouseEventInit = {}) =>
-  fireEvent.mouseDown(row(id), { button: 0, ...modifiers });
+const select = (id: string, modifiers: MouseEventInit = {}) => {
+  const el = row(id);
+  fireEvent.mouseDown(el, { button: 0, ...modifiers });
+  fireEvent.click(el, { button: 0, ...modifiers });
+};
 const selectedTasks = () =>
   screen
     .queryAllByRole("treeitem", { selected: true })
@@ -617,5 +620,170 @@ describe("Agents pinned and grouped tasks", () => {
     } finally {
       restore();
     }
+  });
+
+  const dropOnRow = (target: Element, type: string, payload: string, position: "before" | "after") => {
+    vi.spyOn(target, "getBoundingClientRect").mockReturnValue({
+      top: 100,
+      bottom: 124,
+      left: 0,
+      right: 200,
+      width: 200,
+      height: 24,
+      x: 0,
+      y: 100,
+      toJSON: () => {},
+    });
+    const y = position === "before" ? 104 : 120;
+    const restore = pointAt(target);
+    try {
+      const session = dragSession({ type, payload });
+      act(() => session.move(10, y));
+      const indicator = target.className;
+      act(() => session.drop(10, y));
+      return indicator;
+    } finally {
+      restore();
+    }
+  };
+
+  it("reorders tasks within a section by dragging before or after a sibling", () => {
+    const tasks = new Map(
+      [
+        { ...task("one"), updatedMs: 40 },
+        { ...task("two"), updatedMs: 30 },
+        { ...task("three"), updatedMs: 20 },
+      ].map((t) => [t.id, t]),
+    );
+    useAgents.setState({ tasks, organize: { groups: [], groupOf: {}, pinned: [] } });
+    setup();
+
+    const indicatorBefore = dropOnRow(row("one"), TASK_DRAG, "three", "before");
+    expect(indicatorBefore).toContain(styles.dropBefore);
+    expect(
+      treeRows()
+        .slice(1)
+        .map((t) => t.replace(/\d+[smhd]|now/g, "").trim()),
+    ).toEqual(["three", "one", "two"]);
+
+    // Updating activity later keeps the manual order intact.
+    act(() => {
+      const next = new Map(useAgents.getState().tasks);
+      next.set("two", { ...next.get("two")!, updatedMs: 999 });
+      useAgents.setState({ tasks: next });
+    });
+    expect(
+      treeRows()
+        .slice(1)
+        .map((t) => t.replace(/\d+[smhd]|now/g, "").trim()),
+    ).toEqual(["three", "one", "two"]);
+
+    const indicatorAfter = dropOnRow(row("two"), TASK_DRAG, "three", "after");
+    expect(indicatorAfter).toContain(styles.dropAfter);
+    expect(
+      treeRows()
+        .slice(1)
+        .map((t) => t.replace(/\d+[smhd]|now/g, "").trim()),
+    ).toEqual(["one", "two", "three"]);
+  });
+
+  it("places a task at the exact slot when dragged across Pinned, custom, and matching status groups", () => {
+    const tasks = new Map(
+      [
+        { ...task("one"), updatedMs: 40 },
+        { ...task("two"), updatedMs: 30 },
+        { ...task("three"), updatedMs: 20 },
+        { ...task("run", "running"), updatedMs: 50 },
+      ].map((t) => [t.id, t]),
+    );
+    useAgents.setState({ tasks, organize: { groups: [frontend], groupOf: {}, pinned: ["one"] } });
+    setup();
+
+    // Drag `three` before `one` in Pinned -> pins `three` above `one`.
+    dropOnRow(row("one"), TASK_DRAG, "three", "before");
+    expect(useAgents.getState().organize.pinned).toEqual(["one", "three"]);
+    expect(useAgents.getState().organize.order?.pinned).toEqual(["three", "one"]);
+
+    // Drag `three` back onto `Ready to Review` after `two` -> unpins `three` and places it after `two`.
+    dropOnRow(row("two"), TASK_DRAG, "three", "after");
+    expect(useAgents.getState().organize.pinned).toEqual(["one"]);
+    expect(useAgents.getState().organize.order?.["g:ready"]).toEqual(["two", "three"]);
+
+    // Dragging a `running` task onto a `ready` row is rejected.
+    const rejected = dropOnRow(row("two"), TASK_DRAG, "run", "before");
+    expect(rejected).not.toContain(styles.dropBefore);
+    expect(useAgents.getState().organize.order?.["g:ready"]).toEqual(["two", "three"]);
+
+    // Dropping a pinned `ready` task onto the `Ready to Review` header returns it to the status group.
+    const restore = pointAt(screen.getByText("Ready to Review"));
+    try {
+      const session = dragSession({ type: TASK_DRAG, payload: "one" });
+      act(() => session.move(10, 10));
+      act(() => session.drop(10, 10));
+      expect(useAgents.getState().organize.pinned).toEqual([]);
+    } finally {
+      restore();
+    }
+  });
+
+  it("disables row reordering while searching", () => {
+    setup();
+    fireEvent.change(screen.getByLabelText("Search tasks"), { target: { value: "o" } });
+    const oneRow = document.querySelector('[data-tree-key="one"]')!;
+    const indicator = dropOnRow(oneRow, TASK_DRAG, "two", "before");
+    expect(indicator).not.toContain(styles.dropBefore);
+    expect(useAgents.getState().organize.order).toBeUndefined();
+  });
+
+  it("reorders custom groups by dragging a group header before or after another", () => {
+    const backend = { id: "g2", name: "Backend" };
+    useAgents.setState({ organize: { groups: [frontend, backend], groupOf: {}, pinned: [] } });
+    setup();
+
+    const frontendRow = screen.getByText("Frontend").closest('[role="treeitem"]')!;
+    const indicator = dropOnRow(frontendRow, GROUP_DRAG, "g2", "before");
+    expect(indicator).toContain(styles.dropBefore);
+    expect(useAgents.getState().organize.groups.map((g) => g.id)).toEqual(["g2", "g1"]);
+  });
+
+  it("opens a task only on click release, not when starting a drag", () => {
+    setup();
+    const target = row("one");
+    const sourceSpan = within(row("two") as HTMLElement)
+      .getByText("two")
+      .closest(`.${styles.row}`)!;
+    vi.spyOn(target, "getBoundingClientRect").mockReturnValue({
+      top: 100,
+      bottom: 124,
+      left: 0,
+      right: 200,
+      width: 200,
+      height: 24,
+      x: 0,
+      y: 100,
+      toJSON: () => {},
+    });
+    const restore = pointAt(target);
+    try {
+      // Pressing and dragging `two` onto `one` must not open `two`, even if the browser fires a click after drop.
+      fireEvent.pointerDown(sourceSpan, { button: 0, clientX: 10, clientY: 130 });
+      fireEvent.mouseDown(row("two"), { button: 0 });
+      expect(openTask).not.toHaveBeenCalled();
+      fireEvent.pointerMove(window, { buttons: 1, clientX: 10, clientY: 104 });
+      fireEvent.pointerUp(window, { button: 0, clientX: 10, clientY: 104 });
+      fireEvent.click(sourceSpan, { button: 0 });
+      expect(openTask).not.toHaveBeenCalled();
+      expect(useAgents.getState().organize.order?.["g:ready"]?.[0]).toBe("two");
+    } finally {
+      restore();
+    }
+
+    // A normal press + release without dragging opens the task on click.
+    fireEvent.pointerDown(sourceSpan, { button: 0, clientX: 10, clientY: 104 });
+    fireEvent.mouseDown(row("two"), { button: 0 });
+    expect(openTask).not.toHaveBeenCalled();
+    fireEvent.pointerUp(window, { button: 0, clientX: 10, clientY: 104 });
+    fireEvent.click(sourceSpan, { button: 0 });
+    expect(openTask).toHaveBeenCalledWith("two");
   });
 });

@@ -82,6 +82,25 @@ describe("execution point state", () => {
     expect(useExecutionPoint.getState()).toMatchObject({ path, line: 9 });
   });
 
+  it("keeps a failed stack trace's reason for the frames list, and a retry loads the frames", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    ipc.debugStackTrace.mockResolvedValueOnce({
+      status: "error",
+      error: { kind: "timedOut", message: "stackTrace timed out after 30s" },
+    } as never);
+    stopped();
+    await settle();
+    expect(useDebug.getState().sessions[1]).toMatchObject({
+      frames: [],
+      framesError: "stackTrace timed out after 30s",
+    });
+    expect(error).toHaveBeenCalled();
+    await selectThread(1, 5);
+    expect(useDebug.getState().sessions[1]).toMatchObject({ framesError: null, selectedFrame: 100 });
+    expect(useExecutionPoint.getState()).toMatchObject({ path, line: 6840 });
+    error.mockRestore();
+  });
+
   it("counts stops per session", async () => {
     adoptSession(2, { adapter: "java-debug" });
     expect(useDebug.getState().sessions[1]!.stops).toBe(0);

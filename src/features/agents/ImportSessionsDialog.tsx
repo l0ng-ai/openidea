@@ -6,7 +6,14 @@ import { hasPrimaryModifier } from "@/platform/keymap";
 import { relativePath, useProject } from "@/platform/project";
 import { useTx } from "@/platform/i18n";
 import { age, providerIcon } from "./model";
-import { externalKey, hideImportSessions, importExternalSessions, refreshExternalSessions, useAgents } from "./store";
+import {
+  externalKey,
+  forkExternalSessions,
+  hideImportSessions,
+  importExternalSessions,
+  refreshExternalSessions,
+  useAgents,
+} from "./store";
 import styles from "./Agents.module.css";
 
 /** The backend lists at most this many sessions, newest first. */
@@ -62,7 +69,7 @@ function ImportSessionsDialog() {
   const [query, setQuery] = useState("");
   // By key, so a filter or rescan never moves the selection onto another session.
   const [sel, setSel] = useState<Selection>({ leadKey: null, anchorKey: null, keys: null });
-  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [progress, setProgress] = useState<{ done: number; total: number; fork?: boolean } | null>(null);
   // The batch's rows, listed while it imports (they leave `external` one by one).
   const [frozen, setFrozen] = useState<Row[] | null>(null);
   const abort = useRef<AbortController | null>(null);
@@ -112,25 +119,36 @@ function ImportSessionsDialog() {
       keys: new Set(view.map((r) => r.key)),
     });
   };
-  const importChosen = () => {
+  const runChosen = (fork: boolean) => {
     if (busy || !shown || !chosen.length) return;
-    const batch = chosen.map((r) => ({ provider: r.provider, sessionId: r.sessionId, title: r.title }));
     setFrozen(chosen);
     setSel({ leadKey: chosen[0]!.key, anchorKey: chosen[0]!.key, keys: new Set(chosen.map((r) => r.key)) });
-    setProgress({ done: 0, total: batch.length });
+    const total = chosen.length;
+    setProgress({ done: 0, total, fork });
     const controller = new AbortController();
     abort.current = controller;
-    void importExternalSessions(
-      batch,
-      (done) => live.current && setProgress({ done, total: batch.length }),
-      controller.signal,
-    ).finally(() => live.current && hideImportSessions());
+    const progress = (done: number) => live.current && setProgress({ done, total, fork });
+    const finish = () => live.current && hideImportSessions();
+    if (fork) {
+      const batch = chosen.map((r) => ({
+        provider: r.provider,
+        sessionId: r.sessionId,
+        cwd: r.cwd ?? root ?? "",
+        title: r.title,
+      }));
+      void forkExternalSessions(batch, progress, controller.signal).finally(finish);
+    } else {
+      const batch = chosen.map((r) => ({ provider: r.provider, sessionId: r.sessionId, title: r.title }));
+      void importExternalSessions(batch, progress, controller.signal).finally(finish);
+    }
   };
+  const importChosen = () => runChosen(false);
   // Cancel, Esc and the close button stop a running batch after the import in flight.
   const close = () => {
     abort.current?.abort();
     hideImportSessions();
   };
+  const forkChosen = () => runChosen(true);
   const onFilterKey = (e: KeyboardEvent) => {
     if (e.key === "Enter") {
       e.preventDefault();
@@ -155,6 +173,7 @@ function ImportSessionsDialog() {
   };
   const providerName = (id: string) => providers.find((p) => p.id === id)?.name ?? id;
   const importLabel = chosen.length > 1 ? tx`Import ${chosen.length}` : tx("Import");
+  const forkLabel = chosen.length > 1 ? tx`Fork ${chosen.length}` : tx("Fork");
 
   return (
     <Dialog
@@ -169,7 +188,9 @@ function ImportSessionsDialog() {
           </Button>
           {progress ? (
             <span className={styles.chooserHint}>
-              {tx`Importing ${Math.min(progress.done + 1, progress.total)} of ${progress.total}…`}
+              {progress.fork
+                ? tx`Forking ${Math.min(progress.done + 1, progress.total)} of ${progress.total}…`
+                : tx`Importing ${Math.min(progress.done + 1, progress.total)} of ${progress.total}…`}
             </span>
           ) : shown && external.length >= LISTED_MAX ? (
             <span className={styles.chooserHint}>
@@ -180,6 +201,7 @@ function ImportSessionsDialog() {
       }
       buttons={[
         { label: "Cancel", role: "cancel" },
+        { label: forkLabel, onClick: forkChosen, disabled: busy || !shown || !chosen.length },
         { label: importLabel, role: "default", onClick: importChosen, disabled: busy || !shown || !chosen.length },
       ]}
     >

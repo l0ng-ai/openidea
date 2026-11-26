@@ -921,13 +921,15 @@ pub(crate) fn merge(base: &mut Value, layer: Value) {
     }
 }
 
-/// Excludes project-relative Maven POM paths from JDTLS import, preserving user exclusions.
+/// Excludes project-relative Maven POM paths and the project's excluded folders (everything
+/// below them, such as checkouts in `.worktrees`) from JDTLS import, preserving user exclusions.
 /// `build_files` (`file:` URIs), when given, are the only build files jdtls imports: the
 /// exclusions cannot leave out a module of a reactor jdtls imports.
 pub fn configure_maven_import(
     cfg: &mut LanguageServerConfig,
     root: &Path,
     excluded_poms: &[PathBuf],
+    excluded_folders: &[String],
     build_files: Option<&[String]>,
 ) {
     if cfg.name != "jdtls" {
@@ -951,15 +953,22 @@ pub fn configure_maven_import(
                 json!("**/META-INF/maven/**"),
             ]
         });
-    for pom in excluded_poms {
-        let directory = root.join(pom).parent().unwrap_or(root).to_path_buf();
+    // Java NIO glob syntax treats these characters specially even in literal paths.
+    let glob = |directory: &Path| -> String {
         let directory = directory.to_string_lossy().replace('\\', "/");
-        // Java NIO glob syntax treats these characters specially even in literal paths.
-        let escaped: String =
-            directory.chars().flat_map(|c| if "*?[]{}\\".contains(c) { vec!['\\', c] } else { vec![c] }).collect();
-        exclusions.push(json!(escaped));
+        directory.chars().flat_map(|c| if "*?[]{}\\".contains(c) { vec!['\\', c] } else { vec![c] }).collect()
+    };
+    for pom in excluded_poms {
+        exclusions.push(json!(glob(root.join(pom).parent().unwrap_or(root))));
     }
-    if !excluded_poms.is_empty() {
+    // Builds below an excluded folder repeat the coordinates of the project's own builds (a
+    // checkout of the same repository) and would take their place: one project per name.
+    for folder in excluded_folders.iter().map(|f| f.trim_matches('/')).filter(|f| !f.is_empty()) {
+        let folder = glob(&root.join(folder));
+        exclusions.push(json!(format!("{folder}/**")));
+        exclusions.push(json!(folder));
+    }
+    if !excluded_poms.is_empty() || !excluded_folders.is_empty() {
         merge_init_options(cfg, json!({"settings": {"java": {"import": {"exclusions": exclusions}}}}));
         if let Some(files) = build_files {
             merge_init_options(cfg, json!({"projectConfigurations": files}));
@@ -975,8 +984,13 @@ pub fn configure_maven_import(
             && let Some(workspace) = cfg.args.get_mut(index + 1)
         {
             let mut hash = 0xcbf29ce484222325u64;
-            for pom in excluded_poms {
-                for byte in pom.to_string_lossy().bytes().chain([0]) {
+            let excluded = excluded_poms.iter().map(|pom| pom.to_string_lossy()).chain(
+                // Folders hash apart from POMs of the same name; projects without excluded
+                // folders keep the workspace their unlinked POMs already had.
+                excluded_folders.iter().map(|f| format!("folder:{f}").into()),
+            );
+            for path in excluded {
+                for byte in path.bytes().chain([0]) {
                     hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
                 }
             }
@@ -2931,7 +2945,7 @@ mod maven_linkage_tests {
         let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
         cfg.args = vec!["-data".into(), "/cache/jdtls".into()];
         merge_init_options(&mut cfg, json!({"settings":{"java":{"import":{"exclusions":["**/custom"]}}}}));
-        configure_maven_import(&mut cfg, tmp.path(), &["a/child/pom.xml".into(), "a/pom.xml".into()], None);
+        configure_maven_import(&mut cfg, tmp.path(), &["a/child/pom.xml".into(), "a/pom.xml".into()], &[], None);
         let options = serde_json::to_value(cfg.initialization_options).unwrap();
         let exclusions = options.pointer("/settings/java/import/exclusions").unwrap().as_array().unwrap();
         assert!(exclusions.contains(&json!("**/custom")));
@@ -2942,16 +2956,40 @@ mod maven_linkage_tests {
     }
 
     #[test]
+    fn import_excludes_the_projects_excluded_folders_and_changes_persistent_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = |p: &str| tmp.path().join(p).to_string_lossy().replace('\\', "/");
+        let workspace = |excluded: &[String]| {
+            let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
+            cfg.args = vec!["-data".into(), "/cache/jdtls".into()];
+            configure_maven_import(&mut cfg, tmp.path(), &[], excluded, None);
+            (serde_json::to_value(cfg.initialization_options).unwrap(), cfg.args[1].clone())
+        };
+        let (options, data) = workspace(&[".worktrees".into(), "out/[old]".into()]);
+        let exclusions = options.pointer("/settings/java/import/exclusions").unwrap().as_array().unwrap();
+        // The folder and everything below it; glob characters in the path stay literal.
+        assert!(exclusions.contains(&json!(dir(".worktrees"))));
+        assert!(exclusions.contains(&json!(format!("{}/**", dir(".worktrees")))));
+        assert!(exclusions.contains(&json!(format!("{}/\\[old\\]/**", dir("out")))));
+        assert!(exclusions.contains(&json!("**/node_modules/**")));
+        assert!(options.get("projectConfigurations").is_none());
+        // Projects imported before the folder was excluded stay in the old workspace.
+        assert!(data.starts_with("/cache/jdtls-maven-"));
+        assert_ne!(data, workspace(&[".other".into()]).1);
+        assert_eq!(workspace(&[]).1, "/cache/jdtls");
+    }
+
+    #[test]
     fn import_lists_the_build_files_when_given() {
         let tmp = tempfile::tempdir().unwrap();
         let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
         let files = ["file:///p/r/x/pom.xml".to_owned(), "file:///p/build.gradle".to_owned()];
-        configure_maven_import(&mut cfg, tmp.path(), &["r/y/pom.xml".into()], Some(&files));
+        configure_maven_import(&mut cfg, tmp.path(), &["r/y/pom.xml".into()], &[], Some(&files));
         let options = serde_json::to_value(cfg.initialization_options).unwrap();
         assert_eq!(options["projectConfigurations"], json!(files));
         // Nothing unlinked: jdtls finds the build files itself.
         let mut cfg = custom_server("jdtls", &LanguageServerSettings::default());
-        configure_maven_import(&mut cfg, tmp.path(), &[], Some(&files));
+        configure_maven_import(&mut cfg, tmp.path(), &[], &[], Some(&files));
         assert!(serde_json::to_value(cfg.initialization_options).unwrap().get("projectConfigurations").is_none());
     }
 

@@ -38,6 +38,8 @@ TypeScript 服务器以 `tsconfig.json`、`jsconfig.json` 或 `package.json` 所
 
 Vue、Astro 和 Angular 服务器也会使用这里选择的版本。TypeScript 7（原生移植版）没有语言服务 API，因此 IDE 在安装 `typescript-language-server` 以及 Vue、Svelte、Astro 服务器时会一并安装 `typescript@6`。
 
+原生 TypeScript 7 服务器与基于 tsserver 的服务器共用 **JavaScript 和 TypeScript** 配色方案。模块级函数使用 **全局函数**，局部函数调用使用 **函数调用**。语言服务器将符号标记为标准库成员时，会应用 **预定义函数** 配色。TypeScript 7.0.2 在不区分大小写的文件系统上可能漏掉该标记（[TypeScript 修复](https://github.com/microsoft/typescript-go/pull/4654)）。
+
 ## 环境配置
 
 ### 安装语言服务器

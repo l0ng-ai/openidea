@@ -95,6 +95,14 @@ export interface StateQuery {
   file?: string;
 }
 
+/** Whether a result's test path is the gutter target's. */
+export function matchesTarget(result: string[], { path, file }: StateQuery): boolean {
+  if (!path.length || result.length < path.length) return false;
+  const offset = result.length - path.length;
+  if (!path.every((p, i) => segmentMatches(result[offset + i]!, p))) return false;
+  return file === undefined || (offset > 0 && sameFile(result[0]!, file));
+}
+
 /**
  * Last state of a gutter target: failed when any matching result failed (a
  * parameterised test failed for one of its parameters), else passed.
@@ -103,10 +111,7 @@ export function testState({ path, file }: StateQuery): TestState | null {
   if (!path.length) return null;
   let passed = false;
   for (const e of entries.values()) {
-    if (e.path.length < path.length) continue;
-    const offset = e.path.length - path.length;
-    if (!path.every((p, i) => segmentMatches(e.path[offset + i]!, p))) continue;
-    if (file !== undefined && (offset === 0 || !sameFile(e.path[0]!, file))) continue;
+    if (!matchesTarget(e.path, { path, file })) continue;
     if (e.state === "failed") return "failed";
     passed = true;
   }

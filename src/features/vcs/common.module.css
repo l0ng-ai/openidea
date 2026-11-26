@@ -730,9 +730,6 @@
   flex: 1;
   min-width: 0;
 }
-.pushRepoName {
-  min-width: 20px;
-}
 .pushRepoLabel,
 .pushSourceBranch {
   display: block;

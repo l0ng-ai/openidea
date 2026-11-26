@@ -40,6 +40,8 @@ const ATTRIBUTE_NAMES: Record<string, string> = {
   DEFAULT_DOC_COMMENT_TAG: "docCommentTag",
   DEFAULT_DOC_COMMENT_TAG_VALUE: "docCommentTagValue",
   DEFAULT_DOC_MARKUP: "docCommentMarkup",
+  // Java's annotation key outranks the default it falls back to.
+  ANNOTATION_NAME_ATTRIBUTES: "metadata",
   DEFAULT_METADATA: "metadata",
   DEFAULT_OPERATION_SIGN: "operator",
   DEFAULT_PARENTHS: "operator",
@@ -297,6 +299,8 @@ for (const id of [
 // its fallback's. TypeScript keys win over JavaScript (TS.* falls back to JS.*), then Python, then the
 // shared defaults; within a language, the key listed first above. DEFAULT_DOT, _COMMA and _SEMICOLON are
 // not mapped: the one punctuation colour here would spread them to every brace and operator.
+/** ANNOTATION_NAME_ATTRIBUTES as IntelliJ's bundled Default and Darcula schemes set it. */
+const PARENT_ANNOTATIONS: Record<string, string> = { Default: "#808000", Darcula: "#bbb529" };
 const KEY_ORDER = new Map(Object.keys(ATTRIBUTE_NAMES).map((name, i) => [name, i]));
 const LANGUAGE_PRECEDENCE = ["TS.", "JS.", "PY."];
 const precedence = (name: string) => {
@@ -488,6 +492,10 @@ export function parseIcls(
     const own = new Set([...entries.keys()].flatMap((name) => (name ? targets(name) : [])));
     for (const [id, value] of Object.entries(DARCULA_ATTRIBUTES)) if (!own.has(id)) attributes[id] ??= { ...value };
   }
+  // Both bundled parents set Java's annotation key itself, so a file that leaves it out shows the parent's
+  // colour there, not its own DEFAULT_METADATA.
+  if (Object.hasOwn(PARENT_ANNOTATIONS, parentName) && !entries.has("ANNOTATION_NAME_ATTRIBUTES"))
+    attributes.metadata = { bold: false, italic: false, foreground: PARENT_ANNOTATIONS[parentName]! };
   const bg = attributes.text?.background;
   const rgb = bg ? [1, 3, 5].map((i) => parseInt(bg.slice(i, i + 2), 16)) : [255, 255, 255];
   const dark = rgb[0]! * 0.299 + rgb[1]! * 0.587 + rgb[2]! * 0.114 < 128;

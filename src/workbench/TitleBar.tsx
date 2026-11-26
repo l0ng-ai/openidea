@@ -2,6 +2,7 @@ import { ContributedToolbar } from "./ContributedToolbar";
 import { useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { useActions } from "@/platform/actions";
+import { isWebMode } from "@/platform/webBridge";
 import { shortcutLabel, useKeymap } from "@/platform/keymap";
 import { basename, useProject } from "@/platform/project";
 import { BarButton, Icon, IconButton, Menu, type MenuItem, showContextMenu, T } from "@/ui";
@@ -326,6 +327,7 @@ export function TitleBar({
 }) {
   const overlay = usePlatform((s) => s.overlayTitleBar);
   const frameless = usePlatform((s) => s.framelessTitleBar);
+  const showMainMenu = frameless || isWebMode();
   const windowButtons = usePlatform((s) => s.windowButtons);
   const { map, shown, menu } = useToolbar();
   const [menuExpanded, setMenuExpanded] = useState(false);
@@ -344,7 +346,7 @@ export function TitleBar({
     frameless && captionButtons(windowButtons, "left", dialog).length > 0 && styles.captionsAtLeft,
     frameless && captionButtons(windowButtons, "right", dialog).length === 0 && styles.noCaptionsAtRight,
   );
-  // Where the title bar carries the main menu (Windows, Linux) it stays, or nothing
+  // Where the title bar carries the main menu (Windows, Linux, web) it stays, or nothing
   // would lead back out of Distraction Free Mode or bring the toolbar back.
   if (bare || compact)
     return (
@@ -355,13 +357,13 @@ export function TitleBar({
         data-titlebar={compact ? "compact" : "bare"}
       >
         {frameless && <WindowControls side="left" />}
-        {frameless && <MainMenu />}
+        {showMainMenu && <MainMenu />}
         {compact ? <CompactTitle title={title} /> : frameless && <div className={styles.drag} {...windowDragRegion} />}
         {frameless && <WindowControls side="right" />}
       </header>
     );
   const entry = (id: string) => <ToolbarEntry key={id} id={id} items={map} />;
-  const menuRow = frameless && !minimal && separateMenu;
+  const menuRow = showMainMenu && !minimal && separateMenu;
   const header = (
     <header
       ref={setBar}
@@ -374,7 +376,7 @@ export function TitleBar({
       }}
     >
       {frameless && <WindowControls side="left" dialog={dialog} />}
-      {frameless && !minimal && !separateMenu && <MainMenu onExpandedChange={setMenuExpanded} />}
+      {showMainMenu && !minimal && !separateMenu && <MainMenu onExpandedChange={setMenuExpanded} />}
       {title && (
         <span className={styles.windowTitle} {...windowDragRegion}>
           {typeof title === "string" ? <T>{title}</T> : title}
