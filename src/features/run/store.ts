@@ -57,6 +57,7 @@ import { TeamcityOutput } from "./testing/teamcity";
 import type { TestStdout } from "./testing/types";
 import { flutterMachineOutput, isFlutterMachineRun } from "./flutterMachine";
 import { recordTestStates } from "./testing/states";
+import { packageScript, watchLaunch } from "./testing/watch";
 import { failedTestPaths, leafTestPaths, rerunFailedConfigs, testsConfigs } from "./testing/rerun";
 import { testsBySubproject } from "./testing/gradleSubprojects";
 import { buildCMake, isCMakeBuild } from "./cmake";
@@ -1112,6 +1113,13 @@ async function startRunIn(
   };
   try {
     let launch = options.launch ?? config;
+    // Jest / Vitest "Watch for changes" (Debug runs the tests once).
+    if (!options.launch && launch.watch && launch.isTest && frameworkFor(launch) === "js") {
+      const watched = watchLaunch(launch, await packageScript(launch));
+      if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
+      if (watched) launch = watched;
+      else enqueue(sessionId, { kind: "system", text: tx`No Jest or Vitest command found: the tests run once.\n` });
+    }
     // A Maven/Gradle configuration's own command is its build; Rebuild adds clean.
     if (!options.launch) launch = applyBuildPolicyToCommand(launch);
     // "Build and run using: Gradle": the module's Gradle build compiles and launches it.
@@ -1642,6 +1650,14 @@ useRun.subscribe((s, prev) => {
 /** The configuration was saved or temporary in this window and has been removed since. */
 export function configRemoved(id: string): boolean {
   return listedConfigIds.has(id) && !useRun.getState().configs.some((c) => c.id === id);
+}
+
+/** "Rerun Automatically": a Jest / Vitest run in watch mode in the same tab; off stops the watcher. */
+export function toggleRerunAutomatically(sessionId: string) {
+  const session = getSession(sessionId);
+  if (!session) return;
+  if (session.config.watch && isLive(session)) void stopSession(sessionId);
+  else void startRun({ ...rerunConfig(session), watch: true }, sessionId, session.baseConfig && baseConfigOf(session));
 }
 
 export function rerunSession(sessionId: string) {

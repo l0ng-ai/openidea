@@ -187,6 +187,10 @@ pub struct RunExtras {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[specta(optional)]
     pub test_runner: Option<String>,
+    /// Jest / Vitest "Watch for changes": the run stays alive and reruns the tests after each edit.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[specta(optional)]
+    pub watch: bool,
 }
 
 impl Default for RunExtras {
@@ -211,6 +215,7 @@ impl Default for RunExtras {
             stop_command: None,
             target: None,
             test_runner: None,
+            watch: false,
         }
     }
 }

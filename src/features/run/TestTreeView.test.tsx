@@ -151,6 +151,28 @@ describe("TestTreeView", () => {
   );
 });
 
+it("shows Rerun Automatically only where watch mode applies", () => {
+  const { unmount } = render(<Host />);
+  expect(screen.queryByRole("button", { name: "Rerun Automatically" })).toBeNull();
+  unmount();
+  const toggle = vi.fn();
+  render(
+    <TestTreeView
+      results={results()}
+      version={1}
+      cwd="/p"
+      selected={null}
+      onSelect={() => {}}
+      running
+      rerunAutomatically={{ on: true, toggle }}
+    />,
+  );
+  const button = screen.getByRole("button", { name: "Rerun Automatically" });
+  expect(button.getAttribute("aria-pressed")).toBe("true");
+  fireEvent.click(button);
+  expect(toggle).toHaveBeenCalledOnce();
+});
+
 describe("Previous / Next Failed Test", () => {
   const navigate = vi.fn();
   beforeEach(() => {

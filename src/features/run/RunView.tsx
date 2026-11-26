@@ -37,6 +37,7 @@ import {
   rerunSession,
   resizeTerminal,
   runSelectedTests,
+  toggleRerunAutomatically,
   runtime,
   sendStdin,
   setPendingInput,
@@ -48,7 +49,7 @@ import {
   pinSession,
 } from "./store";
 import { rerunFailedConfigs } from "./testing/rerun";
-import { formatDuration, nodeOutput } from "./testing";
+import { formatDuration, frameworkFor, nodeOutput } from "./testing";
 import { TestStatusBar, TestTreeView } from "./TestTreeView";
 import { StackTracePanel, useStackTraces, type StackTraceTab } from "./stackTrace";
 import { ThreadDumpPanel } from "./threadDump/ThreadDumpPanel";
@@ -406,6 +407,11 @@ export function SessionPanel({
                 onSelect={setSelectedTest}
                 canRunTests={(ids) => canRunSelectedTests(session.id, ids)}
                 onRunTests={(ids, debug) => void runSelectedTests(session.id, ids, debug)}
+                rerunAutomatically={
+                  frameworkFor(session.config) === "js"
+                    ? { on: !!session.config.watch && running, toggle: () => toggleRerunAutomatically(session.id) }
+                    : undefined
+                }
               />
             </SplitPanel>
             <SplitHandle />

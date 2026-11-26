@@ -12474,6 +12474,8 @@ export type RunExtras_Deserialize = {
 	 *  test output parser and how a single test is selected.
 	 */
 	testRunner?: string | null,
+	/**  Jest / Vitest "Watch for changes": the run stays alive and reruns the tests after each edit. */
+	watch?: boolean,
 };
 
 export type RunExtras_Serialize = {
@@ -12524,6 +12526,8 @@ export type RunExtras_Serialize = {
 	 *  test output parser and how a single test is selected.
 	 */
 	testRunner?: string | null,
+	/**  Jest / Vitest "Watch for changes": the run stays alive and reruns the tests after each edit. */
+	watch?: boolean,
 };
 
 /**  A process started from a run configuration. */

@@ -168,6 +168,11 @@ export class TestResults {
         case "summary":
           this.summary = { ...this.summary, ...stripUndefined(e) };
           break;
+        case "reset":
+          this.roots.length = 0;
+          this.byId.clear();
+          this.summary = {};
+          break;
       }
     }
   }

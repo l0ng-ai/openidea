@@ -10402,5 +10402,9 @@
   "No privileges are granted on this table.": "此表未授予任何权限。",
   "* With grant option: the grantee may grant the privilege to others.": "* WITH GRANT OPTION：被授权者可以将该权限再授予他人。",
   "Separate several prefixes with commas: they are tried in order, then the official source.": "多个前缀用逗号分隔：按顺序尝试，最后回退到官方源。",
-  "Recent Find Usages": "最近的查找用法"
+  "Recent Find Usages": "最近的查找用法",
+  "Watch for changes": "监视更改",
+  "Rerun Automatically": "自动重新运行",
+  "Debug runs the tests once, without watching.": "调试时测试只运行一次，不监视更改。",
+  "No Jest or Vitest command found: the tests run once.\n": "未找到 Jest 或 Vitest 命令：测试只运行一次。\n"
 }

@@ -21,7 +21,9 @@ export type TestEvent =
   | { type: "result"; path: string[]; status: Exclude<TestStatus, "running">; durationMs?: number }
   | { type: "location"; path: string[]; location: TestLocation }
   | { type: "output"; path: string[]; line: string }
-  | { type: "summary"; passed?: number; failed?: number; skipped?: number; durationMs?: number };
+  | { type: "summary"; passed?: number; failed?: number; skipped?: number; durationMs?: number }
+  /** A watch mode cycle begins: its results replace the previous ones. */
+  | { type: "reset" };
 
 export interface TestOutputParser {
   feed(line: string): TestEvent[];
