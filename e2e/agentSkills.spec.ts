@@ -354,15 +354,16 @@ test("manages multi-level skills in Settings and per-session overrides via Compo
   await sessionPopup.getByRole("button", { name: "Skills…" }).click();
   const settingsDialog = page.getByRole("dialog", { name: "Settings", exact: true });
   await expect(settingsDialog).toBeVisible();
-  await expect(settingsDialog.getByRole("heading", { name: "Skills" })).toBeVisible();
-  await expect(settingsDialog.getByTitle(".claude/skills").first()).toHaveText("Claude Code");
-  await expect(settingsDialog.getByText("context: fork")).toBeVisible();
-  await expect(settingsDialog.getByText("paths (2)")).toBeVisible();
+  await expect(settingsDialog.getByRole("treeitem", { name: "Skills", exact: true })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
 
   await settingsDialog.getByRole("button", { name: /^verify/ }).click();
   await expect(settingsDialog.getByText("Claude Code (.claude/skills)")).toBeVisible();
   await expect(settingsDialog.getByText("src/**/*.tsx, e2e/*.spec.ts")).toBeVisible();
   await expect(settingsDialog.getByText("SKILL.md is valid")).toBeVisible();
+  await expect(settingsDialog.getByText("Runs in a subagent where supported (context: fork)")).toBeVisible();
 
   await settingsDialog.getByRole("tab", { name: /Plugins/ }).click();
   await expect(settingsDialog.getByText("release-notes")).toBeVisible();

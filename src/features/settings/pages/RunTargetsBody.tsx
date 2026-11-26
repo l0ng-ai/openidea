@@ -304,7 +304,7 @@ function DockerConnectionSelect({ value, onChange }: { value: string; onChange: 
   const connections = useDockerConnections();
   const options: SelectOption[] = [
     { value: "", label: tx("Docker CLI default") },
-    ...connections.map((c) => ({ value: c.id, label: c.name })),
+    ...connections.map((c) => ({ value: c.id, verbatim: true, label: c.name })),
   ];
   if (value && connections.length && !connections.some((c) => c.id === value))
     options.push({ value, label: tx`${value} (missing)` });

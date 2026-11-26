@@ -301,6 +301,7 @@ function ChangelistBar() {
         value={value}
         options={lists.map((l) => ({
           value: l.id,
+          verbatim: true,
           label: l.name,
           detail: l.files.length === 1 ? tx`${l.files.length} file` : tx`${l.files.length} files`,
         }))}
@@ -316,7 +317,13 @@ function ScopeBar() {
   const custom = useCustomScopeList();
   const options = [
     ...BUILTIN_TODO_SCOPES,
-    ...custom.map((c) => ({ value: `custom:${c.name}` as TodoScope, label: c.name, detail: c.pattern })),
+    ...custom.map((c) => ({
+      value: `custom:${c.name}` as TodoScope,
+      verbatim: true,
+      verbatimDetail: true,
+      label: c.name,
+      detail: c.pattern,
+    })),
   ];
   return (
     <div className={styles.scopeBar}>

@@ -30,7 +30,10 @@ vi.mock("../diffDialog", () => ({ openDiffDialog: vi.fn() }));
 vi.mock("../DiffWindow", () => ({ showDiffWindow: vi.fn() }));
 
 import { getAction } from "@/platform/actions";
+import { clearContext, setContext } from "@/platform/context";
 import { registerVcsActions } from "../actions";
+import { setCommitDialogSelection } from "../commitDialogSelection";
+import { useCommit } from "../commitStore";
 import { useVcs } from "../store";
 
 const fs = (relPath: string, unstaged: FileStatus["unstaged"]): FileStatus => ({
@@ -83,6 +86,46 @@ describe("Add to VCS", () => {
     expect(notify).toHaveBeenCalledWith(
       expect.objectContaining({ title: "Nothing to add: the files are already under version control" }),
     );
+  });
+});
+
+describe("Add to VCS from the modal Commit dialog", () => {
+  beforeEach(() => {
+    setContext("activeToolWindow", "project");
+    useCommit.setState({ selection: [], selectionKeys: [] });
+    document.body.innerHTML = '<div data-changes-tree="dialog" tabindex="0"></div>';
+    (document.querySelector('[data-changes-tree="dialog"]') as HTMLElement).focus();
+    setCommitDialogSelection({ paths: ["/repo/dir/new.ts"], keys: ["unversioned:dir:dir"] });
+  });
+
+  afterEach(() => {
+    setCommitDialogSelection(null);
+    document.body.innerHTML = "";
+    clearContext("activeToolWindow");
+  });
+
+  it("stages the dialog tree's own selection while that tree has focus", async () => {
+    await addToVcs().run({ arg: undefined, ctx: { vcsAvailable: true, projectViewFocus: false } });
+    expect(stage).toHaveBeenCalledWith(["/repo/dir/new.ts"]);
+  });
+
+  it("does not fall back to the shared store or the Project view on an empty dialog selection", async () => {
+    setCommitDialogSelection({ paths: [], keys: [] });
+    useCommit.setState({ selection: ["/repo/dir/new.ts"], selectionKeys: ["leftover"] });
+    project.paths = ["/repo/dir/new.ts"];
+    await addToVcs().run({ arg: undefined, ctx: { vcsAvailable: true, projectViewFocus: true } });
+    expect(stage).not.toHaveBeenCalled();
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Nothing to add: the files are already under version control" }),
+    );
+  });
+
+  it("ignores the dialog selection once focus leaves its changes tree", async () => {
+    const message = document.createElement("textarea");
+    document.body.append(message);
+    message.focus();
+    await addToVcs().run({ arg: undefined, ctx: { vcsAvailable: true } });
+    expect(stage).not.toHaveBeenCalled();
   });
 });
 

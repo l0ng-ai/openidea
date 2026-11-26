@@ -146,6 +146,16 @@ describe("Application / Spring Boot command line", () => {
     expect(parsed.programArgs).toEqual(["--server.port=8081", "two words"]);
   });
 
+  it.each([
+    ["application", applicationType],
+    ["spring-boot", springBootType],
+  ] as const)("%s offers Enhanced class redefinition for Debug without changing the Run command", (_, type) => {
+    expect(type.fields.find((f) => f.key === "enhancedClassRedefinition")).toMatchObject({ control: "checkbox" });
+    const params = { mainClass: "a.Main", classpath: "${classpath}" };
+    expect(type.commandLine({ ...params, enhancedClassRedefinition: "true" })).toEqual(type.commandLine(params));
+    expect(jarApplicationType.fields.some((f) => f.key === "enhancedClassRedefinition")).toBe(false);
+  });
+
   it("reads VM options over several lines and with quoted spaces", () => {
     const line = applicationType.commandLine({
       mainClass: "a.Main",
