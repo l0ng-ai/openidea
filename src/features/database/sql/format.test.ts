@@ -87,3 +87,35 @@ describe("formatSql", () => {
     expect(sf(body)).toContain("$$ begin  return 1; end $$;");
   });
 });
+
+describe("formatSql word case", () => {
+  const upper = { keywords: "upper", identifiers: "keep" } as const;
+
+  it("upper-cases keywords and keeps identifiers (IDEA's default)", () => {
+    expect(formatted("select id from t_user where id = 1", "mysql", upper)).toBe(
+      "SELECT id\nFROM t_user\nWHERE id = 1",
+    );
+    expect(
+      formatted("select count(*) from t left join u on u.id = t.u_id where x is not null", "postgres", upper),
+    ).toBe("SELECT count(*)\nFROM t\n         LEFT JOIN u ON u.id = t.u_id\nWHERE x IS NOT NULL");
+  });
+
+  it("applies the identifier case to unquoted names only", () => {
+    const lower = { keywords: "lower", identifiers: "lower" } as const;
+    expect(formatted("SELECT Name, \"MixedCase\" FROM Users AS U WHERE U.Id = 'Ab'", "postgres", lower)).toBe(
+      "select name,\n       \"MixedCase\"\nfrom users as u\nwhere u.id = 'Ab'",
+    );
+  });
+
+  it("leaves qualified names that look like keywords, bind parameters and ClickHouse names alone", () => {
+    const both = { keywords: "upper", identifiers: "upper" } as const;
+    expect(formatted("select t.key from t where t.id = :userId", "postgres", { ...upper })).toBe(
+      "SELECT t.key\nFROM t\nWHERE t.id = :userId",
+    );
+    expect(formatted("select uniqExact(id) from events", "clickhouse", both)).toBe("SELECT uniqExact(id)\nFROM events");
+  });
+
+  it("keeps the case by default", () => {
+    expect(formatted("select id from t", "sqlite")).toBe("select id\nfrom t");
+  });
+});

@@ -122,6 +122,7 @@ export async function readManyFileLines(
   const out = new Map<string, string[] | null>();
   const queue = [...new Set(paths)];
   const worker = async () => {
+    // oxlint-disable-next-line no-await-in-loop -- bounded worker pool: queue.shift() limits fan-out to `concurrency`
     for (let p = queue.shift(); p !== undefined; p = queue.shift()) out.set(p, await readFileLines(p));
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, worker));

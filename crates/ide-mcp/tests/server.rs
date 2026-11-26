@@ -282,6 +282,8 @@ async fn a_folder_served_in_the_background_answers_initialize_list_and_call() {
     let init = rpc_for(&s, &inside, "initialize", json!({})).await;
     let instructions = init["result"]["instructions"].as_str().unwrap();
     assert!(instructions.contains(inventory.to_str().unwrap()), "{instructions}");
+    // Clients that load tool descriptions lazily still learn to establish the workspace first (#5751).
+    assert!(instructions.contains("first project-related operation in a session, call `get_workspace_roots`"));
     let list = rpc_for(&s, &inside, "tools/list", json!({})).await;
     assert_eq!(list["result"]["tools"][0]["description"], format!("Names {}", inventory.display()), "{list}");
     let call = rpc_for(&s, &inside, "tools/call", json!({ "name": "where" })).await;

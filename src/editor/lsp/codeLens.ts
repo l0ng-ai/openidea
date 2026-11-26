@@ -21,11 +21,13 @@ import { useProject } from "@/platform/project";
 import { debounce, docOf, isUnavailable, lspRequest } from "./lsp";
 import { posToOffset } from "./positions";
 import { featureBackoff, onLspRefresh, onServerSettled } from "./availability";
+import { isNavigating, onNavigation } from "./foreground";
 import { editorPrefs } from "@/platform/editorSettings";
 import { authorLabel, authorSummary, authorTooltip, blameFor, onBlameInvalidated } from "./authorLens";
 import { tx } from "@/platform/i18n";
 import { languageInfo, languagesForPath } from "@/editor/core/cm/languages";
 import { overrideKey, userFileType, validateFileTypeOverrides, validateFileTypes } from "@/platform/fileTypes";
+import { showFileUsages } from "@/editor/refactor";
 
 const LENS_KINDS = new Set<SymbolKind>([
   "class",
@@ -169,7 +171,10 @@ class UsagesLensPlugin {
   private offSettled: () => void;
   private offBlame: () => void;
   private offChanges: () => void;
+  private offNavigation: () => void;
   private skipped = false;
+  /** A pass was cut short or held back by a navigation, and runs once it is done. */
+  private yielded = false;
 
   constructor(private view: EditorView) {
     this.refresh();
@@ -185,6 +190,18 @@ class UsagesLensPlugin {
       this.refresh();
     });
     this.offBlame = onBlameInvalidated(() => this.refresh());
+    // Go to Declaration and the like go first: counts search the whole project on the same
+    // server, so in-flight ones are cancelled and asked again once the navigation is done.
+    this.offNavigation = onNavigation((navigating) => {
+      if (navigating) {
+        if (!this.pending.size) return;
+        this.cancel();
+        this.yielded = true;
+      } else if (this.yielded) {
+        this.yielded = false;
+        this.schedule();
+      }
+    });
     // Counts cover the whole project, so a change anywhere can outdate them
     // while this view is hidden and skips its passes: another document's edit
     // (the call sites) or a closed unsaved buffer, a backend patch (a
@@ -243,6 +260,10 @@ class UsagesLensPlugin {
     if (this.skipped) return;
     const doc = docOf(view);
     if (!doc) return;
+    if (isNavigating()) {
+      this.yielded = true;
+      return;
+    }
     const gen = this.generation;
     const usagesWanted = usagesEnabled() && !isLibrarySource(doc);
     const usages = usagesWanted && !usagesBackoff.active(doc.doc);
@@ -278,6 +299,11 @@ class UsagesLensPlugin {
       let unavailable = false;
       let retry = false;
       for (let i = 0; i < todo.length && !unavailable; i += CONCURRENCY) {
+        if (isNavigating()) {
+          this.yielded = true;
+          return;
+        }
+        // oxlint-disable-next-line no-await-in-loop -- batched in groups of CONCURRENCY; a batch's flags decide whether the next batch runs
         await Promise.all(
           todo.slice(i, i + CONCURRENCY).map(async (t) => {
             const request = nextRequestId();
@@ -328,6 +354,18 @@ class UsagesLensPlugin {
       }
       const allowNoUsages = editorPrefs().inlay.codeVisionNoUsages;
       const lenses: CodeLens[] = [];
+      // WebStorm's Code Vision on a Vue single-file component: its usages from other files, on request.
+      if (usagesWanted && doc.language === "vue" && !doc.virtual) {
+        const path = doc.path;
+        lenses.push({
+          pos: 0,
+          title: tx("Show component usages"),
+          tooltip: tx("Find where this component is imported and used"),
+          order: 5,
+          kind: "usages",
+          run: () => void showFileUsages(path),
+        });
+      }
       for (const t of visible) {
         const offset = posToOffset(text, { line: t.line, col: t.col });
         const who = lines && authorSummary(lines, t.startLine, t.endLine);
@@ -377,6 +415,7 @@ class UsagesLensPlugin {
     this.offSettled();
     this.offBlame();
     this.offChanges();
+    this.offNavigation();
     this.cancel();
   }
 }

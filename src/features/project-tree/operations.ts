@@ -2,9 +2,9 @@
  * File operations behind the project view's actions: new / rename / delete,
  * internal copy-cut-paste, drag & drop moves and OS file imports.
  */
-import { writeClipboardText } from "@/platform/clipboard";
+import { readClipboardPlainText, writeClipboardText } from "@/platform/clipboard";
 import { createElement, Fragment } from "react";
-import { askUsagesDetected, fileUsages, viewUsages } from "@/editor/refactor";
+import { askUsagesDetected, fileUsages, showFileUsages, viewUsages } from "@/editor/refactor";
 import { executeAction, getAction } from "@/platform/actions";
 import {
   canRevealInFileManager,
@@ -14,18 +14,22 @@ import {
   revealInFileManager,
 } from "@/platform/fileManager";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
-import { ask, confirmChecked } from "@/workbench/messages";
+import { ask, confirm, confirmChecked } from "@/workbench/messages";
 import { osClipboard } from "./clipboard";
 import { lastFileRefactoring, nextFileOperation, runFileRefactoring, undoFileRefactoring } from "./fileRefactor";
 import { openFileRefactorDialog, rememberedOptions } from "./FileRefactorDialogs";
 import { beginLocalImport, projectFs } from "./fs";
-import { IpcError, isCancelled } from "@/platform/ipc";
+import { renameCopiedJavaType } from "./javaCopy";
+import { javaPackageAt, pastedJavaClass, withJavaPackage } from "./javaPaste";
+import { currentRoots } from "@/platform/projectRoots";
+import { IpcError, isCancelled, isTauri } from "@/platform/ipc";
 import { MEMBER_PREFIX, type ProjectNode } from "./model";
 import {
   isInside,
   isSameOrInside,
   joinPath,
   nameOf,
+  outermostPaths,
   packageSegments,
   parentOf,
   uniqueName,
@@ -49,7 +53,7 @@ import { tx, txPart } from "@/platform/i18n";
 import { hostOs, isRemoteWindow } from "@/platform/remote";
 import { usePlatform } from "@/platform/platformInfo";
 import { pathToCopy, type PathKind } from "@/platform/copyPath";
-import { projectFolder, useProject } from "@/platform/project";
+import { projectFolder, relativePath, useProject } from "@/platform/project";
 export type { PathKind } from "@/platform/copyPath";
 
 /** Nodes that may be renamed, moved or deleted (not roots, groups or library sources). */
@@ -91,8 +95,7 @@ export function leadNode(): ProjectNode | null {
 
 /** Selected paths without entries nested in other selected folders. */
 export function topLevelPaths(nodes: ProjectNode[] = selectedNodes()): string[] {
-  const paths = assetPaths(nodes.map((n) => n.path));
-  return paths.filter((p) => !paths.some((q) => q !== p && isInside(p, q)));
+  return outermostPaths(assetPaths(nodes.map((n) => n.path)));
 }
 
 /** A visible sidecar is already included by the backend asset operation. */
@@ -165,7 +168,9 @@ export function selectedFiles(): ProjectNode[] {
 
 /** Open in Right Split (⇧Enter): the selected files in the pane right of the current editor. */
 export async function openSelectionInRightSplit(nodes = selectedFiles()) {
-  for (const [i, n] of nodes.entries()) await openFile(n.path, { side: true, focus: i === nodes.length - 1 });
+  for (const [i, n] of nodes.entries())
+    // oxlint-disable-next-line no-await-in-loop -- files open into the same split in order; the last one takes focus
+    await openFile(n.path, { side: true, focus: i === nodes.length - 1 });
 }
 
 // ---------------------------------------------------------------------------
@@ -303,10 +308,13 @@ export async function commitEditing(name: string): Promise<boolean> {
       if (editing.nodeKind === "file") await fs.createFile(path);
       else await fs.createDir(path);
       // Every folder of a Python package gets an `__init__.py`, as in PyCharm.
-      if (editing.pkg === "python")
+      if (editing.pkg === "python") {
+        const dirs: string[] = [];
         for (let dir = path; isInside(dir, editing.parent) && dir !== editing.parent; dir = parentOf(dir))
-          // An existing intermediate package keeps its own `__init__.py`.
-          await fs.createFile(joinPath(dir, "__init__.py")).catch(() => {});
+          dirs.push(dir);
+        // Each folder is a distinct path and existing files are left alone, so the writes can run together.
+        await Promise.all(dirs.map((dir) => fs.createFile(joinPath(dir, "__init__.py")).catch(() => {})));
+      }
     } catch (e) {
       fail(editing.nodeKind === "file" ? tx("Cannot create file") : tx("Cannot create folder"), e);
       return true;
@@ -330,6 +338,7 @@ export async function commitEditing(name: string): Promise<boolean> {
 async function refreshAfterCreate(parent: string, path: string) {
   const dirs = [parent];
   for (let p = parentOf(path); isInside(p, parent); p = parentOf(p)) dirs.push(p);
+  // oxlint-disable-next-line no-await-in-loop -- reloads mutate shared listings/selection; each folder must settle before the next
   for (const d of dirs) await loadDir(d, true);
 }
 
@@ -438,26 +447,9 @@ export async function safeToDelete(files: string[]): Promise<boolean> {
   return answer === "delete";
 }
 
-/** Find Usages (⌥F7) on a file: usages of its top-level symbols from other files. */
-export async function findFileUsages(path: string) {
-  const name = nameOf(path);
-  let result;
-  try {
-    result = await fileUsages([path]);
-  } catch (e) {
-    fail(`Cannot find usages of '${name}'`, e);
-    return;
-  }
-  if (result.status !== "ok")
-    notifications().notify({
-      level: "info",
-      title: `Cannot find usages of '${name}'`,
-      body: result.reason,
-      group: "search",
-    });
-  else if (!result.usages.length)
-    notifications().notify({ level: "info", title: `No usages of '${name}' found`, group: "search" });
-  else viewUsages(name, result.usages);
+/** Find Usages (⌥F7) on a file: its imports and usages of its top-level symbols from other files. */
+export function findFileUsages(path: string) {
+  return showFileUsages(path);
 }
 
 /** Reload from Disk: re-reads the selected folders (and the folders of selected files) and their open documents. */
@@ -477,8 +469,9 @@ export async function deleteSelection(nodes: ProjectNode[] = selectedNodes()) {
   if (!root || !paths.length) return;
   // Invoked from the tree (or its context menu): give the tree its focus back afterwards.
   const refocus = typeof document !== "undefined" && !!document.activeElement?.closest('[role="tree"], [role="menu"]');
-  const folders = nodes.filter((n) => n.dir && paths.includes(n.path)).length;
-  const files = nodes.filter((n) => !n.dir && paths.includes(n.path)).map((n) => n.path);
+  const top = new Set(paths);
+  const folders = nodes.filter((n) => n.dir && top.has(n.path)).length;
+  const files = nodes.filter((n) => !n.dir && top.has(n.path)).map((n) => n.path);
   // IDEA's Delete dialog: "Safe delete (with usage search)", remembered.
   const searchable = files.length > 0 && files.length <= SAFE_DELETE_MAX_FILES;
   const answer = await confirmChecked({
@@ -511,6 +504,7 @@ export async function deleteSelection(nodes: ProjectNode[] = selectedNodes()) {
   const deleted: NonNullable<typeof lastDelete>["items"] = [];
   for (const p of paths) {
     try {
+      // oxlint-disable-next-line no-await-in-loop -- deletes run in order; snapshots and errors keep path order for Undo
       const restore = await fs.delete(p);
       parents.add(parentOf(p));
       deleted.push({ path: p, restore });
@@ -552,6 +546,7 @@ export async function undoDelete(): Promise<boolean> {
   for (const { path, restore } of op.items) {
     if (get().root !== op.root) break;
     try {
+      // oxlint-disable-next-line no-await-in-loop -- restores run in order and stop as soon as the project changes
       const skipped = await restore();
       for (const skippedPath of skipped) failed.add(skippedPath);
       if (!restored && !skipped.includes(path)) restored = path;
@@ -593,6 +588,8 @@ export function copySelection(cut: boolean) {
 /** Files or an image on the OS clipboard, cached: `canPaste` runs while a menu renders. */
 let osHasFiles = false;
 let osHasImage = false;
+/** The clipboard holds Java code, which Paste turns into a file. */
+let osHasJava = false;
 
 /** Keeps Paste enabled for what Explorer copied; called when the window gains focus. */
 export async function refreshOsClipboard() {
@@ -611,6 +608,10 @@ async function readOsClipboard(): Promise<string[] | null> {
   if (get().clipboard !== clipboard) return null;
   osHasFiles = external.length > 0;
   osHasImage = image;
+  // Only the desktop app reads the text without asking; in a browser Paste still tries. Checked on
+  // every window focus, so a huge clipboard is not parsed for the menu item.
+  const text = !osHasFiles && !image && isTauri() ? await readClipboardPlainText().catch(() => "") : "";
+  osHasJava = text.length <= 1_000_000 && !!pastedJavaClass(text);
   // Our remote text write removes file URLs, so any files were copied later.
   // A failed write leaves ownership uncertain; retain the remote copy then.
   if (handedOff && (clipboard?.remote ? external.length > 0 : !sameFiles(external, clipboard?.paths)))
@@ -619,7 +620,7 @@ async function readOsClipboard(): Promise<string[] | null> {
 }
 
 export function canPaste(): boolean {
-  return !!get().clipboard?.paths.length || osHasFiles || osHasImage;
+  return !!get().clipboard?.paths.length || osHasFiles || osHasImage || osHasJava;
 }
 
 /**
@@ -647,6 +648,7 @@ export async function paste(target = targetFolder()) {
     return pasteFromOsClipboard(external, target);
   if (!clipboard?.paths.length) {
     if (await pasteImage(target)) return;
+    if (await pasteJavaCode(target)) return;
     notifications().notify({ level: "info", title: "No files on the clipboard" });
     return;
   }
@@ -659,6 +661,45 @@ export async function paste(target = targetFolder()) {
   openMoveDialogFor(paths, target, single, () => {
     if (get().clipboard === clipboard) setClipboard(null);
   });
+}
+
+/**
+ * Java code on the clipboard becomes `<Class>.java` in `target`, declaring the folder's package
+ * inside a source root, and opens (IDEA's Java file paste). Asks before replacing a file of that
+ * name. False when the clipboard holds no Java type.
+ */
+async function pasteJavaCode(target: string): Promise<boolean> {
+  const text = (await readClipboardPlainText().catch(() => "")).replace(/\r\n?/g, "\n");
+  const className = pastedJavaClass(text);
+  if (!className) return false;
+  const name = `${className}.java`;
+  const root = get().root ?? target;
+  const pkg = javaPackageAt(target === root ? "" : relativePath(root, target), currentRoots());
+  const path = joinPath(target, name);
+  await loadDir(target);
+  const exists = (get().listings.get(target) ?? []).some((e) => e.name === name);
+  if (
+    exists &&
+    !(await confirm({
+      title: tx("Paste"),
+      message: tx`File '${name}' already exists. Do you want to overwrite it?`,
+      ok: "Overwrite",
+    }))
+  )
+    return true;
+  const fs = projectFs(root);
+  try {
+    // The replaced file goes to Local History, like any delete.
+    if (exists) await fs.delete(path);
+    await fs.createFileBytes(path, new TextEncoder().encode(pkg === null ? text : withJavaPackage(text, pkg)));
+  } catch (e) {
+    fail(tx`Cannot paste ${name}`, e);
+    return true;
+  }
+  await loadDir(target, true);
+  revealPath(path, true);
+  await maybeEditorService()?.openFile(path, { focus: true });
+  return true;
 }
 
 /**
@@ -681,6 +722,7 @@ async function pasteImage(target: string): Promise<boolean> {
     if (taken.has(name)) continue;
     const path = joinPath(target, name);
     try {
+      // oxlint-disable-next-line no-await-in-loop -- names are tried one at a time; alreadyExists selects the next name
       await projectFs(get().root ?? target).createFileBytes(path, png);
     } catch (e) {
       // Created since the listing was read: take the next name.
@@ -688,6 +730,7 @@ async function pasteImage(target: string): Promise<boolean> {
       fail(tx`Cannot paste the image into ${name}`, e);
       return true;
     }
+    // oxlint-disable-next-line no-await-in-loop -- the listing is refreshed before revealing the successfully saved image
     await loadDir(target, true);
     revealPath(path, true);
     return true;
@@ -728,9 +771,41 @@ function openCopyDialogFor(paths: string[], target: string, dir?: boolean) {
   });
 }
 
+type ConflictChoice = "overwrite" | "skip" | "copy";
+
+/**
+ * A file dropped or pasted from outside the project whose name is taken in `target`: replace
+ * the existing one, skip it, or keep both under a new name (`Foo copy.kt`). A folder can't
+ * be overwritten. `null` cancels the rest of the import.
+ */
+async function askNameConflict(
+  name: string,
+  target: string,
+  dir: boolean,
+  more: boolean,
+): Promise<{ choice: ConflictChoice; all: boolean } | null> {
+  const folder = nameOf(target) || target;
+  const r = await ask({
+    title: dir ? "Folder Already Exists" : "File Already Exists",
+    body: tx`${name} already exists in ${folder}.`,
+    icon: "warning",
+    buttons: [
+      ...(dir ? [] : [{ id: "overwrite", label: "Overwrite" }]),
+      { id: "skip", label: "Skip" },
+      { id: "copy", label: "Create Copy", primary: true },
+    ],
+    checkbox: more ? "Do this for the other conflicts" : undefined,
+  });
+  return r.button === "overwrite" || r.button === "skip" || r.button === "copy"
+    ? { choice: r.button, all: r.checked }
+    : null;
+}
+
 /**
  * Moves or copies `paths` into `target`. Copies take `name` (a single item) or
- * get a non-conflicting name (`Foo copy.kt`); moves refuse to overwrite.
+ * get a non-conflicting name (`Foo copy.kt`); moves refuse to overwrite. Files
+ * from outside the project (`local`) whose name is taken ask first: overwrite,
+ * skip or keep both.
  * Returns whether anything changed (for copies: the first copy's path).
  */
 export async function transfer(
@@ -755,6 +830,9 @@ export async function transfer(
   let first: string | null = null;
   const newName = name;
   const upload = source === "local" && isRemoteWindow() ? beginLocalImport() : undefined;
+  const ask = source === "local" && !(paths.length === 1 && newName);
+  let conflictsLeft = ask ? paths.filter((p) => isTaken(nameOf(p))).length : 0;
+  let forAll: ConflictChoice | null = null;
   try {
     for (const src of paths) {
       if (upload?.cancelled) break;
@@ -770,13 +848,44 @@ export async function transfer(
       }
       const srcIsDir =
         get().listings.has(src) || currentModel().byKey.get(currentModel().keyOfPath.get(src) ?? src)?.dir === true;
-      const finalName = paths.length === 1 && newName ? newName : uniqueName(name, isTaken, srcIsDir);
+      let finalName = paths.length === 1 && newName ? newName : uniqueName(name, isTaken, srcIsDir);
+      let replace = false;
+      if (ask && isTaken(name)) {
+        conflictsLeft--;
+        // A dropped folder isn't in the listings: what decides is the entry already there.
+        const existing = (get().listings.get(target) ?? []).find((e) =>
+          caseInsensitive ? e.name.toLowerCase() === name.toLowerCase() : e.name === name,
+        );
+        const folder = existing?.kind !== "file";
+        let choice: ConflictChoice | null = forAll;
+        if (!choice) {
+          // oxlint-disable-next-line no-await-in-loop -- one question per conflicting file, in order
+          const answer = await askNameConflict(name, target, folder, conflictsLeft > 0);
+          if (!answer) break;
+          choice = answer.choice;
+          if (answer.all) forAll = choice;
+        }
+        if (choice === "skip") continue;
+        // A folder is never overwritten: "for all" keeps both instead.
+        replace = choice === "overwrite" && !folder;
+        if (replace) finalName = name;
+      }
       const to = joinPath(target, finalName);
       try {
+        // The replaced file goes to Local History, like any delete.
+        // oxlint-disable-next-line no-await-in-loop -- the file is replaced before its copy is written
+        if (replace) await fs.delete(to);
         if (source === "local") {
+          // oxlint-disable-next-line no-await-in-loop -- cancellation is checked per source; each import feeds the taken-name set
           const skipped = await fs.importLocal(src, to, upload);
           errors.push(...skipped);
-        } else await fs.copy(src, to);
+        } else {
+          // oxlint-disable-next-line no-await-in-loop -- copies pick conflict-free names from the shared taken set
+          await fs.copy(src, to);
+          if (!srcIsDir)
+            // oxlint-disable-next-line no-await-in-loop -- the Java type rename follows this copy, before the next source
+            await renameCopiedJavaType(src, to).catch(() => undefined);
+        }
         taken.add(caseInsensitive ? finalName.toLowerCase() : finalName);
         first ??= to;
       } catch (e) {
@@ -907,6 +1016,7 @@ export async function revealInFinder(nodes: ProjectNode[] = selectedNodes()) {
 /** Opens each selected file with the application the OS associates with it. */
 export async function openWithAssociatedApp(nodes: ProjectNode[] = selectedNodes()) {
   for (const file of nodes.filter((n) => !n.dir && !n.placeholder)) {
+    // oxlint-disable-next-line no-await-in-loop -- stop at the first file the OS cannot open
     if (!(await openWithSystemApp(file.path))) {
       notifications().notify({ level: "error", title: tx`Cannot open ${nameOf(file.path)} with its application` });
       return;
@@ -937,10 +1047,4 @@ export function reformatNodes(nodes: readonly ProjectNode[]): boolean {
     files: targets.filter((n) => !n.dir).map((n) => n.path),
     directories: targets.filter((n) => n.dir).map((n) => n.path),
   });
-}
-
-/** Argument for VCS actions: one path or several. */
-export function vcsArg(nodes: ProjectNode[] = selectedNodes()): string | string[] {
-  const paths = nodes.map((n) => n.path);
-  return paths.length === 1 ? paths[0]! : paths;
 }

@@ -87,6 +87,15 @@ pub fn settings_get_global(host: &Host) -> Settings {
     host.with_proxy_password(host.global_settings.effective())
 }
 
+/// Read the same host-wide value for the close dialog and the idle timer: another project's
+/// daemon may have edited the file since this host loaded its settings.
+#[command(trust = always)]
+pub async fn remote_idle_timeout_minutes(host: &Arc<Host>) -> IdeResult<u16> {
+    let h = host.clone();
+    host.blocking(move || Ok(h.global_settings.layer(SettingsScope::Global).remote_development.idle_timeout_minutes))
+        .await
+}
+
 /// The removed built-in theme id a settings file of this window still names, if any:
 /// `settings_get` reports the built-in that stands in for it, so the notice about
 /// a theme that moved to a plugin can address the installs it concerns.
@@ -112,6 +121,9 @@ pub fn settings_set(
     let applied = set_settings(host, window, scope, &key, &value)?;
     if key == "mcpServer" || key.starts_with("mcpServer.") {
         host.mcp.apply(host);
+    }
+    if key == "terminal" || key.starts_with("terminal.") {
+        super::term::apply_output_rate(host, window);
     }
     let sink = host.window_sink(window);
     sink.emit(IdeEvent::SettingsChanged { key });
@@ -398,6 +410,13 @@ pub fn set_settings(
     if key == "vcs" || key == "vcs.git" || key == "vcs.git.executable" {
         host.apply_git_executable();
     }
+    // `flutter daemon` and DevTools run on the Flutter SDK; the next request starts DevTools again.
+    if ["languages", "languages.flutter", "languages.flutter.sdk"].contains(&key) {
+        for project in affected() {
+            project.flutter.sdk_changed();
+            project.devtools.stop();
+        }
+    }
     if is_proxy {
         host.apply_proxy();
     }
@@ -481,6 +500,7 @@ ide_command::domain!(
     project_trust_status,
     project_workspace_member_set,
     project_workspace_members,
+    remote_idle_timeout_minutes,
     settings_get,
     settings_get_global,
     settings_removed_theme,

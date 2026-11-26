@@ -150,6 +150,7 @@ export async function collectSnapshotResults<T, R>(
 ): Promise<R[]> {
   const results: R[] = [];
   for (let i = 0; i < sources.length; i += 4) {
+    // oxlint-disable-next-line no-await-in-loop -- bounded concurrency: four snapshots are inspected in parallel, but batches stay sequential to cap simultaneous reads
     for (const result of await Promise.all(sources.slice(i, i + 4).map(inspect))) {
       if (result !== null) results.push(result);
     }

@@ -3,8 +3,8 @@
 //! This crate is glue only. `commands/<domain>.rs` holds the commands only the desktop runs; the
 //! Tauri adapters of project-host commands are derived from their `ide-host` declarations. No
 //! domain logic lives here.
-// `commands::catalogue!` recurses a few times per command domain.
-#![recursion_limit = "256"]
+// `commands::catalogue!` recurses once per command, so the limit grows with the command count.
+#![recursion_limit = "512"]
 
 mod application_focus;
 mod cli;
@@ -275,6 +275,12 @@ pub fn run() {
     })
     .on_window_event(|window, event| match event {
         tauri::WindowEvent::CloseRequested { .. } => {
+            // A dead web engine never answers the page's close handler: close the window here.
+            #[cfg(windows)]
+            if windows_webview_recovery::browser_failed(window.app_handle()) {
+                let _ = window.destroy();
+                return;
+            }
             #[cfg(target_os = "linux")]
             linux_window_state::save_before_close(window.app_handle());
             if let Some(w) = window.try_state::<WindowsState>() {
@@ -360,6 +366,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             windows::flush_auxiliary_geometry(app);
             if let Some(state) = app.try_state::<AppState>() {
+                ide_db::stop_external_tunnels_on_exit();
                 state.host.stop_processes_on_exit();
                 state.host.mcp.stop(&state.host);
                 state.host.clear_workspace_edit_history_on_exit();

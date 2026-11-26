@@ -72,6 +72,7 @@ export interface AppearanceExtras {
   uiFontFallback: string;
   contrastScrollbars: boolean;
   redGreenVision: boolean;
+  reduceMotion: boolean;
   differentToolWindowBackground: boolean;
   compactMode: boolean;
   /** IDEA "Use smaller indents in trees": tool window trees indent less per level. */
@@ -161,6 +162,7 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   uiFontFallback: "",
   contrastScrollbars: false,
   redGreenVision: false,
+  reduceMotion: false,
   differentToolWindowBackground: false,
   compactMode: false,
   smallTreeIndents: false,
@@ -246,6 +248,7 @@ export function validateAppearanceExtras(raw: unknown): AppearanceExtras {
     uiFontFallback: typeof a.uiFontFallback === "string" ? a.uiFontFallback.trim() : d.uiFontFallback,
     contrastScrollbars: b("contrastScrollbars"),
     redGreenVision: b("redGreenVision"),
+    reduceMotion: b("reduceMotion"),
     differentToolWindowBackground: b("differentToolWindowBackground"),
     compactMode: b("compactMode"),
     smallTreeIndents: b("smallTreeIndents"),

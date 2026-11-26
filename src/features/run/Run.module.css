@@ -245,6 +245,10 @@
   color: var(--link-hover);
   text-decoration-color: currentColor;
 }
+/* The link Up / Down the Stack Trace stepped to (IDEA selects it). */
+.currentLink {
+  background: var(--bg-editor-selection);
+}
 
 /* Test runner */
 
@@ -1335,6 +1339,11 @@
   grid-template-columns: 126px 1fr;
   align-items: center;
   gap: 10px;
+}
+.tomcatFieldError {
+  margin-left: 136px;
+  color: var(--danger);
+  font-size: var(--fs-small);
 }
 .tomcatRowLabel {
   color: var(--fg-secondary);

@@ -22,7 +22,14 @@ import { executeAction } from "@/platform/actions";
 import { fontWeightOf } from "@/platform/editorSettings";
 import { resolveMonoFont } from "@/platform/fonts";
 import { basename, dirname, useProject } from "@/platform/project";
-import { isTestFile, useEffectiveRoots } from "@/platform/projectRoots";
+import { useProjectPresentation } from "@/platform/projectPresentation";
+import {
+  isTestFile,
+  useDetectedRoots,
+  useEffectiveRoots,
+  useProjectRoots,
+  type AttachedProject,
+} from "@/platform/projectRoots";
 import {
   Button,
   Checkbox,
@@ -42,11 +49,14 @@ import {
   showContextMenu,
   startPointerDrag,
   tooltipAttrs,
+  useFileIconRevision,
   type MenuItem,
   type TabItem,
   type TreeHandle,
   T,
 } from "@/ui";
+import { useFilePresentation } from "@/ui/filePresentation";
+import { directoryIconName } from "@/ui/folderPresentation";
 import {
   editorService,
   maybeEditorService,
@@ -72,6 +82,7 @@ import {
 } from "./changes";
 import { amendPreviewNode } from "./amendPreview";
 import { AmendTargetMenu } from "./AmendTargetMenu";
+import { useChangeModules } from "./changeModules";
 import { commitChanges, deleteFiles } from "./changeOps";
 import { CommitOptionsPopup } from "./CommitOptions";
 import { CommitCheckSummary } from "./CommitCheckSummary";
@@ -103,6 +114,7 @@ import {
   setCommitDiffPreview,
   setDiffPreview,
   setGroupByDir,
+  setGroupByModule,
   setGroupByRepo,
   setGroupByStaging,
   setShowUnversionedSeparately,
@@ -139,6 +151,7 @@ import styles from "./CommitView.module.css";
 
 /** MIME type of files dragged onto a change list (absolute paths, newline-separated). */
 const CHANGES_MIME = "application/x-openidea-changes";
+const EMPTY_ATTACHED: AttachedProject[] = [];
 
 /** Shown text of a node: group names are translated, except the names of user change lists. */
 function nodeText(n: ChangeNode): string {
@@ -353,6 +366,18 @@ export function listMenu(id: string, active: boolean, files: readonly FileStatus
 /** The selected files that still exist in the working tree (Delete… removes them from disk). */
 /** Whether the change leaves the file in the working tree. */
 const onDisk = existsOnDisk;
+
+/** The working-tree path to resolve a Project-tree presentation icon from, or null when absent on disk. */
+function presentationPath(node: ChangeNode): string | null {
+  if (node.type !== "file" || ignoredDirectory(node) || !node.path || node.kind === "deleted") return null;
+  if (node.files[0] && !onDisk(node.files[0])) return null;
+  return node.path;
+}
+
+function ChangeFileIcon({ path }: { path: string }) {
+  const { icon } = useFilePresentation(path);
+  return <Icon name={icon} size={16} className={styles.icon} />;
+}
 
 export function deletableFiles(nodes: ChangeNode[]): string[] {
   const files = filesOf(nodes);
@@ -771,6 +796,7 @@ export function LocalChangesView() {
  * interface (no checkboxes, a Commit… button); `dialog`: the Commit dialog's.
  */
 export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dialog"; amended?: ChangeNode | null }) {
+  useFileIconRevision();
   const status = useVcs((s) => s.status);
   const root = useVcs((s) => s.root) ?? "";
   const groupByDir = useCommit((s) => s.groupByDir);
@@ -782,6 +808,7 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
   const ignored = useIgnoredFiles(root, staging && showIgnored);
   const groupByStaging = useCommit((s) => s.groupByStaging) || staging;
   const groupByRepo = useCommit((s) => s.groupByRepo);
+  const groupByModule = useCommit((s) => s.groupByModule);
   const showUnversionedSeparately = useCommit((s) => s.showUnversionedSeparately);
   const diffPreview = useCommit((s) => s.diffPreview);
   const commitDiffPreview = useCommit((s) => s.commitDiffPreview);
@@ -799,7 +826,12 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
 
   const repos = useVcs((s) => s.roots);
   const heads = useVcs((s) => s.heads);
+  const projectRoot = useProject((s) => s.project?.root ?? null);
   const projectRoots = useEffectiveRoots();
+  const changeModules = useChangeModules();
+  const detectedRoots = useDetectedRoots();
+  const attachedProjects = useProjectRoots((s) => (s.root === projectRoot ? s.attached : EMPTY_ATTACHED));
+  const buildPresentation = useProjectPresentation();
   const roots = useMemo(() => {
     const changes = buildChangeTree(
       status,
@@ -812,6 +844,8 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
       groupByRepo,
       showUnversionedSeparately,
       ignored?.files,
+      changeModules,
+      groupByModule,
     );
     return amended ? [amended, ...changes] : changes;
   }, [
@@ -825,6 +859,8 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
     groupByRepo,
     showUnversionedSeparately,
     ignored,
+    changeModules,
+    groupByModule,
     amended,
   ]);
   const [byKey, parents] = useMemo(() => {
@@ -979,6 +1015,9 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
                 ...(repos.length > 1
                   ? [{ label: "Repository", checked: groupByRepo, run: () => setGroupByRepo(!groupByRepo) }]
                   : []),
+                ...(changeModules.length > 0
+                  ? [{ label: "Module", checked: groupByModule, run: () => setGroupByModule(!groupByModule) }]
+                  : []),
                 ...(staging
                   ? []
                   : [
@@ -1091,6 +1130,7 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
       >
         <Tree<ChangeNode>
           handleRef={treeRef}
+          horizontalScroll
           roots={roots}
           getKey={(n) => n.key}
           getLabel={nodeText}
@@ -1130,6 +1170,7 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
             if (n.type === "group") {
               const files = n.files.filter((f) => onDisk(f) && !f.path.endsWith("/"));
               for (const [i, file] of files.entries()) {
+                // oxlint-disable-next-line no-await-in-loop -- tabs open in group order and only the last file may take focus
                 await editorService().openFile(file.path, { focus: i === files.length - 1 });
               }
               return;
@@ -1173,8 +1214,10 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
               </span>
             );
             // Pointer-driven (HTML5 drag and drop never reaches the Tauri webview):
-            // file and folder rows drag (unversioned ones onto a changelist, which
-            // adds them to Git); any row of a changelist takes dropped files into it.
+            // file, folder and change-list rows drag (unversioned ones onto a
+            // changelist, which adds them to Git); any changelist takes dropped
+            // files into it. Dragging a change-list header moves all its files,
+            // as in PyCharm's Commit view.
             const list = n.changelist;
             const dnd = {
               ...(list !== undefined && {
@@ -1191,7 +1234,7 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
                       })
                     : undefined,
               }),
-              ...(n.type !== "group" &&
+              ...((n.type !== "group" || list !== undefined) &&
                 n.group !== "ignored" &&
                 n.files.length > 0 && {
                   onPointerDown: (e: PointerEvent<HTMLSpanElement>) => {
@@ -1206,6 +1249,7 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
                   },
                 }),
             };
+            const iconPath = presentationPath(n);
             return (
               <span
                 className={clsx(styles.nodeRow, n.type === "group" && dropTarget === n.changelist && styles.dropTarget)}
@@ -1242,18 +1286,34 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
                       className={clsx(styles.icon, n.warning && styles.committerWarning)}
                     />
                   ))
-                ) : (
+                ) : n.module ? (
+                  <Icon name="module" size={16} className={styles.icon} />
+                ) : ignoredDirectory(n) || n.repository ? (
+                  <Icon name={st.expanded ? "folder-open" : "folder"} size={16} className={styles.icon} />
+                ) : n.type === "dir" ? (
                   <Icon
                     name={
-                      n.type === "dir" || ignoredDirectory(n)
-                        ? st.expanded
+                      n.path
+                        ? directoryIconName({
+                            path: n.path,
+                            root: projectRoot,
+                            roots: projectRoots,
+                            detected: detectedRoots,
+                            attached: attachedProjects,
+                            build: buildPresentation,
+                            expanded: st.expanded,
+                          })
+                        : st.expanded
                           ? "folder-open"
                           : "folder"
-                        : fileIconName(n.label)
                     }
                     size={16}
                     className={styles.icon}
                   />
+                ) : iconPath ? (
+                  <ChangeFileIcon path={iconPath} />
+                ) : (
+                  <Icon name={fileIconName(n.label, n.path ?? null)} size={16} className={styles.icon} />
                 )}
                 {label}
                 {n.type !== "file" && (n.group !== "amend" || n.historicalFileCount !== undefined) && (

@@ -359,8 +359,15 @@ function step(view: EditorView, forward: boolean): boolean {
   return true;
 }
 
+/**
+ * CodeMirror's search commands open its own search panel when the query is empty or invalid;
+ * ours run from the find bar, so without a usable query they do nothing.
+ */
+const usableQuery = (view: EditorView) => getSearchQuery(view.state).valid;
+
 export function findNext(view: EditorView): boolean {
-  return view.state.field(findScope, false) ? step(view, true) : cmFindNext(view);
+  if (view.state.field(findScope, false)) return step(view, true);
+  return usableQuery(view) && cmFindNext(view);
 }
 
 /** The last match in `from`–`to` other than `skip`. */
@@ -466,7 +473,7 @@ const replacePreview = StateField.define<{ preserve: boolean | null; tooltip: To
 /** Replaces the selected match (if it is one) and selects the next match. */
 export function replaceNext(view: EditorView, preserve = false): boolean {
   const { state } = view;
-  if (!state.field(findScope, false) && !preserve) return cmReplaceNext(view);
+  if (!state.field(findScope, false) && !preserve) return usableQuery(view) && cmReplaceNext(view);
   if (state.readOnly) return false;
   const query = getSearchQuery(state);
   const ms = matchesIn(state);
@@ -487,7 +494,7 @@ export function replaceNext(view: EditorView, preserve = false): boolean {
 
 export function replaceAll(view: EditorView, preserve = false): boolean {
   const { state } = view;
-  if (!state.field(findScope, false) && !preserve) return cmReplaceAll(view);
+  if (!state.field(findScope, false) && !preserve) return usableQuery(view) && cmReplaceAll(view);
   if (state.readOnly) return false;
   const query = getSearchQuery(state);
   const changes = matchesIn(state).map((m) => ({

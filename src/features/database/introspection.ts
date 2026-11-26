@@ -128,6 +128,7 @@ export async function introspectSource(id: string): Promise<void> {
       sticky: true,
     });
     try {
+      // oxlint-disable-next-line no-await-in-loop -- databases are read in turn so cancellation checks, progress notices and catalog updates stay in order
       const schemas = await call(commands.dbDatabaseCatalog(sourceId, database));
       if (!current()) return;
       tables += schemas.reduce((n, schema) => n + schema.tables.length, 0);

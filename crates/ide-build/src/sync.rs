@@ -86,22 +86,37 @@ const MAVEN_CACHE_VERSION: u32 = 1;
 
 /// `dependency:tree` of a plugin version whose `-Dverbose` lists the occurrences Maven
 /// omitted (conflicts, duplicates): verbose output was dropped in 3.0 and is back since 3.2.
-/// Offline, it is used only when an earlier sync downloaded it; otherwise the project's own
-/// plugin version is, which may be cached instead.
+/// Offline, it is used only when an earlier sync downloaded it; otherwise the newest version
+/// in the local repository is.
 const DEPENDENCY_TREE: &str = "org.apache.maven.plugins:maven-dependency-plugin:3.8.1:tree";
 const DEPENDENCY_TREE_JAR: &str =
     "org/apache/maven/plugins/maven-dependency-plugin/3.8.1/maven-dependency-plugin-3.8.1.jar";
 
 /// The goals that read the effective POM into `effective` and the verbose dependency trees;
-/// `repo` is the local repository the build resolves from.
+/// `repo` is the local repository the build resolves from. Both goals name their plugin by
+/// coordinates: offline, a prefix resolves only from group metadata the repository may lack.
+/// Offline without a cached 3.x `maven-help-plugin`, `effective-pom` is skipped so `mvn -o`
+/// still resolves the dependency tree instead of failing to download the help plugin.
 fn maven_sync_goals(effective: &Path, offline: bool, repo: Option<&Path>) -> Vec<String> {
     let pinned = !offline || repo.is_some_and(|repo| repo.join(DEPENDENCY_TREE_JAR).is_file());
-    vec![
-        "help:effective-pom".into(),
-        format!("-Doutput={}", effective.to_string_lossy()),
-        if pinned { DEPENDENCY_TREE.into() } else { "dependency:tree".into() },
-        "-Dverbose".into(),
-    ]
+    let tree = if pinned {
+        DEPENDENCY_TREE.to_owned()
+    } else {
+        repo.and_then(|repo| maven::newest_local_plugin(repo, "maven-dependency-plugin", 2)).map_or_else(
+            || "dependency:tree".to_owned(),
+            |v| format!("org.apache.maven.plugins:maven-dependency-plugin:{v}:tree"),
+        )
+    };
+    let has_help =
+        !offline || repo.is_some_and(|repo| maven::newest_local_plugin(repo, "maven-help-plugin", 3).is_some());
+    let mut goals = Vec::with_capacity(4);
+    if has_help {
+        goals.push(maven::plugin_goal("help:effective-pom", repo));
+        goals.push(format!("-Doutput={}", effective.to_string_lossy()));
+    }
+    goals.push(tree);
+    goals.push("-Dverbose".into());
+    goals
 }
 
 /// The settings' Maven options for the sync runs: the thread count (`-T`, also
@@ -367,25 +382,8 @@ pub fn sync_maven(
         verbose: true,
         ..MavenCache::default()
     };
-    // Where the build resolves its jars, and therefore where the plugin goals are read
-    // from: `-Dmaven.repo.local=` first, then `<localRepository>` of the `-s` settings,
-    // then the user's default repository (which `plugin()` resolves itself).
-    let local_repo: Option<PathBuf> =
-        options.maven_options.iter().find_map(|a| a.strip_prefix("-Dmaven.repo.local=")).map(PathBuf::from).or_else(
-            || {
-                let mut args = options.maven_options.iter();
-                while let Some(arg) = args.next() {
-                    let path = match arg.as_str() {
-                        "-s" | "--settings" => args.next().map(String::as_str),
-                        _ => arg.strip_prefix("-s=").or_else(|| arg.strip_prefix("--settings=")),
-                    };
-                    if let Some(path) = path {
-                        return maven::local_repository_of(Path::new(path));
-                    }
-                }
-                None
-            },
-        );
+    // Where the build resolves its jars, and therefore where the plugin goals are read from.
+    let repo = maven::local_repository_for(&options.maven_options);
     let mut errors: Vec<String> = Vec::new();
     for (n, top) in model.projects.iter().filter(|p| !p.aggregated).enumerate() {
         let effective = cache_dir.join(format!("effective-pom-{n}.xml"));
@@ -407,7 +405,6 @@ pub fn sync_maven(
         if !options.profiles.is_empty() {
             args.push(format!("-P{}", options.profiles.join(",")));
         }
-        let repo = local_repo.clone().or_else(maven::default_local_repo);
         args.extend(maven_sync_goals(&effective, options.offline, repo.as_deref()));
         progress(SyncProgress { message: format!("Reading {}", top.display_name), fraction: None });
         let command = options.maven_command.as_deref().unwrap_or(&top.command);
@@ -425,7 +422,7 @@ pub fn sync_maven(
             }
         })?;
         let effective_projects = std::fs::read_to_string(&effective)
-            .map(|t| maven::parse_effective_pom_in(&t, local_repo.as_deref()))
+            .map(|t| maven::parse_effective_pom_in(&t, repo.as_deref()))
             .unwrap_or_default();
         let trees = maven::parse_dependency_tree(&out.text);
         for (key, plugins, deps) in effective_projects {
@@ -810,12 +807,13 @@ mod tests {
             Some(gradle::ProcessedResources { task: "processResources".into(), dir: "/p/build/resources/main".into() })
         );
         let src = |p: &str| PathBuf::from(core_src(p));
+        let core = PathBuf::from(format!("{b}/modules/core"));
         assert_eq!(
             gradle::reported_source_roots(&projects),
             [
-                (src("main/java"), gradle::ReportedRoot::Source),
-                (src("main/resources"), gradle::ReportedRoot::Resources),
-                (src("test/java"), gradle::ReportedRoot::Test),
+                (src("main/java"), gradle::ReportedRoot::Source, core.clone()),
+                (src("main/resources"), gradle::ReportedRoot::Resources, core.clone()),
+                (src("test/java"), gradle::ReportedRoot::Test, core),
             ]
         );
         let mut model = gradle::load(&root).unwrap();
@@ -953,11 +951,32 @@ mod tests {
     #[test]
     fn sync_reads_verbose_trees_with_a_pinned_plugin_unless_offline_without_it() {
         let tmp = tempfile::tempdir().unwrap();
-        let online = maven_sync_goals(Path::new("e.xml"), false, None);
-        assert_eq!(online, ["help:effective-pom", "-Doutput=e.xml", DEPENDENCY_TREE, "-Dverbose"]);
+        let help = "org.apache.maven.plugins:maven-help-plugin:3.5.1:effective-pom";
+        let online = maven_sync_goals(Path::new("e.xml"), false, Some(tmp.path()));
+        assert_eq!(online, [help, "-Doutput=e.xml", DEPENDENCY_TREE, "-Dverbose"]);
+        // Offline with neither plugin cached: `effective-pom` is skipped so `mvn -o` does not fail
+        // on an uncached `maven-help-plugin`, and the tree falls back to the project's own version.
         let offline = maven_sync_goals(Path::new("e.xml"), true, Some(tmp.path()));
-        assert_eq!(offline[2], "dependency:tree");
-        assert!(offline.contains(&"-Dverbose".to_owned()));
+        assert_eq!(offline, ["dependency:tree", "-Dverbose"]);
+        // #5757 / #5844: offline, plugins in the local repository are named by their coordinates,
+        // since the prefix needs group metadata a repository filled from a private mirror may lack;
+        // a repository with `maven-dependency-plugin` but no 3.x `maven-help-plugin` runs only the tree.
+        for (artifact, version) in [("maven-help-plugin", "2.2"), ("maven-dependency-plugin", "3.6.1")] {
+            let jar =
+                tmp.path().join(format!("org/apache/maven/plugins/{artifact}/{version}/{artifact}-{version}.jar"));
+            std::fs::create_dir_all(jar.parent().unwrap()).unwrap();
+            std::fs::write(&jar, "").unwrap();
+        }
+        let offline = maven_sync_goals(Path::new("e.xml"), true, Some(tmp.path()));
+        assert_eq!(offline, ["org.apache.maven.plugins:maven-dependency-plugin:3.6.1:tree", "-Dverbose"]);
+        let help_jar = tmp.path().join("org/apache/maven/plugins/maven-help-plugin/3.4.0/maven-help-plugin-3.4.0.jar");
+        std::fs::create_dir_all(help_jar.parent().unwrap()).unwrap();
+        std::fs::write(&help_jar, "").unwrap();
+        // A version folder without its jar (only the POM was fetched) doesn't count.
+        std::fs::create_dir_all(tmp.path().join("org/apache/maven/plugins/maven-help-plugin/3.10.0")).unwrap();
+        let offline = maven_sync_goals(Path::new("e.xml"), true, Some(tmp.path()));
+        assert_eq!(offline[0], "org.apache.maven.plugins:maven-help-plugin:3.4.0:effective-pom");
+        assert_eq!(offline[2], "org.apache.maven.plugins:maven-dependency-plugin:3.6.1:tree");
         // Downloaded by an online sync: offline keeps using it, the project's version may be missing.
         let jar = tmp.path().join(DEPENDENCY_TREE_JAR);
         std::fs::create_dir_all(jar.parent().unwrap()).unwrap();
@@ -1029,7 +1048,7 @@ mod tests {
         let cache = tmp.path().join("cache");
         sync_maven(&root, &cache, &SyncOptions::default(), &CancellationToken::new(), &|_| {}).unwrap();
         let args = std::fs::read_to_string(root.join("mvnw-args")).unwrap();
-        assert!(args.contains("help:effective-pom"), "args: {args}");
+        assert!(args.contains("maven-help-plugin:"), "args: {args}");
         let loaded = crate::load_linked(&root, &cache, None, &Default::default(), &Default::default());
         let maven = loaded.maven.unwrap();
         assert!(maven.synced_at.is_some() && maven.sync_error.is_none(), "{:?}", maven.sync_error);
@@ -1054,6 +1073,6 @@ mod tests {
         let args = std::fs::read_to_string(root.join("mvnd-args")).unwrap();
         // `-T1` pins the daemon serial so the dependency trees stay parseable.
         assert!(args.contains("-T1"), "args: {args}");
-        assert!(args.contains("help:effective-pom"), "args: {args}");
+        assert!(args.contains("maven-help-plugin:"), "args: {args}");
     }
 }

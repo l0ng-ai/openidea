@@ -20,6 +20,7 @@ import { effectiveBindings, isMacHost, letterOf, registerKeyClaim, strokeOf } fr
 import { workflowSettings } from "@/platform/workflowSettings";
 import { terminalRuntime } from "./loader";
 import { isImeKey } from "@/platform/ime";
+import { usePlatform } from "@/platform/platformInfo";
 
 export type TerminalKeyResult =
   | { kind: "send"; data: string }
@@ -56,6 +57,10 @@ export function terminalKeyAction(e: KeyLike, hasSelection: boolean): TerminalKe
   }
   const letter = letterOf(e);
   if (ctrl && !meta && !alt && letter === "C" && hasSelection && !isMacHost()) return { kind: "copy" };
+  // Windows terminals paste on plain Ctrl+V; elsewhere it stays ^V (the shell's quoted-insert).
+  if (ctrl && !shift && !meta && !alt && letter === "V" && usePlatform.getState().os === "windows") {
+    return { kind: "paste" };
+  }
   if (ctrl && shift && !meta && !alt) {
     if (letter === "C") return hasSelection ? { kind: "copy" } : { kind: "pass" };
     if (letter === "V") return { kind: "paste" };
@@ -115,6 +120,7 @@ const ALLOWED_ACTION_IDS = new Set([
   "navigate.switcher",
   "navigate.switcherBack",
   "terminal.new",
+  "terminal.newInEditor",
   "terminal.find",
   "terminal.clear",
   "terminal.closeSession",
@@ -123,8 +129,14 @@ const ALLOWED_ACTION_IDS = new Set([
 ]);
 
 /** Whether `stroke` starts a binding of an allowed action. */
-export function isAllowedIdeShortcut(stroke: string, bindings: ReadonlyArray<readonly [string, string]>): boolean {
+export function isAllowedIdeShortcut(
+  stroke: string,
+  bindings: ReadonlyArray<readonly [string, string]>,
+  inEditorTab = false,
+): boolean {
   return bindings.some(([binding, id]) => {
+    if (id === "terminal.newInEditor" && !inEditorTab) return false;
+    if (id === "terminal.new" && inEditorTab) return false;
     if (!ALLOWED_ACTION_IDS.has(id) || (binding !== stroke && !binding.startsWith(`${stroke} `))) return false;
     // Ctrl+E stays with the shell (end of line), as in IDEA.
     return !(id === "navigate.recentFiles" && stroke === "Ctrl+E");
@@ -135,7 +147,7 @@ export function installTerminalKeys(target: Window = window): () => void {
   // Embedded terminals and sessions with shortcut overrides disabled still own copy/interrupt.
   const releaseCopyClaim = registerKeyClaim(
     (e, stroke) =>
-      !!(e.target as Element | null)?.closest?.(".xterm") &&
+      !!((e.composedPath()[0] ?? e.target) as Element | null)?.closest?.(".xterm") &&
       ["Ctrl+C", "Ctrl+Insert", "Ctrl+Shift+C", "Meta+C"].includes(stroke),
   );
   const onKeyDown = (e: KeyboardEvent) => {
@@ -155,6 +167,7 @@ export function installTerminalKeys(target: Window = window): () => void {
     const session =
       rt.sessionFromElement(e.target as Element | null) ?? rt.cliSessionFromElement(e.target as Element | null);
     if (!session) return;
+    const inEditorTab = rt.isCliSession(session);
     const action = terminalKeyAction(e, session.hasSelection);
     // "Override IDE shortcuts" off: Ctrl+key and Escape reach the IDE keymap first;
     // keys it doesn't bind still get to xterm through its own key handling.
@@ -162,12 +175,11 @@ export function installTerminalKeys(target: Window = window): () => void {
     if (action.kind === "send" && (e.ctrlKey || e.key === "Escape") && !t.overrideIdeShortcuts) return;
     if (action.kind === "send" && (e.ctrlKey || e.key === "Escape")) {
       const stroke = strokeOf(e);
-      if (stroke && isAllowedIdeShortcut(stroke, effectiveBindings())) return;
+      if (stroke && isAllowedIdeShortcut(stroke, effectiveBindings(), inEditorTab)) return;
     }
     // "Move focus to the Editor with Escape": the IDE keymap's Escape (Focus Editor) runs instead.
     if (action.kind === "send" && e.key === "Escape" && t.escapeToEditor) return;
     // An editor tab's session: its Close and Find go back to the IDE keymap.
-    const inEditorTab = rt.isCliSession(session);
     switch (action.kind) {
       case "pass":
         return;

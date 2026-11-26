@@ -33,10 +33,10 @@ plugins/
    ├─ regex-tester/           # html view talking to its code, settings, the editor's selection
    └─ license-header/         # file-opened events, quick fix, project scan in a task
 sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
-crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave, semantic-tokens, hover, commit, inlay-hints
+crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave, semantic-tokens, hover, commit, inlay-hints, decorations
 ```
 
-The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.15.0`, world
+The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.17.0`, world
 `plugin`).
 
 ## 1. Quick start
@@ -154,9 +154,9 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 | `keymaps`           | `command`, `key`, `mac?` (`Ctrl+Alt+C`; a chord: `Meta+K Meta+C`); `key = "Escape"` with a required `when` (API 1.10) runs after the editor's own Escape handling                                                                      | no            |
 | `statusBar`         | `id`, `text`, `tooltip?`, `command?`, `align?`, `priority?`                                                                                                                                                                            | no            |
 | `settings`          | `schema` (JSON file) or `pages` (API 1.3), `title?` — see _Settings_                                                                                                                                                                   | no            |
-| `views`             | `id`, `title`, `icon?` (an icon name or a package SVG), `location` (`left`, `right`, `bottom`, `services`), `web?` (_Web views_), `group?`, `when?` (API 1.3)                                                                          | without `web` |
-| `customEditors`     | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`                                                                                                                                            | without `web` |
-| `editorPanels`      | `id`, `web`, `width` (pixels, 40–400), `when?` — needs `editor.read` (API 1.9; _Editor panels_)                                                                                                                                        | no            |
+| `views`             | `id`, `title`, `icon?` (an icon name or a package SVG), `location` (`left`, `right`, `bottom`, `services`), `web?` (_Web views_), `frames?` (API 1.16), `group?`, `when?` (API 1.3)                                                    | without `web` |
+| `customEditors`     | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`, `frames?`, `binary?` (API 1.16)                                                                                                           | without `web` |
+| `editorPanels`      | `id`, `web`, `width` (pixels, 40–400), `when?`, `frames?` (API 1.16) — needs `editor.read` (API 1.9; _Editor panels_)                                                                                                                  | no            |
 | `fileIcons`         | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                                                                                                                               | no            |
 | `fileTemplates`     | `id`, `name`, `extension`, `path`; API 1.3: `fileName`, `variables = [{ name, prompt }]` — New menu                                                                                                                                    | no            |
 | `commitChecks`      | `id`, `title` — a before-commit check in Commit Options (see _Commits_)                                                                                                                                                                | yes           |
@@ -426,6 +426,60 @@ are always available. Calling a gated function without its capability returns
 (Git Toolbox still shows the branch without `vcs.write`).
 
 ## 3. Writing code (Rust SDK)
+
+### API 1.17
+
+API 1.17.0 is in development on `main`. Use `engines.openidea = "^1.17"` and the
+matching SDK. Plugins for 1.16 and earlier keep working. New in 1.17:
+
+- [Editor decorations](#editor-and-project-snapshots-api-14):
+  `host::set_styled_decorations` (`decorations.set-styled`) draws the same items as
+  `set_markdown_decorations` with their own `colors`: a `#rrggbb` or `#rrggbbaa`
+  foreground and background, for colors the theme palette does not have (a TODO
+  highlighter's user-chosen colors). An item with colors may leave `style` empty;
+  with a palette style the colors paint over it. Any other color string is rejected
+  with `Error::Invalid`. Set ids, limits and `clear_decorations` are shared with
+  `set_decorations`.
+
+### API 1.16
+
+API 1.16.0 shipped with OpenIDEA 0.1.52. Use `engines.openidea = "^1.16"` and the
+matching SDK. Plugins for 1.15 and earlier keep working. New in 1.16:
+
+- `Project::vcs_repository_at(path)` returns the mapped worktree owning an existing project file
+  or directory, its repository-relative path, branch, commit, upstream, ahead count and sanitized
+  remotes, or `None` outside Git. The innermost root wins, including for the worktree directory
+  itself. It requires `vcs.read` and trust. `Project::vcs_roots()` lists the possible roots
+  without choosing one on the user's behalf.
+
+- `host::pick_file(title, &dialog)` lets an interactive command or view event choose an existing file
+  or a save destination. The path belongs to the host running the project, including in remote windows.
+  See [File selection](#file-selection-api-116).
+
+- [Editor decorations](#editor-and-project-snapshots-api-14):
+  `host::set_markdown_decorations` (`decorations.set-markdown`, API 1.16) draws
+  the same line-end labels as `set_decorations`, and renders each item's
+  `markdown_hover` as a hover card. Set ids, limits and `clear_decorations` are
+  shared with `set_decorations`.
+
+- A tab-layout web custom editor can declare `binary = true` to open a file without loading it
+  into a text document. Its page can call `document.size()` and `document.readRange(offset, length)`
+  to read up to 1 MiB at a time. Messages to the plugin carry the open file as their editor context.
+
+- **Incomplete completion lists.** The optional `completion-list-provider`
+  export (world `plugin-completion-list`, SDK
+  `Providers::completion_list`, registration
+  `register_plugin!(Plugin, providers, completion_list)`) returns completion
+  items with an `incomplete` flag. A plugin exporting it is called instead of
+  `providers.completion` for its `completion` kind. While the user types on in
+  the same word, the host asks only the plugins that marked their list
+  incomplete again, with the new text, and keeps the language server's list
+  (when it was complete) and the other plugins' items. Plugins without the
+  export keep one request, then filtering.
+- [Web views](#web-views) can embed other sites: `frames = ["https://…"]` on a
+  view, custom editor or editor panel lists the origins, each covered by a
+  `net:<host>` capability; the page's `frame-src` holds the ones the user
+  granted.
 
 ### API 1.15
 
@@ -795,6 +849,8 @@ then run `openidea-plugin check`.
 | `host::open_editor(path, selection)`                                                                           | `editor.open`                                | API 1.4: open/select a project file (`project.read`), plugin-dir file, or install-directory file (read-only); same path rules as `views.open-location`. Commands/events of a window only.                                                                                                                                                                 |
 | `TextEditor::set_selections(ranges)`, `reveal(range)`                                                          | `editor.text-editor`                         | API 1.4: selections or scrolling in this window's already open editor; no capability. Commands/events only, UTF-16 coordinates.                                                                                                                                                                                                                           |
 | `host::set_decorations`, `clear_decorations`                                                                   | `decorations.{set,clear}`                    | API 1.4: project-scoped editor annotations cleared on plugin stop. Requires `project.read`.                                                                                                                                                                                                                                                               |
+| `host::set_markdown_decorations`                                                                               | `decorations.set-markdown`                   | API 1.16: the same sets with `markdown_hover` cards; shares set ids and limits with `set_decorations`. Requires `project.read`.                                                                                                                                                                                                                           |
+| `host::set_styled_decorations`                                                                                 | `decorations.set-styled`                     | API 1.17: those items with their own `#rrggbb` / `#rrggbbaa` `colors`; `style` may be empty when colors are set; shares set ids and limits with `set_decorations`. Requires `project.read`.                                                                                                                                                               |
 | `host::set_file_decoration`, `clear_file_decorations`                                                          | `decorations.{set-file,clear-file}`          | API 1.4: project-tree badges/styles. Requires `project.read`.                                                                                                                                                                                                                                                                                             |
 | `host::set_file_note`                                                                                          | `decorations.set-file-note`                  | API 1.7: a note after the name in the project tree (one line, at most 200 characters). Requires `project.read`.                                                                                                                                                                                                                                           |
 | `host::set_file_icon`, `set_file_icons`                                                                        | `decorations.{set-file-icon,set-file-icons}` | API 1.8: assign one of the plugin's declared `[[contributes.fileIcons]]` icons to a file or plain folder by path (individually or up to 10,000 entries per set). Requires `project.read`.                                                                                                                                                                 |
@@ -1289,6 +1345,18 @@ set in all projects. Each plugin has at most 50 editor sets and 50 tree sets,
 10,000 editor items per file across its sets, and 4 MiB total metadata. Disabling,
 unloading or crashing the plugin withdraws them; idle reclamation preserves them.
 
+API 1.16 adds `set_markdown_decorations`: the same items, limits and set ids, with
+`markdown_hover` rendered as a hover card (the editor's Markdown hover, including
+code highlighting and safe links) while the pointer rests on the range or its
+`after` label. `hover` remains the plain-text fallback. API 1.17 adds
+`set_styled_decorations`: those items plus `colors` (`foreground` / `background`,
+each `#rrggbb` or `#rrggbbaa`). Palette styles follow the theme; use colors only
+when the user chose them (or the plugin's own data defines them), since they do not
+adapt to light and dark themes. The line-end `after` label takes the foreground only. A plugin that pushes
+labels when a file is opened or focused should subscribe to
+`file-opened`/`editor-focused` and call `clear_decorations` when its data no
+longer applies; the host already bounds what a set can carry.
+
 The new Git reads run on the project machine, require a trusted open project and
 `vcs.read`, and disable repository-configured helpers, textconv and external diff
 programs. `vcs_log` returns commit ids, author/email, Unix seconds, subject/body
@@ -1434,6 +1502,21 @@ declaration matches the file's language are called (and loaded):
 [[contributes.providers]]
 kinds = ["definition", "line-markers", "completion"]  # also "inline-completion", "code-actions", "semantic-tokens", "hover", "inlay-hints", "diagnostics"
 languages = ["java", "xml"]                           # editor language ids; "*" for any
+```
+
+Completion built from what has been typed (GORM's dynamic finders:
+`findByTitle`, `findByTitleAndAuthor`, …) can't be listed up front. With API
+1.16 a plugin returns it from `Providers::completion_list` with
+`incomplete: true` and registers that export too; typing on in the word asks
+it again:
+
+```rust
+impl Providers for Finders {
+    fn completion_list(&mut self, doc: &Document, at: Position, _: Option<&str>) -> CompletionList {
+        CompletionList { items: finders_after(doc, at), incomplete: true }
+    }
+}
+register_plugin!(Finders, providers, completion_list);
 ```
 
 Line marker `icon` accepts an icon name (including registered plugin icons),
@@ -2111,6 +2194,34 @@ For example, a page can reserve the corner in its own toolbar:
   padding-right: var(--openidea-corner-inset-width, 0px);
 }
 ```
+
+With API 1.16 (`engines.openidea = "^1.16"`) a web page can embed other sites
+in `<iframe>`s: list their origins in the declaration's `frames` (views, custom
+editors and editor panels, up to 16). An origin is `https://host[:port]`, or
+`http://` to `localhost` / `127.0.0.1` / `[::1]`, with no path, query or
+fragment, and must be covered by a `net:<host>` (or `net.http:<host>`)
+capability of the manifest — `net:ask` does not count — so the install page
+lists it:
+
+```toml
+[capabilities]
+optional = ["net:play.example.com"]
+
+[[contributes.views]]
+id = "hall"
+title = "Game Hall"
+web = "web/index.html"
+frames = ["https://play.example.com"]
+```
+
+The HTML files under that page's directory are served with `frame-src` set to
+the declared origins whose capability the user granted (`frame-src 'none'`
+when none is), and are revalidated rather than cached, so declining or
+revoking a host takes it out on the next load. Without `frames` nothing can be
+framed, as before. The embedded page inherits the frame's sandbox (scripts and
+an opaque origin: no cookies or storage), never gets `window.openidea`, and
+the plugin's own page still has no network. Sites that refuse framing
+(`X-Frame-Options`, `frame-ancestors`) stay blank.
 
 `plugins/official/graphviz` is a complete example: a Vite + React page in
 `web-src/`, built into `web/` by `plugins/build.sh`, paired with code — the page renders (Graphviz compiled to WebAssembly) and
@@ -3021,7 +3132,7 @@ the API itself follows _Evolving the plugin API_ below.
 
 Released versions are frozen: 1.0.0 shipped with OpenIDEA 0.1.36, 1.1.0
 with 0.1.37, 1.2.0 with 0.1.38, 1.3.0 with 0.1.39 and 1.4.0 with 0.1.40.
-API 1.5.0 shipped with 0.1.41, 1.6.0 with 0.1.43, 1.7.0 with 0.1.44, 1.8.0 with 0.1.45, 1.9.0 with 0.1.46 and 1.10.0 with 0.1.47; API 1.11.0, 1.12.0, 1.13.0, 1.14.0 and 1.15.0 are in development on `main`. wasmtime decides what stays compatible: it resolves interface names
+API 1.5.0 shipped with 0.1.41, 1.6.0 with 0.1.43, 1.7.0 with 0.1.44, 1.8.0 with 0.1.45, 1.9.0 with 0.1.46 and 1.10.0 with 0.1.47; API 1.11.0, 1.12.0, 1.13.0, 1.14.0 1.15.0 and 1.16.0 are in development on `main`. wasmtime decides what stays compatible: it resolves interface names
 by semver (a component importing `openidea:plugin/x@1.0.0` links against a
 host defining `@1.1.0`, and the host finds its exports the same way), but
 function types must match exactly — a record with another field count, or a
@@ -3090,6 +3201,14 @@ A new host function touches:
 Then run `plugins/build.sh`; CI's `plugins` job runs `plugins/build.sh --check`
 plus fmt, clippy (host and wasm) and the tests of the SDK, the official
 plugins and the fixtures.
+
+### File selection (API 1.16)
+
+Call `host::pick_file(title, &FileDialog { save, name, filters })` from an interactive command or view event.
+Set `save` to choose a destination and `name` to suggest a filename. Each `FileFilter` names a group of
+extensions, for example `["parquet", "csv"]`. The result is an absolute host path or `None` when dismissed.
+The component uses its existing capabilities to access the file. A web view can start the operation by
+posting a message to the component.
 
 ### Directory selection and opening projects (API 1.3)
 

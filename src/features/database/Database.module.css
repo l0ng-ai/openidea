@@ -70,6 +70,10 @@
   cursor: col-resize;
 }
 .rowNumber {
+  /* Frozen at the left edge: only vertical scrolling moves the numbers. */
+  position: sticky;
+  left: 0;
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -79,6 +83,9 @@
   border-right: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
   user-select: none;
+}
+.rowNumberSelected {
+  color: var(--fg-line-number-current);
 }
 .cell {
   display: flex;
@@ -107,6 +114,23 @@
 .null {
   color: var(--fg-muted);
   font-style: italic;
+}
+/* A value the page carries only the start of: tagged before its text, which a column clips on the right. */
+.cellCutMark {
+  flex: none;
+  margin-right: var(--space-1-5);
+  padding: 0 var(--space-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  color: var(--fg-muted);
+  font-size: 0.85em;
+}
+.cutNotice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1-5);
+  color: var(--fg-muted);
 }
 .lineBreak {
   color: var(--fg-muted);
@@ -486,6 +510,52 @@
   margin: 0;
   padding-left: var(--space-4);
 }
+.tunnelReview {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: var(--space-2);
+}
+.tunnelReview p {
+  margin: 0;
+}
+.tunnelPreview {
+  display: grid;
+  grid-template-columns: fit-content(35%) minmax(0, 1fr);
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+}
+.tunnelPreview dt {
+  color: var(--fg-secondary);
+}
+.tunnelPreview dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.tunnelPreview ol {
+  margin: 0;
+  padding-inline-start: 2em;
+}
+.tunnelPreview code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  white-space: pre-wrap;
+  direction: ltr;
+  unicode-bidi: isolate;
+  user-select: text;
+}
+.tunnelArgumentsLabel {
+  align-self: start;
+  padding-top: var(--space-1);
+}
+.tunnelArguments {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-2);
+}
+.tunnelArguments > button {
+  align-self: flex-start;
+}
 .formFull {
   grid-column: 1 / -1;
 }
@@ -728,6 +798,13 @@
 :global(.cm-openidea-db-executing) {
   background: var(--accent-soft);
 }
+/* The range the console's next run would submit (DataGrip's current-statement border). */
+:global(.cm-openidea-db-preview) {
+  box-sizing: border-box;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+}
 :global(.cm-openidea-db-elapsed) {
   font-variant-numeric: tabular-nums;
 }
@@ -917,6 +994,57 @@
 .modifyProps .formLabel {
   text-align: left;
   overflow-wrap: anywhere;
+}
+.grantsPanel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-height: 0;
+}
+.grantsScroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+}
+.grantsTable {
+  border-collapse: collapse;
+  min-width: 100%;
+  white-space: nowrap;
+}
+.grantsTable th {
+  position: sticky;
+  top: 0;
+  padding: 4px 8px;
+  text-align: left;
+  font-weight: 500;
+  color: var(--fg-muted);
+  background: var(--bg-dialog);
+  border-bottom: 1px solid var(--border);
+}
+.grantsTable td {
+  height: 24px;
+  padding: 0 8px;
+}
+.grantsTable tbody tr:hover {
+  background: var(--bg-hover);
+}
+.grantsTable .grantsFlag {
+  text-align: center;
+}
+.grantsNone {
+  color: var(--fg-muted);
+}
+.grantsMark {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+}
+.grantsOption {
+  font-weight: 600;
+  color: var(--accent);
 }
 .quickDoc {
   width: 460px;

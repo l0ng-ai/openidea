@@ -101,9 +101,9 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
   const catalog = useAgents((s) => s.modelCatalogs.get(provider?.id ?? ""));
   const requestingModels = useAgents((s) => s.modelRequests.has(provider?.id ?? ""));
   const requestTarget = useAgents((s) => s.modelRequestTargets.get(provider?.id ?? ""));
-  const { defaults, fitWindowWidth } = useAgentSettings();
+  const { defaults, fitWindowWidth, newTaskApprovals } = useAgentSettings();
   const providerDefaults = (provider && defaults[provider.id]) || {};
-  const config = draftConfig(provider, draft, providerDefaults);
+  const config = draftConfig(provider, draft, providerDefaults, newTaskApprovals);
   const model = config.find((o) => o.category === "model");
   const selectedModel = model?.current ?? null;
   const selectedModelRef = useRef(selectedModel);
@@ -184,7 +184,7 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
       className={clsx(styles.home, docked && styles.docked, fitWindowWidth && styles.fitWidth)}
       style={zoomStyle}
     >
-      {/* In the tool window the box sits at the bottom, under the question centred in the space above. */}
+      {/* In the tool window the box sits at the bottom, with the question as a hint line just above it. */}
       {docked && (
         <div className={styles.dockedIntro}>
           <h1 className={styles.heading}>
@@ -299,6 +299,7 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
               options={members.map((path) => ({
                 value: path,
                 label: basename(path),
+                verbatim: true,
                 detail: path,
                 icon: "folder",
               }))}
@@ -349,7 +350,7 @@ export function HomeEditor({ docked = false, input }: { docked?: boolean; input?
               aria-label="Base branch"
               searchable
               value={base}
-              options={branches.map((b) => ({ value: b.name, label: b.name, icon: "branch" }))}
+              options={branches.map((b) => ({ value: b.name, label: b.name, verbatim: true, icon: "branch" }))}
               onChange={(b) => updateDraft({ base: b === current ? null : b })}
             />
           )}

@@ -2,11 +2,12 @@
 //! for "Emulate terminal in output console"), stream output, stdin, stop.
 
 use crate::utf8::OutputDecoder;
-use crate::{OutputChunk, RunConfig, RunInfo};
+use crate::{OutputChunk, RunAttach, RunConfig, RunInfo};
+use ide_core::pty::native_pty_system;
 use ide_core::{IdeError, IdeEvent, IdeResult, RunId, SharedSink};
 use parking_lot::Mutex;
-use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
-use std::collections::BTreeMap;
+use portable_pty::{CommandBuilder, MasterPty, PtySize};
+use std::collections::{BTreeMap, VecDeque};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
@@ -16,6 +17,11 @@ use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
 use std::time::{Duration, Instant};
 
 const BATCH_INTERVAL: Duration = Duration::from_millis(8);
+
+/// The batch interval at the current Max FPS setting (`ide_core::output_rate`).
+fn batch_interval() -> Duration {
+    ide_core::output_rate::batch_interval(BATCH_INTERVAL)
+}
 const BATCH_BYTES: usize = 64 * 1024;
 /// Size of one pipe read, so the most one queued [`Msg::Data`] holds.
 const READ_BUF: usize = 16 * 1024;
@@ -32,10 +38,42 @@ const STOP_GRACE: Duration = Duration::from_secs(3);
 const STOP_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 /// Finished runs kept for [`ProcessManager::list`].
 const MAX_FINISHED: usize = 20;
+/// Bounded console scrollback retained per run for reattaching across window reconnects.
+const MAX_BUFFERED_OUTPUT: usize = 256 * 1024;
 /// PTY size until the console reports its own.
 const DEFAULT_PTY: (u16, u16) = (120, 30);
 
 type OutputFn = Arc<dyn Fn(OutputChunk) + Send + Sync>;
+
+struct RunOutputState {
+    buffered: VecDeque<OutputChunk>,
+    buffered_bytes: usize,
+    on_output: OutputFn,
+}
+
+impl RunOutputState {
+    fn new(on_output: OutputFn) -> Self {
+        Self { buffered: VecDeque::new(), buffered_bytes: 0, on_output }
+    }
+
+    fn emit(&mut self, chunk: OutputChunk) {
+        let len = chunk_len(&chunk);
+        self.buffered_bytes += len;
+        self.buffered.push_back(chunk.clone());
+        while self.buffered_bytes > MAX_BUFFERED_OUTPUT && self.buffered.len() > 1 {
+            if let Some(removed) = self.buffered.pop_front() {
+                self.buffered_bytes = self.buffered_bytes.saturating_sub(chunk_len(&removed));
+            }
+        }
+        (self.on_output)(chunk);
+    }
+}
+
+fn chunk_len(chunk: &OutputChunk) -> usize {
+    match chunk {
+        OutputChunk::Stdout { text } | OutputChunk::Stderr { text } | OutputChunk::System { text } => text.len(),
+    }
+}
 
 /// Environment of a launched process: the inherited one (unless cleared) plus `vars`.
 #[derive(Clone, Debug, Default)]
@@ -54,6 +92,7 @@ struct StopCommand {
 struct Entry {
     project_root: PathBuf,
     id: RunId,
+    config: RunConfig,
     config_id: String,
     name: String,
     pid: Mutex<Option<u32>>,
@@ -67,13 +106,18 @@ struct Entry {
     #[cfg(windows)]
     job: Option<ide_core::process::Job>,
     stop: Option<StopCommand>,
-    output: OutputFn,
+    output: Mutex<RunOutputState>,
+    sink: Mutex<SharedSink>,
     exited: AtomicBool,
     code: Mutex<Option<i32>>,
     stopping: AtomicBool,
 }
 
 impl Entry {
+    fn emit_output(&self, chunk: OutputChunk) {
+        self.output.lock().emit(chunk);
+    }
+
     fn info(&self) -> RunInfo {
         RunInfo {
             id: self.id,
@@ -479,6 +523,7 @@ impl ProcessManager {
         let entry = Arc::new(Entry {
             project_root: root.to_path_buf(),
             id,
+            config: config.clone(),
             config_id: config.id.clone(),
             name: config.name.clone(),
             pid: Mutex::new(Some(child.id())),
@@ -487,14 +532,15 @@ impl ProcessManager {
             #[cfg(windows)]
             job,
             stop,
-            output: on_output.clone(),
+            output: Mutex::new(RunOutputState::new(on_output)),
+            sink: Mutex::new(sink),
             exited: AtomicBool::new(false),
             code: Mutex::new(None),
             stopping: AtomicBool::new(false),
         });
         self.register(entry.clone());
 
-        on_output(OutputChunk::System { text: format!("{}\n", inv.display) });
+        entry.emit_output(OutputChunk::System { text: format!("{}\n", inv.display) });
 
         let (tx, rx) = output_queue();
         let stdout = child.stdout.take();
@@ -521,7 +567,7 @@ impl ProcessManager {
                 )?;
             }
             let decoder = || OutputDecoder::for_pipes(options.encoding.as_deref());
-            spawn_pump(rx, on_output.clone(), entry.clone(), sink, [decoder(), decoder()], notice)?;
+            spawn_pump(rx, entry.clone(), [decoder(), decoder()], notice)?;
             Ok(())
         })();
         if let Err(e) = result {
@@ -626,6 +672,7 @@ impl ProcessManager {
         let entry = Arc::new(Entry {
             project_root: root.to_path_buf(),
             id,
+            config: config.clone(),
             config_id: config.id.clone(),
             name: config.name.clone(),
             pid: Mutex::new(child.process_id()),
@@ -635,13 +682,14 @@ impl ProcessManager {
             #[cfg(windows)]
             job: child.process_id().and_then(ide_core::process::Job::for_pid),
             stop,
-            output: on_output.clone(),
+            output: Mutex::new(RunOutputState::new(on_output)),
+            sink: Mutex::new(sink),
             exited: AtomicBool::new(false),
             code: Mutex::new(None),
             stopping: AtomicBool::new(false),
         });
         self.register(entry.clone());
-        on_output(OutputChunk::System { text: format!("{}\n", inv.display) });
+        entry.emit_output(OutputChunk::System { text: format!("{}\n", inv.display) });
 
         let (tx, rx) = output_queue();
         let result = spawn_reader(
@@ -654,7 +702,7 @@ impl ProcessManager {
         )
         .and_then(|_| {
             let decoder = || OutputDecoder::for_label(options.encoding.as_deref());
-            spawn_pump(rx, on_output, entry.clone(), sink, [decoder(), decoder()], None)
+            spawn_pump(rx, entry.clone(), [decoder(), decoder()], None)
         });
         if let Err(e) = result {
             let _ = child.kill();
@@ -763,7 +811,7 @@ impl ProcessManager {
                     !group_alive(pid, &entry)
                 };
                 if let Some(stop) = &entry.stop {
-                    run_stop_command(stop, &entry.output);
+                    run_stop_command(stop, &entry);
                     if exits_within(grace) {
                         return;
                     }
@@ -778,6 +826,17 @@ impl ProcessManager {
             })
             .map_err(|e| IdeError::internal(format!("failed to start stop thread: {e}")))?;
         Ok(())
+    }
+
+    /// The launched process's pid while it runs; `None` for an unknown or exited run, whose pid
+    /// the system may already have given to something else.
+    pub fn pid(&self, id: RunId) -> Option<u32> {
+        let entry = self.entry(id).ok()?;
+        if entry.exited.load(Ordering::Acquire) {
+            return None;
+        }
+        let pid = entry.pid.lock();
+        *pid
     }
 
     /// Returns `None` while running, or the exit code once output has drained.
@@ -800,15 +859,59 @@ impl ProcessManager {
         live.map(|e| e.info()).collect()
     }
 
-    /// Kills every running process tree at once (shutting down).
-    pub fn kill_project(&self, root: &Path) {
+    pub fn has_live_runs(&self) -> bool {
+        self.runs.lock().values().any(|entry| {
+            !entry.exited.load(Ordering::Acquire) || entry.pid.lock().is_some_and(|pid| group_alive(pid, entry))
+        })
+    }
+
+    /// Rebinds `id`'s output stream to `on_output`, returning its buffered console chunks
+    /// and configuration without dropping or duplicating output.
+    pub fn reattach(
+        &self,
+        id: RunId,
+        sink: SharedSink,
+        on_output: Box<dyn Fn(OutputChunk) + Send + Sync>,
+    ) -> IdeResult<RunAttach> {
+        let entry = self.entry(id)?;
+        *entry.sink.lock() = sink;
+        let buffered = {
+            let mut out = entry.output.lock();
+            let chunks: Vec<OutputChunk> = out.buffered.iter().cloned().collect();
+            out.on_output = Arc::from(on_output);
+            chunks
+        };
+        Ok(RunAttach { info: entry.info(), config: entry.config.clone(), buffered })
+    }
+
+    /// Drops live client output callbacks when a remote window disconnects, keeping
+    /// running processes and their console ring buffers alive.
+    pub fn detach_output(&self) {
+        let entries: Vec<Arc<Entry>> = self.runs.lock().values().cloned().collect();
+        for entry in entries {
+            entry.output.lock().on_output = Arc::new(|_| {});
+        }
+    }
+
+    /// Collects every running process tree for `root` and marks it stopping so the actual
+    /// termination can run on a background thread without blocking the UI thread or racing
+    /// processes started later.
+    pub fn detach_project_kills(&self, root: &Path) -> DetachedProcessKills {
+        let mut targets = Vec::new();
         for entry in self.runs.lock().values().filter(|e| e.project_root == root) {
             if !entry.exited.load(Ordering::Acquire)
                 && let Some(pid) = *entry.pid.lock()
             {
-                kill_tree(entry, pid, true);
+                entry.stopping.store(true, Ordering::Release);
+                targets.push((entry.clone(), pid));
             }
         }
+        DetachedProcessKills(targets)
+    }
+
+    /// Kills every running process tree at once (shutting down).
+    pub fn kill_project(&self, root: &Path) {
+        self.detach_project_kills(root).kill();
     }
 
     pub fn kill_all(&self) {
@@ -818,6 +921,47 @@ impl ProcessManager {
                 && let Some(pid) = *entry.pid.lock()
             {
                 kill_tree(entry, pid, true);
+            }
+        }
+    }
+
+    /// Honor external service stop actions (for example `docker compose down`) before
+    /// forcing run processes to exit.
+    pub async fn shutdown(&self) {
+        let entries: Vec<_> = self.runs.lock().values().cloned().collect();
+        let mut stops = tokio::task::JoinSet::new();
+        for entry in entries {
+            let Some(pid) = *entry.pid.lock() else { continue };
+            if entry.exited.load(Ordering::Acquire) && !group_alive(pid, &entry) {
+                continue;
+            }
+            stops.spawn_blocking(move || {
+                if !entry.stopping.swap(true, Ordering::AcqRel)
+                    && let Some(stop) = &entry.stop
+                {
+                    run_stop_command(stop, &entry);
+                }
+                if group_alive(pid, &entry) {
+                    kill_tree(&entry, pid, true);
+                }
+            });
+        }
+        while let Some(result) = stops.join_next().await {
+            if let Err(e) = result {
+                tracing::warn!("could not stop a run during shutdown: {e}");
+            }
+        }
+    }
+}
+
+/// Running process trees snapshotted from [`ProcessManager`] to be killed off the caller's thread.
+pub struct DetachedProcessKills(Vec<(Arc<Entry>, u32)>);
+
+impl DetachedProcessKills {
+    pub fn kill(self) {
+        for (entry, pid) in self.0 {
+            if !entry.exited.load(Ordering::Acquire) {
+                kill_tree(&entry, pid, true);
             }
         }
     }
@@ -865,7 +1009,7 @@ fn run_followup(
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0000_0200 | ide_core::process::CREATE_NO_WINDOW);
     }
-    (entry.output)(OutputChunk::System { text: format!("{}\n", inv.display) });
+    entry.emit_output(OutputChunk::System { text: format!("{}\n", inv.display) });
     let mut child = cmd.spawn()?;
     // The follow-up run continues the same launch: it joins the run's job, so a Stop
     // reaches its tree too.
@@ -997,11 +1141,12 @@ fn apply_env(cmd: &mut Command, env: &LaunchEnv) {
 
 /// Runs `stop.line` through the platform shell and waits for it (bounded), echoing it
 /// and any error output to the console.
-fn run_stop_command(stop: &StopCommand, output: &OutputFn) {
-    output(OutputChunk::System { text: format!("{}\n", stop.line) });
+fn run_stop_command(stop: &StopCommand, entry: &Entry) {
+    entry.emit_output(OutputChunk::System { text: format!("{}\n", stop.line) });
     let inv = shell_invocation(&stop.line, cfg!(windows), std::env::var("COMSPEC").ok());
     let mut cmd = Command::new(&inv.program);
     ide_core::process::prepare(&mut cmd);
+    ide_core::process::own_group(&mut cmd);
     if inv.raw_args {
         add_raw_args(&mut cmd, &inv.args);
     } else {
@@ -1012,16 +1157,18 @@ fn run_stop_command(stop: &StopCommand, output: &OutputFn) {
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            output(OutputChunk::Stderr { text: format!("Cannot run the stop command: {e}\n") });
+            entry.emit_output(OutputChunk::Stderr { text: format!("Cannot run the stop command: {e}\n") });
             return;
         }
     };
     let stderr = child.stderr.take().map(|mut pipe| {
+        let (send, receive) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut buf = Vec::new();
             let _ = pipe.read_to_end(&mut buf);
-            String::from_utf8_lossy(&buf).into_owned()
-        })
+            let _ = send.send(String::from_utf8_lossy(&buf).into_owned());
+        });
+        receive
     });
     let deadline = Instant::now() + STOP_COMMAND_TIMEOUT;
     let status = loop {
@@ -1029,15 +1176,17 @@ fn run_stop_command(stop: &StopCommand, output: &OutputFn) {
             Ok(Some(status)) => break Some(status),
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
             _ => {
-                let _ = child.kill();
+                ide_core::process::kill_tree(&mut child);
                 let _ = child.wait();
                 break None;
             }
         }
     };
-    let err = stderr.and_then(|h| h.join().ok()).unwrap_or_default();
-    if !status.is_some_and(|s| s.success()) && !err.trim().is_empty() {
-        output(OutputChunk::Stderr { text: format!("{}\n", err.trim_end()) });
+    if !status.is_some_and(|s| s.success()) {
+        let err = stderr.and_then(|r| r.recv_timeout(Duration::from_millis(100)).ok()).unwrap_or_default();
+        let detail = status.map_or_else(|| "timed out".to_string(), |s| s.to_string());
+        tracing::warn!("run stop command failed: {detail}");
+        entry.emit_output(OutputChunk::Stderr { text: format!("Stop command failed ({detail})\n{err}") });
     }
 }
 
@@ -1193,9 +1342,7 @@ fn emit(
 /// `decoders` decode stdout and stderr.
 fn spawn_pump(
     rx: mpsc::Receiver<Msg>,
-    on_output: OutputFn,
     entry: Arc<Entry>,
-    sink: SharedSink,
     decoders: [OutputDecoder; 2],
     notice: Option<String>,
 ) -> std::io::Result<()> {
@@ -1216,7 +1363,7 @@ fn spawn_pump(
 
         let flush = |pending: &mut String, stream: Stream, started: &mut Option<Instant>| {
             if !pending.is_empty() {
-                on_output(chunk(stream, std::mem::take(pending)));
+                entry.emit_output(chunk(stream, std::mem::take(pending)));
             }
             *started = None;
         };
@@ -1224,8 +1371,8 @@ fn spawn_pump(
         loop {
             let now = Instant::now();
             let wait = [
-                batch_started.map(|t| (t + BATCH_INTERVAL).saturating_duration_since(now)),
-                held_since.map(|t| (t + BATCH_INTERVAL).saturating_duration_since(now)),
+                batch_started.map(|t| (t + batch_interval()).saturating_duration_since(now)),
+                held_since.map(|t| (t + batch_interval()).saturating_duration_since(now)),
                 drain_deadline.map(|t| t.saturating_duration_since(now)),
             ]
             .into_iter()
@@ -1260,7 +1407,7 @@ fn spawn_pump(
                         break;
                     }
                     // Nothing more came: show a held prompt.
-                    if held_since.is_some_and(|t| t.elapsed() >= BATCH_INTERVAL) {
+                    if held_since.is_some_and(|t| t.elapsed() >= batch_interval()) {
                         held_since = None;
                         for (stream, dec, notice) in [
                             (Stream::Stdout, &mut out_dec, &mut out_notice),
@@ -1278,7 +1425,7 @@ fn spawn_pump(
                             batch_started = Some(Instant::now());
                         }
                     }
-                    if batch_started.is_some_and(|t| t.elapsed() >= BATCH_INTERVAL) {
+                    if batch_started.is_some_and(|t| t.elapsed() >= batch_interval()) {
                         flush(&mut pending, pending_stream, &mut batch_started);
                     }
                 }
@@ -1296,12 +1443,12 @@ fn spawn_pump(
                 rest.push_str(&filter.finish());
             }
             if !rest.is_empty() {
-                on_output(chunk(stream, rest));
+                entry.emit_output(chunk(stream, rest));
             }
         }
 
         let (code, message) = describe_exit(status);
-        on_output(OutputChunk::System { text: format!("\n{message}\n") });
+        entry.emit_output(OutputChunk::System { text: format!("\n{message}\n") });
         entry.stdin.lock().take();
         if let Some(pty) = &entry.pty {
             pty.lock().take();
@@ -1333,7 +1480,8 @@ fn spawn_pump(
         *entry.code.lock() = code;
         entry.exited.store(true, Ordering::Release);
         tracing::debug!(id = %entry.id, ?code, "run exited");
-        sink.emit(IdeEvent::RunExited { run: entry.id, code });
+        let target_sink = entry.sink.lock().clone();
+        target_sink.emit(IdeEvent::RunExited { run: entry.id, code });
     })?;
     Ok(())
 }

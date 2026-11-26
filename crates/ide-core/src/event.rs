@@ -40,10 +40,11 @@ pub enum IdeEvent {
     McpBackgroundProjectsChanged,
     /// A window entered or left full screen, itself or as a member of a full-screen window group.
     WindowFullscreenChanged,
-    /// This remote window's connection to its host ended on its own (network loss, the host or
-    /// its server went away); the window's project is unreachable until it reconnects.
+    /// This remote window's connection ended or another window took over the session.
     RemoteConnectionLost {
         host: String,
+        #[serde(default)]
+        taken_over: bool,
     },
     ProjectTrustChanged {
         root: crate::IpcPath,
@@ -263,6 +264,20 @@ pub struct FlutterDevice {
     pub emulator: bool,
     /// The adb state keeping it from being used (`unauthorized`, `offline`, …).
     pub unavailable: Option<String>,
+    /// The [`FlutterEmulator`] it runs on: an AVD name, or `apple_ios_simulator`.
+    #[serde(default)]
+    #[specta(optional)]
+    pub emulator_id: Option<String>,
+}
+
+/// An Android emulator (AVD) or the iOS Simulator that `flutter emulators --launch` can start.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FlutterEmulator {
+    pub id: String,
+    pub name: String,
+    /// `android` or `ios`.
+    pub platform_type: Option<String>,
 }
 
 /// See [`FlutterDeviceList`].
@@ -288,6 +303,10 @@ pub enum FlutterDaemonStatus {
 pub struct FlutterDeviceList {
     pub status: FlutterDaemonStatus,
     pub devices: Vec<FlutterDevice>,
+    /// The emulators that no listed device runs on.
+    #[serde(default)]
+    #[specta(optional)]
+    pub emulators: Vec<FlutterEmulator>,
 }
 
 /// See [`IdeEvent::Direnv`].

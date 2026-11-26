@@ -62,6 +62,8 @@ export interface SelectProps<V extends string = string> {
   customOption?: (query: string) => SelectOption<V>;
   /** The option under the pointer or keyboard while the list is open; `null` once it closes. */
   onPreview?: (value: V | null) => void;
+  /** Called when the user opens the listbox. */
+  onOpen?: () => void;
   /** Choosing an option this returns `true` for keeps the popup open (e.g. expanding a tree row). */
   keepOpen?: (value: V) => boolean;
 }
@@ -371,6 +373,7 @@ export function Select<V extends string = string>({
   searchable = false,
   customOption,
   onPreview,
+  onOpen,
   keepOpen,
   ...aria
 }: SelectProps<V>) {
@@ -380,6 +383,7 @@ export function Select<V extends string = string>({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const current = options.find((o) => !o.section && o.value === value);
   const openPopup = (query = "") => {
+    onOpen?.();
     setInitialQuery(query);
     setOpen(true);
   };

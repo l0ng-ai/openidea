@@ -350,7 +350,7 @@ impl Cx<'_> {
             SPRING_BOOT => self.java_app(name, c, true, &mut ignored)?,
             GO_APPLICATION => self.go_config(name, c, false, &mut ignored)?,
             GO_TEST => self.go_config(name, c, true, &mut ignored)?,
-            FLUTTER => self.flutter(name, c, &mut ignored)?,
+            FLUTTER => self.flutter(name, c)?,
             COMPOUND => {
                 members = c.children_named("toRun").filter_map(|t| t.attr("name")).map(str::to_owned).collect();
                 config(name, "compound", String::new(), Vec::new(), None)
@@ -440,8 +440,10 @@ impl Cx<'_> {
     }
 
     /// The Flutter plugin's configuration (its `SdkFields`): `flutter run` in the entry's package,
-    /// `additionalArgs` then `--flavor=<buildFlavor>` after the entry, as the plugin passes them.
-    fn flutter(&self, name: &str, c: &El, ignored: &mut Vec<String>) -> Res<RunConfig> {
+    /// `--flavor=<buildFlavor>` then `additionalArgs` after the entry, in the order the Flutter
+    /// form writes them. `attachArgs` (for Flutter Attach) is a form field: with it the form's
+    /// params are stored.
+    fn flutter(&self, name: &str, c: &El) -> Res<RunConfig> {
         let Some(entry) = self.path(c.option("filePath"))? else {
             return Err(SkipReason::NothingToRun);
         };
@@ -449,18 +451,25 @@ impl Cx<'_> {
         let Some((package, _)) = dart_package(self.root, &entry) else {
             return Err(SkipReason::MissingFile { file: "pubspec.yaml".into() });
         };
-        let mut extra = self.words(c.option("additionalArgs"))?;
-        extra.extend(self.text(c.option("buildFlavor"))?.map(|f| format!("--flavor={f}")));
+        let flavor = self.text(c.option("buildFlavor"))?;
+        let mut extra: Vec<String> = flavor.iter().map(|f| format!("--flavor={f}")).collect();
+        extra.extend(self.words(c.option("additionalArgs"))?);
         let mut rc = flutter_run(name, self.root, &package, &entry, extra);
+        if let Some(attach) = self.text(c.option("attachArgs"))? {
+            let params = [
+                ("entry", rc.args.get(2).cloned()),
+                ("flavor", flavor),
+                ("arguments", self.text(c.option("additionalArgs"))?),
+                ("attachArgs", Some(attach)),
+            ];
+            rc.extras.params = params.into_iter().filter_map(|(k, v)| Some((k.to_owned(), v?))).collect();
+        }
         // `<option name="envs"><map><entry key=… value=…/></map></option>`.
         let envs = c.children_named("option").filter(|o| o.attr("name") == Some("envs"));
         for e in envs.flat_map(|o| o.children.iter()).flat_map(|m| m.children_named("entry")) {
             if let Some(key) = e.attr("key").filter(|k| !k.is_empty()) {
                 rc.env.insert(key.to_owned(), e.attr("value").unwrap_or_default().to_owned());
             }
-        }
-        if self.text(c.option("attachArgs"))?.is_some() {
-            ignored.push("attachArgs".into());
         }
         Ok(rc)
     }

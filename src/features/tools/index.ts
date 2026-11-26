@@ -69,7 +69,11 @@ export function activate(): () => void {
               return;
             }
           }
-          await executeAction("file.settings", SETTINGS_PAGE_ID);
+          // Opened on that tool, where its manual install hint is.
+          await executeAction(
+            "file.settings",
+            typeof arg === "string" ? `${SETTINGS_PAGE_ID}#${arg}` : SETTINGS_PAGE_ID,
+          );
         },
       },
     ]),

@@ -1,7 +1,7 @@
 //! App-wide SSH connections, one per SSH configuration, shared by every
 //! feature that works on that host (deployment, run targets, data sources).
 
-use crate::secrets::SecretFile;
+use crate::secrets::{LegacyPasswordAction, SecretFile};
 use crate::session::{ConnectError, Session, UnknownHostKey};
 use crate::target::{SshFiles, SshTarget};
 use ide_core::remote_settings::{SshAuth, SshConfiguration};
@@ -14,6 +14,7 @@ use std::sync::Arc;
 pub struct SshManager {
     files: SshFiles,
     saved: SecretFile,
+    startup_migration: std::sync::Once,
     /// Secrets entered this session (not saved, or not yet), by configuration id.
     entered: Mutex<HashMap<String, String>>,
     configs: RwLock<Vec<SshConfiguration>>,
@@ -34,7 +35,8 @@ impl SshManager {
     pub fn with_files(secrets: PathBuf, files: SshFiles) -> Self {
         Self {
             files,
-            saved: SecretFile::new(secrets),
+            saved: SecretFile::ssh_passwords(secrets),
+            startup_migration: std::sync::Once::new(),
             entered: Mutex::default(),
             configs: RwLock::default(),
             sessions: Mutex::default(),
@@ -45,6 +47,19 @@ impl SshManager {
 
     pub fn files(&self) -> &SshFiles {
         &self.files
+    }
+
+    pub fn start_password_migration(&self) {
+        self.startup_migration.call_once(|| match self.saved.resolve_legacy(LegacyPasswordAction::Retry) {
+            Ok(None) => {}
+            Ok(Some(why)) => tracing::warn!("ssh-passwords.json still contains legacy plaintext credentials: {why}"),
+            Err(e) => tracing::warn!("could not check ssh-passwords.json: {}", e.message),
+        });
+    }
+
+    pub fn resolve_legacy_passwords(&self, action: LegacyPasswordAction) -> IdeResult<Option<String>> {
+        self.start_password_migration();
+        self.saved.resolve_legacy(action)
     }
 
     /// Replaces the configurations (Settings › SSH Configurations); sessions of
@@ -86,7 +101,7 @@ impl SshManager {
 
     /// Remembers the password / passphrase of configuration `id` for the session,
     /// and in the saved passwords with `save` (`None` forgets it).
-    pub fn set_secret(&self, id: &str, secret: Option<String>, save: bool) {
+    pub fn set_secret(&self, id: &str, secret: Option<String>, save: bool) -> IdeResult<()> {
         match &secret {
             Some(s) => {
                 self.entered.lock().insert(id.to_owned(), s.clone());
@@ -96,12 +111,13 @@ impl SshManager {
             }
         }
         match (secret, save) {
-            (Some(s), true) => {
-                if let Err(e) = self.saved.set(id, &s) {
-                    tracing::warn!("could not save the SSH password: {}", e.message);
-                }
+            (Some(s), true) => self.saved.set(id, &s).map_err(|e| {
+                IdeError::unavailable(format!("The credential was kept for this session only. {}", e.message))
+            }),
+            _ => {
+                self.saved.delete(id);
+                Ok(())
             }
-            _ => self.saved.delete(id),
         }
     }
 

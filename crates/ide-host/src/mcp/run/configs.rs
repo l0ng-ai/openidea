@@ -513,8 +513,10 @@ async fn resolve_jvm_application(
         call.window(),
         std::path::PathBuf::from(&module),
         test == Some(true),
+        false,
         policy,
         &cancel,
+        None,
     )
     .await?;
     use ide_lsp::jdtls::JavaBuildStatus;

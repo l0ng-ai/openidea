@@ -125,6 +125,7 @@ async function drainBreakpoints() {
   while (paths.size) {
     for (const timer of timers.values()) clearTimeout(timer);
     timers.clear();
+    // oxlint-disable-next-line no-await-in-loop -- the debounce drain must repeat: syncing can schedule new timers, so the next batch is recomputed only after this one settles
     await Promise.all([...paths].map((path) => syncFile(path)));
     paths = new Set([...timers.keys(), ...inFlight.keys()]);
   }
@@ -224,6 +225,10 @@ export function removeBreakpoint(path: string, id: string) {
 
 export function removeAllBreakpoints() {
   for (const path of Object.keys(useBreakpoints.getState().byFile)) setFile(path, []);
+}
+
+export function removeFileBreakpoints(path: string) {
+  setFile(path, []);
 }
 
 /** Replaces a file's list after its lines moved with an edit (from the editor gutter). */

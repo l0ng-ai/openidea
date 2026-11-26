@@ -37,26 +37,34 @@ function templatePath(root: string, template: string): string {
 /** The definitions of `key` in the message bundles next to the templates `root`. */
 async function messageTargets(root: string, key: string): Promise<Array<Location & { name?: string }>> {
   const resources = root.slice(0, root.lastIndexOf("/"));
-  let application = "";
-  for (const name of ["application.properties", "application.yml", "application.yaml"])
-    application += `${(await read(`${resources}/${name}`)) ?? ""}\n`;
-  const targets: Array<Location & { name?: string }> = [];
-  for (const base of messageBasenames(application)) {
-    const dir = base.includes("/") ? `${resources}/${base.slice(0, base.lastIndexOf("/"))}` : resources;
-    let entries;
-    try {
-      entries = await call(commands.fsReadDir(dir));
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      if (entry.kind !== "file" || !inBundle(entry.name, base)) continue;
-      const text = await read(entry.path);
-      const at = text === null ? -1 : propertyDefinition(text, key);
-      if (text !== null && at >= 0) targets.push(location(entry.path, text, at, at + key.length, entry.name));
-    }
-  }
-  return targets;
+  const configs = await Promise.all(
+    ["application.properties", "application.yml", "application.yaml"].map((name) => read(`${resources}/${name}`)),
+  );
+  const application = configs.map((text) => `${text ?? ""}\n`).join("");
+  const bases = messageBasenames(application);
+  const listings = await Promise.all(
+    bases.map((base) =>
+      call(
+        commands.fsReadDir(base.includes("/") ? `${resources}/${base.slice(0, base.lastIndexOf("/"))}` : resources),
+      ).catch(() => null),
+    ),
+  );
+  const groups = await Promise.all(
+    bases.map(async (base, i) => {
+      const entries = listings[i];
+      if (!entries) return [];
+      const files = entries.filter((entry) => entry.kind === "file" && inBundle(entry.name, base));
+      const texts = await Promise.all(files.map((entry) => read(entry.path)));
+      const targets: Array<Location & { name?: string }> = [];
+      files.forEach((entry, j) => {
+        const text = texts[j] ?? null;
+        const at = text === null ? -1 : propertyDefinition(text, key);
+        if (text !== null && at >= 0) targets.push(location(entry.path, text, at, at + key.length, entry.name));
+      });
+      return targets;
+    }),
+  );
+  return groups.flat();
 }
 
 export function activate(): () => void {

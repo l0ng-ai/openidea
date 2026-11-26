@@ -3,7 +3,7 @@
 //! background with cancellation and parses the compiler output into messages
 //! for the Build tool window, the Problems view and the editor.
 
-mod fingerprint;
+pub(crate) mod fingerprint;
 mod launch_resources;
 mod modules;
 mod parse;
@@ -15,12 +15,12 @@ pub use fingerprint::{LaunchFingerprint, launch_fingerprint, menu_fingerprint};
 pub use launch_resources::process_launch_resources;
 pub use modules::record_module_build;
 pub use single::{
-    SingleFileTarget, compile_file_plan, find_javac, javac_step, module_classpath, module_classpaths,
-    single_file_classpath, single_file_target,
+    SingleFileTarget, compile_file_plan, compile_file_plan_cancellable, find_javac, gradle_compile_file_plan,
+    has_gradle_file_target, javac_step, module_classpath, module_classpaths, single_file_classpath, single_file_target,
 };
 pub use structure::{
-    StructureJdk, StructureRoots, artifact_file, artifact_output, language_release, structure_outputs, structure_plan,
-    structure_war_plan, structure_web_artifacts,
+    StructureJdk, StructureRoots, artifact_file, artifact_output, language_release, structure_compile_file_plan,
+    structure_outputs, structure_plan, structure_war_plan, structure_web_artifacts,
 };
 pub use up_to_date::{menu_up_to_date, record_menu_build};
 
@@ -236,10 +236,13 @@ pub fn plan(
     let project_name = root.file_name().map_or_else(|| "project".to_owned(), |n| n.to_string_lossy().into_owned());
     let module_dir = match file {
         Some(f) => {
-            let scope = model
-                .gradle
-                .iter()
-                .flat_map(|g| std::iter::once(root.join(&g.dir)).chain(g.projects.iter().map(|p| root.join(&p.dir))))
+            let maven_dirs = model.maven.iter().flat_map(|m| m.projects.iter().map(|p| normalize(&root.join(&p.dir))));
+            let gradle_dirs = model.gradle.iter().flat_map(|g| {
+                std::iter::once(normalize(&root.join(&g.dir)))
+                    .chain(g.projects.iter().map(|p| normalize(&root.join(&p.dir))))
+            });
+            let scope = maven_dirs
+                .chain(gradle_dirs)
                 .filter(|dir| f.starts_with(dir))
                 .max_by_key(|dir| dir.components().count())
                 .unwrap_or_else(|| root.to_path_buf());
@@ -251,10 +254,13 @@ pub fn plan(
         None => None,
     };
     let dir = module_dir.clone().unwrap_or_else(|| root.to_path_buf());
-    // A folder of sibling projects has no build file itself; its Maven projects are built one by one.
-    let system = detect_dir(&dir, model, root)
-        .or((!model.gradle.is_empty()).then_some(BuildSystem::Gradle))
-        .or_else(|| model.maven.as_ref().filter(|m| !m.projects.is_empty()).map(|_| BuildSystem::Maven))
+    let direct_system = detect_dir(&dir, model, root);
+    let has_gradle = !model.gradle.is_empty();
+    let has_maven = model.maven.as_ref().is_some_and(|m| !m.projects.is_empty());
+    // A folder of sibling projects has no build file itself; build every linked Gradle and Maven project in it.
+    let system = direct_system
+        .or(has_gradle.then_some(BuildSystem::Gradle))
+        .or(has_maven.then_some(BuildSystem::Maven))
         .ok_or_else(|| {
             IdeError::not_found("no supported build system (Maven, Gradle, .NET, Cargo, Go, TypeScript, CMake) found")
         })?;
@@ -267,17 +273,26 @@ pub fn plan(
         ),
         None => project_name,
     };
-    let steps = match system {
-        BuildSystem::Maven => maven_steps(root, model, kind, module_dir.as_deref(), cache, cancel)?,
-        BuildSystem::Gradle => gradle_steps(root, model, kind, module_dir.as_deref())?,
-        BuildSystem::Cargo => cargo_steps(&dir, kind),
-        // Go builds the file's package (a module holds many).
-        BuildSystem::Go => go_steps(file.and_then(Path::parent).unwrap_or(&dir), kind)?,
-        BuildSystem::TypeScript => ts_steps(&dir, kind),
-        BuildSystem::CMake => cmake_steps(&dir, kind, cmake.and_then(<[_]>::first)),
-        BuildSystem::Dotnet => dotnet_steps(&dir, kind)?,
-        // Never detected from a folder: it comes from the Project Structure (`structure_plan`).
-        BuildSystem::Javac => return Err(IdeError::invalid("no build tool to run")),
+    let steps = if module_dir.is_none() && direct_system.is_none() && has_gradle && has_maven {
+        let mut combined = gradle_steps(root, model, kind, None)?;
+        combined.extend(maven_steps(root, model, kind, None, cache, cancel)?);
+        combined
+    } else {
+        match system {
+            BuildSystem::Maven => maven_steps(root, model, kind, module_dir.as_deref(), cache, cancel)?,
+            BuildSystem::Gradle => gradle_steps(root, model, kind, module_dir.as_deref())?,
+            BuildSystem::Cargo => cargo_steps(&dir, kind),
+            // Go builds the file's package (a module holds many); a directory target builds itself.
+            BuildSystem::Go => {
+                let pkg = file.map(|f| if f.is_dir() { f } else { f.parent().unwrap_or(f) }).unwrap_or(&dir);
+                go_steps(pkg, kind)?
+            }
+            BuildSystem::TypeScript => ts_steps(&dir, kind),
+            BuildSystem::CMake => cmake_steps(&dir, kind, cmake.and_then(<[_]>::first)),
+            BuildSystem::Dotnet => dotnet_steps(&dir, kind)?,
+            // Never detected from a folder: it comes from the Project Structure (`structure_plan`).
+            BuildSystem::Javac => return Err(IdeError::invalid("no build tool to run")),
+        }
     };
     Ok(BuildPlan { system, title, steps })
 }
@@ -845,6 +860,28 @@ fn reactor_projects<'a>(m: &'a maven::MavenModel, top: &'a maven::MavenProject) 
     projects
 }
 
+/// A step running Maven, its output parsed as Maven's.
+pub(crate) fn maven_build_step(program: &str, args: &[&str], cwd: &Path) -> BuildStep {
+    BuildStep::new(program, args, cwd, Format::Maven)
+}
+
+pub(crate) fn gradle_build_step(program: &str, args: &[&str], cwd: &Path) -> BuildStep {
+    BuildStep::new(program, args, cwd, Format::Gradle)
+}
+
+/// The linked reactor root building the project at `module` (project-relative).
+pub(crate) fn maven_reactor_dir<'a>(m: &'a maven::MavenModel, module: &str) -> Option<&'a maven::MavenProject> {
+    maven_reactor(m, module)
+}
+
+/// The projects of the reactor `top`.
+pub(crate) fn reactor_projects_of<'a>(
+    m: &'a maven::MavenModel,
+    top: &'a maven::MavenProject,
+) -> Vec<&'a maven::MavenProject> {
+    reactor_projects(m, top)
+}
+
 fn maven_reactor<'a>(m: &'a maven::MavenModel, module: &str) -> Option<&'a maven::MavenProject> {
     m.projects.iter().filter(|p| !p.aggregated).find(|top| reactor_projects(m, top).iter().any(|p| p.dir == module))
 }
@@ -965,6 +1002,7 @@ pub struct LaunchBuild {
 
 /// Compiles the module at `module` with its build system before a JVM launch and
 /// returns the class directories it wrote, to put ahead of the jdtls classpath.
+/// The build's console, messages and progress stream to `on_event` as it runs.
 pub fn build_for_launch(
     root: &Path,
     model: &BuildModel,
@@ -972,8 +1010,9 @@ pub fn build_for_launch(
     test: bool,
     kind: BuildKind,
     cancel: &CancellationToken,
+    on_event: &(dyn Fn(BuildEvent) + Sync),
 ) -> IdeResult<LaunchBuild> {
-    let mut built = build_for_launches(root, model, &[module.to_path_buf()], test, kind, cancel)?;
+    let mut built = build_for_launches(root, model, &[module.to_path_buf()], test, kind, cancel, on_event)?;
     Ok(built.pop().unwrap())
 }
 
@@ -986,9 +1025,10 @@ pub fn build_for_launches(
     test: bool,
     kind: BuildKind,
     cancel: &CancellationToken,
+    on_event: &(dyn Fn(BuildEvent) + Sync),
 ) -> IdeResult<Vec<LaunchBuild>> {
     let plan = merged_launch_plan(root, model, modules, test, kind, cancel)?;
-    let result = run(root, &plan, cancel, &|_| {})?;
+    let result = run(root, &plan, cancel, on_event)?;
     let failure = if !result.success {
         let errors: Vec<String> = result
             .messages
@@ -1822,8 +1862,16 @@ mod tests {
         std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut model = reactor_model();
         model.maven.as_mut().unwrap().projects[0].command = wrapper.to_string_lossy().into_owned();
-        let dirs = build_for_launch(root, &model, &root.join("app"), true, BuildKind::Build, &CancellationToken::new())
-            .unwrap();
+        let dirs = build_for_launch(
+            root,
+            &model,
+            &root.join("app"),
+            true,
+            BuildKind::Build,
+            &CancellationToken::new(),
+            &|_| {},
+        )
+        .unwrap();
         assert_eq!(
             dirs.class_dirs,
             ["app/target/test-classes", "app/target/classes", "middle/target/classes", "lib/target/classes"]
@@ -1834,16 +1882,25 @@ mod tests {
             "mvnw",
             "#!/bin/sh\necho '[ERROR] Kotlin compilation failed: unresolved reference broken' >&2\nexit 1\n",
         );
-        let error =
-            build_for_launch(root, &model, &root.join("app"), false, BuildKind::Build, &CancellationToken::new())
-                .unwrap()
-                .failure
-                .unwrap();
+        let error = build_for_launch(
+            root,
+            &model,
+            &root.join("app"),
+            false,
+            BuildKind::Build,
+            &CancellationToken::new(),
+            &|_| {},
+        )
+        .unwrap()
+        .failure
+        .unwrap();
         assert!(error.contains("Kotlin compilation failed"), "{error}");
         let cancel = CancellationToken::new();
         cancel.cancel();
         assert_eq!(
-            build_for_launch(root, &model, &root.join("app"), false, BuildKind::Build, &cancel).unwrap_err().kind,
+            build_for_launch(root, &model, &root.join("app"), false, BuildKind::Build, &cancel, &|_| {})
+                .unwrap_err()
+                .kind,
             ide_core::error::ErrorKind::Cancelled
         );
     }
@@ -1869,5 +1926,93 @@ mod tests {
         );
         assert_eq!(launch_class_dirs(BuildSystem::Gradle, m, true)[0], m.join("build/classes/kotlin/test"));
         assert_eq!(launch_class_dirs(BuildSystem::Maven, m, true), [m.join("target/classes")]);
+    }
+
+    #[test]
+    fn polyglot_root_targets_selected_subproject_or_combines_sibling_builds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("polyglot");
+        write(&root, "Cargo.toml", "[package]\nname = \"root\"\nversion = \"0.1.0\"\n");
+        write(
+            &root,
+            "fixtures/java-app/pom.xml",
+            "<project><modelVersion>4.0.0</modelVersion><groupId>t</groupId><artifactId>app</artifactId><version>1</version></project>",
+        );
+        write(&root, "fixtures/kotlin-gradle/build.gradle.kts", "plugins { kotlin(\"jvm\") }\n");
+        let model = crate::load(&root, &tmp.path().join("cache"), None);
+
+        let maven = plan(
+            &root,
+            &model,
+            BuildKind::Build,
+            Some(&root.join("fixtures/java-app")),
+            None,
+            None,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(maven.system, BuildSystem::Maven);
+        assert_eq!(maven.steps.len(), 1);
+        assert_eq!(maven.steps[0].cwd, root.join("fixtures/java-app"));
+
+        let gradle = plan(
+            &root,
+            &model,
+            BuildKind::Build,
+            Some(&root.join("fixtures/kotlin-gradle")),
+            None,
+            None,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(gradle.system, BuildSystem::Gradle);
+        assert_eq!(gradle.steps.len(), 1);
+        assert_eq!(gradle.steps[0].cwd, root.join("fixtures/kotlin-gradle"));
+
+        let cargo = plan(&root, &model, BuildKind::Build, Some(&root), None, None, &CancellationToken::new()).unwrap();
+        assert_eq!(cargo.system, BuildSystem::Cargo);
+        assert_eq!(cargo.steps[0].cwd, root);
+
+        // Folder without a root build file builds both linked Gradle and Maven subprojects on Build Project.
+        let mixed = tmp.path().join("mixed");
+        write(&mixed, "gradle-app/build.gradle.kts", "plugins { java }\n");
+        write(
+            &mixed,
+            "maven-app/pom.xml",
+            "<project><modelVersion>4.0.0</modelVersion><groupId>t</groupId><artifactId>m</artifactId><version>1</version></project>",
+        );
+        let mixed_model = crate::load(&mixed, &tmp.path().join("cache2"), None);
+        let all = plan(&mixed, &mixed_model, BuildKind::Build, None, None, None, &CancellationToken::new()).unwrap();
+        assert_eq!(all.steps.len(), 2);
+        assert_eq!(all.steps[0].cwd, mixed.join("gradle-app"));
+        assert_eq!(all.steps[1].cwd, mixed.join("maven-app"));
+    }
+
+    #[test]
+    fn go_directory_target_builds_that_package_without_stepping_to_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("go-app");
+        write(&root, "go.mod", "module example.com/app\n\ngo 1.22\n");
+        write(&root, "cmd/server/main.go", "package main\nfunc main() {}\n");
+
+        let pkg = plan(
+            &root,
+            &BuildModel::default(),
+            BuildKind::Build,
+            Some(&root.join("cmd/server")),
+            None,
+            None,
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        assert_eq!(pkg.system, BuildSystem::Go);
+        assert_eq!(pkg.steps[0].cwd, root);
+        assert_eq!(pkg.steps[0].args, ["build", "./cmd/server/..."]);
+
+        let whole =
+            plan(&root, &BuildModel::default(), BuildKind::Build, Some(&root), None, None, &CancellationToken::new())
+                .unwrap();
+        assert_eq!(whole.steps[0].cwd, root);
+        assert_eq!(whole.steps[0].args, ["build", "./..."]);
     }
 }

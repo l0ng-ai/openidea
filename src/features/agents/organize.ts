@@ -5,6 +5,7 @@
  */
 import type { AgentTask } from "@/bindings";
 import { tx } from "@/platform/i18n";
+import { parseRemoteLocation } from "@/platform/remote";
 import { attentionRank } from "./model";
 
 /** A group the user made ("Frontend", "Docs"…). */
@@ -58,7 +59,9 @@ export function parseOrganize(saved: unknown): TaskOrganize {
 export function loadOrganize(root: string | null | undefined): TaskOrganize {
   if (!root) return EMPTY_ORGANIZE;
   try {
-    const raw = globalThis.localStorage?.getItem(key(root));
+    const legacy = parseRemoteLocation(root)?.path;
+    const raw =
+      globalThis.localStorage?.getItem(key(root)) ?? (legacy ? globalThis.localStorage?.getItem(key(legacy)) : null);
     return raw == null ? EMPTY_ORGANIZE : parseOrganize(JSON.parse(raw));
   } catch {
     return EMPTY_ORGANIZE;

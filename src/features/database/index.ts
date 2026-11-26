@@ -7,7 +7,7 @@
 import { lazyComponent, lazyWhen, type MenuItem } from "@/ui";
 import { activeEditor, lazyEditorExtension, registerEditorContribution } from "@/editor/api";
 import { tx } from "@/platform/i18n";
-import { onIdeEvent } from "@/platform/ipc";
+import { call, commands, onIdeEvent } from "@/platform/ipc";
 import { registerActions, type ActionContext } from "@/platform/actions";
 import { activeCellGrid } from "./cellActions";
 import {
@@ -31,6 +31,7 @@ import { installValueEditorActions } from "./valueEditorActions";
 import { registerResultTabActions } from "./resultTabActions";
 import { SQL_LANGUAGE } from "./sqlLanguage";
 import { TABLE_KIND, tableTitle } from "./tableInput";
+import { DIAGRAM_KIND, diagramTitle } from "./erDiagram";
 import { databaseRequest, projectRequest } from "./requests";
 import { nodeTarget, type DbNode } from "./nodes";
 import { registerDatabaseTreeActions } from "./treeActions";
@@ -81,21 +82,58 @@ function tableTarget(arg: unknown): TableCommandTarget {
   return { rows: activeCellGrid()?.selectedRows() ?? [], editor: null };
 }
 
-export function activate(): () => void {
-  const disposers = [
-    onIdeEvent("dbSourcesChanged", () => {
-      void loadSources();
-    }),
-    registerToolWindow({
+/** The Database window, on the stripe by default only while the project has data sources. */
+function registerDatabaseWindow(): () => void {
+  let withSources: boolean | null = null;
+  let dispose = () => {};
+  const sync = (next: boolean) => {
+    if (next === withSources) return;
+    withSources = next;
+    // Registering the same id again replaces the contribution in place.
+    dispose = registerToolWindow({
       id: DB_TOOL_WINDOW,
       title: "Database",
       icon: "toolwindow-database",
       anchor: "right",
       order: 20,
+      ...(next ? {} : { stripe: "onUse" as const }),
       component: lazyComponent(() => import("./DatabaseView").then((m) => m.DatabaseView)),
       headerMenu: useDatabaseHeaderMenu,
       headerActions: lazyComponent(() => import("./DatabaseView").then((m) => m.DatabaseHeaderActions)),
+    });
+  };
+  // Until the window loads the sources, a quiet probe decides; a failed one leaves it under "…".
+  let probe = 0;
+  const check = () => {
+    const seq = ++probe;
+    sync(false);
+    if (!useProject.getState().project) return;
+    call(commands.dbSources()).then(
+      (sources) => seq === probe && !useDatabase.getState().loaded && sync(sources.length > 0),
+      () => {},
+    );
+  };
+  check();
+  const offSources = useDatabase.subscribe((s) => {
+    if (s.loaded) sync(s.sources.length > 0);
+  });
+  const offProject = useProject.subscribe((s, prev) => {
+    if (s.project?.root !== prev.project?.root) check();
+  });
+  return () => {
+    probe++;
+    offSources();
+    offProject();
+    dispose();
+  };
+}
+
+export function activate(): () => void {
+  const disposers = [
+    onIdeEvent("dbSourcesChanged", () => {
+      void loadSources();
     }),
+    registerDatabaseWindow(),
     registerServiceView({
       id: RESULTS_VIEW,
       title: "Database",
@@ -111,6 +149,12 @@ export function activate(): () => void {
       icon: () => "database",
       // Switching tabs keeps the rows, filters, page and unsubmitted edits without querying again.
       keepAlive: true,
+    }),
+    registerEditorKind({
+      kind: DIAGRAM_KIND,
+      component: lazyComponent(() => import("./DiagramView").then((m) => m.DiagramEditor)),
+      title: diagramTitle,
+      icon: () => "db-table",
     }),
     registerOverlay({
       id: "database.dialogs",
@@ -152,6 +196,7 @@ export function activate(): () => void {
         activeResult: null,
         selectedSource: null,
         selectedNode: null,
+        selectedNodes: [],
         treeExpanded: new Set(),
         treeReveal: null,
         manualCommit: new Set(),

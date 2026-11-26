@@ -112,6 +112,46 @@ pub(crate) mod hover_actions_bindings {
     });
 }
 
+/// The optional `completion-list-provider` export (API 1.16), bound on its own when present.
+pub(crate) mod completion_list_bindings {
+    wasmtime::component::bindgen!({
+        world: "plugin-completion-list",
+        path: "../../wit",
+        imports: { default: trappable },
+        with: {
+            "openidea:plugin/types": super::bindings::openidea::plugin::types,
+            "openidea:plugin/log": super::bindings::openidea::plugin::log,
+            "openidea:plugin/ui": super::bindings::openidea::plugin::ui,
+            "openidea:plugin/storage": super::bindings::openidea::plugin::storage,
+            "openidea:plugin/workspace": super::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor": super::bindings::openidea::plugin::editor,
+            "openidea:plugin/decorations": super::bindings::openidea::plugin::decorations,
+            "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
+            "openidea:plugin/vcs": super::bindings::openidea::plugin::vcs,
+            "openidea:plugin/build": super::bindings::openidea::plugin::build,
+            "openidea:plugin/commit": super::bindings::openidea::plugin::commit,
+            "openidea:plugin/events": super::bindings::openidea::plugin::events,
+            "openidea:plugin/tasks": super::bindings::openidea::plugin::tasks,
+            "openidea:plugin/diagnostics": super::bindings::openidea::plugin::diagnostics,
+            "openidea:plugin/net": super::bindings::openidea::plugin::net,
+            "openidea:plugin/secrets": super::bindings::openidea::plugin::secrets,
+            "openidea:plugin/run": super::bindings::openidea::plugin::run,
+            "openidea:plugin/process": super::bindings::openidea::plugin::process,
+            "openidea:plugin/output": super::bindings::openidea::plugin::output,
+            "openidea:plugin/auth": super::bindings::openidea::plugin::auth,
+            "openidea:plugin/command-runner": super::bindings::openidea::plugin::command_runner,
+            "openidea:plugin/language-servers": super::bindings::openidea::plugin::language_servers,
+            "openidea:plugin/ipc": super::bindings::openidea::plugin::ipc,
+            "openidea:plugin/fs": super::bindings::openidea::plugin::fs,
+            "openidea:plugin/views": super::bindings::openidea::plugin::views,
+            "openidea:plugin/settings": super::bindings::openidea::plugin::settings,
+            "openidea:plugin/database": super::bindings::openidea::plugin::database,
+            "openidea:plugin/mcp": super::bindings::openidea::plugin::mcp,
+            "openidea:plugin/extensions": super::bindings::openidea::plugin::extensions,
+        },
+    });
+}
+
 /// The optional `providers` export.
 pub(crate) mod providers_bindings {
     wasmtime::component::bindgen!({
@@ -249,6 +289,8 @@ const MAX_FIND: u32 = 10_000;
 const MAX_STATUS_TEXT: usize = 128;
 const MAX_PICK_ITEMS: usize = 5000;
 const MAX_PICK_KEY: usize = 256;
+/// Filters of a `ui.pick-file` dialog, and extensions of each.
+const MAX_FILE_FILTERS: usize = 32;
 const MAX_ARGS: usize = 256;
 const MAX_ARG_BYTES: usize = 4096;
 const MAX_ENV: usize = 64;
@@ -379,6 +421,17 @@ impl log::Host for StoreData {
 }
 
 impl StoreData {
+    fn pick_path(&mut self, prompt: Prompt) -> Fallible<Option<String>> {
+        let answer = self.ask(prompt);
+        Ok(answer.and_then(|answer| {
+            let path = answer.and_then(|items| items.into_iter().next());
+            if let Some(path) = &path {
+                validate_ui_path(path)?;
+            }
+            Ok(path)
+        }))
+    }
+
     /// Asks the user and waits; the wait doesn't count against the call's
     /// wall-clock budget.
     fn ask(&mut self, prompt: Prompt) -> Result<Option<Vec<String>>, wit::Error> {
@@ -754,14 +807,27 @@ impl ui::Host for StoreData {
         {
             return Ok(Err(error));
         }
-        let answer = self.ask(Prompt::PickDirectory { title: clip(title, MAX_TITLE), initial });
-        Ok(answer.and_then(|answer| {
-            let path = answer.and_then(|items| items.into_iter().next());
-            if let Some(path) = &path {
-                validate_ui_path(path)?;
-            }
-            Ok(path)
-        }))
+        self.pick_path(Prompt::PickDirectory { title: clip(title, MAX_TITLE), initial })
+    }
+
+    fn pick_file(&mut self, title: String, dialog: ui::FileDialog) -> Fallible<Option<String>> {
+        let filters = dialog
+            .filters
+            .into_iter()
+            .take(MAX_FILE_FILTERS)
+            .map(|f| crate::PluginFileFilter {
+                name: clip(f.name, MAX_TITLE),
+                extensions: f.extensions.into_iter().take(MAX_FILE_FILTERS).map(|e| clip(e, MAX_PICK_KEY)).collect(),
+            })
+            .collect();
+        // A suggested file name only: the dialog starts where the user last was, never at a
+        // directory the plugin names.
+        let name = dialog
+            .name
+            .and_then(|n| n.rsplit(['/', '\\']).next().map(str::to_owned))
+            .filter(|n| !n.is_empty() && n != "." && n != "..")
+            .map(|n| clip(n, MAX_TITLE));
+        self.pick_path(Prompt::PickFile { title: clip(title, MAX_TITLE), save: dialog.save, name, filters })
     }
 
     fn pick_many(&mut self, title: String, items: Vec<ui::PickItem>) -> Fallible<Option<Vec<String>>> {
@@ -1379,6 +1445,34 @@ impl vcs::Host for StoreData {
         }
         let root = self.table.get(&project)?.root.clone();
         Ok(self.host.vcs_remotes(&root).map_err(to_wit))
+    }
+
+    fn roots(&mut self, project: Resource<ProjectRes>) -> Fallible<Vec<String>> {
+        if let Err(e) = self.require(Capability::VcsRead) {
+            return Ok(Err(e));
+        }
+        Ok(self.host.vcs_roots(&self.table.get(&project)?.root).map_err(to_wit))
+    }
+
+    fn repository_at(&mut self, project: Resource<ProjectRes>, path: String) -> Fallible<Option<vcs::RepositoryInfo>> {
+        if let Err(e) = self.require(Capability::VcsRead) {
+            return Ok(Err(e));
+        }
+        Ok(self
+            .host
+            .vcs_repository_at(&self.table.get(&project)?.root, &path)
+            .map(|r| {
+                r.map(|r| vcs::RepositoryInfo {
+                    root: r.root,
+                    relative_path: r.relative_path,
+                    branch: r.branch,
+                    commit: r.commit,
+                    upstream: r.upstream,
+                    ahead: r.ahead,
+                    remotes: r.remotes,
+                })
+            })
+            .map_err(to_wit))
     }
 }
 
@@ -2762,6 +2856,23 @@ fn diagnostic_to_wit(d: ide_core::Diagnostic) -> diagnostics::Diagnostic {
         related: Vec::new(),
     }
 }
+impl StoreData {
+    /// Shared by `set` and `set-markdown`: both replace the same set-id namespace.
+    fn replace_decorations(&mut self, path: String, set_id: String, items: Vec<crate::Decoration>) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::ProjectRead) {
+            return Ok(Err(e));
+        }
+        if items.len() > 10_000 {
+            return Ok(Err(wit::Error::Invalid("at most 10000 decorations per file".into())));
+        }
+        let real = match self.decoration_path(&path) {
+            Ok(real) => real,
+            Err(e) => return Ok(Err(e)),
+        };
+        Ok(self.host.decorations(Some(&real), &set_id, items).map_err(to_wit))
+    }
+}
+
 impl bindings::openidea::plugin::decorations::Host for StoreData {
     fn set(
         &mut self,
@@ -2769,21 +2880,58 @@ impl bindings::openidea::plugin::decorations::Host for StoreData {
         set_id: String,
         items: Vec<bindings::openidea::plugin::decorations::Decoration>,
     ) -> Fallible<()> {
-        if let Err(e) = self.require(Capability::ProjectRead) {
-            return Ok(Err(e));
-        }
-        if items.len() > 10_000 {
-            return Ok(Err(wit::Error::Invalid("at most 10000 decorations per file".into())));
-        }
         let items = items
             .into_iter()
-            .map(|d| crate::Decoration { range: core_range(d.range), style: d.style, hover: d.hover, after: d.after })
+            .map(|d| crate::Decoration {
+                range: core_range(d.range),
+                style: d.style,
+                hover: d.hover,
+                after: d.after,
+                markdown_hover: None,
+                colors: None,
+            })
             .collect();
-        let real = match self.decoration_path(&path) {
-            Ok(real) => real,
-            Err(e) => return Ok(Err(e)),
-        };
-        Ok(self.host.decorations(Some(&real), &set_id, items).map_err(to_wit))
+        self.replace_decorations(path, set_id, items)
+    }
+    fn set_markdown(
+        &mut self,
+        path: String,
+        set_id: String,
+        items: Vec<bindings::openidea::plugin::decorations::MarkdownDecoration>,
+    ) -> Fallible<()> {
+        let items = items
+            .into_iter()
+            .map(|d| crate::Decoration {
+                range: core_range(d.range),
+                style: d.style,
+                hover: d.hover,
+                after: d.after,
+                markdown_hover: d.markdown_hover,
+                colors: None,
+            })
+            .collect();
+        self.replace_decorations(path, set_id, items)
+    }
+    fn set_styled(
+        &mut self,
+        path: String,
+        set_id: String,
+        items: Vec<bindings::openidea::plugin::decorations::StyledDecoration>,
+    ) -> Fallible<()> {
+        let items = items
+            .into_iter()
+            .map(|d| crate::Decoration {
+                range: core_range(d.range),
+                style: d.style,
+                hover: d.hover,
+                after: d.after,
+                markdown_hover: d.markdown_hover,
+                colors: d
+                    .colors
+                    .map(|c| crate::DecorationColors { foreground: c.foreground, background: c.background }),
+            })
+            .collect();
+        self.replace_decorations(path, set_id, items)
     }
     fn clear(&mut self, set_id: String) -> Fallible<()> {
         if let Err(e) = self.require(Capability::ProjectRead) {

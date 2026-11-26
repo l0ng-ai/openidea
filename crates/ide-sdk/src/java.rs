@@ -1629,7 +1629,7 @@ pub fn usages_bundle(data_dir: &Path) -> Option<PathBuf> {
     install_bundle(
         data_dir,
         "java-usages",
-        "1.18.0",
+        "1.19.0",
         include_bytes!("../../../java/java-usages/openidea-java-usages.jar"),
     )
 }
@@ -1642,6 +1642,114 @@ pub fn jdbc_bridge_jar(data_dir: &Path) -> Option<PathBuf> {
         "1.0.0",
         include_bytes!("../../../java/jdbc-bridge/openidea-jdbc-bridge.jar"),
     )
+}
+
+/// Extracts the JUnit test runner (`java/junit-runner`; JUnit Platform and JUnit 4) into the application's data directory.
+pub fn junit_runner_jar(data_dir: &Path) -> Option<PathBuf> {
+    install_bundle(
+        data_dir,
+        "junit-runner",
+        "1.0.0",
+        include_bytes!("../../../java/junit-runner/openidea-junit-runner.jar"),
+    )
+}
+
+/// The IDE's Java build (`java/java-build`): the resident javac server and the Maven
+/// extension that records the build model.
+const JAVA_BUILD: &[u8] = include_bytes!("../../../java/java-build/openidea-java-build.jar");
+
+/// Extracts the Java build jar into the application's data directory.
+pub fn java_build_jar(data_dir: &Path) -> Option<PathBuf> {
+    install_bundle(data_dir, "java-build", "1.0.0", JAVA_BUILD)
+}
+
+/// Changes whenever the embedded Java build jar does (FNV-1a of its bytes), so build models
+/// recorded by an older extension are prepared again.
+pub fn java_build_version() -> String {
+    let hash =
+        JAVA_BUILD.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x100_0000_01b3));
+    format!("{hash:016x}")
+}
+
+/// The JUnit Platform launcher a test classpath needs to start the runner.
+#[derive(Debug, PartialEq)]
+pub enum JunitLauncher {
+    /// The classpath has `junit-platform-launcher` already.
+    OnClasspath,
+    /// `junit-platform-launcher` of the engine's version, next to the engine jar in its repository.
+    Found(PathBuf),
+    /// Not found locally: the engine's version, to download.
+    Missing(String),
+    /// No `junit-platform-engine`, but JUnit 4: the runner uses JUnit 4's own `JUnitCore`.
+    Junit4,
+    /// Neither the JUnit Platform nor JUnit 4 on the classpath (TestNG alone).
+    NoPlatform,
+}
+
+/// Like IDEA, the launcher must match the engine's version: a project usually depends on
+/// `junit-jupiter` only, which brings the engine but no launcher. The Maven local repository
+/// (`…/junit-platform-engine/<v>/…jar`) and the Gradle cache (`…/junit-platform-engine/<v>/<sha1>/…jar`)
+/// keep the launcher in a sibling folder.
+pub fn junit_launcher(class_paths: &[String]) -> JunitLauncher {
+    let name = |p: &str| Path::new(p).file_name().and_then(|n| n.to_str()).unwrap_or_default().to_owned();
+    if class_paths.iter().any(|p| name(p).starts_with("junit-platform-launcher-")) {
+        return JunitLauncher::OnClasspath;
+    }
+    let Some((engine, version)) = class_paths.iter().find_map(|p| {
+        let version = name(p).strip_prefix("junit-platform-engine-")?.strip_suffix(".jar")?.to_owned();
+        Some((PathBuf::from(p), version))
+    }) else {
+        let junit4 = class_paths.iter().any(|p| {
+            let name = name(p);
+            (name.starts_with("junit-4.") || name.starts_with("junit-dep-4.")) && name.ends_with(".jar")
+        });
+        return if junit4 { JunitLauncher::Junit4 } else { JunitLauncher::NoPlatform };
+    };
+    let jar = format!("junit-platform-launcher-{version}.jar");
+    let artifact = engine.ancestors().find(|a| a.file_name().is_some_and(|n| n == "junit-platform-engine"));
+    let launcher_dir = artifact.and_then(Path::parent).map(|d| d.join("junit-platform-launcher").join(&version));
+    let found = launcher_dir.and_then(|dir| {
+        let direct = dir.join(&jar);
+        if direct.is_file() {
+            return Some(direct);
+        }
+        std::fs::read_dir(&dir).ok()?.flatten().map(|e| e.path().join(&jar)).find(|p| p.is_file())
+    });
+    match found {
+        Some(path) => JunitLauncher::Found(path),
+        None => JunitLauncher::Missing(version),
+    }
+}
+
+#[cfg(test)]
+mod junit_launcher_tests {
+    use super::{JunitLauncher, junit_launcher};
+
+    #[test]
+    fn finds_the_launcher_of_the_engine_version_in_maven_and_gradle_repositories() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = |p: &std::path::Path| p.to_string_lossy().into_owned();
+        let maven = dir.path().join("m2/org/junit/platform");
+        let maven_engine = maven.join("junit-platform-engine/1.11.3/junit-platform-engine-1.11.3.jar");
+        let maven_launcher = maven.join("junit-platform-launcher/1.11.3/junit-platform-launcher-1.11.3.jar");
+        let gradle = dir.path().join("gradle/files-2.1/org.junit.platform");
+        let gradle_engine = gradle.join("junit-platform-engine/1.10.2/aaa/junit-platform-engine-1.10.2.jar");
+        let gradle_launcher = gradle.join("junit-platform-launcher/1.10.2/bbb/junit-platform-launcher-1.10.2.jar");
+        for jar in [&maven_engine, &maven_launcher, &gradle_engine, &gradle_launcher] {
+            std::fs::create_dir_all(jar.parent().unwrap()).unwrap();
+            std::fs::write(jar, "").unwrap();
+        }
+        assert_eq!(junit_launcher(&["classes".into(), s(&maven_engine)]), JunitLauncher::Found(maven_launcher));
+        assert_eq!(junit_launcher(&[s(&gradle_engine)]), JunitLauncher::Found(gradle_launcher));
+        let other = dir.path().join("lib/junit-platform-engine-1.9.0.jar");
+        assert_eq!(junit_launcher(&[s(&other)]), JunitLauncher::Missing("1.9.0".into()));
+        assert_eq!(
+            junit_launcher(&[s(&other), "/x/junit-platform-launcher-1.9.0.jar".into()]),
+            JunitLauncher::OnClasspath
+        );
+        assert_eq!(junit_launcher(&["/x/junit-4.13.2.jar".into()]), JunitLauncher::Junit4);
+        assert_eq!(junit_launcher(&["/x/testng-7.10.2.jar".into()]), JunitLauncher::NoPlatform);
+    }
 }
 
 /// Installs the app-owned JDT LS bundle that inspects java-debug's JVMs.

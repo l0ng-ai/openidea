@@ -53,6 +53,7 @@ async function sourceRoots(s: DebugSession): Promise<string[]> {
   let dir = start;
   for (let depth = 0; depth < MAX_PACKAGE_DEPTH; depth++) {
     const file = `${dir}/.dart_tool/package_config.json`;
+    // oxlint-disable-next-line no-await-in-loop -- directory walk depends on the previous step and stops at the first config found
     const text = await call(commands.fsReadText(file)).catch(() => null);
     if (text !== null) {
       try {

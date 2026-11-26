@@ -1550,6 +1550,119 @@ async fn flutter_outline_follows_the_document_and_the_server_instance() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn property_editor_lists_the_dart_servers_arguments_and_applies_its_edit() {
+    let h = harness(&[("dart", incremental_caps())]);
+    let (doc, path) = h.open("a.mk", "Text('x')\n");
+    h.wait_status("dart", ServerStatus::Ready).await;
+    let s = h.launcher.state("dart");
+    let arg = |name: &str, extra: Value| {
+        let mut a = json!({ "name": name, "hasArgument": false, "isRequired": false, "isNullable": true,
+            "isDeprecated": false, "isEditable": true });
+        a.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        a
+    };
+    let at = json!({"start":{"line":0,"character":0},"end":{"line":0,"character":9}});
+    s.respond(
+        "dart/textDocument/editableArguments",
+        json!({ "textDocument": { "uri": uri_of(&path), "version": 1 }, "name": "Text", "range": at, "arguments": [
+            arg("data", json!({ "type": "string", "value": "x", "hasArgument": true, "isRequired": true, "isNullable": false })),
+            arg("textAlign", json!({ "type": "enum", "options": ["TextAlign.left", "TextAlign.center"] })),
+            arg("maxLines", json!({ "type": "int", "value": 2, "hasArgument": true })),
+            // An older SDK leaves out flags it doesn't know yet.
+            json!({ "name": "softWrap", "type": "bool", "hasArgument": false }),
+        ]}),
+    );
+    let args = h.mgr.editable_arguments(doc, Pos::new(0, 2)).await.unwrap().unwrap();
+    assert_eq!(args.name.as_deref(), Some("Text"));
+    assert_eq!(
+        (args.arguments[0].kind.as_str(), args.arguments[0].value.clone()),
+        ("string", Some(ArgumentValue::Text("x".into())))
+    );
+    assert_eq!(args.arguments[1].options.as_ref().unwrap()[1], "TextAlign.center");
+    assert_eq!(args.arguments[1].value, None);
+    assert!(args.arguments[3].is_editable && !args.arguments[3].is_deprecated && !args.arguments[3].is_required);
+    assert_eq!(args.arguments[2].value, Some(ArgumentValue::Int(2)));
+    let asked = s.requested("dart/textDocument/editableArguments");
+    assert_eq!(asked[0]["position"], json!({"line":0,"character":2}));
+
+    // The server answers editArgument with null and sends the edit as workspace/applyEdit.
+    let applied: Arc<Mutex<Vec<WorkspaceEdit>>> = Arc::default();
+    let received = applied.clone();
+    h.mgr.set_apply_edit_hook(Box::new(move |e| {
+        received.lock().push(e);
+        true
+    }));
+    let uri = uri_of(&path);
+    *s.responder.lock() = Some(Arc::new(move |s, method, _| {
+        (method == "dart/textDocument/editArgument").then(|| {
+            let edit = json!({ "changes": { uri.clone(): [{ "range":
+                {"start":{"line":0,"character":5},"end":{"line":0,"character":8}}, "newText": "'y'" }] } });
+            let reply: Value = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(s.peer().request(
+                    "workspace/applyEdit",
+                    json!({ "edit": edit }),
+                    None,
+                ))
+            })
+            .unwrap();
+            assert_eq!(reply, json!({"applied": true}));
+            Value::Null
+        })
+    }));
+    h.mgr.edit_argument(doc, Pos::new(0, 2), "data".into(), Some(ArgumentValue::Text("y".into()))).await.unwrap();
+    let sent = s.requested("dart/textDocument/editArgument");
+    assert_eq!(sent[0]["edit"], json!({ "name": "data", "newValue": "y" }));
+    assert_eq!(sent[0]["position"], json!({"line":0,"character":2}));
+    let edits = applied.lock().clone();
+    assert!(
+        matches!(&edits[..], [e] if matches!(&e.files[0], FileEdit::Edit { edits, .. } if edits[0].new_text == "'y'"))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn property_editor_has_nothing_without_a_dart_server() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let (doc, _) = h.open("a.mk", "Text('x')\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    assert!(h.mgr.editable_arguments(doc, Pos::new(0, 2)).await.unwrap().is_none());
+    assert!(h.launcher.state("mock").requested("dart/textDocument/editableArguments").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn closing_labels_join_the_inlay_hints_until_the_next_edit() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let (doc, path) = h.open("a.mk", "Center(\n  child: Text('x'))\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    s.respond("textDocument/inlayHint", json!([]));
+    let refreshes = || {
+        h.events
+            .lock()
+            .iter()
+            .filter(|e| matches!(e, IdeEvent::LspRefresh { kind: LspRefreshKind::InlayHints, .. }))
+            .count()
+    };
+    let at = |l0: u32, c0: u32, c1: u32| json!({"start":{"line":l0,"character":c0},"end":{"line":1,"character":c1}});
+    let labels = json!({ "uri": uri_of(&path), "labels": [
+        { "range": at(1, 9, 18), "label": "Text" },
+        { "range": at(0, 0, 19), "label": "Center" },
+    ]});
+    s.peer().notify("dart/textDocument/publishClosingLabels", labels).unwrap();
+    eventually(|| refreshes() == 1).await;
+    let whole = Range::new(Pos::new(0, 0), Pos::new(2, 0));
+    let hints = h.mgr.inlay_hints(doc, whole).await.unwrap();
+    assert_eq!(hints.len(), 1);
+    assert_eq!(hints[0].label, "// Text // Center");
+    assert_eq!(hints[0].position, Pos::new(1, 19));
+    assert_eq!(hints[0].kind, InlayKind::ClosingLabel);
+    assert!(h.mgr.inlay_hints(doc, Range::new(Pos::new(0, 0), Pos::new(0, 7))).await.unwrap().is_empty());
+
+    // Edited text: the labels wait for the next analysis.
+    h.mgr.did_change(doc, 2, &[change(rng(0, 0, 0, 0), " ")], &|| unreachable!());
+    assert!(h.mgr.inlay_hints(doc, whole).await.unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn diagnostics_become_events_and_feed_code_actions() {
     let h = harness(&[("mock", incremental_caps())]);
     let (doc, path) = h.open("a.mk", "let unused = 1;\nlet y = 2;\n");
@@ -7650,6 +7763,58 @@ async fn gradle_incompatible_jdk_log_is_surfaced_once_across_message_channels() 
         })
         .collect();
     assert_eq!(messages, vec![failure, "after"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_gradle_sync_is_surfaced_once_unless_an_incompatible_jdk_explains_it() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let s = h.launcher.state("jdtls");
+    h.open("A.java", "class A {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let sync = |project: &str, cause: &str| {
+        format!(
+            "Nov 25, 2026, 2:00:14 PM Synchronize project {project} failed due to an error connecting to the Gradle build.\n\
+             org.gradle.tooling.BuildActionFailureException: The supplied phased action failed with an exception.\n\
+             \tat org.gradle.tooling.internal.consumer.DefaultPhasedBuildActionExecuter.run(DefaultPhasedBuildActionExecuter.java:68)\n\
+             Caused by: java.lang.IllegalArgumentException: {cause}\n\
+             \tat org.gradle.groovy.scripts.DefaultScript.apply(DefaultScript.java:133)"
+        )
+    };
+    // jdtls logs it below error level, and again on every sync.
+    for _ in 0..2 {
+        let message = sync("repro", "Unable to determine constructor argument #2");
+        s.peer().notify("window/logMessage", json!({ "type": 3, "message": message })).unwrap();
+    }
+    // An incompatible JDK fails the sync too, and jdtls then says so with its own fix.
+    s.peer()
+        .notify(
+            "window/logMessage",
+            json!({ "type": 3, "message": sync("old", "Unsupported class file major version 71") }),
+        )
+        .unwrap();
+    let jdk = "Can't use Java 27.0.1 and Gradle 7.5.1 to import Gradle project old.";
+    s.peer()
+        .notify("window/logMessage", json!({ "type": 1, "message": format!("{jdk}\njava.lang.Exception: details") }))
+        .unwrap();
+    let notes = || -> Vec<(String, String)> {
+        h.events
+            .lock()
+            .iter()
+            .filter_map(|e| match e {
+                IdeEvent::Notify { title, body: Some(b), .. } => Some((title.clone(), b.clone())),
+                _ => None,
+            })
+            .collect()
+    };
+    eventually(|| notes().iter().any(|(t, _)| t == "Gradle project sync failed")).await;
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let notes = notes();
+    let synced: Vec<_> =
+        notes.iter().filter(|(t, _)| t == "Gradle project sync failed").map(|(_, b)| b.as_str()).collect();
+    assert_eq!(synced.len(), 1, "{notes:?}");
+    assert!(synced[0].starts_with("Gradle could not sync repro. "), "{notes:?}");
+    assert!(synced[0].ends_with(" Cause: Unable to determine constructor argument #2"), "{notes:?}");
+    assert!(notes.iter().any(|(_, b)| b == jdk), "{notes:?}");
 }
 
 /// Pull Members Up / Push Members Down: the extension's answers, refusals and edits.

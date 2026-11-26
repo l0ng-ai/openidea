@@ -66,4 +66,4 @@ pnpm e2e -g "opens a file"                 # by test name
 
 ## Verifying in the real app
 
-Unit and E2E tests don't run the Rust backend inside the webview. For UI or runtime behaviour, run `pnpm tauri dev` and check the change in the app. Debug builds include the Tauri MCP bridge, so the check can be scripted; find the port with `pnpm dev:status` (see [Development setup](/en/contribute/setup#mcp-bridge-and-ports)). The repository's agent skill `.agents/skills/verify` describes driving the app that way and capturing screenshots.
+Unit and E2E tests don't run the Rust backend inside the webview. For UI or runtime behaviour, run `pnpm tauri dev` and check the change in the app. Debug builds include the Tauri MCP bridge, so the check can be scripted; find the port with `pnpm dev:status` (see [Development setup](/en/contribute/setup#mcp-bridge-and-ports)).

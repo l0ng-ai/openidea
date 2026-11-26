@@ -1,5 +1,6 @@
 /** Pure helpers: task grouping, entry updates, labels. */
 import type { AgentEntry, AgentStatus, AgentSubagentStatus, AgentTask } from "@/bindings";
+import { isIconName } from "@/ui/icons";
 
 export const SESSION_KIND = "agent-session";
 export const HOME_KIND = "agent-home";
@@ -19,6 +20,9 @@ export const SKILLS_PAGE = "agents.skills";
 export const POLICY_PAGE = "agents.policy";
 
 export const sessionKey = (task: string) => `agent:${task}`;
+/** A task's Changes editor tab: its changed files and their diffs. */
+export const CHANGES_KIND = "agent-changes";
+export const changesKey = (task: string) => `agent-changes:${task}`;
 
 /** Key of a conversation in the entries store: the task's own, or its subagent `subagent`'s. */
 export const entriesKey = (task: string, subagent: string | null) => (subagent ? `${task}/${subagent}` : task);
@@ -49,26 +53,6 @@ export function subagentStatusLabel(s: AgentSubagentStatus): string {
   }
 }
 
-const PROVIDER_ICONS = new Set([
-  "claude",
-  "codex",
-  "gemini",
-  "copilot",
-  "cursor",
-  "opencode",
-  "qwen",
-  "qoder",
-  "qodercn",
-  "kimi",
-  "goose",
-  "auggie",
-  "kiro",
-  "vibe",
-  "omp",
-  "deepseek-harness",
-  "hermes",
-]);
-
 /** Suggests an agent-file id for a display name (`"My Agent!"` → `"my-agent"`). */
 export function slugifyId(name: string): string {
   return name
@@ -80,10 +64,18 @@ export function slugifyId(name: string): string {
 /** The agent a Hermes profile runs as: `hermes` for `default`, else `hermes-<slug>` (`hermes -p <name> acp`). */
 export const hermesAgentId = (profile: string) => (profile === "default" ? "hermes" : `hermes-${slugifyId(profile)}`);
 
+/** Providers whose logo is another provider's: legacy and ACP-adapter ids of the same agent. */
+const ICON_ALIASES: Record<string, string> = {
+  "claude-acp": "claude",
+  "codex-acp": "codex",
+  "kimi-code": "kimi",
+  "opencode-v2": "opencode",
+};
+
 /** The agent's logo; custom agents get the generic agents icon, Hermes profiles Hermes'. */
 export function providerIcon(provider: string): string {
-  if (PROVIDER_ICONS.has(provider)) return `agent-${provider}`;
-  return provider.startsWith("hermes-") ? "agent-hermes" : "toolwindow-agents";
+  const id = ICON_ALIASES[provider] ?? (provider.startsWith("hermes-") ? "hermes" : provider);
+  return isIconName(`agent-${id}`) ? `agent-${id}` : "toolwindow-agents";
 }
 
 export interface TaskGroup {
@@ -136,21 +128,37 @@ export function upsertEntry(entries: AgentEntry[], index: number, entry: AgentEn
   return next;
 }
 
+/** `shown` with `text`, which follows its first `from` units, added; `null` when `shown` is too short to take it. */
+function grown(shown: string, from: number, text: string): string | null {
+  if (shown.length < from) return null;
+  return shown.length >= from + text.length ? shown : shown + text.slice(shown.length - from);
+}
+
 /**
- * `entries` with `text` appended to the message at `index`, which read its first `from`
- * UTF-16 units when the backend last sent it; `null` when the copy here can't take it (a
- * gap, or another kind of entry), so the conversation is loaded again. A copy loaded while
- * the text streamed may already hold some of it.
+ * `entries` with `text` appended to the message at `index` (or to the output of the tool call
+ * there), which read its first `from` UTF-16 units when the backend last sent it; `null` when
+ * the copy here can't take it (a gap, or another kind of entry), so the conversation is
+ * loaded again. A copy loaded while the text streamed may already hold some of it.
  */
 export function appendEntry(entries: AgentEntry[], index: number, from: number, text: string): AgentEntry[] | null {
   const entry = entries[index];
-  if (!entry || (entry.type !== "agent" && entry.type !== "thought")) return null;
-  const have = entry.text.length;
-  if (have < from) return null;
-  if (have >= from + text.length) return entries;
-  const next = entries.slice();
-  next[index] = { ...entry, text: entry.text + text.slice(have - from) };
-  return next;
+  let next: AgentEntry;
+  if (entry?.type === "tool") {
+    const output = grown(entry.output ?? "", from, text);
+    if (output === null) return null;
+    if (output === entry.output) return entries;
+    next = { ...entry, output };
+  } else if (entry?.type === "agent" || entry?.type === "thought") {
+    const added = grown(entry.text, from, text);
+    if (added === null) return null;
+    if (added === entry.text) return entries;
+    next = { ...entry, text: added };
+  } else {
+    return null;
+  }
+  const copy = entries.slice();
+  copy[index] = next;
+  return copy;
 }
 
 /** "agent/fix-lexer" → "fix-lexer". */

@@ -81,6 +81,10 @@ impl TestWorkspace {
 }
 
 impl PluginWorkspace for TestWorkspace {
+    fn repositories(&self, root: &Path) -> Result<ide_vcs::Repos, HostError> {
+        ide_vcs::Repos::discover(root, &|_| false).map_err(|e| HostError::Failed(e.message))
+    }
+
     fn run_configuration(&self, _client: &str, plugin: &str, id: &str) -> Result<ide_run::RunConfig, HostError> {
         if !(plugin == "execution" && matches!(id, "detected" | "dynamic") || plugin == "api14" && id == "tests") {
             return Err(HostError::NotFound(id.into()));
@@ -124,6 +128,7 @@ impl PluginWorkspace for TestWorkspace {
             max_matches: limit,
             context: Default::default(),
             include_excluded: false,
+            skip_large_files: false,
         };
         let files = Mutex::new(Vec::new());
         let summary = ide_search::search(root, &query, &|_| None, cancel, &|file| files.lock().push(file))
@@ -3527,6 +3532,77 @@ fn views_open_project_files_at_a_line() {
 }
 
 #[test]
+fn views_open_locations_use_invoking_root_and_reject_symlink_escapes() {
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    let other = f._tmp.path().join("project-b");
+    std::fs::create_dir_all(&other).unwrap();
+    let other = dunce::canonicalize(other).unwrap();
+    for root in [&f.project, &other] {
+        std::fs::write(root.join("jobs.log"), "build\ndeploy\nfailed\n").unwrap();
+    }
+    let press = |client: &str, root: Option<&Path>| {
+        f.take_events();
+        let inv = Invocation {
+            client: Some(client.into()),
+            workspace_root: root.map(Path::to_path_buf),
+            ..Default::default()
+        };
+        let result = f.host.view_event("jobs", "jobs", ide_plugin::ViewEvent::Button { id: "log".into() }, inv);
+        let opened = f
+            .take_events()
+            .into_iter()
+            .filter_map(|(client, event)| match event {
+                PluginEvent::OpenLocation { plugin_id, path, line, column } => {
+                    Some((client, plugin_id, path.0, line, column))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        (result, opened)
+    };
+
+    for (client, root) in [("window-a", &f.project), ("window-b", &other), ("window-a", &f.project)] {
+        let (result, opened) = press(client, Some(root));
+        result.unwrap();
+        assert_eq!(opened, vec![(Some(client.into()), "jobs".into(), root.join("jobs.log"), 2, 4)]);
+    }
+
+    let link = f.project.join("jobs.log");
+    std::fs::remove_file(&link).unwrap();
+    let (result, opened) = press("window-a", Some(&f.project));
+    let error = result.unwrap_err();
+    assert_eq!(error.kind, ErrorKind::InvalidInput);
+    assert!(error.message.contains("no such file"), "{error:?}");
+    assert!(opened.is_empty());
+
+    let (result, opened) = press("window-a", None);
+    let error = result.unwrap_err();
+    assert_eq!(error.kind, ErrorKind::InvalidInput);
+    assert!(error.message.contains("no project is open"), "{error:?}");
+    assert!(opened.is_empty());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        symlink(other.join("jobs.log"), &link).unwrap();
+        let (result, opened) = press("window-a", Some(&f.project));
+        let error = result.unwrap_err();
+        assert_eq!(error.kind, ErrorKind::InvalidInput);
+        assert!(error.message.contains("outside the project root"), "{error:?}");
+        assert!(opened.is_empty());
+
+        std::fs::remove_file(&link).unwrap();
+        let target = f.project.join("构建 日志 [ ] # %.log");
+        std::fs::write(&target, "build\ndeploy\nfailed\n").unwrap();
+        symlink(target.file_name().unwrap(), &link).unwrap();
+        let (result, opened) = press("window-a", Some(&f.project));
+        result.unwrap();
+        assert_eq!(opened, vec![(Some("window-a".into()), "jobs".into(), target, 2, 4)]);
+    }
+}
+
+#[test]
 fn commands_see_the_paths_they_were_run_on() {
     let f = fixture(Limits::default());
     f.install(&sample("jobs"));
@@ -3535,6 +3611,36 @@ fn commands_see_the_paths_they_were_run_on() {
     let out = f.host.run_command("jobs", "selection", Some(&to_ipc(&a)), inv).unwrap();
     assert_eq!(out.as_deref(), Some(format!("{}\n{}", to_ipc(&a), to_ipc(&b)).as_str()));
     assert_eq!(f.run("jobs", "selection", None).unwrap().as_deref(), Some(""));
+}
+
+#[test]
+fn plugin_reads_the_repository_owning_the_path() {
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    let lookup = |path: Option<&str>| f.run("jobs", "repository-at", path);
+    for name in ["alpha", "beta", "alpha/nested"] {
+        let dir = f.project.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-b", "work"]);
+        git(&dir, &["remote", "add", "origin", &format!("https://user:pass@example.org/{name}.git")]);
+        std::fs::write(dir.join("file.txt"), name).unwrap();
+    }
+    assert_eq!(lookup(None).unwrap().unwrap().lines().count(), 3);
+    for (path, repo, relative) in [
+        ("alpha/file.txt", "alpha", "file.txt"),
+        ("beta/file.txt", "beta", "file.txt"),
+        ("alpha/nested/file.txt", "alpha/nested", "file.txt"),
+        ("alpha/nested", "alpha/nested", ""),
+    ] {
+        let root = to_ipc(&f.project.join(repo));
+        let expected = format!("{root}|{relative}|work|[(\"origin\", \"https://example.org/{repo}.git\")]");
+        assert_eq!(lookup(Some(path)).unwrap().as_deref(), Some(expected.as_str()));
+    }
+    assert_eq!(lookup(Some(".")).unwrap(), None);
+    assert!(lookup(Some("..")).unwrap_err().contains("outside"));
+    f.host.set_capability("jobs", "vcs.read", false).unwrap();
+    assert!(lookup(None).unwrap_err().contains("vcs.read"));
+    assert!(lookup(Some("alpha/file.txt")).unwrap_err().contains("vcs.read"));
 }
 
 #[test]
@@ -3900,6 +4006,68 @@ path = "templates/new.draw"
     f.host.set_enabled("web-demo", false).unwrap();
     assert!(file(&format!("{rev}/web/index.html")).is_err());
     assert!(f.host.web_page("web-demo", "draw").is_err());
+}
+
+#[test]
+fn web_pages_embed_only_declared_and_granted_frames() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("frame-demo");
+    for (path, text) in [
+        ("hall/index.html", "<iframe src=\"https://play.games.test:8443/room\"></iframe>"),
+        ("hall/rules.html", "<p>rules</p>"),
+        ("hall/app.js", "console.log(1)"),
+        ("panel/index.html", "<p>panel</p>"),
+    ] {
+        std::fs::create_dir_all(pkg.join(path).parent().unwrap()).unwrap();
+        std::fs::write(pkg.join(path), text).unwrap();
+    }
+    std::fs::write(
+        pkg.join("plugin.toml"),
+        r#"id = "frame-demo"
+name = "Frame Demo"
+version = "1.0.0"
+engines.openidea = "^1.16"
+
+[capabilities]
+optional = ["net:example.com", "net:*.games.test"]
+
+[[contributes.views]]
+id = "hall"
+title = "Hall"
+web = "hall/index.html"
+frames = ["https://example.com/", "https://play.games.test:8443", "https://example.com"]
+
+[[contributes.views]]
+id = "panel"
+title = "Panel"
+web = "panel/index.html"
+"#,
+    )
+    .unwrap();
+    let info = f.install(&pkg);
+    assert_eq!(info.status, PluginStatus::Static, "{:?}", info.error);
+    assert_eq!(
+        f.host.ui_items("views").iter().find(|v| v.decl["id"] == "hall").unwrap().decl["frames"],
+        serde_json::json!(["https://example.com", "https://play.games.test:8443"])
+    );
+    let page = f.host.web_page("frame-demo", "hall").unwrap();
+    let rev = page.path.strip_prefix("frame-demo/").unwrap().split_once('/').unwrap().0.to_owned();
+    let frames = |path: &str| f.host.web_file("frame-demo", &format!("{rev}/{path}")).unwrap().frames;
+    let both = Some(vec!["https://example.com".to_owned(), "https://play.games.test:8443".to_owned()]);
+    // Every page in the declaring view's directory, not its other files nor another view's pages.
+    assert_eq!(frames("hall/index.html"), both);
+    assert_eq!(frames("hall/rules.html"), both);
+    assert_eq!(frames("hall/app.js"), None);
+    assert_eq!(frames("panel/index.html"), None);
+
+    // Only what the user granted: declining a host takes it out of the policy.
+    f.host.set_capability("frame-demo", "net:example.com", false).unwrap();
+    assert_eq!(frames("hall/index.html"), Some(vec!["https://play.games.test:8443".to_owned()]));
+    f.host.set_capability("frame-demo", "net:*.games.test", false).unwrap();
+    assert_eq!(frames("hall/index.html"), Some(Vec::new()));
+    f.host.set_capability("frame-demo", "net:example.com", true).unwrap();
+    assert_eq!(frames("hall/index.html"), Some(vec!["https://example.com".to_owned()]));
 }
 
 #[test]
@@ -5284,6 +5452,34 @@ fn project_notifications_go_to_a_window_of_that_project_only() {
     assert!(error.contains("not open"), "{error}");
     assert!(notifications(&f).is_empty());
     assert_eq!(f.status("jobs"), PluginStatus::Active);
+}
+
+#[test]
+fn file_prompts_return_the_path_from_the_calling_window_without_a_capability() {
+    use ide_plugin::{PluginFileFilter, Prompt};
+    let f = fixture(Limits::default());
+    f.install(&sample("jobs"));
+    f.host.set_capability("jobs", "project.read", false).unwrap();
+    for name in [None, Some("result.parquet")] {
+        let (result, prompt) = run_and_answer(&f, "pick-file", name, Some(&["C:/data/chosen.parquet"]), Duration::ZERO);
+        assert_eq!(result.unwrap().as_deref(), Some("C:/data/chosen.parquet"));
+        assert_eq!(
+            prompt,
+            Prompt::PickFile {
+                title: "Data file".into(),
+                save: name.is_some(),
+                name: name.map(str::to_owned),
+                filters: vec![PluginFileFilter { name: "Parquet".into(), extensions: vec!["parquet".into()] }],
+            }
+        );
+    }
+    // A suggested name is only a file name, never a directory to start in.
+    let (_, prompt) =
+        run_and_answer(&f, "pick-file", Some("/etc/out.parquet"), Some(&["C:/data/x.parquet"]), Duration::ZERO);
+    assert!(matches!(&prompt, Prompt::PickFile { name: Some(n), .. } if n == "out.parquet"), "{prompt:?}");
+    assert_eq!(run_and_answer(&f, "pick-file", None, None, Duration::ZERO).0.unwrap(), None);
+    assert!(run_and_answer(&f, "pick-file", None, Some(&["relative"]), Duration::ZERO).0.is_err());
+    assert!(f.host.run_command("jobs", "pick-file", None, Invocation::default()).is_err());
 }
 
 #[test]
@@ -6792,6 +6988,51 @@ fn api14_stage3_terminal_calls_are_denied_without_process_grants() {
     let f = execution_fixture();
     f.host.set_capability("execution", "process:execution-tool", false).unwrap();
     assert!(f.run("execution", "terminal", None).unwrap_err().contains("not granted"));
+}
+
+/// API 1.15: a plugin pushes line-end labels whose hover is Markdown, and clears them.
+#[test]
+fn markdown_decorations_publish_a_hover_card_and_clear() {
+    let f = fixture(Limits::default());
+    f.install(&sample("decorations"));
+    f.run("decorations", "publish", Some("src/notes.txt")).unwrap();
+    let sets = f.host.decoration_sets();
+    let set = &sets["decorations"][0];
+    assert_eq!((set.set_id.as_str(), set.tree), ("example", false));
+    assert_eq!(set.items.len(), 1);
+    assert_eq!(set.items[0].style, "highlight");
+    assert_eq!(set.items[0].after.as_deref(), Some(" + model-x"));
+    assert_eq!(
+        set.items[0].markdown_hover.as_deref(),
+        Some("**model-x** generated this line\n\n- prompt: add a greeting")
+    );
+    f.run("decorations", "clear", None).unwrap();
+    assert!(f.host.decoration_sets()["decorations"].is_empty());
+}
+
+/// API 1.17: `set-styled` items carry their own colors, normalized by the host, and replace
+/// the set's earlier kind of items.
+#[test]
+fn styled_decorations_carry_normalized_colors() {
+    let f = fixture(Limits::default());
+    f.install(&sample("decorations"));
+    f.run("decorations", "publish", Some("src/notes.txt")).unwrap();
+    f.run("decorations", "styled", Some("src/notes.txt")).unwrap();
+    let sets = f.host.decoration_sets();
+    let set = &sets["decorations"][0];
+    assert_eq!(set.set_id, "example");
+    let colors: Vec<_> = set.items.iter().map(|d| (d.style.as_str(), d.colors.clone().unwrap())).collect();
+    assert_eq!(
+        colors,
+        [
+            (
+                "",
+                ide_plugin::DecorationColors { foreground: Some("#1a1a1a".into()), background: Some("#ffeb3b".into()) }
+            ),
+            ("", ide_plugin::DecorationColors { foreground: None, background: Some("#00e5ff80".into()) }),
+        ]
+    );
+    f.run("decorations", "clear", None).unwrap();
 }
 
 // ─── Project window groups ────────────────────────────────────────────────────

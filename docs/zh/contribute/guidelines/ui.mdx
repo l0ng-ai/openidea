@@ -3,11 +3,11 @@ title: "UI 规范"
 description: "前端 UI 代码的规则：设计 token、CSS Modules、图标、UI 基础组件、无障碍以及 WebKit 兼容性。"
 ---
 
-视觉风格是深色、低对比度的灰阶，加一种冷色强调色。一致性靠一小组适用于所有组件的规则来保证。
+视觉风格是 JetBrains 新 UI 的 Islands 形态：灰色底框上的圆角内容岛、低对比度的灰阶，加一种冷色强调色。默认主题是 Islands Light，Islands Dark、High Contrast 和 Solarized 主题使用同一套 token。一致性靠一小组适用于所有组件的规则来保证。
 
 ## 设计 token
 
-[`src/styles/tokens.css`](https://github.com/l0ng-ai/openidea/blob/main/src/styles/tokens.css) 是颜色和尺寸（间距、大小、圆角、字重）的唯一来源。`:root` 是深色主题，`[data-theme="light"]` 和 `[data-theme="dark-hc"]`（高对比度）在其上覆盖。插件主题和配色设置在运行时改写的也是这些变量。
+[`src/styles/tokens.css`](https://github.com/l0ng-ai/openidea/blob/main/src/styles/tokens.css) 是颜色和尺寸（间距、大小、圆角、字重）的唯一来源。`:root` 是深色主题，`[data-theme="light"]`（默认主题）和 `[data-theme="dark-hc"]`（高对比度）在其上覆盖。插件主题和配色设置在运行时改写的也是这些变量。
 
 - **组件里只用 token。** 组件的 CSS 或内联样式中不出现十六进制、`rgb()` 或颜色名字面量：写 `color: var(--fg-muted)`，不写 `color: #8c8c8c`。
 - **需要新的颜色或尺寸？** 在 `tokens.css` 里为每个主题变体都加上 token，名字说明用途，而不是描述外观。

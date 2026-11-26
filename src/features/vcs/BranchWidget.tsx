@@ -63,6 +63,9 @@ import { outgoingCount, outgoingDestination, type SyncDirection } from "./syncCo
 import styles from "./BranchWidget.module.css";
 import { tx } from "@/platform/i18n";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
+import { branchWidgetAnchor, useBranchesPopup, type BranchWidgetPlace } from "./branchesPopupState";
+
+export { showBranchesPopup, STATUS_BRANCH_WIDGET, useBranchesPopup } from "./branchesPopupState";
 
 /** `active` until the user moves: a new filter selects the row IDEA prefers for it. */
 const PREFERRED = -1;
@@ -80,9 +83,6 @@ function pickActive<R>(
   return firstSelectable(rows, isSection);
 }
 
-export const useBranchesPopup = create<{ open: boolean }>(() => ({ open: false }));
-export const showBranchesPopup = () => useBranchesPopup.setState({ open: true });
-
 export function headLabel(branch: { head: string | null; headCommit: string | null } | null): string {
   if (!branch) return "";
   if (branch.head) return branch.head;
@@ -95,7 +95,11 @@ function useBranchRepositories(current: string | null) {
   return useMemo(() => branchRepositoryRoots(roots, branchRoots, current), [roots, branchRoots, current]);
 }
 
-export function BranchWidget() {
+export function StatusBranchWidget() {
+  return <BranchWidget place="status" />;
+}
+
+export function BranchWidget({ place = "toolbar" }: { place?: BranchWidgetPlace }) {
   const available = useVcs((s) => s.available);
   const current = useActiveRepository();
   const roots = useBranchRepositories(current);
@@ -107,9 +111,10 @@ export function BranchWidget() {
   // Several repositories on different branches: the widget names the current one.
   const diverged = widgetShowsRepo(roots.map((r) => ({ head: heads[r]?.head ?? null })));
   const pending = useVcs((s) => unfetchedBranch(s.unfetched, current, branch?.head, branch?.trackedTip));
-  const open = useBranchesPopup((s) => s.open);
+  const open = useBranchesPopup((s) => s.open && (s.from ?? "toolbar") === place);
   const extensions = useBranchWidgetExtensions((s) => s.extensions);
   if (!available || !branch) return null;
+  const toolbar = place === "toolbar";
   // Another feature presents the current branch (the GitHub pull request on it).
   const presented = current === selected ? branchPresentation(extensions) : null;
   const repo = diverged && branchRoot ? repoName(branchRoot) : null;
@@ -138,28 +143,28 @@ export function BranchWidget() {
     .join("\n");
   // A marker lists its commits; the rest of the widget keeps opening the branches popup.
   const openSync = (direction: SyncDirection) => {
-    useBranchesPopup.setState({ open: false });
+    useBranchesPopup.setState({ open: false, from: place });
     showBranchSync(current, branch, direction);
   };
   return (
     <>
       <BarButton
-        data-branches-widget
-        data-toolbar-icon-dropdown=""
-        variant="title"
-        className={styles.widget}
+        data-branches-widget={place}
+        data-toolbar-icon-dropdown={toolbar ? "" : undefined}
+        variant={toolbar ? "title" : undefined}
+        className={toolbar ? styles.widget : styles.statusWidget}
         tooltip={tooltip}
         aria-haspopup="dialog"
         aria-expanded={open}
-        onClick={() => useBranchesPopup.setState({ open: !open })}
+        onClick={() => useBranchesPopup.setState({ open: !open, from: place })}
       >
         <Icon name={presented?.icon ?? (branch.head ? "branch" : "commit")} size={16} className={styles.icon} />
         {diverged && repo && (
-          <span className={styles.repo} data-toolbar-label="">
+          <span className={styles.repo} data-toolbar-label={toolbar ? "" : undefined}>
             {repo}
           </span>
         )}
-        <span className={styles.name} data-toolbar-label="">
+        <span className={styles.name} data-toolbar-label={toolbar ? "" : undefined}>
           {inProgress(branch.operation)
             ? operationTitle(inProgress(branch.operation)!, branch.head)
             : (presented?.text ?? headLabel(branch))}
@@ -169,7 +174,7 @@ export function BranchWidget() {
         )}
         {/* Like IDEA's widget: icons only; counts are in the tooltip. */}
         <BranchSync behind={branch.behind} ahead={ahead} unfetched={!!pending} showCounts={false} onSelect={openSync} />
-        <Icon name="chevron-down" size={14} className={styles.chevron} />
+        {toolbar && <Icon name="chevron-down" size={14} className={styles.chevron} />}
       </BarButton>
     </>
   );
@@ -177,8 +182,9 @@ export function BranchWidget() {
 
 export function BranchesPopupHost() {
   const open = useBranchesPopup((s) => s.open);
+  const from = useBranchesPopup((s) => s.from);
   if (!open) return null;
-  const anchor = document.querySelector("[data-branches-widget]") ?? { x: window.innerWidth / 2 - 160, y: 60 };
+  const anchor = branchWidgetAnchor(from) ?? { x: window.innerWidth / 2 - 160, y: 60 };
   return <BranchesPopup anchor={anchor} onClose={() => useBranchesPopup.setState({ open: false })} />;
 }
 
@@ -935,7 +941,8 @@ function MultiRepoPanel({
                 <span className={styles.noticeDetail}>{r.detail}</span>
               </span>
             ) : r.type === "section" && r.label ? (
-              <span className={styles.section}>{tx(r.label)}</span>
+              // Repository names: shown as written.
+              <span className={styles.section}>{r.label}</span>
             ) : (
               <span className={styles.separator} role="separator" />
             )

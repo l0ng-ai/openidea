@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findColors, formatColor, fromHex, parseComputed, toHex6, toHex8, type ColorMatch } from "./colors";
+import { cssColor, findColors, formatColor, fromHex, parseComputed, toHex6, toHex8, type ColorMatch } from "./colors";
 
 const NAMES = new Set(["red", "rebeccapurple", "white"]);
 const isName = (w: string) => NAMES.has(w.toLowerCase());
@@ -30,6 +30,19 @@ describe("findColors", () => {
     expect(texts('<div style="color: #fff">', "html")).toEqual(["#fff"]);
   });
 
+  it("reads XAML's alpha-first hex (#AARRGGBB, #ARGB) as CSS colors", () => {
+    const [wide, short, opaque] = findColors(
+      '<Window Background="#FF2B5797" Fill="#8F00" Stroke="#1b766c"/>',
+      "axaml",
+      isName,
+    );
+    expect([wide!.argb, short!.argb, opaque!.argb]).toEqual([true, true, undefined]);
+    expect([cssColor(wide!), cssColor(short!), cssColor(opaque!)]).toEqual(["#2B5797FF", "#F008", "#1b766c"]);
+    // Elsewhere an eight-digit hex is CSS's #RRGGBBAA.
+    const [css] = findColors('const c = "#FF2B5797";', "typescript", isName);
+    expect([css!.argb, cssColor(css!)]).toEqual([undefined, "#FF2B5797"]);
+  });
+
   it("leaves prose alone", () => {
     expect(texts("Fixed in #123, color `#fff`", "markdown")).toEqual([]);
   });
@@ -49,6 +62,13 @@ describe("formatColor", () => {
     expect(formatColor([18, 52, 86, 1], match("#1B766C", "hex"))).toBe("#123456".toUpperCase());
     expect(formatColor([18, 52, 86, 0.5], match("#1b766c80", "hex"))).toBe("#12345680");
     expect(formatColor([18, 52, 86, 1], match("red", "name"))).toBe("#123456");
+  });
+
+  it("writes an alpha-first hex back with the alpha first", () => {
+    const argb = (text: string): ColorMatch => ({ ...match(text, "hex"), argb: true });
+    expect(formatColor([18, 52, 86, 1], argb("#FF2B5797"))).toBe("#FF123456");
+    expect(formatColor([18, 52, 86, 0.5], argb("#ff2b5797"))).toBe("#80123456");
+    expect(formatColor([255, 0, 0, 0.6], argb("#8F00"))).toBe("#9F00");
   });
 
   it("keeps a function's name and separators", () => {

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { EditorSelection, EditorState, Prec, StateEffect } from "@codemirror/state";
 import { Decoration, EditorView, WidgetType } from "@codemirror/view";
-import { setSearchQuery } from "@codemirror/search";
+import { searchPanelOpen, setSearchQuery } from "@codemirror/search";
 import { StreamLanguage } from "@codemirror/language";
 import { literalKindAt } from "./literals";
 import { selectionMarks } from "./selectionMarks";
@@ -113,6 +113,18 @@ describe("find backgrounds", () => {
     });
     expect(view.contentDOM.querySelector(".token .cm-openidea-findMatch")?.textContent).toBe("Session");
     expect(view.contentDOM.querySelector(".cm-openidea-findMatch .cm-openidea-selected")?.textContent).toBe("essio");
+  });
+});
+
+describe("without a usable query", () => {
+  it("next, previous and replace do nothing instead of opening CodeMirror's search panel", () => {
+    for (const o of [{ search: "" }, { search: "(", regexp: true }]) {
+      const v = make("abc abc", { ...o, replace: "x" });
+      expect([findNext(v), findPrevious(v), replaceNext(v), replaceAll(v)]).toEqual([false, false, false, false]);
+      expect(searchPanelOpen(v.state)).toBe(false);
+      expect(v.dom.querySelector(".cm-search")).toBeNull();
+      expect(v.state.doc.toString()).toBe("abc abc");
+    }
   });
 });
 

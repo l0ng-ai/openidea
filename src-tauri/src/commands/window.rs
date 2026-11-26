@@ -252,17 +252,10 @@ pub fn window_take_settings_init(
     let owner = AppState::owner_window(window.label());
     let launch = windows.take_launch(window.label());
     let (remote, project) = if let Some(c) = state.remote_dev.get(owner) {
-        let session = crate::remote_dev::RemoteSession {
-            target: c.target.clone(),
-            root: c.root.clone(),
-            host: c.host.clone(),
-            os: c.os.clone(),
-            commands: c.commands.clone(),
-        };
         // Leave `project` empty on remote sessions: the Settings page tree renders immediately
         // from local client settings, and `projectCurrent()` fills in project-scoped settings
         // right after first paint without keeping a shadow cache in sync.
-        (Some(session), None)
+        (Some(c.snapshot()), None)
     } else {
         let project = state.project(owner).ok().filter(|p| !p.light).map(|p| ide_host::ops::project::info(&p));
         (None, project)
@@ -341,6 +334,10 @@ pub struct CloseContext {
     pub quitting: bool,
     /// Number of open project windows (settings windows excluded), including the caller.
     pub windows: u32,
+    /// Whether this window currently has auxiliary document windows that must settle first.
+    pub has_document_windows: bool,
+    /// Whether this close runs alongside other windows or on a background tab (prompts serialize and raise).
+    pub batch: bool,
 }
 
 #[desktop_command(trust = always)]
@@ -357,10 +354,40 @@ pub fn window_close_context(app: AppHandle, window: Window, windows: State<'_, W
         Some(keeper) if pending.len() > 1 && keeper == window.label() => all.len() - pending.len() + 1,
         _ => all.len(),
     };
-    CloseContext { quitting: windows.quitting(), windows: count as u32 }
+    let quitting = windows.quitting();
+    let has_document_windows = !windows::document_windows(&app, window.label()).is_empty();
+    let hidden_tab = windows.groups.lock().group(window.label()).is_some_and(|g| g.selected != window.label());
+    let batch = quitting || pending.len() > 1 || windows.in_tab_close_batch(window.label()) || hidden_tab;
+    CloseContext { quitting, windows: count as u32, has_document_windows, batch }
 }
 
-/// Quits: closes every window, each of which runs its own unsaved-changes check.
+/// Acquires the interactive prompt turn for a batch close and brings this window forward.
+/// Returns `false` if the batch was cancelled while waiting.
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub async fn window_begin_prompt(app: AppHandle, window: WebviewWindow) -> bool {
+    crate::window_groups::begin_prompt(&app, &window).await
+}
+
+/// Releases the interactive prompt turn held by this window.
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub fn window_end_prompt(app: AppHandle, window: Window) {
+    crate::window_groups::end_prompt(&app, window.label());
+}
+
+/// Signals that this window passed its close checks and waits for peers closing in the same
+/// batch/tab group so they hide together in one frame. Returns `false` if the batch was cancelled.
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub async fn window_ready_to_close(app: AppHandle, window: WebviewWindow) -> bool {
+    crate::window_groups::ready_to_close(&app, &window).await
+}
+
+/// Quits: closes every window in parallel, each of which runs its own unsaved-changes check.
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
@@ -369,15 +396,17 @@ pub fn app_quit(app: AppHandle, windows: State<'_, WindowsState>) {
         return;
     }
     windows.set_quitting(true);
-    windows::continue_quit(&app, None);
+    windows::start_quit(&app);
 }
 
 /// A window vetoed the quit (user cancelled its unsaved-changes prompt).
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn app_cancel_quit(app: AppHandle, windows: State<'_, WindowsState>) {
+pub fn app_cancel_quit(app: AppHandle, window: Window, windows: State<'_, WindowsState>) {
     windows.set_quitting(false);
+    windows.abort_all_closing(Some(window.label()));
+    windows.close_settled(window.label());
     tauri::async_runtime::spawn(async move {
         let _ = crate::window_groups::persist(&app).await;
     });
@@ -568,6 +597,18 @@ fn source_endpoints(official: Vec<String>, source: UpdateSource) -> Vec<String> 
     }
 }
 
+/// Bounds connection establishment (TCP and TLS) for the updater. reqwest divides this
+/// across a host's resolved addresses, so a CDN hostname with four A records gets about
+/// 3.75s each — enough for a slow link, while still leaving the 60s check budget intact.
+const UPDATER_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+fn configure_updater_client(
+    builder: reqwest::ClientBuilder,
+    proxy: &ide_core::proxy_settings::ProxySettings,
+) -> reqwest::ClientBuilder {
+    ide_http::client::with_proxy(builder, proxy).connect_timeout(UPDATER_CONNECT_TIMEOUT)
+}
+
 pub(crate) fn updater(app: &AppHandle, source: UpdateSource) -> IdeResult<Option<tauri_plugin_updater::Updater>> {
     use tauri_plugin_updater::UpdaterExt;
     if !updates_configured(app) {
@@ -591,7 +632,7 @@ pub(crate) fn updater(app: &AppHandle, source: UpdateSource) -> IdeResult<Option
         builder = builder.target(target);
     }
     builder
-        .configure_client(move |b| ide_http::client::with_proxy(b, &proxy))
+        .configure_client(move |b| configure_updater_client(b, &proxy))
         .endpoints(endpoints)
         .map_err(|e| IdeError::invalid(e.to_string()))?
         .build()
@@ -761,7 +802,9 @@ pub async fn app_install_update(
 /// can show the UI's language and fall back to English. An install records the
 /// notes it saw, so this is only for an update installed outside the app.
 /// `Ok(None)` when the manifest covers another version or carries no notes.
-#[desktop_command(trust = trusted)]
+/// Reads only the public manifest, like the update check: the page usually opens
+/// in a window without a project.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn app_release_notes(
@@ -916,6 +959,18 @@ mod tests {
     }
 
     #[test]
+    fn updater_client_bounds_connection_setup() {
+        let proxy = ide_core::proxy_settings::ProxySettings::default();
+        let builder = configure_updater_client(reqwest::ClientBuilder::new(), &proxy);
+        // reqwest has no getter for this; its ClientBuilder Debug prints non-default settings.
+        let debug = format!("{builder:?}");
+        assert!(
+            debug.contains(&format!("connect_timeout: {:?}", UPDATER_CONNECT_TIMEOUT)),
+            "the updater must not wait forever on an unreachable CDN address: {debug}"
+        );
+    }
+
+    #[test]
     fn only_one_install_at_a_time() {
         let first = InstallingGuard::acquire().expect("first install starts");
         assert!(InstallingGuard::acquire().is_none());
@@ -941,9 +996,11 @@ ide_command::desktop_domain!(
     menu_model,
     menu_refresh,
     menu_set_disabled,
+    window_begin_prompt,
     window_close_context,
     window_complete_launch,
     window_cycle,
+    window_end_prompt,
     window_flash_taskbar,
     window_is_fullscreen,
     window_new,
@@ -957,6 +1014,7 @@ ide_command::desktop_domain!(
     window_open_projects,
     window_open_remote,
     window_open_settings,
+    window_ready_to_close,
     window_set_smooth_scrolling,
     window_set_titlebar_height,
     window_take_launch,

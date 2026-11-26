@@ -46,6 +46,9 @@ export const RUST_BENCHMARKS: Readonly<Record<string, readonly string[]>> = {
     "search_5k/dense_limit",
     "search_dense_files/24x40k_limit",
     "search_excluded_subtrees/5k_dependencies",
+    "search_long_line/1mb",
+    "search_long_line/5mb",
+    "search_long_line/20mb",
   ],
   "ide-host": ["plugins/load_50", "plugins/cold_activation", "plugins/syntax_highlights_2k_lines"],
   "ide-heap": ["heap/index_1m_objects", "heap/dominators_1m_random"],
@@ -59,6 +62,9 @@ const OBSERVE_ONLY: Readonly<Record<string, true>> = {
   "index_100k/find_symbols/renderView": true,
   "startup_20k/reopen_wait_idle": true,
   "search_excluded_subtrees/5k_dependencies": true,
+  "search_long_line/1mb": true,
+  "search_long_line/5mb": true,
+  "search_long_line/20mb": true,
 };
 
 export function selectRustPackages(packages: readonly string[] = Object.keys(RUST_BENCHMARKS)): string[] {

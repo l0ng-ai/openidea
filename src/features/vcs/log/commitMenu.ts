@@ -3,7 +3,7 @@ import { executeAction } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import type { MenuItem } from "@/ui";
 import { branchMenu, inRepo } from "../branchMenu";
-import { commitKey, commitRepo, type RepoCommit } from "../multiRoot";
+import { canApplyCommits, commitKey, commitRepo, type RepoCommit } from "../multiRoot";
 import { undoCommitProblem } from "../rebasePlan";
 import { browseRepositoryAt } from "../RevisionBrowser";
 import { currentRepoRoot, useVcs } from "../store";
@@ -37,7 +37,7 @@ export function commitMenu(c: Commit, selection: Commit[] = [c], fileHistoryTarg
   const branchInfo = repo ? vcs.heads[repo] : vcs.branch;
   const head = branchInfo?.head ?? null;
   const operation = repo ? vcs.operations[repo] : vcs.branch?.operation;
-  const cannotApply = commits.some((commit) => commit.parents.length > 1 || (commit as RepoCommit).readOnly);
+  const cannotApply = !canApplyCommits(commits);
   const compareArg: Commit[] | FileHistoryCommitsArg = fileHistoryTarget
     ? { kind: "file-history-commits", commits: selection, target: fileHistoryTarget }
     : selection;
@@ -109,6 +109,7 @@ export function commitMenu(c: Commit, selection: Commit[] = [c], fileHistoryTarg
       ? [{ kind: "action" as const, action: "vcs.log.compareVersions", arg: compareArg, icon: null }]
       : []),
     single("vcs.log.compareWithLocal", { arg: actionCommit }),
+    ...(fileHistoryTarget ? [single("vcs.showCommit", { label: "Show in Git Log" })] : []),
     { kind: "separator" },
     single("vcs.log.resetToHere", { icon: "revert" }),
     { kind: "action", action: "vcs.log.revert", arg: many ? selection : c, icon: null, disabled: cannotApply },

@@ -20,6 +20,35 @@
   box-sizing: border-box;
 }
 
+/* Appearance › Reduce motion, or the system's reduced-motion preference: animations jump to their
+   end state and transitions apply at once, so spinners stand still and popups appear without a
+   fade. Animation events still fire. Transitions get no duration at all: with the default
+   `transition-property: all`, any non-zero one would make every element, CodeMirror's height
+   gaps included, report its old size for a frame after a change and throw off layout reads. */
+:root[data-reduce-motion] *,
+:root[data-reduce-motion] *::before,
+:root[data-reduce-motion] *::after {
+  animation-duration: 0.01ms !important;
+  animation-delay: 0s !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0s !important;
+  transition-delay: 0s !important;
+  scroll-behavior: auto !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0s !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0s !important;
+    transition-delay: 0s !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 html,
 body,
 #root {
@@ -52,12 +81,10 @@ body {
   cursor: default !important;
 }
 
-/* A resize drag owns the cursor until release, even over the editor or a button. */
-html[data-drag-cursor],
-html[data-drag-cursor] *,
-html[data-drag-cursor] *::before,
-html[data-drag-cursor] *::after {
-  cursor: var(--drag-cursor) !important;
+[data-drag-cursor-surface] {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-tooltip);
 }
 
 html[data-selection-lock] *:not([data-selection-scope], [data-selection-scope] *) {

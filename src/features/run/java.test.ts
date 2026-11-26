@@ -12,6 +12,8 @@ import {
 import { usePlatform } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
 import { applicationConfig, jvmModuleDir, jvmTestConfig } from "./application";
+import { frameworkFor } from "./testing";
+import { rerunFailedConfig } from "./testing/rerun";
 import { buildRows } from "./ConfigChooser";
 import { jdwpLaunch } from "./javaDebug";
 import { DELEGATED_DEBUG } from "./gradleRun";
@@ -264,15 +266,95 @@ describe("application configurations", () => {
     const file = cfg({
       id: "f",
       kind: "maven",
-      args: ["test", "-Dtest=OrderTest", "-Dsurefire.failIfNoSpecifiedTests=false"],
+      args: [
+        "test",
+        "-Dtest=OrderTest",
+        "-Dsurefire.failIfNoSpecifiedTests=false",
+        "-DskipTests=false",
+        "-Dmaven.test.skip=false",
+      ],
       isTest: true,
     });
     expect(jvmTestConfig(file, "a.OrderTest$Nested", "fails")).toMatchObject({
       name: "Nested.fails",
-      args: ["test", "-Dtest=a.OrderTest$Nested#fails", "-Dsurefire.failIfNoSpecifiedTests=false"],
+      args: [
+        "test",
+        "-Dtest=a.OrderTest$Nested#fails",
+        "-Dsurefire.failIfNoSpecifiedTests=false",
+        "-DskipTests=false",
+        "-Dmaven.test.skip=false",
+      ],
     });
     const gradle = cfg({ id: "g", kind: "gradle", args: ["test", "--tests", "*OrderTest"], isTest: true });
     expect(jvmTestConfig(gradle, "a.OrderTest", undefined)!.args).toEqual(["test", "--tests", "a.OrderTest"]);
+  });
+});
+
+describe("JUnit through OpenIDEA's runner (Maven › Run tests using)", () => {
+  const rel = "shop/src/test/java/a/OrderTest.java";
+  const jupiter = `package a;
+import org.junit.jupiter.api.Test;
+class OrderTest {
+  @Test
+  void adds() {}
+}`;
+  const junit4 = jupiter.replace("org.junit.jupiter.api.Test", "org.junit.Test");
+  const testng = jupiter.replace("org.junit.jupiter.api.Test", "org.testng.annotations.Test");
+  const maven = [cfg({ id: "maven:test", kind: "maven", args: ["test"], cwd: "shop", isTest: true })];
+  const gradle = [cfg({ id: "gradle:test", kind: "gradle", args: ["test"], cwd: "shop", isTest: true })];
+  const target = (src: string, name: string) =>
+    detectRunTargets(src, rel).find((t) => t.path.at(-1) === name || t.name === name)!;
+  const useTests = (runTestsUsing: "ide" | "maven" | undefined) =>
+    useProject.setState({
+      settings: runTestsUsing ? { languages: { java: { maven: { runTestsUsing } } } } : undefined,
+    } as never);
+  beforeEach(() => useTests(undefined));
+
+  it("runs a method or class of a Maven module with the runner on the test classpath, without Maven", () => {
+    expect(targetConfig(target(jupiter, "adds"), rel, maven, jupiter)).toMatchObject({
+      id: "junit:shop:a.OrderTest#adds",
+      name: "OrderTest.adds",
+      kind: "application",
+      command: "java",
+      args: ["-ea", "-cp", "${testClasspath}", "ai.openidea.junit.Runner", "a.OrderTest#adds"],
+      module: "shop",
+      cwd: "shop",
+      isTest: true,
+      debugAdapter: "java-debug",
+    });
+    expect(targetConfig(target(jupiter, "OrderTest"), rel, maven, jupiter)!.args.at(-1)).toBe("a.OrderTest");
+  });
+
+  it("runs JUnit 4 tests with the runner too", () => {
+    expect(targetConfig(target(junit4, "adds"), rel, maven, junit4)).toMatchObject({
+      kind: "application",
+      args: ["-ea", "-cp", "${testClasspath}", "ai.openidea.junit.Runner", "a.OrderTest#adds"],
+    });
+  });
+
+  it("keeps Surefire for the Maven setting, TestNG and Gradle", () => {
+    useTests("maven");
+    expect(targetConfig(target(jupiter, "adds"), rel, maven, jupiter)!.kind).toBe("maven");
+    expect(targetConfig(target(junit4, "adds"), rel, maven, junit4)!.kind).toBe("maven");
+    useTests("ide");
+    expect(targetConfig(target(testng, "adds"), rel, maven, testng)!.kind).toBe("maven");
+    expect(targetConfig(target(jupiter, "adds"), rel, gradle, jupiter)!.kind).toBe("gradle");
+  });
+
+  it("reports through the JVM parser, debugs with a waiting agent and reruns failed tests by selector", () => {
+    const config = targetConfig(target(jupiter, "OrderTest"), rel, maven, jupiter)!;
+    expect(frameworkFor(config)).toBe("jvm");
+    expect(jdwpLaunch(config)!.args).toEqual([JDWP_AGENT, ...config.args]);
+    const failed = rerunFailedConfig(config, [["a.OrderTest", "adds"], ["a.OrderTest$Nested", "b"], ["a.Other"]]);
+    expect((failed as RunConfig).args).toEqual([
+      "-ea",
+      "-cp",
+      "${testClasspath}",
+      "ai.openidea.junit.Runner",
+      "a.OrderTest#adds",
+      "a.OrderTest$Nested#b",
+      "a.Other",
+    ]);
   });
 });
 

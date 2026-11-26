@@ -201,6 +201,7 @@ async function main() {
         const index = phase === "warmup" ? i + 1 : i - warmup + 1;
         try {
           const last = i === warmup + runs - 1;
+          // oxlint-disable-next-line no-await-in-loop -- trials share one browser and run warmup-then-measured in order, stopping on first failure
           const metrics = await runOnce(runtime.browser, serving.url, s, {
             trace: args.trace && last ? join(OUT, "traces", `${s.id}.json`) : undefined,
             profile: args.profile && last ? join(OUT, "profiles", `${s.id}.cpuprofile`) : undefined,

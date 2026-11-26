@@ -6,6 +6,7 @@ import {
   categoryOf,
   kindLabel,
   commandLine,
+  createdConfigs,
   duplicateConfig,
   formatArgs,
   groupConfigs,
@@ -324,7 +325,12 @@ describe("context configuration", () => {
       command: ".venv/bin/python",
       args: ["tools/gen.py"],
     });
-    expect(contextConfig("scripts/build.sh", configs)).toMatchObject({ command: "sh", args: ["scripts/build.sh"] });
+    // Run in a terminal, as IDEA's Shell Script "Execute in the terminal": interactive scripts work.
+    expect(contextConfig("scripts/build.sh", configs)).toMatchObject({
+      command: "sh",
+      args: ["scripts/build.sh"],
+      emulateTerminal: true,
+    });
     expect(contextConfig("scripts/build.bat", configs, undefined, true)).toMatchObject({
       command: "cmd.exe",
       args: ["/c", "build.bat"],
@@ -577,5 +583,24 @@ describe("categoryOf", () => {
     });
     expect(categoryOf("fake-server")).toBe("Servers");
     dispose();
+  });
+});
+
+describe("createdConfigs", () => {
+  const gutter = cfg({ id: "docker:dockerfile:Dockerfile", detected: false, params: { tag: "app" } });
+
+  it("saves a new configuration after the saved ones, leaving out detected and temporary ones", () => {
+    const configs = [cfg({ id: "d" }), cfg({ id: "u", detected: false }), cfg({ id: "t", detected: false })];
+    expect(createdConfigs(configs, ["t"], gutter)?.map((c) => c.id)).toEqual(["u", gutter.id]);
+  });
+
+  it("keeps a saved configuration with the same id as the user edited it (#6047)", () => {
+    const saved = { ...gutter, params: { tag: "app", ports: "8080:80" } };
+    expect(createdConfigs([saved], [], gutter)).toBeNull();
+  });
+
+  it("saves over a detected or temporary configuration with the same id", () => {
+    expect(createdConfigs([cfg({ id: gutter.id })], [], gutter)).toEqual([gutter]);
+    expect(createdConfigs([{ ...gutter, detected: false }], [gutter.id], gutter)).toEqual([gutter]);
   });
 });

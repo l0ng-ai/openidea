@@ -21,7 +21,7 @@ mod utf8;
 pub mod wrap;
 
 pub use detect::cmake::{build_configs as cmake_build_configs, prepare as prepare_cmake};
-pub use process::{ProcessManager, StartOptions};
+pub use process::{DetachedProcessKills, ProcessManager, StartOptions};
 
 use ide_core::{IdeResult, RunId};
 use serde::{Deserialize, Serialize};
@@ -240,6 +240,15 @@ pub struct RunInfo {
     pub running: bool,
     /// Runs on a pseudo-terminal: output is raw terminal data, input goes in keystroke by keystroke.
     pub pty: bool,
+}
+
+/// Snapshot and live output binding returned when reattaching to a running process.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RunAttach {
+    pub info: RunInfo,
+    pub config: RunConfig,
+    pub buffered: Vec<OutputChunk>,
 }
 
 pub use external::{EXTERNAL_PREFIX, ExternalDetection, set_external_detection};

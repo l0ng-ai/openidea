@@ -3,6 +3,9 @@ name = ".NET"
 group = ".NET"
 icon = "project-dotnet"
 description = "A .NET project from dotnet new."
+# With a solution, the top folder is named after it (MySolution/MyProject/MyProject.csproj).
+# `solution-name` is sent only while "Create solution" is checked; otherwise it renders the name.
+directory = "{{solution-name}}"
 
 # `dotnet --version` fails without an SDK (a runtime-only install). Blazor Web App and the
 # other templates' current options need SDK 8.
@@ -49,6 +52,7 @@ label = "Create solution"
 type = "checkbox"
 default = "true"
 hint = "As in Visual Studio: the solution file at the top, the project in its own folder."
+
 
 [[fields]]
 id = "solution-name"

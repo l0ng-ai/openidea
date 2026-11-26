@@ -99,6 +99,8 @@ describe("t / locales", () => {
     expect(resolveLocale("pl-PL")).toBe("pl");
     expect(resolveLocale("es-MX")).toBe("es");
     expect(resolveLocale("es_MX")).toBe("es");
+    expect(resolveLocale("ru-RU")).toBe("ru");
+    expect(resolveLocale("ru_RU")).toBe("ru");
     expect(resolveLocale("xx")).toBe("en");
     expect(resolveLocale(undefined)).toBe(resolveLocale(navigator.language));
   });
@@ -124,6 +126,10 @@ describe("t / locales", () => {
     await setLocale("pt-BR");
     expect(t("app.keymap.count", { count: 1 })).toBe("1 atalho");
     expect(t("app.keymap.count", { count: 5 })).toBe("5 atalhos");
+    await setLocale("ru-RU");
+    expect(t("app.keymap.count", { count: 1 })).toBe("1 сочетание");
+    expect(t("app.keymap.count", { count: 2 })).toBe("2 сочетания");
+    expect(t("app.keymap.count", { count: 5 })).toBe("5 сочетаний");
   });
 
   it("switches to Korean", async () => {
@@ -278,6 +284,11 @@ describe("catalogs", () => {
   /** Product names intentionally kept as written in every locale. */
   const SAME_AS_ENGLISH = new Set([
     "Flutter DevTools",
+    // Pub / Flutter command names on the pubspec.yaml banner.
+    "Pub get",
+    "Pub upgrade",
+    "Pub outdated",
+    "Flutter doctor",
     "4096 MB",
     "6144 MB",
     "8192 MB",
@@ -288,6 +299,7 @@ describe("catalogs", () => {
     "ID:",
     "Code Vision",
     "JUnit",
+    "HotSwap",
     "⌘Enter",
     "Fork",
     "Shell",
@@ -296,6 +308,8 @@ describe("catalogs", () => {
     "Java",
     "Python",
     "Python {short}",
+    "Flutter {framework}",
+    "Dart {dart}",
     "C/C++",
     "C#",
     "Go",

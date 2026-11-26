@@ -207,6 +207,11 @@ describe("single-file producers (scratches)", () => {
       command: "/bin/bash",
       args: ["a.sh"],
     });
+    // Run in a terminal so the script can prompt (`read`) and see a TTY; other interpreters keep pipes.
+    const terminal = (i: ContextInput) => produceContext(i, ALL)!.config!.emulateTerminal;
+    expect(terminal(scratch("a.sh", "#!/usr/bin/env bash\nread x"))).toBe(true);
+    expect(terminal(scratch("a.sh", "read x"))).toBe(true);
+    expect(terminal(scratch("tool", "#!/usr/bin/env ruby\nputs 1"))).toBeFalsy();
     expect(run(scratch("a.sh", "#!/bin/zsh -f\necho"))).toMatchObject({ command: "/bin/zsh", args: ["-f", "a.sh"] });
     expect(run(scratch("a.sh", "echo"))).toMatchObject({ command: "/bin/sh" });
     expect(run(scratch("a.zsh", "echo"))).toMatchObject({ command: "/bin/zsh" });
@@ -742,6 +747,8 @@ describe("single-file producers (scratches)", () => {
         "test",
         "-Dtest=demo.Test#works",
         "-Dsurefire.failIfNoSpecifiedTests=false",
+        "-DskipTests=false",
+        "-Dmaven.test.skip=false",
       ]);
       // No `main`: the file-level context runs the class's tests.
       const noMain = "package demo;\npublic class Test {\n  @Test\n  void works() {\n  }\n}\n";
@@ -751,7 +758,13 @@ describe("single-file producers (scratches)", () => {
       )!;
       expect(tests.config).toMatchObject({ kind: "maven", isTest: true });
       // A reactor module without `Test` must not fail the build before the module that has it.
-      expect(tests.config!.args).toEqual(["test", "-Dtest=Test", "-Dsurefire.failIfNoSpecifiedTests=false"]);
+      expect(tests.config!.args).toEqual([
+        "test",
+        "-Dtest=Test",
+        "-Dsurefire.failIfNoSpecifiedTests=false",
+        "-DskipTests=false",
+        "-Dmaven.test.skip=false",
+      ]);
     });
   });
 
@@ -843,6 +856,25 @@ describe("project producers", () => {
     )!;
     expect(p).toMatchObject({ name: "a.test.ts", scope: "file" });
     expect(p.config!.args).toEqual(["run", "test", "--", "src/a.test.ts"]);
+  });
+
+  it("runs a .NET project file with dotnet run --project (#5635)", () => {
+    const p = produceContext({ path: `${ROOT}/src/App/App.csproj`, root: ROOT, configs: [] }, OPTIMISTIC)!;
+    expect(p).toMatchObject({ name: "App", scope: "file" });
+    expect(p.config).toMatchObject({
+      id: "context:dotnet:src/App/App.csproj",
+      kind: "dotnet",
+      command: "dotnet",
+      args: ["run", "--project", "src/App/App.csproj", "--no-launch-profile"],
+      debugAdapter: "netcoredbg",
+      params: { project: "src/App/App.csproj" },
+    });
+    // A `.csproj.user` is not a project, and a source file has no entry-point production.
+    expect(produceContext({ path: `${ROOT}/src/App/App.csproj.user`, root: ROOT, configs: [] }, OPTIMISTIC)).toBeNull();
+    expect(produceContext({ path: `${ROOT}/src/App/Program.cs`, root: ROOT, configs: [] }, OPTIMISTIC)).toBeNull();
+    // Neither is a solution or a shared props file.
+    expect(produceContext({ path: `${ROOT}/src/App/App.sln`, root: ROOT, configs: [] }, OPTIMISTIC)).toBeNull();
+    expect(produceContext({ path: `${ROOT}/Directory.Build.props`, root: ROOT, configs: [] }, OPTIMISTIC)).toBeNull();
   });
 
   it("⌃⇧R picks the innermost context: test > describe > file", () => {

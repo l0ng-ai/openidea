@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type * as TauriCore from "@tauri-apps/api/core";
+import { EditorState } from "@codemirror/state";
 import type { IdeEvent, NotebookSnapshot } from "@/bindings";
 import { IpcError } from "@/platform/ipc";
 import type * as Ipc from "@/platform/ipc";
-import { NotebookSession, notebookBackend } from "./session";
+import { caretAfterHistory, NotebookSession, notebookBackend } from "./session";
 
 type KernelEvent = Extract<IdeEvent, { type: "notebookKernel" }>;
 const kernelListeners = vi.hoisted(() => new Set<(event: KernelEvent) => void>());
@@ -547,6 +548,114 @@ describe("shared notebook mutation session", () => {
     m.backend.restart = async () => structuredClone(m.read());
     await session.restart();
     expect(session.getState().error).toBeNull();
+    await session.close();
+  });
+});
+
+describe("caretAfterHistory", () => {
+  it("goes to the end of the text the history step changed", () => {
+    // Undo of typing: the inserted text is gone, the caret sits where it was.
+    expect(caretAfterHistory("a = 1\nb = 22\n", "a = 1\nb = 2\n", 0)).toEqual({ line: 1, col: 5 });
+    // Redo of typing: the caret follows the re-inserted text.
+    expect(caretAfterHistory("a = 1\n", "a = 1\nprint(a)\n", 0)).toEqual({ line: 2, col: 0 });
+    expect(caretAfterHistory("x\n", "x = 10\n", 0)).toEqual({ line: 0, col: 6 });
+  });
+
+  it("keeps the old caret when the cell did not change", () => {
+    expect(caretAfterHistory("abc\ndef", "abc\ndef", 6)).toEqual({ line: 1, col: 2 });
+  });
+});
+
+describe("undo and redo keep the focused cell's caret", () => {
+  /** A backend whose history responses set every cell's source back to the original. */
+  function historyModel(direction: "undo" | "redo") {
+    const m = model();
+    m.backend[direction] = async () => {
+      const current = m.read();
+      const reverted = {
+        ...current,
+        version: current.version + 1,
+        canRedo: true,
+        cells: current.cells.map((cell) => ({ ...cell, source: "original" })),
+      };
+      m.replace(reverted);
+      return structuredClone(reverted);
+    };
+    return m;
+  }
+
+  it("reveals the undone change in the focused cell after an undo", async () => {
+    const m = historyModel("undo");
+    const session = new NotebookSession("/p/a.ipynb", m.backend, true);
+    await session.load();
+    session.edit({ type: "setSource", cell: "cell-a", source: "original + typed" });
+    await session.settled();
+    // The caret had moved to the start; undo removes " + typed", so it goes where that was.
+    session.focusedCell = "cell-a";
+    session.editors.set("cell-a", EditorState.create({ doc: "original + typed", selection: { anchor: 0 } }));
+    await session.undo();
+    expect(session.getState().reveal).toMatchObject({
+      cell: "cell-a",
+      selection: { line: 0, col: 8 },
+      align: "auto",
+    });
+    await session.close();
+  });
+
+  it("reveals the focused cell's caret after a redo", async () => {
+    const m = historyModel("redo");
+    const session = new NotebookSession("/p/a.ipynb", m.backend, true);
+    await session.load();
+    session.focusedCell = "cell-a";
+    session.editors.set("cell-a", EditorState.create({ doc: "original", selection: { anchor: 4 } }));
+    await session.redo();
+    expect(session.getState().reveal).toMatchObject({ cell: "cell-a", selection: { line: 0, col: 4 } });
+    await session.close();
+  });
+
+  it("does not reveal a location when no cell editor is focused", async () => {
+    const m = historyModel("undo");
+    const session = new NotebookSession("/p/a.ipynb", m.backend, true);
+    await session.load();
+    session.edit({ type: "setSource", cell: "cell-a", source: "typed text" });
+    await session.settled();
+    await session.undo();
+    expect(session.getState().reveal).toBeNull();
+    await session.close();
+  });
+
+  it("skips the caret restore when the undo removes the focused cell", async () => {
+    const m = historyModel("undo");
+    m.backend.undo = async () => {
+      const current = m.read();
+      const emptied = { ...current, version: current.version + 1, cells: [] };
+      m.replace(emptied);
+      return structuredClone(emptied);
+    };
+    const session = new NotebookSession("/p/a.ipynb", m.backend, true);
+    await session.load();
+    session.focusedCell = "cell-a";
+    session.editors.set("cell-a", EditorState.create({ doc: "typed text", selection: { anchor: 6 } }));
+    await session.undo();
+    expect(session.getState().reveal).toBeNull();
+    await session.close();
+  });
+
+  it("skips the caret restore when the focused cell lost its editor", async () => {
+    const m = historyModel("undo");
+    m.backend.undo = async () => {
+      const current = m.read();
+      const markdown = { ...current.cells[0]!, cellType: "markdown" as const };
+      const converted = { ...current, version: current.version + 1, cells: [markdown] };
+      m.replace(converted);
+      return structuredClone(converted);
+    };
+    const session = new NotebookSession("/p/a.ipynb", m.backend, true);
+    await session.load();
+    session.focusedCell = "cell-a";
+    session.editors.set("cell-a", EditorState.create({ doc: "typed text", selection: { anchor: 6 } }));
+    await session.undo();
+    expect(session.getState().reveal).toBeNull();
     await session.close();
   });
 });

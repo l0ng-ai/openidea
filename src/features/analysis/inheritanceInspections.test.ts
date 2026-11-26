@@ -9,7 +9,7 @@ import type {
   PythonMethodFacts,
   Range,
 } from "@/platform/ipc";
-import { inheritanceIndex } from "@/editor/navigation/inheritanceGraph";
+import { inheritanceIndex, subclassMap } from "@/editor/navigation/inheritanceGraph";
 import { inheritanceDiagnostics, pythonInheritanceExtension } from "./inheritanceInspections";
 
 interface MethodSpec {
@@ -20,12 +20,18 @@ interface MethodSpec {
   abstract?: boolean;
   override?: boolean;
   body?: MethodBody;
+  /** The parser found the receiver unused (`unusedReceiver`). */
+  receiverUnused?: boolean;
 }
 
 interface ClassSpec {
   name: string;
   line: number;
   col?: number;
+  /** The line the *index* saw (defaults to `line`): an unsaved edit has moved the class. */
+  indexedLine?: number;
+  /** Typed since the graph was indexed: the graph lacks it. */
+  unindexed?: boolean;
   /** The bases the *index* saw (defaults to `bases`). */
   indexedBases?: string[];
   bases: string[];
@@ -52,6 +58,7 @@ const methodFacts = (spec: MethodSpec): PythonMethodFacts => ({
   abstractMethod: spec.abstract ?? false,
   overrideDecorated: spec.override ?? false,
   body: spec.body ?? EMPTY,
+  unusedReceiver: spec.receiverUnused ? range(spec.line, 13) : null,
 });
 
 const classItem = (spec: ClassSpec, col: number, methods: PythonMethodFacts[]): OutlineItem => ({
@@ -103,7 +110,14 @@ class Fixture {
         bases: spec.bases,
         methods,
       });
-      this.graph.push({ path, line: spec.line, col, name: spec.name, bases: spec.indexedBases ?? spec.bases });
+      if (!spec.unindexed)
+        this.graph.push({
+          path,
+          line: spec.indexedLine ?? spec.line,
+          col,
+          name: spec.name,
+          bases: spec.indexedBases ?? spec.bases,
+        });
       this.outlines.set(path, [...(this.outlines.get(path) ?? []), classItem(spec, col, methods)]);
     }
     this.facts.set(path, { classes: [...(this.facts.get(path)?.classes ?? []), ...classFacts], suppressions: [] });
@@ -113,11 +127,13 @@ class Fixture {
   async run(enabled?: ReadonlySet<string>): Promise<Diagnostic[]> {
     const facts = this.facts.get(this.current);
     if (!facts) throw new Error(`no fixture for ${this.current}`);
+    const index = inheritanceIndex(this.graph, { readFiles: async () => new Map() });
     return inheritanceDiagnostics({
       path: this.current,
       outline: this.outlines.get(this.current) ?? [],
       facts,
-      index: inheritanceIndex(this.graph, { readFiles: async () => new Map() }),
+      index,
+      subclasses: () => subclassMap(index),
       factsOf: async (path) => this.facts.get(path) ?? null,
       outlineOf: async (path) => this.outlines.get(path) ?? [],
       enabled,
@@ -357,6 +373,30 @@ it("skips a class whose header no longer matches the indexed graph", async () =>
   expect(await project.run()).toEqual([]);
 });
 
+it("keeps checking classes an unsaved edit moved off their indexed lines", async () => {
+  // A comment typed above `One` moved it and `Two` down a line; the graph still has the saved lines.
+  const project = new Fixture("/p/a.py").add("/p/a.py", [
+    { name: "Base", line: 2, bases: ["ABC"], methods: [{ name: "report", line: 4, abstract: true }] },
+    { name: "One", line: 7, indexedLine: 6, bases: ["Base"] },
+    { name: "Two", line: 10, indexedLine: 9, bases: ["Base"] },
+    { name: "Done", line: 13, indexedLine: 12, bases: ["Base"], methods: [{ name: "report", line: 14 }] },
+  ]);
+  expect(codes(await project.run())).toEqual([
+    ["builtin:python-abstract-method", "warning", 7],
+    ["builtin:python-abstract-method", "warning", 10],
+  ]);
+});
+
+it("pairs moved classes by position only once their names no longer line up", async () => {
+  // A class was added above `Two` since the graph was indexed: `Two` stays where it was indexed.
+  const project = new Fixture("/p/a.py").add("/p/a.py", [
+    { name: "Base", line: 0, bases: [], methods: [{ name: "report", line: 1, abstract: true }] },
+    { name: "New", line: 3, unindexed: true, bases: ["Base"] },
+    { name: "Two", line: 6, bases: ["Base"] },
+  ]);
+  expect(codes(await project.run())).toEqual([["builtin:python-abstract-method", "warning", 6]]);
+});
+
 it("runs only the producers that are enabled", async () => {
   const project = new Fixture("/p/a.py").add("/p/a.py", [
     { name: "First", line: 0, bases: ["Second"] },
@@ -370,4 +410,49 @@ it("installs the inspections for Python documents only", () => {
   const ctx = (language: string) => ({ doc: 1, path: "/p/a.py", language, uiMode: null, readOnly: false });
   expect(pythonInheritanceExtension(ctx("typescript"))).toEqual([]);
   expect(pythonInheritanceExtension(ctx("python"))).not.toEqual([]);
+});
+
+const STATIC = "builtin:python-method-may-be-static";
+const helper: MethodSpec = { name: "helper", line: 1, body: OTHER, receiverUnused: true };
+
+it("reports a method that may be static", async () => {
+  const project = new Fixture("/p/a.py").add("/p/a.py", [{ name: "C", line: 0, bases: ["ABC"], methods: [helper] }]);
+  expect(codes(await project.run())).toEqual([[STATIC, "info", 1]]);
+  expect(await project.run(new Set())).toEqual([]);
+});
+
+it("leaves alone a static candidate that overrides or may override", async () => {
+  const overrides = withBase({ name: "C", line: 0, bases: ["Base"], methods: [helper] }, [
+    { name: "Base", line: 0, bases: [], methods: [{ name: "helper", line: 1, body: OTHER }] },
+  ]);
+  expect(await overrides.run()).toEqual([]);
+  // `Widget` is a library class: it may declare `helper`.
+  const foreign = new Fixture("/p/a.py").add("/p/a.py", [{ name: "C", line: 0, bases: ["Widget"], methods: [helper] }]);
+  expect(await foreign.run()).toEqual([]);
+});
+
+it("leaves alone a static candidate a subclass overrides", async () => {
+  const project = new Fixture("/p/a.py")
+    .add("/p/a.py", [{ name: "Base", line: 0, bases: [], methods: [helper] }])
+    .add("/p/mid.py", [{ name: "Mid", line: 0, bases: ["Base"] }])
+    .add("/p/child.py", [
+      { name: "Child", line: 0, bases: ["Mid"], methods: [{ name: "helper", line: 1, body: OTHER }] },
+    ]);
+  expect(await project.run()).toEqual([]);
+});
+
+it("leaves test code alone", async () => {
+  const testClass = new Fixture("/p/a.py").add("/p/a.py", [
+    { name: "TestParser", line: 0, bases: [], methods: [helper] },
+  ]);
+  expect(await testClass.run()).toEqual([]);
+  const testMethod = new Fixture("/p/a.py").add("/p/a.py", [
+    { name: "Checks", line: 0, bases: [], methods: [{ ...helper, name: "test_parse" }] },
+  ]);
+  expect(await testMethod.run()).toEqual([]);
+  for (const path of ["/p/tests/test_a.py", "/p/a_test.py", "/p/conftest.py"]) {
+    const testFile = new Fixture(path).add(path, [{ name: "Helpers", line: 0, bases: [], methods: [helper] }]);
+    // oxlint-disable-next-line no-await-in-loop -- assertions stay in path order so a failure names the exact test file
+    expect(await testFile.run()).toEqual([]);
+  }
 });

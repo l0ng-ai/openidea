@@ -25,7 +25,7 @@ import { ask } from "@/workbench/messages";
 import { connectRemote, isRemoteWindow } from "@/platform/remote";
 import { holdSplash } from "@/platform/splash";
 import { editorService, maybeEditorService, notifications } from "@/workbench/contributions";
-import { chooseProjectWindow } from "@/workbench/projectWindow";
+import { chooseProjectWindow, type ProjectWindowOverride } from "@/workbench/projectWindow";
 import { openTabColorPicker } from "@/workbench/TabColorPicker";
 import { cycleWindowTab, useWindowGroup } from "@/platform/windowGroups";
 import { editorSwitching } from "@/editor/api";
@@ -84,6 +84,7 @@ type Positions = ReadonlyArray<{ path: string; line: number; column: number }>;
 async function openInEditor(files: readonly string[], positions: Positions = []): Promise<void> {
   for (const [i, path] of files.entries()) {
     const at = positions.find((p) => p.path === path);
+    // oxlint-disable-next-line no-await-in-loop -- tabs open in argument order so the last file is focused
     await editorService()
       .openFile(path, {
         focus: i === files.length - 1,
@@ -168,18 +169,23 @@ export async function openProjectInWindow(path: string, newWindow: boolean, file
 
 /**
  * Opens `path` following "Open project in" when this window already has a
- * project or LightEdit session, then `files` in its editor.
+ * project or LightEdit session, then `files` in its editor. `override` (a
+ * modifier key on a recent project) picks the window instead.
  */
-export async function openProjectWithPolicy(path: string, files: readonly string[] = []): Promise<void> {
+export async function openProjectWithPolicy(
+  path: string,
+  files: readonly string[] = [],
+  override?: ProjectWindowOverride | null,
+): Promise<void> {
   if (desktopOnly()) return;
   const { project: current, lightEdit } = useProject.getState();
-  if (!current && !lightEdit) return openProjectInWindow(path, false, files);
+  if (!current && !lightEdit) return openProjectInWindow(path, override === "new", files);
   if (!isRemoteWindow() && current?.root === path) return openInEditor(files);
   if (!isRemoteWindow() && current?.workspace?.projects.includes(path)) {
     await executeAction("project.reveal", path);
     return openInEditor(files);
   }
-  const mode = await chooseProjectWindow(basename(path));
+  const mode = override ?? (await chooseProjectWindow(basename(path)));
   if (!mode) return;
   if (mode === "new") return openProjectInWindow(path, true, files);
   if (mode === "attach") {
@@ -197,6 +203,14 @@ export async function openProjectWithPolicy(path: string, files: readonly string
   } catch {
     if (await openHere(path)) await openInEditor(files);
   }
+}
+
+/** What the recent lists pass to `file.openRecentProject`: the path, plus the window a modifier key picked. */
+function recentProjectArg(arg: unknown): { path: string; window: ProjectWindowOverride | null } | null {
+  if (typeof arg === "string") return { path: arg, window: null };
+  if (!arg || typeof arg !== "object" || !("path" in arg) || typeof arg.path !== "string") return null;
+  const { window } = arg as { window?: unknown };
+  return { path: arg.path, window: window === "new" || window === "same" ? window : null };
 }
 
 async function attachProject(path: string, files: readonly string[] = []): Promise<void> {
@@ -374,6 +388,17 @@ export function windowActions(): Action[] {
         if (desktopOnly()) return;
         const path = await pickFolder(t("app.action.attachProject"));
         if (path) await attachProject(path);
+      },
+    },
+    {
+      // Import Module from Existing Sources for a folder without a build file.
+      id: "project.attachFolder",
+      title: t("app.action.attachProject"),
+      category: t("app.category.file"),
+      hidden: true,
+      when: "projectLocal",
+      run: async ({ arg }) => {
+        if (typeof arg === "string" && !desktopOnly()) await attachProject(arg);
       },
     },
     {
@@ -574,12 +599,14 @@ export function windowActions(): Action[] {
       run: openLightEditFileAsProject,
     },
     {
+      // The recent lists pass `{ path, window }` when a modifier key picks the window.
       id: "file.openRecentProject",
       title: t("app.action.openRecentProject"),
       category: t("app.category.file"),
       hidden: true,
       run: async (c) => {
-        if (typeof c.arg === "string") await openProjectWithPolicy(c.arg);
+        const recent = recentProjectArg(c.arg);
+        if (recent) await openProjectWithPolicy(recent.path, [], recent.window);
       },
     },
     {

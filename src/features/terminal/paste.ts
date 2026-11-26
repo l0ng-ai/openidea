@@ -1,6 +1,6 @@
-import { pasteClipboardFiles, readClipboardPlainText, readClipboardText } from "@/platform/clipboard";
+import { pasteClipboardFiles, readClipboardPlainText, readClipboardPng, readClipboardText } from "@/platform/clipboard";
 import { toBase64 } from "@/platform/base64";
-import { call, commands, type TerminalId } from "@/platform/ipc";
+import { call, commands, isTauri, type TerminalId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { usePlatform } from "@/platform/platformInfo";
 import { notifications } from "@/workbench/contributions";
@@ -139,6 +139,28 @@ export async function pasteTerminalClipboard(paste: (text: string) => void, getT
         return;
       }
     }
+    // WebKit on macOS asks the user to confirm execCommand("paste") and Clipboard.read() from a
+    // menu with a "Paste" callout; the backend reads files, text and images without asking.
+    if (target && isTauri() && usePlatform.getState().os === "macos") {
+      const paths: string[] = await call(commands.clipboardFileList()).catch(() => []);
+      const text =
+        paths.length && !target.remote ? pathsText(paths, target) : await readClipboardPlainText().catch(() => "");
+      if (!target.current()) return;
+      if (text) {
+        paste(text);
+        return;
+      }
+      const png = await readClipboardPng();
+      if (!target.current()) return;
+      if (png)
+        await pasteMedia(
+          new Blob([Uint8Array.from(atob(png), (c) => c.charCodeAt(0))], { type: "image/png" }),
+          target,
+          paste,
+        );
+      else if (paths.length) paste(paths.join("\n"));
+      return;
+    }
     // Native paste preserves clipboard blobs where Clipboard.read() is unavailable.
     if (target && document.queryCommandSupported?.("paste") && document.execCommand("paste")) return;
     const images =
@@ -164,7 +186,9 @@ export async function pasteTerminalClipboard(paste: (text: string) => void, getT
       for (const item of result.items) {
         const mime = item.types.find(isMedia);
         if (mime) {
+          // oxlint-disable-next-line no-await-in-loop -- the first clipboard item with a supported image type wins
           const image = await item.getType(mime);
+          // oxlint-disable-next-line no-await-in-loop -- this one image is pasted, then the loop stops; later items are not read
           if (target.current()) await pasteMedia(image, target, paste);
           return;
         }

@@ -60,8 +60,10 @@ export async function withEditorsFollowing<T>(
   if (!editor || !open.length) return result;
   // The editor closes tabs of removed files in a queue; an open that starts before an
   // active tab's close counts as superseded and stays in the background.
+  // oxlint-disable-next-line no-await-in-loop -- queued closes must finish before any open starts
   for (const p of open) await editor.closePath?.(p).catch(() => false);
   const ordered = active && open.includes(active) ? [...open.filter((p) => p !== active), active] : open;
+  // oxlint-disable-next-line no-await-in-loop -- opens follow closes; the active tab is deliberately last
   for (const p of ordered) await editor.openFile(movedPath(p, applied), { focus: false }).catch(() => {});
   if (active && !open.includes(active)) await editor.openFile(active, { focus: false }).catch(() => {});
   return result;

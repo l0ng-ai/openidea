@@ -250,6 +250,7 @@ export async function uniqueNames(names: string[], taken: (name: string) => Prom
   const base = names[0]!;
   for (let i = 1; i < 100; i++) {
     const n = `${base}${i}`;
+    // oxlint-disable-next-line no-await-in-loop -- numbered names are tried in order; stop at the first free one
     if (!(await taken(n).catch(() => true))) return [n];
   }
   return [base];

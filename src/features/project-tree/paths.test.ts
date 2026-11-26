@@ -5,6 +5,7 @@ import {
   isSameOrInside,
   joinPath,
   nameOf,
+  outermostPaths,
   parentOf,
   relativeTo,
   splitExtension,
@@ -54,6 +55,10 @@ describe("path helpers", () => {
     expect(uniqueName("Bar.kt", (n) => taken.has(n))).toBe("Bar.kt");
     expect(uniqueName("Foo.kt", (n) => taken.has(n))).toBe("Foo copy 2.kt");
     expect(uniqueName("src", (n) => taken.has(n), true)).toBe("src copy");
+    // A Java source keeps a name its public type can take (#5647).
+    const java = new Set(["Foo.java", "FooCopy.java"]);
+    expect(uniqueName("Foo.java", (n) => java.has(n))).toBe("FooCopy2.java");
+    expect(uniqueName("Foo.java", (n) => n === "Foo.java")).toBe("FooCopy.java");
   });
 });
 
@@ -96,5 +101,58 @@ describe("validateName", () => {
 
   it("warns about surrounding spaces", () => {
     expect(validateName(" x ", { siblings }).warning).toBeTruthy();
+  });
+});
+
+describe("outermostPaths", () => {
+  // The pairwise filter it replaces, kept to compare against.
+  const pairwise = (paths: string[]) => paths.filter((p) => !paths.some((q) => q !== p && isInside(p, q)));
+
+  it("drops paths inside another selected path, keeping order and duplicates", () => {
+    expect(outermostPaths(["/a/b", "/a", "/c", "/a/b/c", "/ab", "/c"])).toEqual(["/a", "/c", "/ab", "/c"]);
+    expect(outermostPaths(["/", "/a"])).toEqual(["/"]);
+    expect(outermostPaths(["/a", "/a/"])).toEqual(["/a"]);
+    // Two spellings of one folder count as nested in each other, as before.
+    expect(outermostPaths(["C:\\a", "C:/a"])).toEqual([]);
+  });
+
+  it("returns what the pairwise filter returns", () => {
+    let seed = 42;
+    const random = () => {
+      seed = (seed * 1103515245 + 12345) % 2 ** 31;
+      return seed / 2 ** 31;
+    };
+    const pick = <T>(xs: readonly T[]) => xs[Math.floor(random() * xs.length)]!;
+    const heads = [
+      "",
+      "/",
+      "C:",
+      "C:/",
+      "C:\\",
+      "c:\\",
+      "\\\\?\\C:\\",
+      "\\\\?\\UNC\\s\\h\\",
+      "\\\\s\\h\\",
+      "//s/h/",
+      "/p/",
+    ];
+    const names = ["a", "b", "a\\b", ".meta", ""];
+    const path = () => {
+      let p = pick(heads);
+      for (let n = Math.floor(random() * 4); n > 0; n--) p += pick(names) + pick(["/", "/", "\\"]);
+      return random() < 0.5 ? p.replace(/[\\/]$/, "") : p;
+    };
+    for (let round = 0; round < 3000; round++) {
+      const paths = Array.from({ length: 1 + Math.floor(random() * 30) }, path);
+      for (let n = Math.floor(random() * 3); n > 0; n--) paths.push(pick(paths));
+      expect(outermostPaths(paths), JSON.stringify(paths)).toEqual(pairwise(paths));
+    }
+  });
+
+  it("takes linear time in the number of paths", () => {
+    const paths = Array.from({ length: 5000 }, (_, i) => `/p/generated/item${i}.json`);
+    const start = performance.now();
+    expect(outermostPaths(paths)).toHaveLength(5000);
+    expect(performance.now() - start).toBeLessThan(250);
   });
 });

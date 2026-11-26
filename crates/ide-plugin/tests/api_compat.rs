@@ -34,9 +34,11 @@ fn components() -> Vec<PathBuf> {
         repo().join("crates/ide-plugin/tests/fixtures/inlay-hints/dist/plugin.wasm"),
         repo().join("crates/ide-plugin/tests/fixtures/language-features/dist/plugin.wasm"),
         repo().join("crates/ide-plugin/tests/fixtures/hover-actions/dist/plugin.wasm"),
+        repo().join("crates/ide-plugin/tests/fixtures/completion-list/dist/plugin.wasm"),
         repo().join("crates/ide-plugin/tests/fixtures/symbols/dist/plugin.wasm"),
         repo().join("crates/ide-plugin/tests/fixtures/api14/dist/plugin.wasm"),
         repo().join("crates/ide-plugin/tests/fixtures/execution/dist/plugin.wasm"),
+        repo().join("crates/ide-plugin/tests/fixtures/decorations/dist/plugin.wasm"),
         repo().join("crates/ide-plugin/tests/fixtures/search/dist/plugin.wasm"),
     ];
     let official = repo().join("plugins/official");
@@ -93,7 +95,7 @@ fn the_sdk_carries_the_hosts_wit() {
 
 #[test]
 fn the_version_check_runs_compatible_components_and_explains_the_rest() {
-    let host = v("1.15.0");
+    let host = v("1.17.0");
     for ok in [
         "1.0.0",
         "1.3.0",
@@ -109,15 +111,17 @@ fn the_version_check_runs_compatible_components_and_explains_the_rest() {
         "1.13.0",
         "1.14.0",
         "1.15.0",
+        "1.16.0",
+        "1.17.0",
         "1.0.0-rc.1",
     ] {
         assert_eq!(check_api(&v(ok), &host), Ok(()), "{ok}");
     }
-    let newer = check_api(&v("1.16.0"), &host).unwrap_err();
-    assert!(newer.contains("1.16") && newer.contains("update OpenIDEA"), "{newer}");
+    let newer = check_api(&v("1.18.0"), &host).unwrap_err();
+    assert!(newer.contains("1.18") && newer.contains("update OpenIDEA"), "{newer}");
     assert!(check_api(&v("2.0.0"), &host).unwrap_err().contains("update OpenIDEA"));
     let older = check_api(&v("0.2.0"), &host).unwrap_err();
-    assert!(older.contains("rebuild it with the 1.15 SDK"), "{older}");
+    assert!(older.contains("rebuild it with the 1.17 SDK"), "{older}");
     // 0.x: every minor is its own API.
     assert_eq!(check_api(&v("0.2.0"), &v("0.2.5")), Ok(()));
     assert!(check_api(&v("0.1.0"), &v("0.2.0")).is_err());
@@ -160,6 +164,23 @@ fn the_hover_actions_component_exports_the_optional_hover_actions_world() {
     let old_exports: Vec<String> =
         old.component_type().exports(engine.engine()).map(|(name, _)| name.to_owned()).collect();
     assert!(!old_exports.iter().any(|name| name.starts_with("openidea:plugin/hover-actions")));
+}
+
+#[test]
+fn the_completion_list_component_exports_the_optional_completion_list_world() {
+    let engine = PluginEngine::new().unwrap();
+    let exports_of = |path: &str| -> Vec<String> {
+        let component = engine.compile(&repo().join(path)).unwrap();
+        component.component_type().exports(engine.engine()).map(|(name, _)| name.to_owned()).collect()
+    };
+    let exports = exports_of("crates/ide-plugin/tests/fixtures/completion-list/dist/plugin.wasm");
+    let list = format!("openidea:plugin/completion-list-provider@{API_VERSION}.0");
+    assert!(exports.iter().any(|name| name.starts_with(&list)), "{exports:?}");
+    // Next to `providers`, which still serves the other kinds and older hosts.
+    assert!(exports.iter().any(|name| name.starts_with("openidea:plugin/providers@")), "{exports:?}");
+    // A plugin that does not export the optional world stays valid.
+    let old = exports_of("plugins/official/test-runner/dist/plugin.wasm");
+    assert!(!old.iter().any(|name| name.starts_with("openidea:plugin/completion-list-provider")));
 }
 
 // --- a later host, simulated -------------------------------------------------------------

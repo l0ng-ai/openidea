@@ -16,6 +16,7 @@ use crate::types::{
     FieldValue, ServiceLog, ServiceLogToggle, ServicePane, ServiceTab, TableSort, View, ViewBody, ViewButton,
     ViewEvent, ViewField, ViewListItem, ViewTable, ViewTreeItem, Viewport,
 };
+use crate::wit_host::completion_list_bindings::exports::openidea::plugin::completion_list_provider as wit_cl;
 use crate::wit_host::hover_actions_bindings::exports::openidea::plugin::hover_actions as wit_hia;
 use crate::wit_host::injections_bindings::exports::openidea::plugin::injections as wit_inj;
 use crate::wit_host::language_features_bindings::exports::openidea::plugin::language_features as wit_lf;
@@ -58,7 +59,7 @@ use views_bindings::exports::openidea::plugin::view_provider as wit_view;
 use views_bindings::openidea::plugin::view_types as wit_vt;
 
 /// The API version of the world above, `major.minor` of [`host_api`].
-pub const API_VERSION: &str = "1.15";
+pub const API_VERSION: &str = "1.17";
 const EPOCH_TICK: Duration = Duration::from_millis(10);
 pub(crate) const MAX_TEXT: usize = 1 << 20;
 /// The most text, and the most PNG bytes, `ui.read-clipboard` returns.
@@ -316,6 +317,8 @@ pub trait HostApi: Send + Sync {
     fn storage_keys(&self, prefix: &str) -> Result<Vec<String>, HostError>;
     fn vcs_status(&self, root: &Path) -> Result<Option<RepositoryStatus>, HostError>;
     fn vcs_remotes(&self, root: &Path) -> Result<Vec<(String, String)>, HostError>;
+    fn vcs_roots(&self, root: &Path) -> Result<Vec<String>, HostError>;
+    fn vcs_repository_at(&self, root: &Path, path: &str) -> Result<Option<crate::RepositoryInfo>, HostError>;
     fn vcs_fetch(&self, root: &Path, cancel: &CancellationToken) -> Result<(), HostError>;
     /// The commit being prepared in `client`'s window (`None`: no repository),
     /// waiting for the window until `cancel` fires.
@@ -892,6 +895,7 @@ struct Exports {
     endpoints: Option<wit_endpoints::Guest>,
     search: Option<wit_search::Guest>,
     hover_actions: Option<wit_hia::Guest>,
+    completion_list: Option<wit_cl::Guest>,
     run_configurations: Option<wit_configs::Guest>,
     launch_configurations: Option<wit_launch::Guest>,
     test_results: Option<wit_tests::Guest>,
@@ -1044,6 +1048,7 @@ impl Runtime {
         let endpoint_indices = wit_endpoints::GuestIndices::new(&pre).ok();
         let search_indices = wit_search::GuestIndices::new(&pre).ok();
         let hover_actions_indices = wit_hia::GuestIndices::new(&pre).ok();
+        let completion_list_indices = wit_cl::GuestIndices::new(&pre).ok();
         let configs_indices = wit_configs::GuestIndices::new(&pre).ok();
         let launch_indices = wit_launch::GuestIndices::new(&pre).ok();
         let tests_indices = wit_tests::GuestIndices::new(&pre).ok();
@@ -1111,6 +1116,8 @@ impl Runtime {
         let search = search_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let hover_actions =
             hover_actions_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
+        let completion_list =
+            completion_list_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let endpoints = match endpoint_indices {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
             None => None,
@@ -1135,6 +1142,7 @@ impl Runtime {
                 endpoints,
                 search,
                 hover_actions,
+                completion_list,
                 run_configurations,
                 launch_configurations,
                 test_results,
@@ -1400,29 +1408,57 @@ impl Runtime {
         trigger: Option<&str>,
         timeout: Duration,
     ) -> Result<Vec<CompletionItem>, CallError> {
+        Ok(self.provide_completion_list(doc, at, trigger, timeout)?.0)
+    }
+
+    /// Completion items and whether the plugin marked them incomplete: from the
+    /// `completion-list-provider` export (API 1.16) when the plugin has it, else
+    /// from `providers.completion`, which is never incomplete.
+    pub fn provide_completion_list(
+        &mut self,
+        doc: &ProviderDocument,
+        at: ide_core::Pos,
+        trigger: Option<&str>,
+        timeout: Duration,
+    ) -> Result<(Vec<CompletionItem>, bool), CallError> {
+        macro_rules! item {
+            ($i:expr) => {{
+                let i = $i;
+                CompletionItem {
+                    label: clip(i.label, MAX_TITLE),
+                    detail: i.detail.map(|d| clip(d, MAX_TITLE)),
+                    kind: i.kind.map(|k| clip(k, 32)),
+                    insert_text: clip(i.insert_text, 64 << 10),
+                    snippet: i.snippet,
+                    replace: i.replace.map(range_from_wit),
+                    sort_text: i.sort_text.map(|t| clip(t, 64)),
+                    filter_text: i.filter_text.map(|t| clip(t, MAX_TITLE)),
+                    documentation: i.documentation.map(|d| clip(d, 16 << 10)),
+                    additional_edits: i
+                        .additional_edits
+                        .into_iter()
+                        .take(MAX_ADDITIONAL_EDITS)
+                        .map(edit_from_wit)
+                        .collect(),
+                }
+            }};
+        }
+        if self.exports.completion_list.is_some() {
+            let d = wit_cl::Document {
+                path: to_ipc(&doc.path),
+                language: doc.language.clone(),
+                version: doc.version,
+                text: doc.text.clone(),
+            };
+            let list = self.call(Invocation::default(), timeout, |exports, store| {
+                exports.completion_list.as_ref().expect("checked").call_completion(store, &d, pos_to_wit(at), trigger)
+            })?;
+            let items = list.items.into_iter().take(MAX_PROVIDER_ITEMS).map(|i| item!(i)).collect();
+            return Ok((items, list.incomplete));
+        }
         let d = doc_to_wit(doc);
         let items = self.provider_call(timeout, |p, s| p.call_completion(s, &d, pos_to_wit(at), trigger))?;
-        Ok(items
-            .into_iter()
-            .take(MAX_PROVIDER_ITEMS)
-            .map(|i| CompletionItem {
-                label: clip(i.label, MAX_TITLE),
-                detail: i.detail.map(|d| clip(d, MAX_TITLE)),
-                kind: i.kind.map(|k| clip(k, 32)),
-                insert_text: clip(i.insert_text, 64 << 10),
-                snippet: i.snippet,
-                replace: i.replace.map(range_from_wit),
-                sort_text: i.sort_text.map(|t| clip(t, 64)),
-                filter_text: i.filter_text.map(|t| clip(t, MAX_TITLE)),
-                documentation: i.documentation.map(|d| clip(d, 16 << 10)),
-                additional_edits: i
-                    .additional_edits
-                    .into_iter()
-                    .take(MAX_ADDITIONAL_EDITS)
-                    .map(edit_from_wit)
-                    .collect(),
-            })
-            .collect())
+        Ok((items.into_iter().take(MAX_PROVIDER_ITEMS).map(|i| item!(i)).collect(), false))
     }
 
     pub fn provide_inline_completion(

@@ -1,10 +1,9 @@
 /** Which "New › Package" flavour a folder offers, from the project's roots. */
 import { rootFor, type RootFolder } from "@/platform/languageSettings";
+import { isJvmSourcePackage } from "@/ui/folderPresentation";
 import type { PackageKind } from "./paths";
 
-const JVM_BUILD = /(^|\/)(pom\.xml|build\.gradle(\.kts)?)$/;
 const PY_BUILD = /(^|\/)(pyproject\.toml|setup\.py|setup\.cfg|Pipfile|requirements\.txt)$/;
-const JVM_DIR = /(^|\/)(java|kotlin|scala|groovy)$/;
 
 const moduleDir = (buildFile: string) =>
   buildFile.includes("/") ? buildFile.slice(0, buildFile.lastIndexOf("/")) : "";
@@ -19,13 +18,8 @@ export function packageKindAt(
   roots: readonly RootFolder[],
   detected: readonly RootFolder[] = [],
 ): PackageKind | null {
-  const root = rootFor(roots, rel);
-  if (root?.kind === "excluded") return null;
-  if (
-    (root?.kind === "source" || root?.kind === "test") &&
-    (JVM_BUILD.test(root.detectedFrom ?? "") || JVM_DIR.test(root.path))
-  )
-    return "jvm";
+  if (rootFor(roots, rel)?.kind === "excluded") return null;
+  if (isJvmSourcePackage(rel, roots)) return "jvm";
   const python = [...roots, ...detected].some(
     (r) => r.detectedFrom && PY_BUILD.test(r.detectedFrom) && within(rel, moduleDir(r.detectedFrom)),
   );

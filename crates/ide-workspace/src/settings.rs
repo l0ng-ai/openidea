@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use toml_edit::{DocumentMut, Item, Table, TableLike};
 
 /// The UI languages the frontend ships (`LOCALES` in `src/platform/i18n.ts`).
-pub const UI_LOCALES: &[&str] = &["en", "zh", "zh-TW", "ko", "fr", "pl", "pt", "es", "tr"];
+pub const UI_LOCALES: &[&str] = &["en", "zh", "zh-TW", "ko", "fr", "pl", "pt", "es", "tr", "ru"];
 
 /// Maps an OS language tag (`tr-TR`, `fr_CA.UTF-8`, `zh-Hant-HK`) to one of [`UI_LOCALES`], English otherwise.
 pub fn ui_locale_for(language: &str) -> &'static str {
@@ -66,8 +66,9 @@ pub enum SettingsScope {
 /// Settings a project's own file can't hold: the IDE's MCP server, imported color schemes, and
 /// what agents may do without asking (commands run without asking, the modes new tasks start in,
 /// whether new tasks ask for approvals).
-const USER_ONLY: [&[&str]; 6] = [
+const USER_ONLY: &[&[&str]] = &[
     &["mcpServer"],
+    &["remoteDevelopment"],
     &["editor", "customSchemes"],
     &["agentSecurity", "allowedCommands"],
     &["agents", "defaults"],
@@ -91,7 +92,7 @@ fn user_only_setting(key: &str, value: &Json) -> Option<String> {
 /// Applies a project layer's limits before it merges onto `below`: [`USER_ONLY`] settings are
 /// dropped, and its blocked agent commands add to the ones below instead of replacing them.
 fn restrict_project_layer(below: &Json, layer: &mut Json) {
-    for path in USER_ONLY {
+    for &path in USER_ONLY {
         let (last, parents) = path.split_last().expect("non-empty path");
         if let Some(table) = parents.iter().try_fold(&mut *layer, |v, seg| v.get_mut(seg)).and_then(Json::as_object_mut)
         {

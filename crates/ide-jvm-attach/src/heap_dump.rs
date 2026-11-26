@@ -18,11 +18,16 @@ const DUMP_BASE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Only `-all` and a quoted path: any argument the DCmd rejects while the VM is suspended
 /// hangs the attach listener (17/21/25) until resume, and so does an unquoted path with a space.
 pub fn heap_dump_command(path: &Path) -> Result<String, AttachError> {
-    let text = path.to_str().ok_or_else(|| AttachError::Protocol(format!("heap dump path {path:?} is not UTF-8")))?;
+    Ok(format!("GC.heap_dump -all {}", quoted_path(path, "heap dump")?))
+}
+
+/// `path` in double quotes, as a DCmd argument; `what` names the file in errors.
+pub(crate) fn quoted_path(path: &Path, what: &str) -> Result<String, AttachError> {
+    let text = path.to_str().ok_or_else(|| AttachError::Protocol(format!("{what} path {path:?} is not UTF-8")))?;
     if text.contains(['"', '\0', '\n', '\r']) {
-        return Err(AttachError::Protocol(format!("heap dump path {text:?} cannot be quoted for the JVM")));
+        return Err(AttachError::Protocol(format!("{what} path {text:?} cannot be quoted for the JVM")));
     }
-    Ok(format!("GC.heap_dump -all \"{text}\""))
+    Ok(format!("\"{text}\""))
 }
 
 /// The JVM answers result code 0 for IO failures too, so success is told apart by its text.

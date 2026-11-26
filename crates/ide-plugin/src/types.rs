@@ -119,6 +119,13 @@ pub struct PickItem {
     pub description: Option<String>,
 }
 
+/// A group of file extensions in a plugin's native chooser.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct PluginFileFilter {
+    pub name: String,
+    pub extensions: Vec<String>,
+}
+
 /// What a plugin asks the user (`ui.pick`, `ui.pick-many`, `ui.input`,
 /// `ui.input-multiline`, `ui.confirm`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -132,6 +139,8 @@ pub enum Prompt {
     Confirm { title: String, message: String },
     #[serde(rename_all = "camelCase")]
     PickDirectory { title: String, initial: Option<String> },
+    #[serde(rename_all = "camelCase")]
+    PickFile { title: String, save: bool, name: Option<String>, filters: Vec<PluginFileFilter> },
     /// The host's own question under `net:ask` (never plugin-initiated): the
     /// plugin reached an HTTPS host its manifest does not list.
     #[serde(rename_all = "camelCase")]
@@ -397,6 +406,18 @@ pub struct RepositoryStatus {
     pub behind: u32,
     pub operation: Option<String>,
     pub changed_files: u32,
+}
+
+/// Reference and remotes of a path's mapped worktree (WIT `vcs.repository-info`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RepositoryInfo {
+    pub root: String,
+    pub relative_path: String,
+    pub branch: Option<String>,
+    pub commit: Option<String>,
+    pub upstream: Option<String>,
+    pub ahead: u32,
+    pub remotes: Vec<(String, String)>,
 }
 
 /// A file a pending commit changes (WIT `commit.commit-change`).
@@ -993,11 +1014,24 @@ pub struct FileProblems {
 }
 /// An editor decoration.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct Decoration {
     pub range: ide_core::Range,
     pub style: String,
     pub hover: Option<String>,
     pub after: Option<String>,
+    /// Markdown rendered in the editor's hover card (API 1.16); `hover` is the
+    /// plain-text fallback shown when this is absent.
+    pub markdown_hover: Option<String>,
+    /// The item's own colors (API 1.17 `set-styled`), validated `#rrggbb` / `#rrggbbaa`.
+    #[serde(default)]
+    pub colors: Option<DecorationColors>,
+}
+/// Colors of a styled editor decoration (API 1.17).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+pub struct DecorationColors {
+    pub foreground: Option<String>,
+    pub background: Option<String>,
 }
 /// A tree decoration.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]

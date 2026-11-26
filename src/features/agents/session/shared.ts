@@ -1,5 +1,6 @@
 import type { AgentEntry, AgentTask } from "@/bindings";
 import { useEffect, useState } from "react";
+import { splitLeadingCd } from "../shellCommand";
 import { useAgents } from "../store";
 
 export function providerName(id: string) {
@@ -20,6 +21,15 @@ export type UserEntry = Extract<AgentEntry, { type: "user" }>;
 
 /** Agent-written titles with the task's own folder dropped from paths. */
 export const shortTitle = (task: AgentTask, title: string) => title.replaceAll(`${task.cwd}/`, "");
+
+/**
+ * A command's title without the `cd <dir> &&` agents put before every call, and the folder it
+ * moved to when that is not the task's own: the command is what tells calls apart.
+ */
+export function commandTitle(task: AgentTask, title: string): { title: string; dir: string | null } {
+  const { command, dir } = splitLeadingCd(title);
+  return { title: shortTitle(task, command), dir: dir === task.cwd || dir === "." ? null : dir };
+}
 
 /**
  * `memo`'s comparison for props rebuilt with every render without changing: a prop named in

@@ -250,6 +250,9 @@ export const EXECUTION_PAGES: PageSpec[] = [
     order: 359,
     keywords: [
       "Delegate IDE build/run actions to Maven",
+      "Run tests using",
+      "JUnit",
+      "Surefire",
       "javac",
       "ECJ",
       "JRE",
@@ -316,13 +319,29 @@ export const EXECUTION_PAGES: PageSpec[] = [
     group: BUILD_GROUP,
     order: 361,
     projectScope: true,
-    keywords: ["debug", "breakpoint"],
+    keywords: ["debug", "breakpoint", "hotswap", "hot swap", "reload classes", "recompile"],
     sections: [
       {
         options: [
           { kind: "toggle", key: "debugger.showOnBreakpoint", label: "Show debug window on breakpoint hit" },
           { kind: "toggle", key: "debugger.focusAppOnBreakpoint", label: "Focus application on breakpoint" },
           { kind: "toggle", key: "debugger.hideOnTermination", label: "Hide debug window on process termination" },
+        ],
+      },
+      {
+        title: "HotSwap",
+        options: [
+          {
+            kind: "select",
+            key: "debugger.hotSwapAfterCompile",
+            label: "Reload classes after compilation",
+            options: [
+              { value: "always", label: "Always" },
+              { value: "ask", label: "Ask" },
+              { value: "never", label: "Never" },
+            ],
+            hint: "Reload changed classes into running Java debug sessions after Build Project, Build Module, or Recompile succeeds.",
+          },
         ],
       },
       {

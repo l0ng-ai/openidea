@@ -6,6 +6,15 @@
   height: var(--h-toolbar-widget);
   border-radius: var(--radius-toolbar-dropdown);
 }
+/* The status bar's Git Branch widget: the bar's own button, sized like its other widgets. Like
+   IDEA's, it shows the whole branch name (up to about 100 characters) in the bar's free space. */
+.statusWidget {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  max-width: 100ch;
+}
 .icon {
   flex: none;
   color: var(--fg-muted);
@@ -18,8 +27,10 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* A long repository name gives way before the branch name does. */
 .repo {
-  flex: none;
+  flex: 0 100 auto;
+  min-width: 3ch;
   --toolbar-label-max: 120px;
   max-width: 120px;
   overflow: hidden;

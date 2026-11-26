@@ -379,6 +379,23 @@ fn binary_and_huge_files_are_listed_without_symbols() {
 }
 
 #[test]
+fn binary_files_are_classified_from_their_head_and_text_is_read_past_it() {
+    let fx = Fixture::new(&[("img/logo.rs", "")]);
+    let mut binary = b"fn head() {}\0".to_vec();
+    binary.extend(std::iter::repeat_n(b'x', 64 * 1024));
+    std::fs::write(fx.root.join("img/logo.rs"), &binary).unwrap();
+    let long = format!("{}fn past_the_sniff() {{}}\n", "// pad\n".repeat(2000));
+    assert!(long.len() > 8192);
+    fx.write("src/long.rs", &long);
+    let idx = fx.open();
+    assert_eq!(symbols(&idx, "past_the_sniff", SymbolFilter::All), vec!["past_the_sniff"]);
+    assert!(symbols(&idx, "head", SymbolFilter::All).is_empty());
+    let data = idx.shared.data.read();
+    let logo = data.files.iter().flatten().find(|entry| entry.rel.as_ref() == "img/logo.rs").unwrap();
+    assert_eq!(logo.hash, [0; 32], "a binary file is not read whole to be hashed");
+}
+
+#[test]
 fn go_to_file_finds_ignored_files_but_not_their_symbols() {
     let fx = Fixture::new(&[
         (".gitignore", ".env\n*.local.ts\ndist/\n"),
@@ -1245,4 +1262,67 @@ fn queries_during_streaming_scan_do_not_deadlock() {
     });
 
     done_rx.recv_timeout(Duration::from_secs(60)).expect("concurrent index queries deadlocked with streaming scan");
+}
+
+#[test]
+fn reconciling_a_few_changed_files_does_not_show_indexing() {
+    let fx = sample();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink: SharedSink = {
+        let events = events.clone();
+        Arc::new(move |e: IdeEvent| events.lock().push(e))
+    };
+    let idx = fx.open_with(sink);
+    let announced = |events: &Mutex<Vec<IdeEvent>>| {
+        events
+            .lock()
+            .iter()
+            .filter(|e| matches!(e, IdeEvent::IndexState { indexing: true, .. } | IdeEvent::Task { done: false, .. }))
+            .count()
+    };
+    let settle = || {
+        assert!(idx.wait_idle(WAIT));
+        // The touched folders are reconciled once the snapshot delay has passed.
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(idx.wait_idle(WAIT));
+    };
+
+    // A program appending to its log in the project, as a debugged Spring app does.
+    events.lock().clear();
+    let log = fx.write("logs/app.log", "start\n");
+    for i in 0..3 {
+        std::fs::write(&log, format!("line {i}\n").repeat(i + 1)).unwrap();
+        idx.update(std::slice::from_ref(&log), &[]);
+        settle();
+    }
+    assert_eq!(announced(&events), 0, "a log being written must not show Indexing");
+    assert!(files(&idx, "app.log").contains(&"logs/app.log".to_owned()), "the log is still indexed");
+}
+
+/// #5749: a file at the project root changing must not re-walk the whole project when the
+/// touched folders are reconciled, yet folders that appear or vanish there are still picked up.
+#[test]
+fn reconciling_a_root_change_lists_only_that_folder() {
+    let fx = sample();
+    let idx = fx.open();
+
+    // Written behind the index's back, deep in a folder it already knows.
+    fx.write("src/order/Unreported.java", "class Unreported {}\n");
+    // A new folder, a vanished one and an unreported file next to the changed root file.
+    fx.write("fresh/deep/Fresh.java", "class Fresh {}\n");
+    std::fs::remove_dir_all(fx.root.join("docs")).unwrap();
+    fx.write("Unlisted.txt", "x\n");
+    let log = fx.write("app.log", "line\n");
+    idx.update(std::slice::from_ref(&log), &[]);
+    assert!(idx.wait_idle(WAIT));
+    // The touched folders are reconciled once the snapshot delay has passed.
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(idx.wait_idle(WAIT));
+
+    assert!(files(&idx, "app.log").contains(&"app.log".to_owned()), "the changed file is indexed");
+    assert!(files(&idx, "Unlisted").contains(&"Unlisted.txt".to_owned()), "the root folder is listed");
+    assert!(files(&idx, "Fresh").contains(&"fresh/deep/Fresh.java".to_owned()), "a new folder is walked");
+    assert!(files(&idx, "maintenance").is_empty(), "a vanished folder's files are dropped");
+    assert!(files(&idx, "main.rs").contains(&"src/main.rs".to_owned()), "other folders keep their files");
+    assert!(files(&idx, "Unreported").is_empty(), "known subfolders are not re-walked");
 }

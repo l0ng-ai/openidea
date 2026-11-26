@@ -69,6 +69,21 @@ export interface PerfProbe {
    * `latencyMs` (a `git log` call). `0` commits removes it.
    */
   fakeGitLog(commits: number, latencyMs?: number): void;
+  /**
+   * Opens an all-in-one diff of `files` generated files changed between two revisions, answering
+   * the Git reads its blocks make: 40 lines each, every 50th file 1,000 lines.
+   */
+  openCombinedDiff(files: number): Promise<{ first: string; last: string }>;
+  /** Opens an empty Run console session before streaming starts so UI (e.g. Find) can mount first. */
+  openConsoleSession(mode: "long" | "no-lf"): Promise<string>;
+  /** Streams long-line or no-newline output into a Run console session. */
+  streamConsoleOutput(options: {
+    mode: "long" | "no-lf";
+    count: number;
+    perFrame: number;
+    lineLength?: number;
+    sessionId?: string;
+  }): Promise<{ lines: number; dropped: number }>;
 }
 
 const KINDS: CompletionKind[] = [
@@ -137,6 +152,15 @@ function commit(i: number, count: number): Commit {
     messageTruncated: false,
     refs: i === 0 ? ["HEAD -> main", "origin/main"] : i % 250 === 0 ? [`tag: v1.${count - i}`] : [],
   };
+}
+
+/** `lines` lines of a generated source file; the two revisions differ on every 7th line. */
+function revisionText(file: number, lines: number, rev: string): string {
+  return Array.from({ length: lines }, (_, i) =>
+    i % 7 === 3
+      ? `export const v${file}_${i} = compute("${rev}", ${i});`
+      : `export const v${file}_${i} = compute(${i});`,
+  ).join("\n");
 }
 
 type Route = (cmd: string, args: unknown) => Promise<unknown> | null;
@@ -252,6 +276,47 @@ export function installPerfProbe(): () => void {
             }
           : null,
       );
+    },
+    async openCombinedDiff(files) {
+      const paths = Array.from(
+        { length: files },
+        (_, i) => `/dev/acme-api/src/gen/pkg${Math.floor(i / 50)}/File${i}.ts`,
+      );
+      const index = new Map(paths.map((path, i) => [path, i]));
+      setRoute("combinedDiff", (cmd, args) => {
+        if (cmd === "vcs_diff_entries")
+          return Promise.resolve(
+            (args as { entries: { path: string }[] }).entries.map(() => ({ mode: "100644", gitlink: null })),
+          );
+        const { path, rev } = (args ?? {}) as { path?: string; rev?: string };
+        const i = path === undefined ? undefined : index.get(path);
+        if (i === undefined) return null;
+        if (cmd === "vcs_file_mode") return Promise.resolve("100644");
+        if (cmd === "fs_probe") return Promise.resolve({ size: 1024, binary: false, tooLarge: false });
+        if (cmd === "vcs_file_at") return Promise.resolve(revisionText(i, i % 50 === 49 ? 1_000 : 40, rev ?? ""));
+        return null;
+      });
+      await editorService().openInput({
+        kind: "combined-diff",
+        key: `combined-diff:perf:${files}`,
+        path: paths[0] ?? "",
+        data: {
+          items: paths.map((path) => ({
+            path,
+            left: { type: "rev", rev: "HEAD~1" },
+            right: { type: "rev", rev: "HEAD" },
+          })),
+        },
+      });
+      return { first: paths[0] ?? "", last: paths.at(-1) ?? "" };
+    },
+    async openConsoleSession(mode) {
+      const { openSampleConsoleSession } = await import("@/features/run/store");
+      return openSampleConsoleSession(mode);
+    },
+    async streamConsoleOutput(options) {
+      const { startSampleConsoleOutput } = await import("@/features/run/store");
+      return startSampleConsoleOutput(options);
     },
     editorText: (from = 0, to) => activeEditor()?.view.state.doc.sliceString(from, to) ?? null,
     insertAfter(after, text) {

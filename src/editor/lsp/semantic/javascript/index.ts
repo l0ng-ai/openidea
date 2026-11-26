@@ -2,7 +2,7 @@
  * JavaScript and TypeScript (tsserver), coloured as WebStorm does: a decorator's
  * whole name (`@Component`, `@Outer.Inner`) is a decorator, not the class or
  * function the server reports; a variable or function without tsserver's `local`
- * modifier is a module-level global.
+ * modifier is a module-level global; methods are instance or static methods.
  */
 import { Tree, TreeBuffer, type NodeSet, type SyntaxNode } from "@lezer/common";
 import { registerLanguageSemantics, type LanguageSemantics, type SemanticRange } from "../languages";
@@ -72,9 +72,22 @@ export function decoratorRanges(tree: Tree, probe?: { visited: number }): Semant
   return out;
 }
 
+const TYPE_KIND_CLASS: Record<string, string> = {
+  interface: "cm-sem-js-interface",
+  type: "cm-sem-js-type-alias",
+  typeParameter: "cm-sem-js-type-parameter",
+};
+
 const javascriptSemantics: LanguageSemantics = {
   syntaxRanges: (tree) => decoratorRanges(tree),
   tokenClasses({ type, modifiers, classes, marksLocals }) {
+    // WebStorm's Instance / Static member function: a method's declaration and its calls (a
+    // library's own keep the Predefined style).
+    if ((type === "method" || type === "member") && !modifiers.includes("defaultLibrary"))
+      classes.push(modifiers.includes("static") ? "cm-sem-js-static-method" : "cm-sem-js-instance-method");
+    // TypeScript's interfaces, type aliases (tsserver's `type`) and type parameters.
+    if (!modifiers.includes("defaultLibrary") && Object.hasOwn(TYPE_KIND_CLASS, type))
+      classes.push(TYPE_KIND_CLASS[type]!);
     if (!marksLocals || modifiers.includes("local") || modifiers.includes("defaultLibrary")) return;
     if (type === "variable" && !classes.includes("cm-sem-constant")) classes.push("cm-sem-global");
     else if (type === "function") classes.push("cm-sem-global-function");

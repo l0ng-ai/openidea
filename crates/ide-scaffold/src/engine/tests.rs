@@ -169,6 +169,17 @@ fn dotnet_pins_the_sdk_and_creates_a_solution() {
     let (pin, lines) = render(&[("solution", "false")]);
     assert_eq!(pin, None);
     assert_eq!(lines, ["dotnet new console --name Shop --output . --language C#", "dotnet new gitignore"]);
+
+    // #5732: the top folder is the solution's (Store/Store.slnx, Store/Shop/Shop.csproj), as in
+    // Rider and Visual Studio; without a solution `solution-name` isn't sent and it is the project's.
+    let folder = |pairs: &[(&str, &str)]| {
+        let given = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        project_folder(def, "Shop", &with_defaults(def, "Shop", &given))
+    };
+    assert_eq!(folder(&[("solution-name", "Store")]), "Store");
+    assert_eq!(folder(&[]), "Shop");
+    assert_eq!(folder(&[("solution", "false")]), "Shop");
+    assert_eq!(folder(&[("solution-name", " ")]), "Shop");
 }
 
 #[cfg(unix)]
@@ -198,6 +209,11 @@ fn dotnet_templates_see_the_selected_sdk_before_running() {
     let pin: serde_json::Value = serde_json::from_slice(&std::fs::read(project.join("global.json")).unwrap()).unwrap();
     assert_eq!(pin["sdk"]["version"], "10.0.400");
     assert_eq!(std::fs::read_to_string(parent_pin).unwrap(), inherited);
+    // A solution named apart from the project names the folder.
+    let req = request("dotnet", tmp.path(), "Api", &[("sdk", "10.0.400"), ("solution-name", "Store")]);
+    let project = create_with(&def, &req, &CancellationToken::new(), &|_| {}).unwrap();
+    assert_eq!(project, tmp.path().join("Store"));
+    assert!(project.join("global.json").is_file());
 }
 
 /// `dotnet` of a runtime-only install: `--version` fails ("No .NET SDKs were found").

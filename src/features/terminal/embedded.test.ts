@@ -4,12 +4,14 @@ import { installTerminalKeys } from "./keys";
 import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
 import { registerAction } from "@/platform/actions";
 import { usePlatform } from "@/platform/platformInfo";
+import { useProject } from "@/platform/project";
 import type { ITerminalOptions } from "@xterm/xterm";
 
 const terminal = vi.hoisted(() => ({
   selection: "selected run output",
   handler: (_e: KeyboardEvent): boolean => true,
   input: vi.fn(),
+  written: [] as string[],
   options: {} as ITerminalOptions,
 }));
 vi.mock("@xterm/xterm", () => ({
@@ -34,6 +36,10 @@ vi.mock("@xterm/xterm", () => ({
     input(data: string) {
       terminal.input(data);
     }
+    write(data: string) {
+      terminal.written.push(data);
+    }
+    reset() {}
     open(host: HTMLElement) {
       this.textarea = document.createElement("textarea");
       host.append(this.textarea);
@@ -94,6 +100,33 @@ it.each([
   }
 });
 
+it("paces Run console output by Max FPS (#5897)", () => {
+  vi.useFakeTimers();
+  const term = createEmbeddedTerminal(document.createElement("div"), { onData() {}, onResize() {} });
+  try {
+    terminal.written = [];
+    term.write("a");
+    expect(terminal.written).toEqual(["a"]);
+    useProject.setState({ settings: { terminal: { maxFps: "10" } } as never });
+    term.write("b");
+    term.write("c");
+    term.write("d");
+    // One frame after the last paint, the three chunks arrive as one write.
+    expect(terminal.written).toEqual(["a"]);
+    vi.advanceTimersByTime(100);
+    expect(terminal.written).toEqual(["a", "bcd"]);
+    term.write("e");
+    term.clear();
+    vi.advanceTimersByTime(200);
+    // Clearing drops what was still waiting for a frame.
+    expect(terminal.written.join("")).toBe("abcd");
+  } finally {
+    term.dispose();
+    useProject.setState({ settings: {} as never });
+    vi.useRealTimers();
+  }
+});
+
 it("copies embedded Run terminal selections before xterm can send Ctrl+C", () => {
   const writeText = vi.fn().mockResolvedValue(undefined);
   Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
@@ -137,6 +170,21 @@ it("copies embedded Run terminal selections before xterm can send Ctrl+C", () =>
     disposeDispatcher();
     disposeKeys();
     disposeAction();
+    term.dispose();
+  }
+});
+
+it("leaves paste strokes in embedded Run terminals to the native paste", () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const term = createEmbeddedTerminal(host, { onData: vi.fn(), onResize: vi.fn() });
+  try {
+    for (const init of [{ ctrlKey: true }, { ctrlKey: true, shiftKey: true }]) {
+      const paste = new KeyboardEvent("keydown", { key: "v", code: "KeyV", cancelable: true, ...init });
+      expect(terminal.handler(paste)).toBe(false);
+      expect(paste.defaultPrevented).toBe(false);
+    }
+  } finally {
     term.dispose();
   }
 });

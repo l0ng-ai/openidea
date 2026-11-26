@@ -40,6 +40,7 @@ describe("automatic project types", () => {
     expect(backend.fsReadDir).toHaveBeenCalledTimes(4);
     while (useProjectTree.getState().projectTypes.size < 9) {
       pending.splice(0).forEach((resolve) => resolve());
+      // oxlint-disable-next-line no-await-in-loop -- wait for each batch of root reads before releasing the next batch
       await waitFor(() => expect(pending.length || useProjectTree.getState().projectTypes.size === 9).toBeTruthy());
     }
     expect([...useProjectTree.getState().projectTypes.values()]).toEqual(Array(9).fill("go"));

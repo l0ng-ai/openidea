@@ -32,6 +32,7 @@ pub fn detect(kind: SdkKind, root: Option<&Path>) -> Vec<Sdk> {
         SdkKind::Ruby => crate::ruby::detect(root),
         SdkKind::Zig => zig(),
         SdkKind::Dotnet => dotnet(),
+        SdkKind::Flutter => crate::flutter::detect(),
     };
     if let Some(root) = root {
         pinned_first(&mut out, kind, root);
@@ -48,7 +49,12 @@ fn tool_of(kind: SdkKind) -> Option<Tool> {
         SdkKind::Maven => Some(Tool::Maven),
         SdkKind::Ruby => Some(Tool::Ruby),
         SdkKind::Zig => Some(Tool::Zig),
-        SdkKind::Php | SdkKind::PackageManager | SdkKind::Rust | SdkKind::TypeScript | SdkKind::Dotnet => None,
+        SdkKind::Php
+        | SdkKind::PackageManager
+        | SdkKind::Rust
+        | SdkKind::TypeScript
+        | SdkKind::Dotnet
+        | SdkKind::Flutter => None,
     }
 }
 
@@ -1605,7 +1611,10 @@ mod pipenv_tests {
     #[test]
     fn environments_are_named_as_pipenv_names_them() {
         // `sanitize(folder)[:42] + "-" + urlsafe_b64encode(sha256(Pipfile path).digest()[:6])`, from pipenv.
+        #[cfg(unix)]
         assert_eq!(pipenv_env_name(Path::new("/home/me/My Shop (2)")), "My_Shop__2_-6rNTtAUD");
+        #[cfg(windows)]
+        assert_eq!(pipenv_env_name(Path::new(r"C:\Users\me\My Shop (2)")), "My_Shop__2_-ED1rXUDC");
     }
 
     #[test]
