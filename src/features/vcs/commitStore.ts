@@ -298,6 +298,35 @@ function writeDraft(root: string, list: string, text: string | null) {
   }
 }
 
+const CHECK_STATES = new Set<CheckState>(["all", "none", "staged", "hunks"]);
+const checksKey = (root: string) => `openidea.vcs.commitChecks:${root}`;
+
+/** Inclusion overrides for this project. A path with no entry still follows the setting. */
+export function savedChecks(root: string | null): Map<string, CheckState> {
+  if (!root) return new Map();
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem(checksKey(root)) ?? "null");
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return new Map();
+    const checks = new Map<string, CheckState>();
+    for (const [path, state] of Object.entries(raw)) {
+      if (typeof state === "string" && CHECK_STATES.has(state as CheckState)) checks.set(path, state as CheckState);
+    }
+    return checks;
+  } catch {
+    return new Map();
+  }
+}
+
+function writeChecks(root: string, checks: ReadonlyMap<string, CheckState>) {
+  try {
+    const key = checksKey(root);
+    if (!checks.size) localStorage.removeItem(key);
+    else localStorage.setItem(key, JSON.stringify(Object.fromEntries(checks)));
+  } catch {
+    // ignore
+  }
+}
+
 const authorKey = (root: string, list: string) => `openidea.vcs.commitAuthor:${JSON.stringify([root, list])}`;
 
 function defaultCommitAuthor(root: string, list: string): CommitAuthorDetails {
@@ -560,7 +589,8 @@ export function keepMessageAfterCommit(committed: string, clear: boolean, finish
     finished.root &&
     (active || (finished.text !== null && readDraft(finished.root, finished.list) === finished.text))
   ) {
-    writeDraft(finished.root, finished.list, clear ? "" : null);
+    // Clear drops it. Otherwise the message left in the field is the next draft, including after a restart.
+    writeDraft(finished.root, finished.list, clear ? "" : messageAfterCommit(committed, false) || null);
   }
   if (!active) return;
   const message = messageAfterCommit(committed, clear);
@@ -674,14 +704,20 @@ export function installCommitMessages(): () => void {
   const offDraft = useCommit.subscribe((s, prev) => {
     if (displayingDraft) return;
     if (s.message !== prev.message) scheduleDraft();
-    if (s.checks !== prev.checks) syncChangelist();
+    if (s.checks !== prev.checks) {
+      const root = useVcs.getState().root;
+      if (root) writeChecks(root, s.checks);
+      syncChangelist();
+    }
   });
   const initialRoot = useVcs.getState().root;
   if (initialRoot) {
-    const list = includedChangelist();
+    const checks = savedChecks(initialRoot);
+    const list = includedChangelist(checks);
     const current = useCommit.getState();
     displayCommitDraft({
       ...savedCommitAuthor(initialRoot, list),
+      checks,
       messageChangelist: list,
       message: current.messageChangelist === list && current.message ? current.message : savedDraft(initialRoot, list),
     });
@@ -721,7 +757,7 @@ export function installCommitMessages(): () => void {
       flushDraft();
       keptMessage = null;
       appliedMessage = null;
-      const checks = new Map<string, CheckState>();
+      const checks = savedChecks(s.root);
       const list = includedChangelist(checks);
       displayCommitDraft({
         ...resetAmendDraft(),
