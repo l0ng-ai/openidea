@@ -2466,6 +2466,13 @@ fn macos_webview_configuration<'a>(
 fn build_macos_webview_configuration(
     app: &AppHandle,
 ) -> Option<objc2::rc::Retained<objc2_web_kit::WKWebViewConfiguration>> {
+    build_macos_webview_configuration_with(|f| app.run_on_main_thread(f))
+}
+
+#[cfg(target_os = "macos")]
+fn build_macos_webview_configuration_with(
+    run_on_main_thread: impl FnOnce(Box<dyn FnOnce() + Send>) -> tauri::Result<()>,
+) -> Option<objc2::rc::Retained<objc2_web_kit::WKWebViewConfiguration>> {
     const ON_MAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
     struct SendConfig(objc2::rc::Retained<objc2_web_kit::WKWebViewConfiguration>);
@@ -2487,10 +2494,10 @@ fn build_macos_webview_configuration(
     // build off the main thread; create the configuration on the AppKit main thread and fall back
     // to the default builder if the event loop cannot service it.
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
-    if let Err(err) = app.run_on_main_thread(move || {
+    if let Err(err) = run_on_main_thread(Box::new(move || {
         let result = objc2::MainThreadMarker::new().and_then(make);
         let _ = tx.send(result);
-    }) {
+    })) {
         tracing::warn!("could not schedule macOS WKWebViewConfiguration on main thread: {err}");
         return None;
     }
@@ -2643,6 +2650,57 @@ mod tests {
             assert!(configured);
             let behavior: NSWritingToolsBehavior = unsafe { msg_send![&config, writingToolsBehavior] };
             assert_eq!(behavior, NSWritingToolsBehavior::None);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_webview_configuration_handles_non_main_thread() {
+        use objc2::{MainThreadMarker, sel};
+        use objc2_foundation::NSObjectProtocol;
+
+        // Off-thread scheduling failure falls back to None instead of panicking.
+        let result = std::thread::spawn(|| {
+            assert!(MainThreadMarker::new().is_none());
+            build_macos_webview_configuration_with(|_| Err(tauri::Error::FailedToReceiveMessage)).is_none()
+        })
+        .join()
+        .expect("worker thread must not panic");
+        assert!(result);
+
+        // Off-thread callback without a main-thread marker falls back to None instead of panicking.
+        let result = std::thread::spawn(|| {
+            assert!(MainThreadMarker::new().is_none());
+            build_macos_webview_configuration_with(|f| {
+                f();
+                Ok(())
+            })
+            .is_none()
+        })
+        .join()
+        .expect("worker thread must not panic");
+        assert!(result);
+
+        // When a main thread is available (e.g. nextest or --test-threads=1), dispatching from a
+        // worker thread constructs and configures WKWebViewConfiguration on the main thread.
+        if let Some(mtm) = MainThreadMarker::new() {
+            let probe = unsafe { objc2_web_kit::WKWebViewConfiguration::new(mtm) };
+            let expects_config = probe.respondsToSelector(sel!(setWritingToolsBehavior:));
+
+            let (work_tx, work_rx) = std::sync::mpsc::sync_channel::<Box<dyn FnOnce() + Send>>(1);
+            let worker = std::thread::spawn(move || {
+                assert!(MainThreadMarker::new().is_none());
+                build_macos_webview_configuration_with(move |f| {
+                    work_tx.send(f).map_err(|_| tauri::Error::FailedToReceiveMessage)
+                })
+                .is_some()
+            });
+            let work = work_rx.recv().expect("worker should schedule onto main thread");
+            work();
+            let got_config = worker.join().expect("worker thread must not panic");
+            if expects_config {
+                assert!(got_config);
+            }
         }
     }
 
