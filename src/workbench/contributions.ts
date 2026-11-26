@@ -2040,6 +2040,11 @@ export interface RunAnythingProvider {
    * synchronous): Markdown offers run icons for such lines in code blocks.
    */
   accepts?(line: string): boolean;
+  /**
+   * Called when the popup opens, with a callback for `items` changing while it
+   * is open (entries read from disk in the background); returns the unsubscriber.
+   */
+  watch?(onChange: () => void): () => void;
 }
 
 const runAnythingProviders = new Map<string, RunAnythingProvider>();

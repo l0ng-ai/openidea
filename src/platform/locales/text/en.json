@@ -1532,6 +1532,7 @@
   "Branch '{name}' is checked out in the worktree at {path}.\nDelete the worktree and the branch? Its folder is deleted.": "Branch '{name}' is checked out in the worktree at {path}.\nDelete the worktree and the branch? Its folder is deleted.",
   "Starting…": "Starting…",
   "Maven Goals": "Maven Goals",
+  "Package Executables": "Package Executables",
   "Gradle Tasks": "Gradle Tasks",
   "IDE MCP Server": "IDE MCP Server",
   "Enable MCP server": "Enable MCP server",

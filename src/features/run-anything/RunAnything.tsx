@@ -4,7 +4,7 @@
  * the selected entry, or the line itself: a provider that claims it, else the
  * shell in the project directory, its output in the Run tool window.
  */
-import { useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { create } from "zustand";
 import { executeAction } from "@/platform/actions";
@@ -56,13 +56,19 @@ function RunAnythingPopup({ root }: { root: string }) {
   const [line, setLine] = useState("");
   const [active, setActive] = useState(-1);
   const [history, setHistory] = useState(() => readHistory(root));
+  const [revision, setRevision] = useState(0);
+  useEffect(() => {
+    const unwatch = runAnythingProviderList().map((p) => p.watch?.(() => setRevision((r) => r + 1)));
+    return () => unwatch.forEach((u) => u?.());
+  }, []);
   const rows = useMemo(
     () =>
       buildRows(line.trim(), history, runAnythingProviderList(), (h) => {
         close();
         void runCommandLine(h);
       }),
-    [line, history],
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- `revision` re-reads providers whose entries changed.
+    [line, history, revision],
   );
   const selected = rows[active];
   const first = firstSelectable(rows, isSection);
