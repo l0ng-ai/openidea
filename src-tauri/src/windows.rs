@@ -1118,7 +1118,7 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
     #[cfg(target_os = "linux")]
     decorate_csd(&window);
     #[cfg(target_os = "macos")]
-    crate::macos_webview_input::install(&window);
+    crate::page_swipe::install(&window);
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
     align_titlebar(app, &window, app.try_state::<WindowsState>().is_some_and(|w| w.opens_project(window.label())));
@@ -1959,7 +1959,7 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
     #[cfg(target_os = "linux")]
     decorate_csd(&window);
     #[cfg(target_os = "macos")]
-    crate::macos_webview_input::install(&window);
+    crate::page_swipe::install(&window);
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
     align_titlebar(app, &window, false);

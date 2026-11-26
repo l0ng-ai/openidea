@@ -21,9 +21,9 @@ mod linux_window_state;
 mod logging;
 #[cfg(target_os = "macos")]
 mod macos;
-#[cfg(target_os = "macos")]
-mod macos_webview_input;
 mod menu;
+#[cfg(target_os = "macos")]
+mod page_swipe;
 mod plugin_web;
 #[cfg(target_os = "macos")]
 mod relaunch;
@@ -315,7 +315,7 @@ pub fn run() {
             window_zoom::forget(window.label());
             #[cfg(target_os = "macos")]
             {
-                macos_webview_input::forget(window.label());
+                page_swipe::forget(window.label());
                 titlebar::forget(window);
             }
             if windows::auxiliary_parent(window.label()).is_none() {
@@ -409,14 +409,12 @@ fn window_state_flags() -> tauri_plugin_window_state::StateFlags {
 /// Routes IDE menu items to the focused window's frontend (`executeAction`).
 fn on_menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
     let id = event.id().as_ref();
-    #[cfg(target_os = "macos")]
-    if macos_webview_input::perform_native_history_if_needed(id) {
-        return;
-    }
     menu::restore_check(app, &app.state::<menu::MenuState>(), id);
     // A keymap accelerator only draws the shortcut: its key reached the menu because the keymap declined it.
     #[cfg(target_os = "macos")]
-    if !menu::macos_native_action(id) && (macos::handling_key_press() || macos::native_modal_open()) {
+    if !menu::fires_natively(&menu::spec(menu::Os::Mac), id)
+        && (macos::handling_key_press() || macos::native_modal_open())
+    {
         return;
     }
     dispatch_menu_action(app, id);

@@ -10124,8 +10124,6 @@ export type MenuConfig = {
 	dynamic?: { [key in string]: DynamicItem[] },
 	/**  Ids of the toggle actions currently on. */
 	checked?: string[],
-	/**  Whether the focused editor owns its undo history. */
-	editorOwnsHistory?: boolean,
 };
 
 /**
