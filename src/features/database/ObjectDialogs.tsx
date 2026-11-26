@@ -35,6 +35,8 @@ import {
   canAlterColumn,
   createDatabaseSql,
   createSchemaSql,
+  commentsSupported,
+  createTableCommentSql,
   createTableSql,
   draftOf,
   dropDatabaseSql,
@@ -60,6 +62,7 @@ import {
   renameDatabase,
   loadDetails,
   loadGrants,
+  loadTables,
   openSourceDialog,
   readableDdl,
   refresh,
@@ -546,6 +549,7 @@ function blankColumn(driver: DbDriver, n: number): ColumnDraft {
     notNull: false,
     default: "",
     primaryKey: false,
+    comment: "",
     dropped: false,
   };
 }
@@ -655,11 +659,19 @@ function ModifyTableForm({
     return columns[Math.max(0, focus)]?.key ?? null;
   });
   const { busy, runAndClose } = useRunner();
+  const comments = commentsSupported(driver);
+  const [comment, setComment] = useState(details?.comment ?? "");
 
   const statements = useMemo(() => {
-    if (!table) return [createTableSql(driver, schema, name.trim() || "table_name", columns)];
-    return alterTableSql(driver, schema, table, name, columns);
-  }, [columns, driver, schema, table, name]);
+    if (!table) {
+      const created = name.trim() || "table_name";
+      return [
+        createTableSql(driver, schema, created, columns, comment),
+        ...createTableCommentSql(driver, schema, created, columns, comment),
+      ];
+    }
+    return alterTableSql(driver, schema, table, name, columns, { original: details?.comment ?? "", value: comment });
+  }, [columns, driver, schema, table, name, comment, details?.comment]);
 
   const current = columns.find((c) => c.key === selected) ?? null;
   const patch = (p: Partial<ColumnDraft>) =>
@@ -718,7 +730,14 @@ function ModifyTableForm({
           label: "OK",
           role: "default",
           disabled: busy || !statements.length || !name.trim(),
-          onClick: () => void runAndClose(id, statements),
+          onClick: () =>
+            void runAndClose(id, statements).then((ok) => {
+              if (!ok) return;
+              // The tree and the next Modify Table show the table as it now is.
+              const final = name.trim();
+              void loadDetails(id, schema, final);
+              if (final !== table) void loadTables(id, schema);
+            }),
         },
       ]}
     >
@@ -736,6 +755,19 @@ function ModifyTableForm({
           />
           <span className={styles.formHint}>{schema}</span>
         </div>
+        {comments && (
+          <div className={styles.formRow}>
+            <label className={styles.formLabel} htmlFor="db-table-comment">
+              <T>Comment:</T>
+            </label>
+            <Input
+              id="db-table-comment"
+              className={styles.fill}
+              value={comment}
+              onChange={(e) => setComment(e.target.value)}
+            />
+          </div>
+        )}
         {showGrants && (
           <Tabs
             variant="compact"
@@ -867,6 +899,19 @@ function ModifyTableForm({
                     disabled={current.dropped || locked}
                     onChange={(e) => patch({ default: e.target.value })}
                   />
+                  {comments && (
+                    <>
+                      <label className={styles.formLabel} htmlFor="db-col-comment">
+                        <T>Column comment</T>
+                      </label>
+                      <Input
+                        id="db-col-comment"
+                        value={current.comment}
+                        disabled={current.dropped || locked}
+                        onChange={(e) => patch({ comment: e.target.value })}
+                      />
+                    </>
+                  )}
                   {locked && (
                     <>
                       <span />

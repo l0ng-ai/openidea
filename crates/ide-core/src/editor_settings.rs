@@ -486,6 +486,16 @@ pub struct LanguageCodeStyle {
     /// SQL › Case › Identifiers (unquoted names): `upper` | `lower` | `keep`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub identifier_case: Option<String>,
+    /// Java: organize imports switches to a wildcard import once this many
+    /// classes of one package are used (jdtls `starThreshold`; IDEA's default
+    /// 5; unset keeps the language server's default).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub class_count_to_use_import_with_star: Option<u32>,
+    /// Java: organize imports switches to a wildcard static import once this
+    /// many statically imported names are used (jdtls `staticStarThreshold`;
+    /// IDEA's default 3; unset keeps the language server's default).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub names_count_to_use_static_import_with_star: Option<u32>,
     /// JavaScript / TypeScript › Punctuation › Semicolons: `ignore` | `insert` | `remove`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub semicolons: Option<String>,

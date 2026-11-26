@@ -6,7 +6,7 @@
  * CodeMirror's pixel motion between their visual rows.
  */
 import { EditorSelection, StateEffect, StateField, type EditorState, type SelectionRange } from "@codemirror/state";
-import type { Command, EditorView } from "@codemirror/view";
+import { BlockType, type BlockInfo, type Command, type EditorView } from "@codemirror/view";
 import { offsetAtVisibleColumn, visibleColumn } from "./visibleColumn";
 
 /** Goal visible column per caret head, kept while only these commands move the carets. */
@@ -52,11 +52,12 @@ export function verticalHead(view: EditorView, head: number, forward: boolean, g
   return moved === head ? null : moved;
 }
 
-function moveCarets(view: EditorView, forward: boolean, extend: boolean): boolean {
+/** `fromHead`: drop a selection and move its caret on from the head, as IDEA's caret-relative moves do. */
+function moveCarets(view: EditorView, forward: boolean, extend: boolean, fromHead = false): boolean {
   const { state } = view;
   const goals = new Map<number, number>();
   const ranges = state.selection.ranges.map((r): SelectionRange => {
-    if (!extend && !r.empty) return EditorSelection.cursor(forward ? r.to : r.from);
+    if (!extend && !fromHead && !r.empty) return EditorSelection.cursor(forward ? r.to : r.from);
     const goal = goalOf(state, r.head);
     let head = verticalHead(view, r.head, forward, goal);
     if (head === null) head = forward ? state.doc.lineAt(r.head).to : state.doc.lineAt(r.head).from;
@@ -65,7 +66,8 @@ function moveCarets(view: EditorView, forward: boolean, extend: boolean): boolea
   });
   const selection = EditorSelection.create(ranges, state.selection.mainIndex);
   if (selection.eq(state.selection)) return false;
-  view.dispatch({ selection, effects: setGoals.of(goals), scrollIntoView: true, userEvent: "select" });
+  // The caret-relative moves scroll the view themselves and may leave the caret out of view.
+  view.dispatch({ selection, effects: setGoals.of(goals), scrollIntoView: !fromHead, userEvent: "select" });
   return true;
 }
 
@@ -73,6 +75,41 @@ export const cursorLineUp: Command = (view) => moveCarets(view, false, false);
 export const cursorLineDown: Command = (view) => moveCarets(view, true, false);
 export const selectLineUp: Command = (view) => moveCarets(view, false, true);
 export const selectLineDown: Command = (view) => moveCarets(view, true, true);
+
+/** Top of the text of the line at `pos`, in document coordinates: below any block widgets (code lens, inline diff) joined to its line block. */
+function lineTextTop(view: EditorView, pos: number): number {
+  const block = view.lineBlockAt(pos);
+  if (!Array.isArray(block.type)) return block.top;
+  const parts = block.type as readonly BlockInfo[];
+  return (parts.find((b) => b.type === BlockType.Text && b.from <= pos && pos <= b.to) ?? block).top;
+}
+
+/** Screen top of the caret's visual row when soft wrap splits lines into rows and the caret is drawn; otherwise null. */
+function caretRowTop(view: EditorView): number | null {
+  if (!view.lineWrapping) return null;
+  const { head, assoc } = view.state.selection.main;
+  return view.coordsAtPos(head, assoc || 1)?.top ?? null;
+}
+
+/**
+ * Move Up / Down and Scroll (with Selection), as IDEA: the carets move one line and
+ * the view scrolls by as much, so the primary caret keeps its place on screen.
+ */
+function moveAndScroll(view: EditorView, forward: boolean, extend: boolean): boolean {
+  const before = { row: caretRowTop(view), line: lineTextTop(view, view.state.selection.main.head) };
+  if (!moveCarets(view, forward, extend, true)) return false;
+  const row = before.row === null ? null : caretRowTop(view);
+  view.scrollDOM.scrollTop +=
+    row !== null && before.row !== null
+      ? row - before.row
+      : lineTextTop(view, view.state.selection.main.head) - before.line;
+  return true;
+}
+
+export const moveUpAndScroll: Command = (view) => moveAndScroll(view, false, false);
+export const moveDownAndScroll: Command = (view) => moveAndScroll(view, true, false);
+export const moveUpAndScrollWithSelection: Command = (view) => moveAndScroll(view, false, true);
+export const moveDownAndScrollWithSelection: Command = (view) => moveAndScroll(view, true, true);
 
 /** Clone Caret Above / Below: a caret on the next line at each caret's goal column. */
 function cloneCaret(view: EditorView, forward: boolean): boolean {

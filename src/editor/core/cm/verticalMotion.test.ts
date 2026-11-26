@@ -1,12 +1,16 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from "vitest";
-import { EditorState } from "@codemirror/state";
-import { EditorView } from "@codemirror/view";
+import { EditorSelection, EditorState, StateEffect } from "@codemirror/state";
+import { Decoration, EditorView, WidgetType } from "@codemirror/view";
 import {
   cloneCaretAbove,
   cloneCaretBelow,
   cursorLineDown,
   cursorLineUp,
+  moveDownAndScroll,
+  moveDownAndScrollWithSelection,
+  moveUpAndScroll,
+  moveUpAndScrollWithSelection,
   selectLineDown,
   visibleGoalColumns,
 } from "./verticalMotion";
@@ -104,5 +108,124 @@ describe("Clone Caret Above / Below in visible columns", () => {
   it("does nothing at the document edge", () => {
     const v = make("张三", 1);
     expect(cloneCaretAbove(v)).toBe(false);
+  });
+});
+
+describe("Move Up / Down and Scroll", () => {
+  /** jsdom has no layout: record what the command asks the scroller for, and whether it scrolled to the caret. */
+  function track(v: EditorView, start: number) {
+    let top = start;
+    Object.defineProperty(v.scrollDOM, "scrollTop", {
+      configurable: true,
+      get: () => top,
+      set: (x: number) => (top = x),
+    });
+    const scrolledToCaret: boolean[] = [];
+    v.dispatch({
+      effects: StateEffect.appendConfig.of(
+        EditorView.updateListener.of((u) => u.transactions.forEach((tr) => scrolledToCaret.push(tr.scrollIntoView))),
+      ),
+    });
+    scrolledToCaret.length = 0;
+    return { top: () => top, scrolledToCaret };
+  }
+  const rowGap = (v: EditorView, from: number, to: number) =>
+    v.lineBlockAt(v.state.doc.line(to).from).top - v.lineBlockAt(v.state.doc.line(from).from).top;
+
+  it("moves the caret one line and scrolls the view by the same amount", () => {
+    const v = make("abcdef\nabcdef\nabcdef\nabcdef", 7 + 3);
+    const t = track(v, 100);
+    const gap = rowGap(v, 2, 3);
+    expect(gap).toBeGreaterThan(0);
+    expect(moveDownAndScroll(v)).toBe(true);
+    expect(heads(v)).toEqual([14 + 3]);
+    expect(t.top()).toBe(100 + gap);
+    expect(moveUpAndScroll(v)).toBe(true);
+    expect(moveUpAndScroll(v)).toBe(true);
+    expect(heads(v)).toEqual([3]);
+    expect(t.top()).toBe(100 - rowGap(v, 1, 2));
+    expect(v.state.selection.main.empty).toBe(true);
+  });
+
+  it("keeps the goal column across a short line", () => {
+    const v = make("abcdefgh\n张\nabcdefgh", 6);
+    track(v, 0);
+    moveDownAndScroll(v);
+    moveDownAndScroll(v);
+    expect(heads(v)).toEqual([11 + 6]);
+  });
+
+  it("with Selection extends from the anchor", () => {
+    const v = make("abcd\nabcd\nabcd", 5 + 2);
+    const t = track(v, 40);
+    moveDownAndScrollWithSelection(v);
+    expect([v.state.selection.main.anchor, v.state.selection.main.head]).toEqual([7, 12]);
+    moveUpAndScrollWithSelection(v);
+    moveUpAndScrollWithSelection(v);
+    expect([v.state.selection.main.anchor, v.state.selection.main.head]).toEqual([7, 2]);
+    expect(t.top()).toBe(40 - rowGap(v, 1, 2));
+  });
+
+  it("moves every caret and scrolls with the primary one", () => {
+    const v = make("ab\nab\nab\nab", 0);
+    v.dispatch({ selection: EditorSelection.create([EditorSelection.cursor(1), EditorSelection.cursor(7)], 1) });
+    const t = track(v, 0);
+    moveDownAndScroll(v);
+    expect(heads(v)).toEqual([4, 10]);
+    expect(v.state.selection.mainIndex).toBe(1);
+    expect(t.top()).toBe(rowGap(v, 3, 4));
+  });
+
+  it("leaves scrolling to itself: never scrolls a caret out of view back into it", () => {
+    const v = make("ab\nab\nab", 1);
+    const t = track(v, 500);
+    moveDownAndScroll(v);
+    expect(t.scrolledToCaret).toEqual([false]);
+    expect(t.top()).toBe(500 + rowGap(v, 1, 2));
+  });
+
+  it("drops a selection and moves one line from its caret", () => {
+    const v = make("abcd\nabcd\nabcd\nabcd", 0);
+    v.dispatch({ selection: { anchor: 15 + 2, head: 2 } });
+    const t = track(v, 0);
+    moveDownAndScroll(v);
+    expect(v.state.selection.main.empty).toBe(true);
+    expect(heads(v)).toEqual([5 + 2]);
+    expect(t.top()).toBe(rowGap(v, 1, 2));
+  });
+
+  it("measures to the text of a line below a block widget (code lens)", () => {
+    class Lens extends WidgetType {
+      toDOM() {
+        return document.createElement("div");
+      }
+      get estimatedHeight() {
+        return 40;
+      }
+    }
+    const v = make("ab\nab\nab", 1);
+    const lens = Decoration.widget({ widget: new Lens(), block: true, side: -1 }).range(3);
+    v.dispatch({ effects: StateEffect.appendConfig.of(EditorView.decorations.of(Decoration.set([lens]))) });
+    const t = track(v, 0);
+    const line = v.lineBlockAt(0).height;
+    expect(v.lineBlockAt(3).height).toBeGreaterThan(line);
+    moveDownAndScroll(v);
+    expect(heads(v)).toEqual([4]);
+    expect(t.top()).toBe(v.lineBlockAt(3).bottom - line);
+    moveUpAndScroll(v);
+    expect(t.top()).toBe(0);
+  });
+
+  it("does not scroll at the document edge", () => {
+    const v = make("ab\ncd", 1);
+    const t = track(v, 0);
+    expect(moveUpAndScroll(v)).toBe(true);
+    expect(heads(v)).toEqual([0]);
+    expect(moveUpAndScroll(v)).toBe(false);
+    v.dispatch({ selection: { anchor: 4 } });
+    expect(moveDownAndScroll(v)).toBe(true);
+    expect(moveDownAndScroll(v)).toBe(false);
+    expect(heads(v)).toEqual([5]);
+    expect(t.top()).toBe(0);
   });
 });

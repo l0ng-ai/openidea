@@ -63,6 +63,7 @@ import { parameterInfoOrLeave, triggerSignatureHelp } from "./signature";
 import { featureBackoff } from "./availability";
 import { pathCompletionSource, pathContext, pathLike } from "./fileReferences";
 import { cssVariablePrefix, cssVariableSource, STYLESHEETS, type VariableOption } from "./cssVariables";
+import { javaDeclarationAt, variableNameSource } from "./variableNames";
 import { editorPrefs } from "@/platform/editorSettings";
 import { tx } from "@/platform/i18n";
 import { showHint } from "./hint";
@@ -930,6 +931,9 @@ function gated(source: CompletionSource): CompletionSource {
     if (ctx.state.field(smartLookup, false) && source !== claimingLspSource) return null;
     const only = exclusiveSource(ctx);
     if (only) return source === contributedSource ? only(ctx) : null;
+    // At a Java declaration's name only names fit: IDEA lists no live templates there, and
+    // jdtls' own name proposals repeat the type (`orderBookOrderBook`).
+    if (source !== variableNameSource && javaDeclarationAt(ctx)) return null;
     if (!ctx.explicit && (!editorPrefs().completion.autoPopup || inplaceRenameActive(ctx.state))) return null;
     if (!editorPrefs().completion.sortAlphabetically) return source(ctx);
     return Promise.resolve(source(ctx)).then(
@@ -1208,6 +1212,7 @@ export function completionExtension() {
         gated(contributedSource),
         gated(pathFallbackSource),
         gated(cssVariableSource),
+        gated(variableNameSource),
       ],
       icons: false,
       addToOptions: [
