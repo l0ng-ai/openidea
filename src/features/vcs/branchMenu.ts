@@ -5,6 +5,7 @@ import { showContextMenu, useContextMenuStore, type MenuItem } from "@/ui";
 import { isFavoriteBranch } from "./branches";
 import {
   branchRef,
+  checkoutAndUpdate,
   checkoutBranch,
   checkoutDetached,
   checkoutInRepos,
@@ -158,6 +159,15 @@ export function branchMenu(
   }
   const items: MenuItem[] = [
     { label: "Checkout", run: run(() => checkoutBranch(b)) },
+    ...(b.remote
+      ? []
+      : [
+          {
+            label: "Checkout and Update",
+            disabled: !b.upstream || updating || !!existingWorktree,
+            run: run(() => checkoutAndUpdate(b)),
+          },
+        ]),
     ...(existingWorktree && !b.remote
       ? [{ label: "Open Existing Worktree", icon: "folder", run: run(() => openWorktree(existingWorktree, true)) }]
       : []),
@@ -327,6 +337,15 @@ export function commonBranchMenu(
   const base = bases[0];
   const items: MenuItem[] = [
     { label: "Checkout", run: run(() => checkoutInRepos(b, roots)) },
+    ...(b.remote
+      ? []
+      : [
+          {
+            label: "Checkout and Update",
+            disabled: !b.upstream || !!useVcs.getState().remoteBusy || checkedOutInWorktree,
+            run: run(() => checkoutAndUpdate(b, roots)),
+          },
+        ]),
     newFrom,
     worktree,
     ...(bases.every(Boolean)

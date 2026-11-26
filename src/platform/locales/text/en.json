@@ -3659,6 +3659,7 @@
   "Stopped highlighting unpicked commits from '{source}' after the branch filter changed": "Stopped highlighting unpicked commits from '{source}' after the branch filter changed",
   "Checkout and Rebase": "Checkout and Rebase",
   "Checkout and Rebase onto Current": "Checkout and Rebase onto Current",
+  "Checkout and Update": "Checkout and Update",
   "Checkout and Rebase failed": "Checkout and Rebase failed",
   "Checkout and Rebase requires an existing commit": "Checkout and Rebase requires an existing commit",
   "Checked out and rebased '{branchName}'": "Checked out and rebased '{branchName}'",
