@@ -594,8 +594,8 @@ export const commands = {
 	/**
 	 *  Structure view: LSP document symbols when available (with tree-sitter
 	 *  visibility and type-alias kinds), tree-sitter otherwise.
-	 *  Tree-sitter answers come from the per-document tree cache (incremental
-	 *  re-parse); large documents get no syntax structure.
+	 *  Normal files reuse the per-document tree cache. Large Markdown files use
+	 *  the syntax parser's size limit for heading outlines.
 	 */
 	docOutline: (doc: DocId) => typedError<OutlineItem[], IdeError>(__TAURI_INVOKE("doc_outline", { doc })),
 	/**  Python class facts for the inheritance inspections: tree-sitter, no language server. */
@@ -6432,8 +6432,8 @@ export type DocumentInfo = {
 	 */
 	canReloadEncoding: boolean,
 	/**
-	 *  Larger than `ide_vfs::LARGE_FILE_THRESHOLD`: language servers, syntax
-	 *  structure and folding are disabled; the editor should drop heavy features.
+	 *  Marks files above `ide_vfs::LARGE_FILE_THRESHOLD` for reduced editor
+	 *  features such as disabling language servers and folding.
 	 */
 	large?: boolean,
 	/**  Effective `.editorconfig` properties, when any section applies. */
