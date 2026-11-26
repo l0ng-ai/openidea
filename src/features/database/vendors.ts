@@ -48,7 +48,7 @@ export const VENDORS: readonly DbVendor[] = [
     scheme: "postgresql",
   },
   { id: "jdbc", label: "Custom JDBC", driver: "jdbc", port: null, icon: "database", scheme: "" },
-  { id: "duckdb", label: "DuckDB", driver: "jdbc", port: null, icon: "database", scheme: "duckdb" },
+  { id: "duckdb", label: "DuckDB", driver: "jdbc", port: null, icon: "db-duckdb", scheme: "duckdb" },
   { id: "greenplum", label: "Greenplum", driver: "postgres", port: 5432, icon: "db-greenplum", scheme: "postgresql" },
   { id: "mariadb", label: "MariaDB", driver: "mysql", port: 3306, icon: "db-mariadb", scheme: "mariadb" },
   {

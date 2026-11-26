@@ -1,0 +1,6 @@
+<!-- OpenIDEA: an analytical database file with a column chart -->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none">
+  <path d="M3 1h6l4 4v9a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1Z" fill="#197A80"/>
+  <path d="M9 1v4h4" fill="#8AD9D2"/>
+  <path d="M4 11h1.5v2H4zm2.75-2.5h1.5V13h-1.5zM9.5 7H11v6H9.5z" fill="#FFF"/>
+</svg>

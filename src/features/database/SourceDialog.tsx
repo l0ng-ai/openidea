@@ -45,7 +45,7 @@ import {
 } from "./model";
 import { closeDialog, loadDatabases, loadSchemas, saveSource, useDatabase } from "./store";
 import { DUCKDB_JDBC_PREFIX, VENDORS, blankSnowflake, sourceUrl, vendorById, vendorOf } from "./vendors";
-import { JdbcDriverProfiles, useJdbcDrivers } from "./JdbcDriverProfiles";
+import { JdbcDriverProfiles, jdbcProfileOption, useJdbcDrivers } from "./JdbcDriverProfiles";
 import styles from "./Database.module.css";
 import { isImeKey } from "@/platform/ime";
 
@@ -1018,7 +1018,7 @@ export function SourceDialog({
               label: jdbcOnly ? "Choose a JDBC driver profile" : "Built-in",
               disabled: duckdb,
             },
-            ...(availableProfiles ?? []).map((d) => ({ value: d.id, label: d.name, verbatim: true })),
+            ...(availableProfiles ?? []).map(jdbcProfileOption),
             ...(jdbc && s.jdbcDriver && !jdbcProfile
               ? [
                   {

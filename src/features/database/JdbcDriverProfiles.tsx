@@ -5,7 +5,7 @@ import { useTx } from "@/platform/i18n";
 import { Button, Dialog, IconButton, Input, Select, T } from "@/ui";
 import { baseName } from "./dumpTools";
 import { newSourceId } from "./model";
-import { DUCKDB_JDBC_CLASS, DUCKDB_JDBC_PREFIX, VENDORS, vendorById } from "./vendors";
+import { DUCKDB_JDBC_CLASS, DUCKDB_JDBC_PREFIX, VENDORS, vendorById, vendorOf } from "./vendors";
 import styles from "./Database.module.css";
 
 export function useJdbcDrivers() {
@@ -35,6 +35,11 @@ export function useJdbcDrivers() {
 }
 
 const blankDriver = (): DbJdbcDriver => ({ id: newSourceId(), name: "", jars: [], className: "", urlTemplate: "" });
+
+export function jdbcProfileOption({ id, name, vendor }: DbJdbcDriver) {
+  const icon = vendorOf({ driver: "jdbc", vendor: vendor ?? undefined }).icon;
+  return { value: id, label: name, verbatim: true, icon };
+}
 
 const DRIVER_TYPES = [
   { value: "", label: "Custom JDBC only" },
@@ -270,7 +275,7 @@ export function JdbcDriverProfiles({
               <Select
                 aria-label="JDBC driver profiles"
                 value={current?.id ?? ""}
-                options={profiles.map((d) => ({ value: d.id, label: d.name, verbatim: true }))}
+                options={profiles.map(jdbcProfileOption)}
                 placeholder="No JDBC driver profiles"
                 disabled={!profiles.length}
                 onChange={setSelection}

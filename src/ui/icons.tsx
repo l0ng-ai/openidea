@@ -438,6 +438,7 @@ const ICONS = {
   "db-sqlite": "openidea/database/sqlite",
   "db-postgres": "openidea/database/postgres",
   "db-clickhouse": "openidea/database/clickhouse",
+  "db-duckdb": "openidea/database/duckdb",
   "db-mysql": "openidea/database/mysql",
   "db-sqlserver": "openidea/database/sqlserver",
   "db-oracle": "openidea/database/oracle",

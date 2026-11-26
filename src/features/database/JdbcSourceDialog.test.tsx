@@ -82,7 +82,7 @@ describe("DuckDB data sources", () => {
   it("offers DuckDB in the new data source menu", () => {
     const dataSource = newMenu().find((item) => "label" in item && item.label === "Data Source");
     expect(dataSource && "submenu" in dataSource && dataSource.submenu).toEqual(
-      expect.arrayContaining([expect.objectContaining({ label: "DuckDB" })]),
+      expect.arrayContaining([expect.objectContaining({ label: "DuckDB", icon: "db-duckdb" })]),
     );
   });
 
