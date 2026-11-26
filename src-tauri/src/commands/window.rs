@@ -2,7 +2,6 @@
 
 use crate::menu::{self, MenuConfig, MenuState};
 use crate::state::AppState;
-use crate::windows::WorkbenchWindow;
 use crate::windows::{self, Launch, OpenOutcome, WindowsState};
 use ide_command::desktop_command;
 use ide_core::{IdeError, IdeResult, RequestId};
@@ -12,7 +11,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::ipc::Channel;
-use tauri::{AppHandle, State, Window};
+use tauri::{AppHandle, State, WebviewWindow, Window};
 
 /// Opens `path` in a new window (`new_window`) or tells the caller to open it
 /// itself (`current`). A project already open in some window is focused instead.
@@ -38,7 +37,7 @@ pub async fn window_open_project(
 #[specta::specta]
 pub async fn window_open_files(
     app: AppHandle,
-    window: WorkbenchWindow,
+    window: WebviewWindow,
     files: Vec<PathBuf>,
 ) -> IdeResult<Vec<ide_core::IpcPath>> {
     Ok(windows::open_files_window(&app, window.label(), files))
@@ -88,7 +87,7 @@ pub async fn window_new(app: AppHandle) -> IdeResult<String> {
 #[specta::specta]
 pub async fn window_open_settings(
     app: AppHandle,
-    window: WorkbenchWindow,
+    window: WebviewWindow,
     page: Option<String>,
     new_projects: bool,
     background: Option<String>,
@@ -103,7 +102,7 @@ pub async fn window_open_settings(
 #[specta::specta]
 pub async fn window_open_comparison(
     app: AppHandle,
-    window: WorkbenchWindow,
+    window: WebviewWindow,
     comparison: windows::ComparisonLaunch,
     background: Option<String>,
 ) -> IdeResult<()> {
@@ -117,7 +116,7 @@ pub async fn window_open_comparison(
 #[specta::specta]
 pub async fn window_open_diff(
     app: AppHandle,
-    window: WorkbenchWindow,
+    window: WebviewWindow,
     diff: windows::DiffLaunch,
     background: Option<String>,
 ) -> IdeResult<()> {
@@ -131,7 +130,7 @@ pub async fn window_open_diff(
 #[specta::specta]
 pub async fn window_open_editor(
     app: AppHandle,
-    window: WorkbenchWindow,
+    window: WebviewWindow,
     editor: windows::EditorLaunch,
     background: Option<String>,
 ) -> IdeResult<()> {
@@ -145,7 +144,7 @@ pub async fn window_open_editor(
 #[specta::specta]
 pub async fn window_open_deployment(
     app: AppHandle,
-    window: WorkbenchWindow,
+    window: WebviewWindow,
     server: String,
     paths: Vec<PathBuf>,
     background: Option<String>,
@@ -157,14 +156,14 @@ pub async fn window_open_deployment(
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn window_cycle(app: AppHandle, window: WorkbenchWindow, forward: bool) {
+pub fn window_cycle(app: AppHandle, window: WebviewWindow, forward: bool) {
     windows::cycle(&app, window.label(), forward);
 }
 
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn window_toggle_fullscreen(window: WorkbenchWindow) -> IdeResult<bool> {
+pub fn window_toggle_fullscreen(window: WebviewWindow) -> IdeResult<bool> {
     crate::window_groups::toggle_fullscreen(&window)
 }
 
@@ -172,7 +171,7 @@ pub fn window_toggle_fullscreen(window: WorkbenchWindow) -> IdeResult<bool> {
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn window_toggle_zoom(window: WorkbenchWindow) -> IdeResult<bool> {
+pub fn window_toggle_zoom(window: WebviewWindow) -> IdeResult<bool> {
     crate::window_zoom::toggle(&window)
 }
 
@@ -183,7 +182,7 @@ pub fn window_toggle_zoom(window: WorkbenchWindow) -> IdeResult<bool> {
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn window_flash_taskbar(window: WorkbenchWindow, flash: bool) -> IdeResult<()> {
+pub fn window_flash_taskbar(window: WebviewWindow, flash: bool) -> IdeResult<()> {
     if flash && window.is_focused().unwrap_or(false) {
         return Ok(());
     }
@@ -196,7 +195,7 @@ pub fn window_flash_taskbar(window: WorkbenchWindow, flash: bool) -> IdeResult<(
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn window_set_smooth_scrolling(window: WorkbenchWindow, enabled: bool) -> IdeResult<()> {
+pub fn window_set_smooth_scrolling(window: WebviewWindow, enabled: bool) -> IdeResult<()> {
     #[cfg(target_os = "linux")]
     window
         .with_webview(move |platform| crate::linux_webkit::set_smooth_scrolling(&platform, enabled))
@@ -210,7 +209,7 @@ pub fn window_set_smooth_scrolling(window: WorkbenchWindow, enabled: bool) -> Id
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn window_set_titlebar_height(window: WorkbenchWindow, height: f64) -> IdeResult<()> {
+pub fn window_set_titlebar_height(window: WebviewWindow, height: f64) -> IdeResult<()> {
     if !height.is_finite() || !(1.0..=1000.0).contains(&height) {
         return Err(IdeError::invalid("invalid title bar height"));
     }
@@ -225,7 +224,7 @@ pub fn window_set_titlebar_height(window: WorkbenchWindow, height: f64) -> IdeRe
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn window_take_launch(window: WorkbenchWindow, windows: State<'_, WindowsState>) -> Option<Launch> {
+pub fn window_take_launch(window: WebviewWindow, windows: State<'_, WindowsState>) -> Option<Launch> {
     windows.take_launch(window.label())
 }
 
@@ -246,7 +245,7 @@ pub struct SettingsWindowInit {
 #[specta::specta]
 pub fn window_take_settings_init(
     app: AppHandle,
-    window: WorkbenchWindow,
+    window: WebviewWindow,
     windows: State<'_, WindowsState>,
     state: State<'_, AppState>,
 ) -> SettingsWindowInit {
@@ -274,7 +273,7 @@ pub fn window_take_settings_init(
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn window_complete_launch(window: WorkbenchWindow, windows: State<'_, WindowsState>) -> IdeResult<()> {
+pub fn window_complete_launch(window: WebviewWindow, windows: State<'_, WindowsState>) -> IdeResult<()> {
     windows.complete_launch(window.label());
     Ok(())
 }
@@ -296,7 +295,7 @@ pub struct OpenProject {
 #[specta::specta]
 pub fn window_open_projects(
     app: AppHandle,
-    window: WorkbenchWindow,
+    window: WebviewWindow,
     state: State<'_, AppState>,
 ) -> IdeResult<Vec<OpenProject>> {
     Ok(windows::project_window_labels(&app)
@@ -324,7 +323,7 @@ pub fn window_open_projects(
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn window_is_fullscreen(window: WorkbenchWindow) -> bool {
+pub fn window_is_fullscreen(window: WebviewWindow) -> bool {
     window.is_fullscreen().unwrap_or(false)
 }
 
@@ -367,7 +366,7 @@ pub fn window_close_context(app: AppHandle, window: Window, windows: State<'_, W
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub async fn window_begin_prompt(app: AppHandle, window: WorkbenchWindow) -> bool {
+pub async fn window_begin_prompt(app: AppHandle, window: WebviewWindow) -> bool {
     crate::window_groups::begin_prompt(&app, &window).await
 }
 
@@ -384,7 +383,7 @@ pub fn window_end_prompt(app: AppHandle, window: Window) {
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub async fn window_ready_to_close(app: AppHandle, window: WorkbenchWindow) -> bool {
+pub async fn window_ready_to_close(app: AppHandle, window: WebviewWindow) -> bool {
     crate::window_groups::ready_to_close(&app, &window).await
 }
 
@@ -420,7 +419,7 @@ pub fn app_cancel_quit(app: AppHandle, window: Window, windows: State<'_, Window
 #[tauri::command]
 #[specta::specta]
 pub fn menu_configure(
-    window: WorkbenchWindow,
+    window: WebviewWindow,
     app: AppHandle,
     menu_state: State<'_, MenuState>,
     state: State<'_, AppState>,
@@ -472,7 +471,7 @@ pub fn menu_model(app: AppHandle, state: State<'_, AppState>, menu_state: State<
 #[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
-pub fn menu_set_disabled(window: WorkbenchWindow, app: AppHandle, menu_state: State<'_, MenuState>, ids: Vec<String>) {
+pub fn menu_set_disabled(window: WebviewWindow, app: AppHandle, menu_state: State<'_, MenuState>, ids: Vec<String>) {
     // The window whose menu runs: a project window also while its Settings window is focused.
     if menu::native_menu_bar()
         && windows::target_window(&app).is_some_and(|target| !owns_menu_config(window.label(), target.label()))
@@ -660,7 +659,7 @@ pub(crate) async fn check_update(app: &AppHandle, source: UpdateSource) -> IdeRe
 #[specta::specta]
 pub fn app_update_window_ready(
     app: AppHandle,
-    window: WorkbenchWindow,
+    window: WebviewWindow,
     ready: bool,
     system_locale: String,
 ) -> IdeResult<()> {
