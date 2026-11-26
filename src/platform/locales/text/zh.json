@@ -1,4 +1,10 @@
 {
+  "SQL aliases": "SQL 别名",
+  "Use a short SQL name for a source. Leave it blank to use the connection name.": "可以为数据源设置简短的 SQL 名称。留空时使用连接名称。",
+  "Left SQL alias": "左侧数据源 SQL 别名",
+  "Right SQL alias": "右侧数据源 SQL 别名",
+  "Start each SQL alias with a letter or underscore, then use letters, digits or underscores.": "SQL 别名须以字母或下划线开头，后续可用字母、数字或下划线。",
+  "Choose a unique SQL alias. The names left and right are reserved.": "请选择唯一的 SQL 别名。left 和 right 是保留名称。",
   "Workspace actions": "工作区操作",
   "Configure Sources…": "配置数据源…",
   "Configure Workspace Sources": "配置工作区数据源",

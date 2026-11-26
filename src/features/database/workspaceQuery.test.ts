@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { workspaceJoinQuery, workspaceSourceNames } from "./workspaceQuery";
+import { workspaceJoinQuery, workspaceSourceAliasError, workspaceSourceNames } from "./workspaceQuery";
 
 describe("workspace table references", () => {
   it("keeps quoted dots, embedded quotes and reversed join keys", () => {
@@ -36,6 +36,35 @@ describe("workspace table references", () => {
     expect(workspaceSourceNames("Sales", "sales")).toEqual({ left: "left", right: "right" });
     expect(workspaceSourceNames("right", "warehouse")).toEqual({ left: "left", right: "warehouse" });
     expect(workspaceSourceNames("  ", "LEFT")).toEqual({ left: "left", right: "right" });
+  });
+  it("resolves optional aliases alongside existing names and positional drafts", () => {
+    const names = workspaceSourceNames("Sales EU", "events");
+    const aliases = { left: "crm", right: "logs" };
+    for (const [first, second] of [
+      ["crm", "logs"],
+      ['"Sales EU"', "events"],
+      ["left", "right"],
+      ["CRM", "events"],
+    ]) {
+      const sql = `SELECT * FROM #${first}.public.t a JOIN #${second}.public.t b ON a.id=b.id`;
+      expect(workspaceJoinQuery(sql, names, aliases).map((x) => x.source)).toEqual(["left", "right"]);
+    }
+    expect(workspaceSourceAliasError(names, { left: "  ", right: "события" })).toBeNull();
+  });
+  it.each([
+    { left: "events" },
+    { right: "left" },
+    { left: "one", right: "One" },
+    { left: "two words" },
+    { left: "a.b" },
+    { left: "#crm" },
+    { left: "1crm" },
+  ])("rejects ambiguous or malformed aliases before running the query: %o", (aliases) => {
+    const names = workspaceSourceNames("sales", "Events");
+    expect(workspaceSourceAliasError(names, aliases)).toBeTruthy();
+    expect(() =>
+      workspaceJoinQuery("SELECT * FROM #left.public.t a JOIN #right.public.t b ON a.id=b.id", names, aliases),
+    ).toThrow();
   });
   it.each([
     "left.id = left.id",

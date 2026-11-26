@@ -1,4 +1,10 @@
 {
+  "SQL aliases": "SQL aliases",
+  "Use a short SQL name for a source. Leave it blank to use the connection name.": "Use a short SQL name for a source. Leave it blank to use the connection name.",
+  "Left SQL alias": "Left SQL alias",
+  "Right SQL alias": "Right SQL alias",
+  "Start each SQL alias with a letter or underscore, then use letters, digits or underscores.": "Start each SQL alias with a letter or underscore, then use letters, digits or underscores.",
+  "Choose a unique SQL alias. The names left and right are reserved.": "Choose a unique SQL alias. The names left and right are reserved.",
   "Workspace actions": "Workspace actions",
   "Configure Sources…": "Configure Sources…",
   "Configure Workspace Sources": "Configure Workspace Sources",

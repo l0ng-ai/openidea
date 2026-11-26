@@ -180,7 +180,7 @@ Console results are editable the same way when the query is a plain select from 
 
 ## Join tables from two data sources
 
-In a trusted project, open **Query Workspace** in the Database tree and choose two saved native PostgreSQL or ClickHouse sources. The workspace uses an [installed DuckDB JDBC driver](#duckdb) on the project host. Type `#` to complete a selected source by name, then `.` to complete a qualified table. The example below uses the stable aliases `#left` and `#right`, which also work when both sources have the same display name.
+In a trusted project, open **Query Workspace** in the Database tree and choose two saved native PostgreSQL or ClickHouse sources. The workspace uses an [installed DuckDB JDBC driver](#duckdb) on the project host. Type `#` to complete a selected source by name, then `.` to complete a qualified table. For long or identical names, open **Configure Sources… › SQL aliases** and give each connection a short name such as `crm` or `events`. You can then write `#crm.public.customers`. Existing SQL that uses a unique connection name still works. The example below uses the stable aliases `#left` and `#right`, which also work when both sources have the same display name.
 
 ```sql
 SELECT *

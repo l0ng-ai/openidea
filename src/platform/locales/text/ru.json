@@ -1,4 +1,10 @@
 {
+  "SQL aliases": "Псевдонимы SQL",
+  "Use a short SQL name for a source. Leave it blank to use the connection name.": "Можно задать источнику короткое имя для SQL. По умолчанию используется имя подключения.",
+  "Left SQL alias": "Псевдоним первого источника",
+  "Right SQL alias": "Псевдоним второго источника",
+  "Start each SQL alias with a letter or underscore, then use letters, digits or underscores.": "Начните псевдоним с буквы или подчёркивания. Дальше можно использовать также цифры.",
+  "Choose a unique SQL alias. The names left and right are reserved.": "Выберите уникальный псевдоним. Имена left и right зарезервированы.",
   "Workspace actions": "Действия рабочей области",
   "Configure Sources…": "Настроить источники…",
   "Configure Workspace Sources": "Источники рабочей области",
