@@ -489,7 +489,7 @@ plugin_navigation_goto                       trusted            project_host bin
 plugin_navigation_index                      trusted            project_host bindings async
 plugin_navigation_invalidate                 trusted            project_host bindings sync
 plugin_navigation_markers                    trusted            project_host bindings async
-plugin_net_setting_host                      always            desktop      bindings async
+plugin_net_setting_host                      always             desktop      bindings async
 plugin_parse_test_results                    trusted            project_host bindings async
 plugin_post_events                           trusted            project_host bindings sync
 plugin_prepare_debug_run                     trusted            project_host bindings async

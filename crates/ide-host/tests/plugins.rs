@@ -6765,7 +6765,11 @@ fn net_http_setting_grants_reach_plain_http_per_transport() {
     f.install(&sample("net-setting"));
     // 127.0.0.2 is this machine's loopback too, but not in the loopback list
     // of `net_capability`: its plain HTTP needs the `net.http:` grant.
-    let listener = std::net::TcpListener::bind("127.0.0.2:0").unwrap();
+    // macOS only configures 127.0.0.1 on lo0 by default.
+    let Ok(listener) = std::net::TcpListener::bind("127.0.0.2:0") else {
+        eprintln!("skipped: 127.0.0.2 is not bound to a loopback interface here");
+        return;
+    };
     let port = listener.local_addr().unwrap().port();
     let url = format!("http://127.0.0.2:{port}/");
     let seen: Arc<Mutex<Vec<String>>> = Arc::default();

@@ -1226,7 +1226,10 @@ export const commands = {
 	 */
 	pluginAnswerPrompt: (promptId: string, answer: string[] | null) => __TAURI_INVOKE<boolean>("plugin_answer_prompt", { promptId, answer }),
 	pluginAnswerRunTarget: (id: string, useTarget: boolean) => typedError<Settings_Serialize, IdeError>(__TAURI_INVOKE("plugin_answer_run_target", { id, useTarget })),
-	/**  Approves `host` for the plugin's `net:setting:<key>` grant (applied in Settings, or the pending row); refused when the setting no longer holds it. */
+	/**
+	 *  Approves `host` for the plugin's `net:setting:<key>` grant (applied in
+	 *  Settings, or the pending row); refused when the setting no longer holds it.
+	 */
 	pluginApproveNetSetting: (id: string, setting: string, http: boolean, host: string) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_approve_net_setting", { id, setting, http, host })),
 	/**  Validated assets of a plugin whose id starts with `prefix` (icon theme mapping and SVGs). */
 	pluginAssets: (pluginId: string, prefix: string) => typedError<([string, string])[], IdeError>(__TAURI_INVOKE("plugin_assets", { pluginId, prefix })),
@@ -1260,7 +1263,10 @@ export const commands = {
 	pluginEventKinds: () => __TAURI_INVOKE<EventKind[]>("plugin_event_kinds"),
 	/**  Reports exactly one completion from the operation's launching window. */
 	pluginFinishOperation: (id: string, status: number | null, stopped: boolean) => typedError<boolean, IdeError>(__TAURI_INVOKE("plugin_finish_operation", { id, status, stopped })),
-	/**  Drops the approved host of a `net:setting:<key>` grant (revoked, or the setting cleared). */
+	/**
+	 *  Drops the approved host of a `net:setting:<key>` grant (revoked, or the
+	 *  setting's value cleared).
+	 */
 	pluginForgetNetSetting: (id: string, setting: string, http: boolean) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_forget_net_setting", { id, setting, http })),
 	pluginFormatters: () => typedError<FormatterChoice[], IdeError>(__TAURI_INVOKE("plugin_formatters")),
 	/**  Confirms a plugin waiting for consent (project plugins, new capabilities). */
@@ -1301,9 +1307,12 @@ export const commands = {
 	pluginNavigationIndex: (paths: string[], request: RequestId) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_navigation_index", { paths, request })),
 	pluginNavigationInvalidate: (paths: string[] | null) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_navigation_invalidate", { paths })),
 	pluginNavigationMarkers: (paths: string[]) => typedError<FileMarkers[], IdeError>(__TAURI_INVOKE("plugin_navigation_markers", { paths })),
-	/**  Parses one batch of an owned test configuration's output. */
-	/**  The host a `net:setting:<key>` grant derives from `value` (a bare host or a URL); an error refuses it. */
+	/**
+	 *  The host a `net:setting:` grant derives from `value` (a bare host or a
+	 *  URL), validated with the manifest host rules; an error refuses the value.
+	 */
 	pluginNetSettingHost: (id: string, setting: string, value: string) => typedError<string, IdeError>(__TAURI_INVOKE("plugin_net_setting_host", { id, setting, value })),
+	/**  Parses one batch of an owned test configuration's output. */
 	pluginParseTestResults: (config: string, chunk: string) => typedError<PluginTestEvent[] | null, IdeError>(__TAURI_INVOKE("plugin_parse_test_results", { config, chunk })),
 	/**  Workbench events from this window (only the kinds of `plugin_event_kinds`). */
 	pluginPostEvents: (events: WorkbenchEvent[], editor: {
@@ -11142,6 +11151,11 @@ export type PluginLanguageVisuals = {
 	hoverActions: ([string, HoverAction])[],
 };
 
+export type PluginLocation = {
+	path: string,
+	range: Range,
+};
+
 /**  A `net:setting:` grant's host for Settings › Plugins: the approved one while the setting holds it, else the pending one. */
 export type PluginNetSetting = {
 	/**  The setting key the host comes from (`server` of `net:setting:server`). */
@@ -11152,11 +11166,6 @@ export type PluginNetSetting = {
 	host: string | null,
 	/**  The host the setting holds now when it is not the approved one. */
 	pending: string | null,
-};
-
-export type PluginLocation = {
-	path: string,
-	range: Range,
 };
 
 /**  A line a view's `process` body printed. */
