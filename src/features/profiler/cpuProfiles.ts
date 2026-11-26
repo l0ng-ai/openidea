@@ -71,7 +71,7 @@ export async function openCpuProfileFiles(arg: unknown): Promise<void> {
     try {
       // oxlint-disable-next-line no-await-in-loop -- one snapshot per file, in the order picked
       const profile = await call(commands.profilerCollect({ kind: "cpuProfileFile", path }));
-      addSnapshot(path.split(/[/\\]/).pop() ?? path, profile);
+      addSnapshot(path.split(/[/\\]/).pop() ?? path, profile, null, path);
       opened = true;
     } catch (e) {
       notifications().notify({

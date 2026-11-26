@@ -2674,6 +2674,8 @@
   "This file is a V8 CPU profile": "This file is a V8 CPU profile",
   "V8 CPU profile": "V8 CPU profile",
   "Cannot open the CPU profile": "Cannot open the CPU profile",
+  "Closed older profiler snapshots": "Closed older profiler snapshots",
+  "The Profiler keeps the last {max} snapshots open; closed {names}.": "The Profiler keeps the last {max} snapshots open; closed {names}.",
   "Profiler": "Profiler",
   "Opens the V8 .cpuprofile files of a directory as a snapshot (arg: { name, dir, root, profiler? }).": "Opens the V8 .cpuprofile files of a directory as a snapshot (arg: { name, dir, root, profiler? }).",
   "Show Only Matches": "Show Only Matches",

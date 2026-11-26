@@ -4,6 +4,11 @@ import type { Profile, ProfileSpec } from "@/platform/ipc";
 const collected: ProfileSpec[] = [];
 let fails: boolean | ((spec: ProfileSpec) => boolean) = false;
 let picked: string[] = [];
+const notified: Array<{ title: string; body?: string }> = [];
+vi.mock("@/workbench/contributions", () => ({
+  notifications: () => ({ notify: (n: { title: string; body?: string }) => notified.push(n) }),
+  toolWindowService: () => ({ show: () => undefined }),
+}));
 vi.mock("@/platform/choosePath", () => ({ choosePaths: () => Promise.resolve(picked) }));
 const profile = { profiler: "v8", unit: "samples", mode: "cpu", total: 3, frames: [] } as unknown as Profile;
 vi.mock("@/platform/ipc", async (orig) => {
@@ -31,6 +36,7 @@ beforeEach(() => {
   collected.length = 0;
   fails = false;
   picked = [];
+  notified.length = 0;
   resetProfiler();
 });
 
@@ -81,6 +87,29 @@ describe("Open Snapshot", () => {
     fails = (spec) => spec.kind === "cpuProfileFile" && spec.path.endsWith("bad.cpuprofile");
     await expect(openCpuProfileFiles(["/tmp/bad.cpuprofile", "/tmp/good.cpuprofile"])).resolves.toBeUndefined();
     expect(names()).toEqual(["good.cpuprofile"]);
+  });
+
+  it("replaces the snapshot of a file opened again", async () => {
+    await openCpuProfileFiles(["/tmp/a.cpuprofile", "/tmp/b.cpuprofile"]);
+    const first = useProfiler.getState().snapshots.find((s) => s.name === "a.cpuprofile")!.id;
+    await openCpuProfileFiles("/tmp/a.cpuprofile");
+    const state = useProfiler.getState();
+    expect(names()).toEqual(["a.cpuprofile", "b.cpuprofile"]);
+    expect(state.activeId).toBe(first);
+  });
+
+  it("says which snapshots it closed to stay within the limit, recordings included", async () => {
+    await showCpuProfiles({ name: "localhost:5173", dir: "/tmp/p", root: "/work/shop" });
+    await openCpuProfileFiles([1, 2, 3, 4, 5].map((n) => `/tmp/${n}.cpuprofile`));
+    expect(names()).toEqual(["5.cpuprofile", "4.cpuprofile", "3.cpuprofile", "2.cpuprofile", "1.cpuprofile"]);
+    expect(notified).toEqual([
+      {
+        group: "run",
+        level: "info",
+        title: "Closed older profiler snapshots",
+        body: "The Profiler keeps the last 5 snapshots open; closed localhost:5173.",
+      },
+    ]);
   });
 
   it("recognises .cpuprofile files by extension", () => {

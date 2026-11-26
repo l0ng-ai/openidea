@@ -9112,6 +9112,8 @@
   "This file is a V8 CPU profile": "此文件是 V8 CPU 性能分析文件",
   "V8 CPU profile": "V8 CPU 性能分析文件",
   "Cannot open the CPU profile": "无法打开 CPU 性能分析文件",
+  "Closed older profiler snapshots": "已关闭较早的性能分析快照",
+  "The Profiler keeps the last {max} snapshots open; closed {names}.": "性能分析器只保留最近 {max} 个快照；已关闭 {names}。",
   "Opens the V8 .cpuprofile files of a directory as a snapshot (arg: { name, dir, root, profiler? }).": "将目录中的 V8 .cpuprofile 文件作为快照打开（参数：{ name, dir, root, profiler? }）。",
   "Show Only Matches": "仅显示匹配项",
   "Docker Compose service {service}": "Docker Compose 服务 {service}",
