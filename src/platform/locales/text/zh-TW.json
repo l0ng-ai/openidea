@@ -850,6 +850,7 @@
   "Analyze Stack Trace": "分析堆疊跟蹤",
   "Analyze Stack Trace or Thread Dump…": "分析堆疊跟蹤或執行緒傾印…",
   "Analyze code": "分析程式碼",
+  "Annotate Revision": "註解此修訂版",
   "Annotate Previous Revision": "註解上一修訂版",
   "Annotate at Revision…": "註解指定修訂版…",
   "Annotate with Git Blame": "使用 Git Blame 註解",

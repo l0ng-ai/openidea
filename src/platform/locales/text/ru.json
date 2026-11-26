@@ -1153,6 +1153,7 @@
   "Analyze Stack Trace": "Анализировать трассировку стека",
   "Analyze Stack Trace or Thread Dump…": "Анализировать трассировку стека или дамп потоков…",
   "Analyze code": "Анализировать код",
+  "Annotate Revision": "Аннотировать ревизию",
   "Annotate Previous Revision": "Аннотировать предыдущую ревизию",
   "Annotate at Revision…": "Аннотировать в ревизии…",
   "Annotate with Git Blame": "Аннотировать с помощью Git Blame",

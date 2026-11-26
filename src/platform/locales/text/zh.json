@@ -1184,6 +1184,7 @@
   "Analyze Stack Trace": "分析堆栈跟踪",
   "Analyze Stack Trace or Thread Dump…": "分析堆栈跟踪或线程转储…",
   "Analyze code": "分析代码",
+  "Annotate Revision": "注解此修订版",
   "Annotate Previous Revision": "注解上一修订版",
   "Annotate at Revision…": "注解指定修订版…",
   "Annotate with Git Blame": "使用 Git Blame 注解",
