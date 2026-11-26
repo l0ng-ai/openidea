@@ -297,12 +297,14 @@ launching as before.
 
 ## Running programs
 
-| Function                                             | What it does                                                                                     |
-| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `Project::run_process(program, &args, stdin)`        | Runs the pinned program in the project root and waits: `{ status, stdout, stderr }`, 4 MiB each. |
-| `host::run_command(&Command, Some(&project), stdin)` | API 1.3: the same, with environment variables added by `Command::env`.                           |
-| `host::start(&Command, Some(&project))`              | API 1.3: a `Child` left running: `poll`, `write`, `close_stdin`, `wait`, `kill`. At most 8.      |
-| `host::open_terminal(title, program, &args)`         | A Terminal tab running the program (see [Views](/en/plugins/guides/views)).                      |
+| Function                                                       | What it does                                                                                                             |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `Project::run_process(program, &args, stdin)`                  | Runs the pinned program in the project root and waits: `{ status, stdout, stderr }`, 4 MiB each.                         |
+| `host::run_command(&Command, Some(&project), stdin)`           | API 1.3: the same, with environment variables added by `Command::env`.                                                   |
+| `host::run_captured(&Command, Some(&project), stdin, options)` | API 1.15: configurable output limit (up to 128 MiB per stream); errors explicitly if either stdout or stderr overflows.  |
+| `host::start(&Command, Some(&project))`                        | API 1.3: a `Child` left running: `poll`, `write`, `close_stdin`, `wait`, `kill`. At most 8.                              |
+| `host::start_stream(&Command, Some(&project), options)`        | API 1.15: lossless streaming with backpressure and bounded buffer, terminating with an explicit error on total overflow. |
+| `host::open_terminal(title, program, &args)`                   | A Terminal tab running the program (see [Views](/en/plugins/guides/views)).                                              |
 
 ```rust
 use openidea_plugin::host::{self, Command};
@@ -319,8 +321,12 @@ let out = host::run_command(&Command::new("forge").arg("build").env("FOUNDRY_PRO
   inside `host::begin_task`. Dropping a `Child` kills it, and disabling or reclaiming the
   plugin ends its children.
 - A `Child`'s `poll` and `wait` return what it printed since the last read. `status` comes
-  with the chunk that holds the last of its output, so read until it is set. Output nobody
-  reads keeps only its last 1 MiB per stream: for the whole output of a command that ends,
-  use `run_command`.
+  with the chunk that holds the last of its output, so read until it is set. For commands started
+  with `start`, unread output keeps only its last 1 MiB per stream (tail mode). For lossless
+  streaming without head data loss or output race conditions, use `start_stream` with `ProcessOptions`
+  (defaults to 256 KiB buffer per stream with OS pipe backpressure, and 32 MiB total limit).
+- When a command exceeds output limits in `run_process`, `run_command`, or `run_captured`, or
+  when total stream output exceeds the ceiling in `start_stream`, the IDE produces an explicit
+  error rather than silently truncating stdout or stderr.
 - In **Settings › Plugins** the user can choose the executable of a `process:` grant
   globally or per project; the plugin keeps calling its declared program name.

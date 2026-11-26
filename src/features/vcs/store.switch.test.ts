@@ -5,9 +5,10 @@ import { useProject } from "@/platform/project";
 import { deferred } from "@/test/deferred";
 import { getFileDecoration } from "@/workbench/contributions";
 import {
+  applyStatus,
   discoverRoots,
   installVcsStore,
-  onConflictsAppeared,
+  onConflictsChanged,
   onConflictsCleared,
   refreshNow,
   refreshPathsNow,
@@ -30,7 +31,14 @@ const branch: BranchInfo = {
   operation: "merge",
 };
 const roots: VcsRoot[] = [
-  { root: git.root, branchRoot: git.root, head: branch.head, headCommit: branch.headCommit, operation: "merge" },
+  {
+    root: git.root,
+    branchRoot: git.root,
+    head: branch.head,
+    headCommit: branch.headCommit,
+    operation: "merge",
+    shallow: false,
+  },
 ];
 const conflicted: FileStatus = {
   path: "/a/src/conflict.ts",
@@ -58,14 +66,14 @@ beforeEach(() => {
   vi.spyOn(commands, "vcsRoots").mockResolvedValue(ok(roots));
   vi.spyOn(commands, "vcsStatus").mockResolvedValue(ok(status));
   vi.spyOn(commands, "vcsBranchInfo").mockResolvedValue(ok(branch));
-  onConflictsAppeared(appeared);
+  onConflictsChanged(appeared);
   onConflictsCleared(cleared);
   dispose = installVcsStore();
 });
 
 afterEach(() => {
   dispose();
-  onConflictsAppeared(() => undefined);
+  onConflictsChanged(() => undefined);
   onConflictsCleared(() => undefined);
   appeared.mockClear();
   cleared.mockClear();
@@ -73,6 +81,18 @@ afterEach(() => {
   vi.mocked(isTauri).mockReset();
   useProject.setState(useProject.getInitialState(), true);
   useVcs.setState(useVcs.getInitialState(), true);
+});
+
+it("updates the notification as conflicts are resolved and reopened", () => {
+  const sibling: FileStatus = { ...modified, unstaged: "conflicted" };
+  applyStatus([conflicted, sibling], branch);
+  applyStatus([conflicted, modified], branch);
+  applyStatus([conflicted, modified], branch);
+  applyStatus([conflicted, sibling], branch);
+  applyStatus([modified], branch);
+
+  expect(appeared.mock.calls).toEqual([[[conflicted, sibling]], [[conflicted]], [[conflicted, sibling]]]);
+  expect(cleared).toHaveBeenCalledOnce();
 });
 
 describe("VCS status ownership", () => {

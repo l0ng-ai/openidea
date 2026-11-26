@@ -65,10 +65,7 @@ impl Call {
     }
     /// The projects attached to this one that the user trusts (each is trusted on its own).
     fn trusted_attachments(&self) -> Vec<PathBuf> {
-        attached_projects(self.root())
-            .into_iter()
-            .filter(|root| self.host.trust.trusted(root).unwrap_or(false))
-            .collect()
+        trusted_attachments(&self.host.trust, self.root())
     }
     pub async fn ask(&self, request: ide_core::event::McpUiRequest) -> IdeResult<()> {
         self.host.mcp_requests.ask(self, request).await
@@ -325,6 +322,11 @@ pub fn resolve_inside(root: &Path, raw: &str) -> IdeResult<PathBuf> {
 }
 pub fn ensure_inside(root: &Path, path: &Path) -> IdeResult<()> {
     resolve_inside(root, &path.to_string_lossy()).map(|_| ())
+}
+
+/// The projects attached to the one at `root` that the user trusts (each is trusted on its own).
+pub(crate) fn trusted_attachments(trust: &crate::trust::TrustStore, root: &Path) -> Vec<PathBuf> {
+    attached_projects(root).into_iter().filter(|p| trust.trusted(p).unwrap_or(false)).collect()
 }
 
 /// The projects attached to the one at `root` (its workspace members), `root` itself left out.

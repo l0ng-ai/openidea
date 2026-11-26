@@ -197,6 +197,18 @@ fn handle(&mut self, _view: &str, event: ViewEvent, ctx: &Invocation) -> Result<
 
 It needs `editor.read` and `editor.write`.
 
+For large binary files, use `binary = true` on a web custom editor with
+`layout = "tab"` and `engines.openidea = "^1.16"`. The IDE opens the file
+without creating a text document. The page gets a read-only document with
+its filename and can read the file through the web view bridge.
+
+Messages from a binary editor carry the open file as the editor in the plugin invocation.
+
+If the component needs a file path, send a message from the page and call `host::pick_file` while
+handling the view event (API 1.16). It returns the path on the project host, or `None` on cancellation.
+For example, a Parquet viewer can choose a second dataset to compare with the open file using its
+existing DuckDB process grant. Use the page’s `openFile` and `saveFile` methods for file contents.
+
 ## HTML bodies
 
 `Body::Html` runs in a sandboxed frame: an opaque origin under a CSP that allows only its
@@ -247,6 +259,8 @@ web = "web/index.html"   # the page; its directory is what it can load
 | `window.openidea`                    | What it does                                                                                                         |
 | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
 | `document.get()`                     | `{ version, text, readOnly, name }` of the custom editor's document (none in a tool window)                          |
+| `document.size()`                    | Size in bytes of the file open in a binary custom editor                                                             |
+| `document.readRange(offset, length)` | Bytes from the open binary file as a `Uint8Array`. Each call reads at most 1 MiB and may return fewer bytes at EOF   |
 | `document.edit(version, edits)`      | Applies `[{ from, to, insert }]` (UTF-16 offsets) as one undoable change; rejects with `stale` when not at `version` |
 | `document.replace(version, text)`    | The same with the whole text                                                                                         |
 | `document.onChange(fn)`              | `{ version, text }` after changes made elsewhere (text editor, Undo, another window)                                 |
@@ -269,6 +283,29 @@ corner actions (**Options**, **Hide**) and sets `--openidea-corner-inset-width` 
   padding-right: var(--openidea-corner-inset-width, 0px);
 }
 ```
+
+**Embedded pages** (API 1.16). A web page can embed other sites in `<iframe>`s when its
+declaration lists their origins in `frames`. Each origin is `https://host[:port]` (or
+`http://` to `localhost`, `127.0.0.1` or `[::1]`), with no path, and must be covered by a
+`net:<host>` capability of the manifest, so the install page shows it:
+
+```toml
+[capabilities]
+optional = ["net:play.example.com"]
+
+[[contributes.views]]
+id = "hall"
+title = "Game Hall"
+web = "web/index.html"
+frames = ["https://play.example.com"]   # up to 16 origins
+```
+
+The pages of that directory get `frame-src` with the declared origins the user granted;
+an origin whose capability is declined or revoked is left out, and without `frames` a page
+can embed nothing. The embedded page keeps the frame's sandbox (scripts, an opaque origin,
+no cookies or storage), gets no `window.openidea`, and the plugin's page still has no
+network of its own. A site that refuses to be framed (`X-Frame-Options`,
+`frame-ancestors`) stays blank.
 
 [Graphviz](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/graphviz) is a
 complete example: a Vite + React page in `web-src/`, built into `web/` by

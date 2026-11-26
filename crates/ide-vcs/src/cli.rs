@@ -6,22 +6,51 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// How long a cancelled git's process group (remote helpers, `ssh`, credential helpers) gets
 /// to exit on `SIGTERM` before `SIGKILL`: git removes its `index.lock` on `SIGTERM`.
 const KILL_GRACE: Duration = Duration::from_millis(20);
+/// Longest the wait for a captured child sleeps before it looks at cancellation again.
+const POLL: Duration = Duration::from_millis(20);
 
-/// Explicit git executable from Settings › Version Control › Git (`None` = auto-detect).
-static CONFIGURED: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
+/// A throwaway index file in the repository's Git directory.
+pub(crate) struct TempIndex(PathBuf);
 
-/// Sets (or clears, with `None` / an empty path) the git executable to use.
-pub fn set_git_executable(path: Option<&Path>) {
-    let path = path.filter(|p| !p.as_os_str().is_empty()).map(Path::to_path_buf);
-    if *CONFIGURED.read().unwrap_or_else(|e| e.into_inner()) != path {
-        *CONFIGURED.write().unwrap_or_else(|e| e.into_inner()) = path;
+impl TempIndex {
+    pub(crate) fn new(repo: &crate::Repo) -> Self {
+        static SEQ: AtomicU32 = AtomicU32::new(0);
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        Self(repo.git_dir.join(format!("openidea-index-{}-{n}", std::process::id())))
     }
+
+    pub(crate) fn env(&self) -> [(&'static str, &std::ffi::OsStr); 1] {
+        [("GIT_INDEX_FILE", self.0.as_os_str())]
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempIndex {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+        let _ = std::fs::remove_file(self.0.with_extension("lock"));
+    }
+}
+
+/// Git executable of the user's global settings (`None` = auto-detect). Never a project's: a
+/// project's repositories carry their own ([`crate::Repo::set_git_executable`]).
+static DEFAULT: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
+
+/// Sets (or clears, with `None` / an empty path) the git executable of repositories that have
+/// none of their own, from the global settings only.
+pub fn set_default_git_executable(path: Option<&Path>) {
+    let path = path.filter(|p| !p.as_os_str().is_empty()).map(Path::to_path_buf);
+    *DEFAULT.write().unwrap_or_else(|e| e.into_inner()) = path;
 }
 
 /// Environment that routes credential prompts (`ssh` passphrases and host keys,
@@ -102,16 +131,20 @@ pub fn detected_git_executable() -> Option<PathBuf> {
     detected_git().map(Path::to_path_buf)
 }
 
+/// The executable of the repository this thread works in, else the default, else the detected one.
 pub(crate) fn git_binary() -> IdeResult<PathBuf> {
-    if let Some(configured) = CONFIGURED.read().unwrap_or_else(|e| e.into_inner()).clone() {
-        return Ok(configured);
+    if let Some(own) = crate::scoped_git_executable() {
+        return Ok(own.to_path_buf());
+    }
+    if let Some(default) = DEFAULT.read().unwrap_or_else(|e| e.into_inner()).clone() {
+        return Ok(default);
     }
     detected_git()
         .map(Path::to_path_buf)
         .ok_or_else(|| IdeError::unavailable("git executable not found; install git and make sure it is on PATH"))
 }
 
-/// `git --version` of `executable` (or the configured / detected one), e.g. `git version 2.44.0`.
+/// `git --version` of `executable` (or the default / detected one), e.g. `git version 2.44.0`.
 pub fn git_version(executable: Option<&Path>) -> IdeResult<String> {
     let exe = match executable.filter(|p| !p.as_os_str().is_empty()) {
         Some(p) => p.to_path_buf(),
@@ -271,6 +304,7 @@ pub(crate) fn command(root: &Path) -> IdeResult<Command> {
         .env("GIT_PAGER", "cat")
         .env("GIT_EDITOR", "true")
         .env("GIT_SEQUENCE_EDITOR", "true")
+        .env_remove(ide_core::process::ASKPASS_SILENT_ENV)
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE");
@@ -474,7 +508,7 @@ fn run_cancellable_raw_stdin(
     stdin: Option<&[u8]>,
     cancel: &CancellationToken,
 ) -> IdeResult<Output> {
-    run_capture(root, args, stdin, cancel, usize::MAX)
+    run_capture(root, args, stdin, cancel, usize::MAX, Credentials::Interactive, &[])
 }
 
 /// Options for a `git diff` that reads the working tree in Restricted Mode: git asks a submodule
@@ -518,29 +552,99 @@ pub fn filter_overrides_from(config: &[u8]) -> IdeResult<Vec<String>> {
 
 /// Cancellable capture with bounded stdout and stderr; stops git on overflow.
 pub(crate) fn run_bounded(root: &Path, args: &[&str], cancel: &CancellationToken, max: usize) -> IdeResult<Output> {
-    let out = run_capture(root, args, None, cancel, max)?;
+    run_bounded_env(root, args, cancel, max, &[])
+}
+
+pub(crate) fn run_bounded_env(
+    root: &Path,
+    args: &[&str],
+    cancel: &CancellationToken,
+    max: usize,
+    env: &[(&str, &std::ffi::OsStr)],
+) -> IdeResult<Output> {
+    let out = run_capture(root, args, None, cancel, max, Credentials::Interactive, env)?;
     if out.code == Some(0) { Ok(out) } else { Err(failure(args, &out.stderr, &out.stdout, out.code)) }
 }
+/// Quiet transport that may still obtain credentials from the IDE's saved store.
+pub(crate) fn run_with_saved_credentials(root: &Path, args: &[&str], cancel: &CancellationToken) -> IdeResult<Output> {
+    let out = run_with_saved_credentials_raw(root, args, cancel)?;
+    if out.code == Some(0) { Ok(out) } else { Err(failure(args, &out.stderr, &out.stdout, out.code)) }
+}
+
+pub(crate) fn run_with_saved_credentials_raw(
+    root: &Path,
+    args: &[&str],
+    cancel: &CancellationToken,
+) -> IdeResult<Output> {
+    run_capture(root, args, None, cancel, 1 << 20, Credentials::Saved, &[])
+}
+
+fn suppress_credential_prompts(cmd: &mut Command) {
+    cmd.env("GCM_INTERACTIVE", "never");
+    let ide_askpass = cmd.get_envs().any(|(key, value)| key == ide_core::process::ASKPASS_PORT_ENV && value.is_some());
+    if ide_askpass {
+        cmd.env(ide_core::process::ASKPASS_SILENT_ENV, "1");
+    } else {
+        cmd.args(["-c", "credential.interactive=false"])
+            .env("GIT_ASKPASS", no_program())
+            .env("SSH_ASKPASS", no_program())
+            .env("SSH_ASKPASS_REQUIRE", "never");
+    }
+}
+
+enum Credentials {
+    Interactive,
+    Saved,
+}
+
 fn run_capture(
     root: &Path,
     args: &[&str],
     stdin: Option<&[u8]>,
     cancel: &CancellationToken,
     max: usize,
+    credentials: Credentials,
+    env: &[(&str, &std::ffi::OsStr)],
+) -> IdeResult<Output> {
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
+    let mut cmd = command(root)?;
+    match credentials {
+        Credentials::Interactive => {}
+        Credentials::Saved => suppress_credential_prompts(&mut cmd),
+    }
+    cmd.args(args).envs(env.iter().copied());
+    let refresh = IndexRefresh::before(root, args, env);
+    let mut session = CommandSession::start(&mut cmd);
+    let out = capture_command(cmd, stdin, cancel, max, "git")?;
+    session.finish(out.code == Some(0), &String::from_utf8_lossy(&out.stderr));
+    refresh.after();
+    Ok(out)
+}
+
+pub(crate) fn capture_command(
+    mut cmd: Command,
+    stdin: Option<&[u8]>,
+    cancel: &CancellationToken,
+    max: usize,
+    program: &str,
 ) -> IdeResult<Output> {
     if cancel.is_cancelled() {
         return Err(IdeError::cancelled());
     }
     let overflow = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let mut cmd = command(root)?;
-    cmd.args(args)
-        .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
+    own_group(&mut cmd);
+    cmd.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    own_group(&mut cmd);
-    let refresh = IndexRefresh::before(root, args, &[]);
-    let mut session = CommandSession::start(&mut cmd);
-    let mut child = cmd.spawn().map_err(spawn_error)?;
+    let mut child = cmd.spawn().map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            IdeError::unavailable(format!("could not run {program}: {error}"))
+        } else {
+            error.into()
+        }
+    })?;
     let writer = match (stdin, child.stdin.take()) {
         (Some(data), Some(mut pipe)) => {
             let data = data.to_vec();
@@ -551,9 +655,13 @@ fn run_capture(
         }
         _ => None,
     };
+    // When both readers finish, their senders disconnect the channel and wake the child wait.
+    let (closed_tx, closed) = mpsc::channel::<()>();
     let capture = |mut pipe: Box<dyn Read + Send>| {
         let overflow = overflow.clone();
+        let closed_tx = closed_tx.clone();
         std::thread::spawn(move || {
+            let _closed_tx = closed_tx;
             let mut bytes = Vec::new();
             (&mut pipe).take(max.saturating_add(1) as u64).read_to_end(&mut bytes)?;
             if bytes.len() > max {
@@ -565,6 +673,9 @@ fn run_capture(
     };
     let stdout = capture(Box::new(child.stdout.take().expect("piped stdout")));
     let stderr = capture(Box::new(child.stderr.take().expect("piped stderr")));
+    drop(closed_tx);
+    let mut pipes_open = true;
+    let mut backoff = Duration::from_micros(100);
     let status = loop {
         if cancel.is_cancelled() || overflow.load(std::sync::atomic::Ordering::Acquire) {
             terminate_tree(&mut child, KILL_GRACE);
@@ -576,25 +687,34 @@ fn run_capture(
             return Err(if cancel.is_cancelled() {
                 IdeError::cancelled()
             } else {
-                IdeError::invalid(format!("git output exceeds {max} bytes"))
+                IdeError::invalid(format!("{program} output exceeds {max} bytes"))
             });
         }
         if let Some(status) = child.try_wait()? {
             break status;
         }
-        std::thread::sleep(Duration::from_millis(20));
+        if pipes_open {
+            // Cancellation and overflow are only noticed between wake-ups, so wait at most one
+            // `POLL` for them; the pipes closing ends the wait at once.
+            pipes_open = !matches!(closed.recv_timeout(POLL), Err(mpsc::RecvTimeoutError::Disconnected));
+        } else {
+            // Reap promptly after EOF, but back off if the child keeps running without its pipes.
+            std::thread::sleep(backoff);
+            backoff = (backoff * 2).min(POLL);
+        }
     };
     if let Some(w) = writer {
         let _ = w.join();
     }
     let join = |thread: std::thread::JoinHandle<std::io::Result<Vec<u8>>>| {
-        thread.join().map_err(|_| IdeError::internal("git output reader panicked"))?.map_err(IdeError::from)
+        thread
+            .join()
+            .map_err(|_| IdeError::internal(format!("{program} output reader panicked")))?
+            .map_err(IdeError::from)
     };
     let out = Output { stdout: join(stdout)?, stderr: join(stderr)?, code: status.code() };
-    session.finish(status.success(), &String::from_utf8_lossy(&out.stderr));
-    refresh.after();
     if out.stdout.len() > max || out.stderr.len() > max {
-        return Err(IdeError::invalid(format!("git output exceeds {max} bytes")));
+        return Err(IdeError::invalid(format!("{program} output exceeds {max} bytes")));
     }
     Ok(out)
 }
@@ -690,6 +810,29 @@ pub(crate) fn run_streaming(
     run_streaming_env(root, args, &[], cancel, on_output)
 }
 
+/// Also feeds machine-readable stdout to the caller, separately from progress and stderr.
+pub(crate) fn run_streaming_stdout(
+    root: &Path,
+    args: &[&str],
+    cancel: &CancellationToken,
+    on_output: &dyn Fn(String),
+    stdout: &mut dyn FnMut(&str),
+) -> IdeResult<()> {
+    run_streaming_command(root, args, &[], &|| cancel.is_cancelled(), on_output, (Stream::Stdout, stdout), false)
+}
+
+/// Also feeds Git's ref status lines on stderr to the caller.
+pub(crate) fn run_streaming_stderr(
+    root: &Path,
+    args: &[&str],
+    cancel: &CancellationToken,
+    on_output: &dyn Fn(String),
+    stderr: &mut dyn FnMut(&str),
+    silent: bool,
+) -> IdeResult<()> {
+    run_streaming_command(root, args, &[], &|| cancel.is_cancelled(), on_output, (Stream::Stderr, stderr), silent)
+}
+
 /// [`run_streaming`] with extra environment variables (e.g. a sequence editor).
 pub(crate) fn run_streaming_env(
     root: &Path,
@@ -698,12 +841,38 @@ pub(crate) fn run_streaming_env(
     cancel: &CancellationToken,
     on_output: &dyn Fn(String),
 ) -> IdeResult<()> {
-    if cancel.is_cancelled() {
+    run_streaming_env_until(root, args, env, &|| cancel.is_cancelled(), on_output)
+}
+
+/// Like `run_streaming_env`, with a predicate for sessions that can stop cooperatively.
+pub(crate) fn run_streaming_env_until(
+    root: &Path,
+    args: &[&str],
+    env: &[(&str, &std::ffi::OsStr)],
+    should_cancel: &dyn Fn() -> bool,
+    on_output: &dyn Fn(String),
+) -> IdeResult<()> {
+    run_streaming_command(root, args, env, should_cancel, on_output, (Stream::Stdout, &mut |_| {}), false)
+}
+
+fn run_streaming_command(
+    root: &Path,
+    args: &[&str],
+    env: &[(&str, &std::ffi::OsStr)],
+    should_cancel: &dyn Fn() -> bool,
+    on_output: &dyn Fn(String),
+    (capture_stream, capture): (Stream, &mut dyn FnMut(&str)),
+    silent: bool,
+) -> IdeResult<()> {
+    if should_cancel() {
         return Err(IdeError::cancelled());
     }
     let mut cmd = command(root)?;
     for (k, v) in env {
         cmd.env(k, v);
+    }
+    if silent {
+        suppress_credential_prompts(&mut cmd);
     }
     cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     own_group(&mut cmd);
@@ -721,12 +890,12 @@ pub(crate) fn run_streaming_env(
     }
     drop(tx);
 
-    // Keep the tail of stderr (and stdout conflict reports) for the error message.
+    // Keep the tail of stderr and machine-readable failures from stdout.
     let mut stderr_tail: Vec<String> = Vec::new();
-    let mut conflicts: Vec<String> = Vec::new();
+    let mut diagnostics: Vec<String> = Vec::new();
     let mut open = readers.len();
     while open > 0 {
-        if cancel.is_cancelled() {
+        if should_cancel() {
             terminate_tree(&mut child, KILL_GRACE);
             for r in readers {
                 let _ = r.join();
@@ -735,13 +904,18 @@ pub(crate) fn run_streaming_env(
         }
         match rx.recv_timeout(Duration::from_millis(40)) {
             Ok(Event::Line(stream, line)) => {
+                if stream == capture_stream {
+                    capture(&line);
+                }
                 if stream == Stream::Stderr {
                     stderr_tail.push(line.clone());
                     if stderr_tail.len() > 40 {
                         stderr_tail.remove(0);
                     }
-                } else if line.starts_with("CONFLICT") && conflicts.len() < 40 {
-                    conflicts.push(line.clone());
+                } else if (line.starts_with("CONFLICT") || (args.first() == Some(&"push") && line.starts_with("!\t")))
+                    && diagnostics.len() < 40
+                {
+                    diagnostics.push(line.clone());
                 }
                 on_output(line);
             }
@@ -755,7 +929,7 @@ pub(crate) fn run_streaming_env(
         if let Some(status) = child.try_wait()? {
             break status;
         }
-        if cancel.is_cancelled() {
+        if should_cancel() {
             terminate_tree(&mut child, KILL_GRACE);
             return Err(IdeError::cancelled());
         }
@@ -769,7 +943,7 @@ pub(crate) fn run_streaming_env(
         return Ok(());
     }
     let relevant: Vec<&str> =
-        conflicts.iter().chain(stderr_tail.iter()).map(String::as_str).filter(|l| !is_progress_line(l)).collect();
+        diagnostics.iter().chain(stderr_tail.iter()).map(String::as_str).filter(|l| !is_progress_line(l)).collect();
     let msg = relevant.join("\n");
     session.finish(false, &stderr_tail.join("\n"));
     Err(failure(args, msg.as_bytes(), b"", status.code()))
@@ -1086,5 +1260,92 @@ mod index_lock_tests {
         out.stdout.clear();
         out.code = Some(1);
         assert!(!retryable_index_conflict(&["reset"], &out));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod capture_tests {
+    use super::*;
+
+    fn sh(script: &str) -> Command {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", script]);
+        cmd
+    }
+
+    #[test]
+    fn a_cancelled_capture_kills_a_long_running_child() {
+        let cancel = CancellationToken::new();
+        let trigger = cancel.clone();
+        let canceller = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            trigger.cancel();
+        });
+        let start = Instant::now();
+        let error = capture_command(sh("sleep 60"), None, &cancel, usize::MAX, "sh").err().unwrap();
+        canceller.join().unwrap();
+        assert_eq!(error.to_string(), IdeError::cancelled().to_string());
+        assert!(start.elapsed() < Duration::from_secs(30));
+    }
+
+    #[test]
+    fn cancelling_before_the_start_spawns_nothing() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("ran");
+        let mut cmd = sh(r#"touch "$1""#);
+        cmd.arg("sh").arg(&marker);
+        assert!(capture_command(cmd, None, &cancel, usize::MAX, "sh").is_err());
+        assert!(!marker.exists());
+    }
+
+    #[test]
+    fn megabytes_on_both_streams_are_captured_whole() {
+        // Both pipes fill at once: a wait that stopped draining one while blocked on the other,
+        // or on the exit, would deadlock here.
+        const SIZE: usize = 6_000_000;
+        let script = format!("(yes e | head -c {SIZE} >&2) & yes o | head -c {SIZE}; wait; exit 3");
+        let out = capture_command(sh(&script), None, &CancellationToken::new(), usize::MAX, "sh").unwrap();
+        assert_eq!((out.stdout.len(), out.stderr.len()), (SIZE, SIZE));
+        assert!(out.stdout.chunks(2).all(|c| c.starts_with(b"o")));
+        assert!(out.stderr.chunks(2).all(|c| c.starts_with(b"e")));
+        assert_eq!(out.code, Some(3));
+    }
+
+    #[test]
+    fn exit_status_and_both_streams_are_preserved() {
+        let out = capture_command(sh("echo out; echo err >&2; exit 7"), None, &CancellationToken::new(), 1 << 20, "sh")
+            .unwrap();
+        assert_eq!((out.stdout, out.stderr, out.code), (b"out\n".to_vec(), b"err\n".to_vec(), Some(7)));
+    }
+
+    #[test]
+    fn stdin_reaches_the_child() {
+        let out = capture_command(sh("cat"), Some(b"piped"), &CancellationToken::new(), 1 << 20, "sh").unwrap();
+        assert_eq!(out.stdout, b"piped");
+    }
+
+    #[test]
+    fn output_over_the_limit_stops_the_child() {
+        let start = Instant::now();
+        let error = capture_command(sh("yes"), None, &CancellationToken::new(), 1000, "sh").err().unwrap();
+        assert!(error.to_string().contains("exceeds 1000 bytes"), "{error}");
+        assert!(start.elapsed() < Duration::from_secs(30));
+    }
+
+    #[test]
+    fn a_child_that_closes_its_pipes_but_keeps_running_is_still_cancellable() {
+        let cancel = CancellationToken::new();
+        let trigger = cancel.clone();
+        let canceller = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            trigger.cancel();
+        });
+        let start = Instant::now();
+        let error = capture_command(sh("exec >&- 2>&-; sleep 60"), None, &cancel, usize::MAX, "sh").err().unwrap();
+        canceller.join().unwrap();
+        assert_eq!(error.to_string(), IdeError::cancelled().to_string());
+        assert!(start.elapsed() < Duration::from_secs(30));
     }
 }

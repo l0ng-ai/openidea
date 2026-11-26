@@ -79,7 +79,7 @@ The task tab shows the conversation: your messages, the agent's replies, its rea
 - **Stop** ends the current turn.
 - `⌘F` / `Ctrl+F` finds text in the conversation.
 
-On your own messages you can **Edit** (the messages after it are replaced; files already changed stay as they are) or **Retract Message**. On replies you can **Copy Markdown**, **Quote Reply**, **Regenerate Response** and **Branch Conversation from Here**, which starts a new task from that point.
+On your own messages you can **Edit** (the messages after it are replaced, and the files the agent changed since go back to how they were before it was sent) or **Roll Back to Here**, which removes the message and the ones after it, puts the files the agent changed since back as they were before it was sent, and returns the message to the composer. On replies you can **Copy Markdown**, **Quote Reply**, **Regenerate Response** and **Branch Conversation from Here**, which starts a new task from that point.
 
 In an existing chat, open **Model › Refresh models** to discover newly available models without sending a message or changing the selection. If the agent can't switch in place, the choice stays pending. You can choose an effort level as soon as the provider reports the new model's options. On your next message, OpenIDEA reopens the same session and applies the model and any effort you selected before sending. If the session can't be reopened or rejects either choice, OpenIDEA restores the previous selection and reports the error without sending the message.
 
@@ -125,16 +125,16 @@ Tasks are saved per project and survive restarts. When the agent supports resumi
 
 ## Manage agents
 
-**Settings › Tools › Agents** (also **More Agents…** in the agent picker) has two tabs:
+**Settings › Agents › Agent Setup** (also **More Agents…** in the agent picker) lists built-in agents and agents from the ACP Registry.
 
 - **Built-in**: for each built-in agent, whether its executable was found on `PATH`, a field to point at a **Custom executable**, **Environment variables** for the agent process (written as `NAME=value; OTHER=value`; the values are kept in the OS credential store) and how to sign in. Changes apply to new sessions. When the agent is a global npm install (such as Claude Code, Codex or Gemini CLI), **Check for updates** compares it with npm's latest stable release and **Update to…** updates that installation.
 - **ACP Registry**: agents published in the [ACP Registry](https://agentclientprotocol.com). Search, **Install**, **Update** and **Remove**. Installed agents are kept in OpenIDEA's data directory; downloads are checked against the registry's SHA-256 when it provides one.
 
-**Settings › Tools › Agents › Chat** chooses what the task header shows: **Context window usage**, **Time spent on the task**, **Usage limits** (when the agent reports them, such as Claude Code) and **Session cost**.
+**Settings › Agents › Chat** chooses what the task header shows: **Context window usage**, **Time spent on the task**, **Usage limits** (when the agent reports them, such as Claude Code) and **Session cost**.
 
 ### External MCP servers
 
-**Settings › Agents › External MCP Servers** configures MCP servers across three persistent levels, while the composer's **MCP** picker (or `/mcp`) controls them per session:
+**Settings › Agents › MCP Connections** configures MCP servers across three persistent levels, while the composer's **MCP** picker (or `/mcp`) controls them per session:
 
 - **Global (`User`)**: saved in `settings.toml` with environment variable and HTTP header values stored in the OS credential store, shared across projects and agents (or scoped to selected agents).
 - **Project (`Workspace`)**: saved in `.openidea/settings.toml`; entries with the same name override Global servers, and servers added outside OpenIDEA stay off until approved.

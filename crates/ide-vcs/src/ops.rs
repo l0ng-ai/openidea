@@ -3,9 +3,13 @@
 
 use crate::cli::{self, run};
 use crate::repo::{gx, resolve};
-use crate::{ChangeKind, ChangedFile, FileLineStats, MergeSides, RebaseAction, RebaseEntry, Repo, ResetMode};
+use crate::{
+    ApplyCommitOptions, ChangeKind, ChangedFile, FileLineStats, MergeSides, RebaseAction, RebaseEntry, Repo, ResetMode,
+};
+use ide_core::workflow_settings::EmptyCherryPickAction;
 use ide_core::{CancellationToken, IdeError, IdeResult};
 use std::collections::HashSet;
+use std::io::Write;
 
 /// The in-progress operation git can continue / abort / skip.
 fn sequencer(r: &Repo) -> IdeResult<&'static str> {
@@ -57,12 +61,17 @@ pub(crate) fn merge_sides(r: &Repo) -> IdeResult<MergeSides> {
         }
         Some("cherry-pick") => sides.commit = read("CHERRY_PICK_HEAD").map(short),
         Some("revert") => sides.commit = read("REVERT_HEAD").map(short),
-        // Conflicts outside an operation come from restoring stashed changes (Smart
-        // Checkout, local changes put aside for a merge or update): stage 2 is the new HEAD,
-        // stage 3 the user's.
         None if !crate::write::unmerged_paths(r)?.is_empty() => {
-            sides.operation = Some("unstash".into());
-            sides.reversed = true;
+            use crate::conflict_resolution::RestoreConflict;
+            let (name, reversed) = match crate::conflict_resolution::restore_conflict(r)? {
+                Some(RestoreConflict::ManualStash) => ("stash-apply", false),
+                Some(RestoreConflict::AutomaticShelf) => ("unshelve", true),
+                Some(RestoreConflict::PatchApply) => ("apply-patch", false),
+                // During automatic restoration stage 2 is the new HEAD, stage 3 the user's work.
+                None => ("unstash", true),
+            };
+            sides.operation = Some(name.into());
+            sides.reversed = reversed;
         }
         _ => {}
     }
@@ -128,7 +137,7 @@ fn changed_paths(r: &Repo, args: &[&str]) -> IdeResult<Vec<String>> {
 /// `stage` first stages the changes of tracked files (Stage and Retry). Without it a
 /// rebase stages only edits of files already staged (made while resolving them) and
 /// otherwise fails with [`UNSTAGED_CHANGES_PREVENT_REBASE`].
-pub(crate) fn continue_op(r: &Repo, stage: bool, cancel: &CancellationToken, out: &dyn Fn(String)) -> IdeResult<()> {
+pub(crate) fn continue_op<T>(r: &Repo, stage: bool, run_command: impl FnOnce(&[&str]) -> IdeResult<T>) -> IdeResult<T> {
     let op = sequencer(r)?;
     let unresolved = unmerged_paths(r)?;
     if !unresolved.is_empty() {
@@ -155,102 +164,179 @@ pub(crate) fn continue_op(r: &Repo, stage: bool, cancel: &CancellationToken, out
         "revert" => &["revert", "--continue"],
         _ => &["am", "--continue"],
     };
-    let result = cli::run_streaming(r.root(), args, cancel, out);
+    let result = run_command(args);
     let finished = finish_operation(r);
-    result.and(finished)
+    result.and_then(|value| finished.map(|()| value))
 }
 
-pub(crate) fn abort_op(r: &Repo, cancel: &CancellationToken, out: &dyn Fn(String)) -> IdeResult<()> {
+pub(crate) fn commit_apply_message(
+    r: &Repo,
+    message: &str,
+    options: &ApplyCommitOptions,
+    cancel: &CancellationToken,
+    out: &dyn Fn(String),
+) -> IdeResult<()> {
+    let mut file = tempfile::NamedTempFile::new_in(&r.git_dir)?;
+    file.write_all(message.as_bytes())?;
+    let path = file.path().to_str().ok_or_else(|| IdeError::invalid("Invalid commit message file path"))?;
+    let flags = crate::write::commit_metadata_flags(
+        options.sign_off,
+        options.run_hooks,
+        options.author.as_deref(),
+        options.author_date.as_deref(),
+    );
+    let mut args = vec!["commit", "--cleanup=whitespace", "-F", path];
+    args.extend(flags.iter().map(String::as_str));
+    cli::run_streaming(r.root(), &args, cancel, out)
+}
+
+pub(crate) fn abort_op(
+    r: &Repo,
+    expected: Option<&str>,
+    cancel: &CancellationToken,
+    out: &dyn Fn(String),
+) -> IdeResult<()> {
     let op = sequencer(r)?;
+    if expected.is_some_and(|expected| expected != op) {
+        return Err(IdeError::invalid("Git operation changed before it could be aborted"));
+    }
     let result = cli::run_streaming(r.root(), &[op, "--abort"], cancel, out);
     let finished = finish_operation(r);
     result.and(finished)
 }
 
-pub(crate) fn skip_op(r: &Repo, cancel: &CancellationToken, out: &dyn Fn(String)) -> IdeResult<()> {
-    let op = sequencer(r)?;
-    if op == "merge" {
-        return Err(IdeError::invalid("a merge cannot be skipped; abort it instead"));
+pub(crate) fn finish_merge(
+    r: &Repo,
+    branch: Option<&str>,
+    head: &str,
+    target: &str,
+    cancel: &CancellationToken,
+    out: &dyn Fn(String),
+) -> IdeResult<()> {
+    let (current_branch, current_head) = r.head()?;
+    let merge_head = std::fs::read_to_string(r.git_dir.join("MERGE_HEAD")).ok();
+    if current_branch.as_deref() != branch
+        || current_head.as_deref() != Some(head)
+        || merge_head.as_deref().map(str::trim) != Some(target)
+    {
+        return Err(IdeError::invalid("The merge changed before it could be finished"));
     }
-    let result = cli::run_streaming(r.root(), &[op, "--skip"], cancel, out);
+    let result = cli::run_streaming(r.root(), &["merge", "--continue"], cancel, out);
     let finished = finish_operation(r);
     result.and(finished)
 }
 
-/// Merge commits need a mainline (`-m`), which IDEA doesn't offer for cherry-pick / revert.
-fn reject_merges(r: &Repo, commits: &[String], verb: &str) -> IdeResult<()> {
-    let repo = r.gix()?;
-    for c in commits {
-        let commit = repo.find_object(resolve(&repo, c)?).map_err(gx)?.peel_to_commit().map_err(gx)?;
-        if commit.parent_ids().count() > 1 {
-            let hex = commit.id.to_string();
-            return Err(IdeError::invalid(format!("cannot {verb} merge commit {}", &hex[..8])));
-        }
+pub(crate) fn skip_op<T>(r: &Repo, run_command: impl FnOnce(&[&str]) -> IdeResult<T>) -> IdeResult<T> {
+    let op = sequencer(r)?;
+    if op == "merge" {
+        return Err(IdeError::invalid("a merge cannot be skipped; abort it instead"));
     }
-    Ok(())
+    let result = run_command(&[op, "--skip"]);
+    let finished = finish_operation(r);
+    result.and_then(|value| finished.map(|()| value))
 }
 
-/// Applies `commits` on top of HEAD, in the given order (pass oldest first);
-/// `record_origin` adds "(cherry picked from commit …)" to their messages.
-pub(crate) fn cherry_pick(
+/// Merge commits need a mainline (`-m`), which IDEA doesn't offer for cherry-pick / revert.
+pub(crate) fn checked_apply_commits(r: &Repo, commits: &[String], verb: &str) -> IdeResult<Vec<String>> {
+    check_commits(commits)?;
+    let repo = r.gix()?;
+    commits
+        .iter()
+        .map(|c| {
+            let commit = repo.find_object(resolve(&repo, c)?).map_err(gx)?.peel_to_commit().map_err(gx)?;
+            let hex = commit.id.to_string();
+            if commit.parent_ids().count() > 1 {
+                return Err(IdeError::invalid(format!("cannot {verb} merge commit {}", &hex[..8])));
+            }
+            Ok(hex)
+        })
+        .collect()
+}
+
+pub(crate) fn apply_cherry_pick(
     r: &Repo,
     commits: &[String],
     record_origin: bool,
+    empty_action: EmptyCherryPickAction,
     cancel: &CancellationToken,
     out: &dyn Fn(String),
-) -> IdeResult<()> {
-    check_commits(commits)?;
-    reject_merges(r, commits, "cherry-pick")?;
+) -> IdeResult<u32> {
     let mut args = vec!["cherry-pick"];
     if record_origin {
         args.push("-x");
     }
     args.extend(commits.iter().map(String::as_str));
-    apply_skipping_empty(r, "cherry-pick", &args, cancel, out)
+    apply_resolving_empty(r, "cherry-pick", &args, empty_action, cancel, out)
 }
 
 /// Creates commits undoing `commits`, in the given order (pass newest first).
 pub(crate) fn revert(r: &Repo, commits: &[String], cancel: &CancellationToken, out: &dyn Fn(String)) -> IdeResult<()> {
-    check_commits(commits)?;
-    reject_merges(r, commits, "revert")?;
+    let commits = checked_apply_commits(r, commits, "revert")?;
     let mut args = vec!["revert", "--no-edit"];
     args.extend(commits.iter().map(String::as_str));
-    apply_skipping_empty(r, "revert", &args, cancel, out)
+    apply_resolving_empty(r, "revert", &args, EmptyCherryPickAction::Skip, cancel, out).map(|_| ())
 }
 
-/// Runs a cherry-pick / revert sequence. A commit whose changes are already there leaves
-/// nothing to commit: it is skipped and the rest of the sequence goes on.
-fn apply_skipping_empty(
+/// Resolves empty steps while leaving conflicts and other failures to the caller.
+pub(crate) fn apply_resolving_empty(
     r: &Repo,
     verb: &str,
     args: &[&str],
+    action: EmptyCherryPickAction,
     cancel: &CancellationToken,
     out: &dyn Fn(String),
-) -> IdeResult<()> {
-    let head_file = if verb == "revert" { "REVERT_HEAD" } else { "CHERRY_PICK_HEAD" };
-    let said_nothing = std::cell::Cell::new(false);
-    let watch = |line: String| {
-        // git runs with LC_ALL=C; a single commit with nothing left to apply stops here.
-        said_nothing.set(said_nothing.get() || line.contains("nothing to commit"));
-        out(line)
+) -> IdeResult<u32> {
+    let cherry_pick = verb == "cherry-pick";
+    let head_file = if cherry_pick { "CHERRY_PICK_HEAD" } else { "REVERT_HEAD" };
+    let is_empty = std::cell::Cell::new(false);
+    let run = |args: &[&str]| {
+        is_empty.set(false);
+        cli::run_streaming(r.root(), args, cancel, &|line| {
+            // Git runs with LC_ALL=C. An empty pick leaves a prepared commit message.
+            is_empty.set(
+                is_empty.get()
+                    || line.contains("nothing to commit")
+                    || line.contains("nothing added to commit but untracked files present")
+                    || line.contains("previous cherry-pick is now empty"),
+            );
+            out(line);
+        })
     };
-    let mut result = cli::run_streaming(r.root(), args, cancel, &watch);
-    if result.is_err() && said_nothing.get() && r.branch_info()?.operation.is_none() {
-        out("Skipped: its changes are already applied".into());
-        return Ok(());
-    }
+    let mut empty_count = 0;
+    let mut result = run(args);
     while result.is_err() && !cancel.is_cancelled() {
-        let Ok(stopped) = std::fs::read_to_string(r.git_dir.join(head_file)) else { break };
-        let empty = unmerged_paths(r)?.is_empty()
-            && cli::run_raw(r.root(), &["diff", "--cached", "--quiet", "HEAD", "--"], None)?.code == Some(0);
-        if !empty {
+        let Ok(stopped) = std::fs::read_to_string(r.git_dir.join(head_file)) else {
+            if is_empty.get() && action == EmptyCherryPickAction::Skip && r.operation()?.is_none() {
+                out("Skipped: its changes are already applied".into());
+                return Ok(empty_count + 1);
+            }
+            break;
+        };
+        if (cherry_pick && !is_empty.get())
+            || !unmerged_paths(r)?.is_empty()
+            || cli::run_raw(r.root(), &["diff", "--cached", "--quiet", "--"], None)?.code != Some(0)
+        {
             break;
         }
         let id = stopped.trim();
-        out(format!("{} skipped: its changes are already applied", &id[..id.len().min(8)]));
-        result = cli::run_streaming(r.root(), &[verb, "--skip"], cancel, out);
+        let short = &id[..id.len().min(8)];
+        empty_count += 1;
+        match action {
+            EmptyCherryPickAction::Skip => {
+                out(format!("{short} skipped: its changes are already applied"));
+                result = run(&[verb, "--skip"]);
+            }
+            EmptyCherryPickAction::CreateEmpty => {
+                cli::run_streaming(r.root(), &["commit", "--allow-empty"], cancel, out)?;
+                // The commit clears CHERRY_PICK_HEAD. A native multi-pick still has its todo.
+                if !r.git_dir.join("sequencer/todo").is_file() {
+                    return Ok(empty_count);
+                }
+                result = run(&[verb, "--continue"]);
+            }
+        }
     }
-    result
+    result.map(|()| empty_count)
 }
 
 pub(crate) fn reset(
@@ -329,7 +415,6 @@ pub(crate) fn interactive_rebase(
     let work = r.git_dir.join("openidea-rebase");
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work)?;
-    let quote = |p: &std::path::Path| format!("'{}'", p.to_string_lossy().replace('\\', "/").replace('\'', "'\\''"));
     let mut todo = String::new();
     for (i, (e, id)) in entries.iter().zip(&ids).enumerate() {
         let verb = match e.action {
@@ -344,7 +429,8 @@ pub(crate) fn interactive_rebase(
         let next_joins =
             entries.get(i + 1).is_some_and(|n| matches!(n.action, RebaseAction::Squash | RebaseAction::Fixup));
         let message = e.message.as_deref().map(str::trim).filter(|m| !m.is_empty());
-        let wants_message = matches!(e.action, RebaseAction::Reword | RebaseAction::Squash | RebaseAction::Pick);
+        let wants_message =
+            matches!(e.action, RebaseAction::Reword | RebaseAction::Squash | RebaseAction::Fixup | RebaseAction::Pick);
         if let Some(m) = message.filter(|_| wants_message) {
             if next_joins {
                 return Err(IdeError::invalid(
@@ -355,20 +441,34 @@ pub(crate) fn interactive_rebase(
             std::fs::write(&file, m)?;
             todo.push_str(&format!(
                 "exec git commit --amend --allow-empty --no-verify --quiet --cleanup=whitespace -F {}\n",
-                quote(&file)
+                quote_for_shell(&file)
             ));
         }
     }
+    let args = ["rebase", "--interactive", "--no-autosquash", base.unwrap_or("--root")];
+    run_rebase_todo(r, &work, &todo, &args, cancel, out)
+}
+
+pub(crate) fn quote_for_shell(path: &std::path::Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\\', "/").replace('\'', "'\\''"))
+}
+
+pub(crate) fn run_rebase_todo(
+    r: &Repo,
+    work: &std::path::Path,
+    todo: &str,
+    args: &[&str],
+    cancel: &CancellationToken,
+    out: &dyn Fn(String),
+) -> IdeResult<()> {
     let todo_file = work.join("todo");
     std::fs::write(&todo_file, todo)?;
-    let editor = format!("cp {}", quote(&todo_file));
+    let editor = format!("cp {}", quote_for_shell(&todo_file));
     // Local changes are put aside and restored when the rebase is over, staged ones as
     // staged (git's --autostash would bring them all back unstaged).
     crate::preserve::save(r, "Local changes saved before rebase")?;
-    let mut args = vec!["rebase", "--interactive", "--no-autosquash"];
-    args.push(base.unwrap_or("--root"));
     let env = [("GIT_SEQUENCE_EDITOR", std::ffi::OsStr::new(&editor))];
-    let result = cli::run_streaming_env(r.root(), &args, &env, cancel, out);
+    let result = cli::run_streaming_env(r.root(), args, &env, cancel, out);
     // A stopped rebase still needs the message files for its remaining `exec` lines.
     let finished = finish_operation(r);
     result.and(finished)
@@ -380,6 +480,7 @@ pub(crate) fn finish_operation(r: &Repo) -> IdeResult<()> {
     if r.branch_info()?.operation.is_some() {
         return Ok(());
     }
+    crate::cherry_pick_plan::clear(r);
     let _ = std::fs::remove_dir_all(r.git_dir.join("openidea-rebase"));
     crate::preserve::restore(r)
 }
@@ -444,14 +545,95 @@ pub(crate) fn push_tag(
     delete: bool,
     cancel: &CancellationToken,
     on_output: &dyn Fn(String),
-) -> IdeResult<()> {
+) -> IdeResult<crate::PushReport> {
     let tag = tag_ref(name)?;
-    let remote = remote.trim();
+    remote_push_urls(r, remote, cancel)?;
+    let spec = if delete { format!(":{tag}") } else { format!("{tag}:{tag}") };
+    let mut report = crate::PushReport::new(Some(remote.to_owned()));
+    crate::push_report::run(
+        &mut report,
+        r.root(),
+        &["push", "--progress", "--porcelain", "--", remote, &spec],
+        cancel,
+        on_output,
+    )?;
+    Ok(report)
+}
+
+pub(crate) fn remote_fetch_url(r: &Repo, remote: &str, cancel: &CancellationToken) -> IdeResult<String> {
+    let output = cli::run_cancellable(r.root(), &["remote", "get-url", "--", remote], cancel)?;
+    output
+        .stdout_str()
+        .lines()
+        .next()
+        .filter(|url| !url.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| IdeError::invalid(format!("remote '{remote}' has no fetch URL")))
+}
+
+pub(crate) fn remote_push_urls(r: &Repo, remote: &str, cancel: &CancellationToken) -> IdeResult<Vec<String>> {
     if remote.is_empty() || remote.starts_with('-') {
         return Err(IdeError::invalid(format!("invalid remote '{remote}'")));
     }
-    let spec = if delete { format!(":{tag}") } else { format!("{tag}:{tag}") };
-    cli::run_streaming(r.root(), &["push", "--progress", remote, &spec], cancel, on_output)
+    let output = cli::run_cancellable(r.root(), &["remote", "get-url", "--push", "--all", remote], cancel)?;
+    let urls: Vec<_> = output.stdout_str().lines().filter(|url| !url.is_empty()).map(str::to_owned).collect();
+    if urls.is_empty() {
+        return Err(IdeError::invalid(format!("remote '{remote}' has no push URL")));
+    }
+    Ok(urls)
+}
+
+pub(crate) fn delete_tag_on_remotes(
+    r: &Repo,
+    deleted: &crate::DeletedTag,
+    cancel: &CancellationToken,
+    out: &dyn Fn(String),
+) -> IdeResult<()> {
+    let tag = tag_ref(&deleted.name)?;
+    let expected = gix::ObjectId::from_hex(deleted.target.as_bytes()).map_err(gx)?.to_string();
+    let lease = format!("--force-with-lease={tag}:{expected}");
+    let deletion = format!(":{tag}");
+    let mut failures = Vec::new();
+    for remote in r.remotes()? {
+        out(format!("Checking tag {} on {}", deleted.name, remote.name));
+        let urls = match remote_push_urls(r, &remote.name, cancel) {
+            Ok(urls) => urls,
+            Err(e) if cancel.is_cancelled() => return Err(e),
+            Err(e) => {
+                failures.push(format!("{}: {e}", remote.name));
+                continue;
+            }
+        };
+        let receive_pack =
+            if urls.len() > 1 { r.config_get(&format!("remote.{}.receivepack", remote.name))? } else { None };
+        for url in &urls {
+            let push_target = if urls.len() == 1 { remote.name.as_str() } else { url.as_str() };
+            let result = (|| {
+                let args = ["ls-remote", "--exit-code", "--refs", "--tags", "--", url, &tag];
+                let refs = cli::run_cancellable_raw(r.root(), &args, cancel)?;
+                if !matches!(refs.code, Some(0 | 2)) {
+                    return Err(cli::failure(&args, &refs.stderr, &refs.stdout, refs.code));
+                }
+                if !refs.stdout_str().lines().any(|line| line.split_once('\t').is_some_and(|(_, name)| name == tag)) {
+                    out(format!("Tag {} is already absent on {}", deleted.name, remote.name));
+                    return Ok(());
+                }
+                let mut args = vec!["push", "--progress", &lease];
+                if let Some(receive_pack) = receive_pack.as_deref() {
+                    args.extend(["--receive-pack", receive_pack]);
+                }
+                args.extend(["--", push_target, &deletion]);
+                cli::run_streaming(r.root(), &args, cancel, out)
+            })();
+            if let Err(e) = result {
+                if cancel.is_cancelled() {
+                    return Err(e);
+                }
+                failures.push(format!("{}: {e}", remote.name));
+            }
+        }
+    }
+    if failures.is_empty() { Ok(()) } else { Err(IdeError::invalid(failures.join("\n"))) }
 }
 
 /// Tag names, sorted.

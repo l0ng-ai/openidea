@@ -1,0 +1,10 @@
+@import "tailwindcss";
+
+@theme {
+  --color-brand-500: oklch(0.62 0.19 259);
+  --color-brand-700: oklch(0.49 0.17 262);
+}
+
+.btn {
+  @apply rounded-md bg-brand-500 px-4 py-2 font-medium text-white hover:bg-brand-700;
+}

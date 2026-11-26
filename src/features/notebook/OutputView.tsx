@@ -22,6 +22,7 @@ function AnsiText({ text, error = false }: { text: string; error?: boolean }) {
       <pre className={error ? styles.errorOutput : styles.textOutput}>
         {entries.map((entry, index) => (
           <span
+            // oxlint-disable-next-line react/no-array-index-key -- ANSI runs repeat; position in an immutable output is stable
             key={index}
             style={{
               color: entry.fg ? `rgb(${entry.fg})` : undefined,
@@ -101,10 +102,12 @@ export function CellOutputs({ outputs }: { outputs: unknown[] }) {
         const output = object(value);
         switch (output.output_type) {
           case "stream":
+            // oxlint-disable-next-line react/no-array-index-key -- outputs repeat; position is the identity
             return <AnsiText key={index} text={mimeText(output.text)} error={output.name === "stderr"} />;
           case "error":
             return (
               <AnsiText
+                // oxlint-disable-next-line react/no-array-index-key -- outputs repeat; position is the identity
                 key={index}
                 error
                 text={
@@ -116,9 +119,11 @@ export function CellOutputs({ outputs }: { outputs: unknown[] }) {
             );
           case "display_data":
           case "execute_result":
+            // oxlint-disable-next-line react/no-array-index-key -- outputs repeat; position is the identity
             return <MimeBundle key={index} value={output.data} />;
           default:
             return (
+              // oxlint-disable-next-line react/no-array-index-key -- outputs repeat; position is the identity
               <p key={index} className={styles.notice}>
                 {tx("Unsupported output type; original data is preserved.")} {String(output.output_type ?? "unknown")}
               </p>

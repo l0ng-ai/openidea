@@ -12,7 +12,11 @@ import {
   pythonSyntaxRanges,
   type PythonSymbolKind,
 } from "./highlight";
-import { implementPythonAbstractMethods, pythonMemberIntentions } from "./members";
+import { implementPythonAbstractMethods, overridePythonMethods, pythonMemberIntentions } from "./members";
+import { pythonGenerateEntries } from "./generate";
+import { pythonCreateFixes } from "./createFromUsage";
+import { pythonTypeHintIntentions } from "./typeHints";
+import { pythonStringIntentions } from "./stringFormat";
 
 /** Server tokens these kinds override: the kind's own classes replace the generic ones. */
 const VARIABLE_KINDS = new Set<PythonSymbolKind>([
@@ -52,8 +56,15 @@ const pythonSemantics: LanguageSemantics = {
     }
   },
   isLocal: ({ type, kind }) => (kind ? kind === "localVariable" || kind === "parameter" : type === "parameter"),
-  intentions: pythonMemberIntentions,
+  intentions: (view) => {
+    const { from, to } = view.state.selection.main;
+    return [...pythonCreateFixes(view, from, to), ...pythonMemberIntentions(view), ...pythonStringIntentions(view)];
+  },
+  quickFixes: pythonCreateFixes,
+  asyncIntentions: pythonTypeHintIntentions,
   implementMethods: implementPythonAbstractMethods,
+  overrideMethods: overridePythonMethods,
+  generate: pythonGenerateEntries,
 };
 
 registerLanguageSemantics("python", pythonSemantics);

@@ -22,6 +22,7 @@ interface Props {
   onSelect: (id: string) => void;
   onCloseTab?: (id: string) => void;
   onCloseOthers?: (id: string) => void;
+  onTogglePin?: (id: string) => void;
   onDismiss: () => void;
 }
 
@@ -34,6 +35,7 @@ export function HiddenTabsPopup({
   onSelect,
   onCloseTab,
   onCloseOthers,
+  onTogglePin,
   onDismiss,
 }: Props) {
   const tr = useGivenTx();
@@ -131,20 +133,22 @@ export function HiddenTabsPopup({
           className={styles.list}
           renderItem={(item) => {
             if (!item) return null;
-            const close = Boolean(onCloseTab && item.closable !== false && item.showCloseButton !== false);
+            const unpin = item.pinned && onTogglePin;
+            const close = onCloseTab && item.closable !== false && item.showCloseButton !== false;
             const action = (
               <div role="gridcell" className={styles.action}>
                 {item.modified && <span className={styles.modified} aria-label={tr("Modified")} />}
-                {close && (
+                {(unpin || close) && (
                   <IconButton
-                    icon="close"
-                    title="Close Tab"
+                    icon={unpin ? "pin" : "close"}
+                    title={unpin ? "Unpin Tab" : "Close Tab"}
                     size="small"
                     tabIndex={-1}
                     onMouseDown={(event) => event.preventDefault()}
                     onClick={(event) => {
                       event.stopPropagation();
-                      if (event.altKey && onCloseOthers) onCloseOthers(item.id);
+                      if (unpin) unpin(item.id);
+                      else if (event.altKey && onCloseOthers) onCloseOthers(item.id);
                       else onCloseTab!(item.id);
                     }}
                   />

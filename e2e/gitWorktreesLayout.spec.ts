@@ -16,7 +16,10 @@ test("Worktrees places actions beside the tree and shows the folder above its br
     });
     window.__ipc.handlers.vcs_worktrees = ({ repo }) =>
       repo === service
-        ? [worktree(service, "release", true), worktree("/dev/service-snapshot", null)]
+        ? [worktree(service, "release", true), worktree("/dev/service-snapshot", null)].map((tree) => ({
+            ...tree,
+            submodule: true,
+          }))
         : [worktree(root, "main", true), worktree("/dev/review-worktree", "feature/review", false, true)];
     const store = "/src/features/vcs/store.ts";
     const { useVcs } = await import(/* @vite-ignore */ store);
@@ -29,9 +32,9 @@ test("Worktrees places actions beside the tree and shows the folder above its br
     await executeAction("vcs.worktrees");
   });
 
-  const dialog = page.getByRole("dialog", { name: "Worktrees", exact: true });
-  const toolbar = dialog.getByRole("toolbar", { name: "Worktrees", exact: true });
-  const tree = dialog.getByRole("tree", { name: "Worktrees", exact: true });
+  const panel = page.getByRole("tabpanel", { name: "Worktrees", exact: true });
+  const toolbar = panel.getByRole("toolbar", { name: "Worktrees", exact: true });
+  const tree = panel.getByRole("tree", { name: "Worktrees", exact: true });
   await expect(tree.getByText("feature/review", { exact: true })).toBeVisible();
   const barBox = (await toolbar.boundingBox())!;
   const treeBox = (await tree.boundingBox())!;
@@ -44,7 +47,9 @@ test("Worktrees places actions beside the tree and shows the folder above its br
   expect(nameBox.y + nameBox.height).toBeLessThanOrEqual(branchBox.y);
   await expect(name).toHaveCSS("font-size", await branch.evaluate((el) => getComputedStyle(el).fontSize));
   await expect(row.getByRole("img", { name: "locked", exact: true })).toBeVisible();
-  await expect(tree.getByRole("treeitem", { name: /service-snapshot.*a1234567/ })).toBeVisible();
+  const submodule = tree.getByRole("treeitem", { name: /service-snapshot.*a1234567/ });
+  await expect(submodule.getByText("Submodule", { exact: true })).toBeVisible();
+  await expect(row.getByText("Submodule", { exact: true })).toHaveCount(0);
 
   await tree.focus();
   await tree.press("End");
@@ -54,14 +59,4 @@ test("Worktrees places actions beside the tree and shows the folder above its br
   await expect(row).toHaveAttribute("aria-selected", "true");
   await tree.press("Escape");
   await expect(row.getByText("/dev/review-worktree", { exact: true })).toBeVisible();
-  await dialog.getByRole("button", { name: "Close", exact: true }).last().click();
-
-  await page.getByRole("toolbar", { name: "Tool windows" }).getByRole("button", { name: "Git", exact: true }).click();
-  await page.getByRole("tab", { name: "Worktrees", exact: true }).click();
-  const panel = page.getByRole("tabpanel", { name: "Worktrees", exact: true });
-  const dockedTree = panel.getByRole("tree", { name: "Worktrees", exact: true });
-  await expect(dockedTree.getByRole("treeitem", { name: /review-worktree.*feature\/review/ })).toBeVisible();
-  const dockedBarBox = (await panel.getByRole("toolbar", { name: "Worktrees" }).boundingBox())!;
-  const dockedTreeBox = (await dockedTree.boundingBox())!;
-  expect(dockedBarBox.x + dockedBarBox.width).toBeLessThanOrEqual(dockedTreeBox.x);
 });

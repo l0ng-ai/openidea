@@ -2,7 +2,19 @@
 import { Fragment, useId, useState, type KeyboardEvent, type ReactNode } from "react";
 import clsx from "clsx";
 import { create } from "zustand";
-import { Checkbox, Dialog, HighlightedText, Input, List, Popup, T, listNavigate, useSanitizedField } from "@/ui";
+import {
+  Checkbox,
+  Dialog,
+  HighlightedText,
+  Input,
+  List,
+  Popup,
+  Select,
+  T,
+  listNavigate,
+  useSanitizedField,
+} from "@/ui";
+import type { SelectOption } from "@/ui/Select";
 import { isImeKey } from "@/platform/ime";
 import { useTx } from "@/platform/i18n";
 import { confirm } from "@/workbench/messages";
@@ -46,22 +58,24 @@ export interface PromptOptions {
   okLabel?: string;
   mono?: boolean;
   /** Returns an error message, or null when valid. */
-  validate?: (value: string, overwrite: boolean) => string | null;
+  validate?: (value: string, overwrite: boolean, scope?: string) => string | null;
   /** Rewrites the field as the user types or pastes (e.g. spaces in a branch name). */
   sanitize?: (value: string) => string;
   /** Show the prefilled value's problem (e.g. the branch exists) before it is edited. */
   validateInitial?: boolean;
   /** Optional checkbox below the field. */
   checkbox?: { label: string; initial: boolean };
-  overwriteBranch?: (value: string) => boolean;
+  overwriteBranch?: (value: string, scope?: string) => boolean;
+  scope?: { label: string; initial: string; options: readonly SelectOption[] };
   /** Branch name prefixes in the order the New Branch dialog should suggest them. */
-  prefixes?: readonly string[];
+  prefixes?: readonly string[] | ((scope?: string) => readonly string[]);
 }
 
 export interface PromptResult {
   value: string;
   checked: boolean;
   overwrite?: boolean;
+  scope?: string;
 }
 
 export function promptText(opts: PromptOptions): Promise<PromptResult | null> {
@@ -90,30 +104,37 @@ function PromptDialog(props: PromptOptions & { onDone: (r: PromptResult | null) 
     validate,
     sanitize,
     checkbox,
-    prefixes,
     onDone,
   } = props;
   const tx = useTx();
   const fieldId = useId();
+  const scopeId = `${fieldId}-scope`;
   const listId = `${fieldId}-prefixes`;
   const inline = !!label && labelPlacement === "inline";
   const { ref, clean } = useSanitizedField(sanitize);
   const [value, setValue] = useState(initial);
   const [checked, setChecked] = useState(checkbox?.initial ?? false);
+  const [scope, setScope] = useState(props.scope?.initial);
   const [overwrite, setOverwrite] = useState(false);
   const [touched, setTouched] = useState(!!props.validateInitial && initial !== "");
   const [completing, setCompleting] = useState(false);
   const [active, setActive] = useState(-1);
+  const prefixes = typeof props.prefixes === "function" ? props.prefixes(scope) : props.prefixes;
   const hasPrefixes = !!prefixes?.length;
   const suggestions =
     completing && value ? (prefixes?.filter((p) => p.length > value.length && p.startsWith(value)) ?? []) : [];
   const shown = suggestions.length > 0;
-  const canOverwrite = props.overwriteBranch?.(value) ?? false;
-  const error = validate ? validate(value, canOverwrite && overwrite) : value.trim() ? null : "Value must not be empty";
+  const canOverwrite = props.overwriteBranch?.(value, scope) ?? false;
+  const error = validate
+    ? validate(value, canOverwrite && overwrite, scope)
+    : value.trim()
+      ? null
+      : "Value must not be empty";
   const errorId = touched && error && value ? `${fieldId}-error` : undefined;
   const submit = () => {
     setTouched(true);
-    if (!error) onDone({ value: value.trim(), checked, ...(canOverwrite ? { overwrite } : {}) });
+    if (!error)
+      onDone({ value: value.trim(), checked, ...(canOverwrite ? { overwrite } : {}), ...(scope && { scope }) });
   };
 
   const acceptPrefix = (prefix: string) => {
@@ -232,6 +253,25 @@ function PromptDialog(props: PromptOptions & { onDone: (r: PromptResult | null) 
             />
           </div>
         </Popup>
+        {props.scope && (
+          <>
+            <label className={styles.fieldLabel} htmlFor={scopeId}>
+              <T>{props.scope.label}</T>
+            </label>
+            <Select
+              id={scopeId}
+              aria-label={tx(props.scope.label)}
+              value={scope ?? null}
+              options={props.scope.options}
+              onChange={(next) => {
+                setScope(next);
+                setOverwrite(false);
+                setTouched(true);
+                setCompleting(false);
+              }}
+            />
+          </>
+        )}
         {errorId && (
           <div id={errorId} className={styles.error}>
             {error}

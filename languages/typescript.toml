@@ -124,6 +124,28 @@ codeAction = { disableRuleComment = { enable = true, location = "separateLine" }
 # No `rules`: an empty list there means no rule gets fixed.
 codeActionOnSave = { mode = "all" }
 
+# Biome: lint diagnostics, quick fixes and fix-all below a Biome configuration or installation,
+# from the project's own biome. Formatting is Reformat Code's (Settings › Biome).
+[[language-servers]]
+name = "biome"
+command = "biome"
+args = ["lsp-proxy"]
+root-markers = ["biome.json", "biome.jsonc", "node_modules/@biomejs/biome"]
+require-root-marker = true
+features = ["code-action", "diagnostics"]
+install-hint = "npm i -D @biomejs/biome"
+
+# Tailwind CSS: class completion, hover and diagnostics, only in a project that uses Tailwind
+# (`tailwind.config.*` or `tailwindcss` in package.json). After the language's own servers,
+# which answer hover first.
+[[language-servers]]
+name = "tailwindcss-language-server"
+command = "tailwindcss-language-server"
+args = ["--stdio"]
+root-markers = ["tailwind.config.*", "package.json#dependencies.tailwindcss", "package.json#devDependencies.tailwindcss"]
+require-root-marker = true
+install-hint = "npm i -g @tailwindcss/language-server"
+
 [debugger]
 adapter = "js-debug"
 command = "js-debug-adapter"

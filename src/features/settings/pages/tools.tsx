@@ -8,6 +8,7 @@ import { FontPicker } from "../components/FontPicker";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import { quotePath } from "@/platform/commandLine";
+import { choosePath } from "@/platform/choosePath";
 import { commands, isTauri } from "@/platform/ipc";
 import {
   DEFAULT_EXTERNAL_TOOL,
@@ -137,9 +138,7 @@ function ShellPathRow() {
     void commands.termAvailableShells().then(setShells, () => undefined);
   }, []);
   const browse = async () => {
-    const { open: pick } = await import("@/platform/dialog");
-    const picked = await pick({ multiple: false, title: "Shell Path" });
-    const path = Array.isArray(picked) ? picked[0] : picked;
+    const path = await choosePath({ directory: false, title: "Shell Path" });
     if (path) set(quotePath(path));
   };
   return (
@@ -261,7 +260,7 @@ function TerminalOptions() {
       <SettingSelect
         k="terminal.maxFps"
         label="Maximum refresh rate"
-        hint="Caps how often fast terminal output is painted. Hidden windows always paint more slowly."
+        hint="Caps how often fast output is sent and painted in the terminal and the Run and Debug consoles. Hidden windows always paint more slowly."
         options={TERMINAL_MAX_FPS_OPTIONS}
       />
     </>
@@ -360,7 +359,7 @@ const SAVE_ACTIONS = [
   {
     k: "actionsOnSave.optimizeImports",
     label: "Optimize imports",
-    hint: "Runs the language server's Organize Imports action.",
+    hint: "Uses the language server or a tool such as Ruff to organize imports.",
   },
   {
     k: "actionsOnSave.cleanup",
@@ -808,12 +807,6 @@ export const TOOLS_PAGES: PageSpec[] = [
         title: "Conversation",
         options: [
           {
-            kind: "toggle",
-            key: "agents.foldTurns",
-            label: "Fold a finished turn's work",
-            hint: "Reasoning and tool calls before the reply fold into one line under its message",
-          },
-          {
             kind: "select",
             key: "agents.toolCalls",
             label: "Tool calls",
@@ -843,7 +836,6 @@ export const TOOLS_PAGES: PageSpec[] = [
         title: "Shown in the Task Header",
         options: [
           { kind: "toggle", key: "agents.showContextUsage", label: "Context window usage" },
-          { kind: "toggle", key: "agents.showWorkTime", label: "Time spent on the task" },
           {
             kind: "toggle",
             key: "agents.showUsageLimits",

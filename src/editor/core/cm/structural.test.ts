@@ -173,6 +173,17 @@ describe("planMoveStatement", () => {
     );
   });
 
+  it("swaps whole Go switch branches whose range runs to the next line's start", () => {
+    const GO = 'func f(x int) {\n\tswitch x {\n\tcase 1:\n\t\tprintln("one")\n\tcase 2:\n\t\tprintln("two")\n\t}\n}\n';
+    const s = state(GO.replace("case 1", "case| 1"), comments("//"));
+    const one = node(s, 'case 1:\n\t\tprintln("one")\n');
+    const two = node(s, 'case 2:\n\t\tprintln("two")\n');
+    const plan = planMoveStatement(s, ranges({ statement: one, nextStatement: two }), false);
+    expect(withCaret(s, plan.kind === "move" ? plan.spec : null)).toBe(
+      'func f(x int) {\n\tswitch x {\n\tcase 2:\n\t\tprintln("two")\n\tcase| 1:\n\t\tprintln("one")\n\t}\n}\n',
+    );
+  });
+
   it("moves a multi-line statement up over its previous sibling", () => {
     const s = kt("if (a");
     const r = ranges({
@@ -256,6 +267,103 @@ describe("completeStatementSpec (text rules)", () => {
   it("keeps a header's trailing comment on the header line", () => {
     const s = state("if (x)| // c", [comments("//"), indentUnit.of("    ")]);
     expect(withCaret(s, completeStatementSpec(s, "kotlin"))).toBe("if (x) { // c\n    |\n}");
+  });
+});
+
+describe("completeStatementSpec: foreach and elseif", () => {
+  const ext = [comments("//"), indentUnit.of("    ")];
+  it("gives a PHP or C# foreach a body instead of ending it with `;`", () => {
+    for (const [head, language] of [
+      ["foreach ($xs as $x)", "php"],
+      ["foreach ($map as $k => $v)", "php"],
+      ["elseif ($x)", "php"],
+      ["foreach (var x in xs)", "csharp"],
+    ] as const) {
+      const s = state(`${head}|`, ext);
+      expect(withCaret(s, completeStatementSpec(s, language))).toBe(`${head} {\n    |\n}`);
+    }
+    const bare = state("foreach|", ext);
+    expect(withCaret(bare, completeStatementSpec(bare, "php"))).toBe("foreach (|) {\n}");
+  });
+});
+
+describe("completeStatementSpec: C and C++ type definitions", () => {
+  const ext = [comments("//"), indentUnit.of("    ")];
+  it("ends a struct, class, union or enum with `};`", () => {
+    for (const [head, language] of [
+      ["struct S", "c"],
+      ["typedef struct Node", "c"],
+      ["union U", "c"],
+      ["enum Color", "c"],
+      ["class A", "cpp"],
+      ["class B : public A", "cpp"],
+      ["enum class E : int", "cpp"],
+      ["template <typename T> class Box", "cpp"],
+    ] as const) {
+      const s = state(`${head}|`, ext);
+      expect(withCaret(s, completeStatementSpec(s, language))).toBe(`${head} {\n    |\n};`);
+    }
+  });
+
+  it("keeps a plain `}` for namespaces and control flow", () => {
+    for (const head of ["if (x)", "namespace n"]) {
+      const s = state(`${head}|`, ext);
+      expect(withCaret(s, completeStatementSpec(s, "cpp"))).toBe(`${head} {\n    |\n}`);
+    }
+  });
+});
+
+describe("completeStatementSpec: TypeScript and Python", () => {
+  const ts = [comments("//", ["/*", "*/"]), indentUnit.of("  ")];
+  const py = [comments("#"), indentUnit.of("    ")];
+  const complete = (text: string, language: string, ext: Extension) => {
+    const s = state(text, ext);
+    return withCaret(s, completeStatementSpec(s, language));
+  };
+
+  it("gives an unfinished arrow function a block body", () => {
+    expect(complete("const f = (x: number) =>|", "typescript", ts)).toBe("const f = (x: number) => {\n  |\n};");
+    expect(complete("  items.map((x) =>|", "typescript", ts)).toBe("  items.map((x) => {\n    |\n  });");
+  });
+
+  it("closes an unfinished object or call before the `;`", () => {
+    expect(complete('const obj = { name: "Ada"|', "typescript", ts)).toBe('const obj = { name: "Ada" };\n|');
+    expect(complete("foo(a, bar(2|", "typescript", ts)).toBe("foo(a, bar(2));\n|");
+    expect(complete("call(a,|", "typescript", ts)).toBe("call(a,\n|");
+  });
+
+  it("finishes every Python compound statement header with `:`", () => {
+    for (const head of [
+      "async def fetch(url)",
+      "with open(path) as f",
+      "except ValueError",
+      "case 1",
+      "match command",
+      "try",
+      "async for x in xs",
+    ])
+      expect(complete(`${head}|`, "python", py)).toBe(`${head}:\n    |`);
+    expect(complete("def f(x|", "python", py)).toBe("def f(x):\n    |");
+    expect(complete("match = 5|", "python", py)).toBe("match = 5\n|");
+  });
+});
+
+describe("completeStatementSpec: function names without a parameter list", () => {
+  const ext = [comments("//"), indentUnit.of("    ")];
+  it("adds the parameter list before the body", () => {
+    for (const [head, language] of [
+      ["func f", "go"],
+      ["fn f", "rust"],
+      ["pub async fn load<T>", "rust"],
+      ["fun f", "kotlin"],
+      ["private suspend fun load", "kotlin"],
+      ["function f", "javascript"],
+    ] as const) {
+      const s = state(`${head}|`, ext);
+      expect(withCaret(s, completeStatementSpec(s, language))).toBe(`${head}() {\n    |\n}`);
+    }
+    const done = state("func f(x int)|", ext);
+    expect(withCaret(done, completeStatementSpec(done, "go"))).toBe("func f(x int) {\n    |\n}");
   });
 });
 

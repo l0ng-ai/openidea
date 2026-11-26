@@ -55,7 +55,10 @@ export const commands = {
 	 */
 	agentCustomSave: (input: CustomAgentInput) => typedError<null, IdeError>(__TAURI_INVOKE("agent_custom_save", { input })),
 	agentDelete: (task: string, removeWorktree: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("agent_delete", { task, removeWorktree })),
-	/**  Entries of `task`'s conversation, or of its subagent `subagent`'s. */
+	/**
+	 *  Entries of `task`'s conversation, or of its subagent `subagent`'s. Async so a long
+	 *  conversation is cloned and serialised off the main thread.
+	 */
 	agentEntries: (task: string, subagent: string | null) => typedError<AgentEntry[], IdeError>(__TAURI_INVOKE("agent_entries", { task, subagent })),
 	/**  Sessions of the project on this machine that no task holds yet, newest first. */
 	agentExternalSessions: () => typedError<ExternalSession[], IdeError>(__TAURI_INVOKE("agent_external_sessions")),
@@ -95,6 +98,10 @@ export const commands = {
 	agentProbe: (provider: string, refresh: boolean) => typedError<AgentProbe, IdeError>(__TAURI_INVOKE("agent_probe", { provider, refresh })),
 	/**  Sends a message; while the agent works it is queued, or with `now` it interrupts the turn. */
 	agentPrompt: (task: string, prompt: AgentPrompt, now: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("agent_prompt", { task, prompt, now })),
+	/**
+	 *  Reads the ACP registry's install state for every provider from disk, so it runs on the
+	 *  blocking pool.
+	 */
 	agentProviders: () => typedError<AgentProvider[], IdeError>(__TAURI_INVOKE("agent_providers")),
 	/**  Refreshes the model catalog; force bypasses freshness, not the cooldown. */
 	agentRefreshModels: (provider: string, force: boolean, model: string | null) => typedError<AgentModelCatalog, IdeError>(__TAURI_INVOKE("agent_refresh_models", { provider, force, model })),
@@ -113,12 +120,15 @@ export const commands = {
 	agentRename: (task: string, title: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_rename", { task, title })),
 	/**  Answers a permission request; `option: null` cancels it. */
 	agentRespond: (task: string, permission: number, option: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_respond", { task, permission, option })),
-	/**  Drops the task's turns after its first `turns`; returns the message of the first dropped one. */
-	agentRollback: (task: string, turns: number) => typedError<{
+	/**
+	 *  Drops the task's turns after its first `turns`; returns the message of the first dropped one.
+	 *  With `files`, the files those turns changed go back as they were before them.
+	 */
+	agentRollback: (task: string, turns: number, files: boolean) => typedError<{
 	text: string,
 	files: IpcPath[],
 	images: AgentImage[],
-} | null, IdeError>(__TAURI_INVOKE("agent_rollback", { task, turns })),
+} | null, IdeError>(__TAURI_INVOKE("agent_rollback", { task, turns, files })),
 	/**  Rollback: the task's changed files among `paths` (all without) back as `view` compares them. */
 	agentRollbackChanges: (task: string, paths: string[] | null, view: 
 /**  Everything since the commit the task started from. */
@@ -150,16 +160,22 @@ export const commands = {
 	 *  starting a turn; its output goes to the agent with the next message.
 	 */
 	agentShell: (task: string, command: string, request: RequestId) => typedError<null, IdeError>(__TAURI_INVOKE("agent_shell", { task, command, request })),
+	/**  Resolves a GitHub `owner/repo[/path][@ref]` source and lists the `SKILL.md` skills in it. */
+	agentSkillsBrowse: (source: string, request: RequestId) => typedError<RemoteSkillBrowseResult, IdeError>(__TAURI_INVOKE("agent_skills_browse", { source, request })),
+	/**  Installs the selected skill subtree into `~/.agents/skills` (User) or `<workspace>/.agents/skills` (Workspace). */
+	agentSkillsInstall: (input: InstallRemoteSkillRequest, request: RequestId) => typedError<AgentSkillState_Serialize[], IdeError>(__TAURI_INVOKE("agent_skills_install", { input, request })),
 	/**
-	 *  Every skill discovered in the project and the user's folders, with the mode a session
-	 *  of this project runs it with (without any session's own overrides).
+	 *  Every skill discovered in the project, the user's folders and enabled plugins, with
+	 *  the mode a session runs it with (without any session's own overrides).
 	 */
-	agentSkillsList: () => typedError<AgentSkillState[], IdeError>(__TAURI_INVOKE("agent_skills_list")),
+	agentSkillsList: () => typedError<AgentSkillState_Serialize[], IdeError>(__TAURI_INVOKE("agent_skills_list")),
+	/**  Fetches one skill's `SKILL.md`, file list, and static security scan warnings before installation. */
+	agentSkillsPreview: (owner: string, repo: string, gitRef: string, subpath: string, request: RequestId) => typedError<RemoteSkillPreview, IdeError>(__TAURI_INVOKE("agent_skills_preview", { owner, repo, gitRef, subpath, request })),
 	/**
 	 *  Sets how `name` may run in `scope`, in the settings file of that scope, and returns the
 	 *  updated list. `SKILL.md` files are never touched; the default `auto` removes the entry.
 	 */
-	agentSkillsSetMode: (name: string, scope: McpScope, mode: AgentSkillMode) => typedError<AgentSkillState[], IdeError>(__TAURI_INVOKE("agent_skills_set_mode", { name, scope, mode })),
+	agentSkillsSetMode: (name: string, scope: McpScope, mode: AgentSkillMode) => typedError<AgentSkillState_Serialize[], IdeError>(__TAURI_INVOKE("agent_skills_set_mode", { name, scope, mode })),
 	/**  Stops one of the task's background tasks. */
 	agentStopBackground: (task: string, background: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_stop_background", { task, background })),
 	/**
@@ -202,7 +218,7 @@ export const commands = {
 	 *  Async: the process walk runs on the blocking pool, not the main thread.
 	 */
 	appMetrics: () => typedError<AppMetrics, IdeError>(__TAURI_INVOKE("app_metrics")),
-	/**  Quits: closes every window, each of which runs its own unsaved-changes check. */
+	/**  Quits: closes every window in parallel, each of which runs its own unsaved-changes check. */
 	appQuit: () => __TAURI_INVOKE<void>("app_quit"),
 	/**
 	 *  Release notes of `version` from the update manifest (`latest.json`), read
@@ -221,11 +237,10 @@ export const commands = {
 	/**  Applies a (previewed) workspace edit, e.g. after rename confirmation. */
 	applyWorkspaceEdit: (edit: WorkspaceEdit) => typedError<null, IdeError>(__TAURI_INVOKE("apply_workspace_edit", { edit })),
 	/**
-	 *  Build › Compile File: compiles one Java source of a linked Maven module with
-	 *  `javac`, streaming the console and messages on `on_event`; cancellable with
-	 *  `cancel_request(request)`. Diagnostics of `clear` (the files of the previous
-	 *  build) are cleared first; the new messages are published as `build`
-	 *  diagnostics.
+	 *  Build › Recompile: compiles one Java source file with `javac`, streaming the
+	 *  console and messages on `on_event`; cancellable with `cancel_request(request)`.
+	 *  Diagnostics of `clear` (the files of the previous build) are cleared first;
+	 *  the new messages are published as `build` diagnostics.
 	 */
 	buildCompileFile: (file: string, request: RequestId, clear: string[], onEvent: Channel<BuildEvent>) => typedError<BuildResult, IdeError>(__TAURI_INVOKE("build_compile_file", { file, request, clear, onEvent })),
 	/**  Maven and Gradle projects of the window's project, from the build files plus the last sync. */
@@ -290,9 +305,11 @@ export const commands = {
 	/**
 	 *  The clipboard's plain text, read natively as [`clipboard_write_text`] writes it: a Paste
 	 *  from a menu has no paste event, and WebKitGTK gives `navigator.clipboard.readText()` no
-	 *  text there (#3041). None on Windows, where the WebView's clipboard is used.
+	 *  text there (#3041); WebView2 asks the user before letting the page read it.
 	 */
 	clipboardText: () => typedError<string | null, IdeError>(__TAURI_INVOKE("clipboard_text")),
+	/**  Copies image pixels to this computer's clipboard, including from remote project windows. */
+	clipboardWriteImage: (png: string) => typedError<null, IdeError>(__TAURI_INVOKE("clipboard_write_image", { png })),
 	/**  Writes text locally, without WebView user-activation requirements. */
 	clipboardWriteText: (text: string) => typedError<null, IdeError>(__TAURI_INVOKE("clipboard_write_text", { text })),
 	closeProject: () => __TAURI_INVOKE<void>("close_project"),
@@ -311,6 +328,8 @@ export const commands = {
 	/**  Cucumber feature files and step definition files, for step navigation. */
 	cucumberSources: () => typedError<StepSource[], IdeError>(__TAURI_INVOKE("cucumber_sources")),
 	dbApplyEdits: (id: string, schema: string, table: string, edits: DbRowEdit[]) => typedError<number | null, IdeError>(__TAURI_INVOKE("db_apply_edits", { id, schema, table, edits })),
+	/**  Records the exact helper and destination reviewed in the local data-source dialog. */
+	dbApproveExternalTunnel: (source: DataSource_Deserialize) => typedError<null, IdeError>(__TAURI_INVOKE("db_approve_external_tunnel", { source })),
 	dbApproveJdbcSource: (source: DataSource_Deserialize) => typedError<null, IdeError>(__TAURI_INVOKE("db_approve_jdbc_source", { source })),
 	dbCompletion: (id: string) => typedError<DbCompletion, IdeError>(__TAURI_INVOKE("db_completion", { id })),
 	dbConnect: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_connect", { id })),
@@ -322,12 +341,12 @@ export const commands = {
 	dbDatabaseCatalog: (id: string, database: string) => typedError<DbCatalogSchema[], IdeError>(__TAURI_INVOKE("db_database_catalog", { id, database })),
 	dbDatabases: (id: string) => typedError<DbDatabases, IdeError>(__TAURI_INVOKE("db_databases", { id })),
 	dbDdl: (id: string, schema: string, table: string) => typedError<string, IdeError>(__TAURI_INVOKE("db_ddl", { id, schema, table })),
-	dbDisconnect: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_disconnect", { id })),
+	dbDisconnect: (id: string, wholeSource: boolean | null) => typedError<null, IdeError>(__TAURI_INVOKE("db_disconnect", { id, wholeSource })),
 	dbDropDatabase: (id: string, database: string, statement: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_drop_database", { id, database, statement })),
 	/**  What made the dump at `path` and whether it creates its own database (from its first bytes). */
 	dbDumpInfo: (path: string) => typedError<DbDumpInfo, IdeError>(__TAURI_INVOKE("db_dump_info", { path })),
-	dbExecute: (request: RequestId, id: string, statements: SqlStatement[], skip: number, maxRows: number, schema: string | null) => typedError<DbStatementOutcome[], IdeError>(__TAURI_INVOKE("db_execute", { request, id, statements, skip, maxRows, schema })),
-	dbExecuteStream: (request: RequestId, id: string, statements: SqlStatement[], maxRows: number, schema: string | null, onProgress: Channel<ExecutionEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("db_execute_stream", { request, id, statements, maxRows, schema, onProgress })),
+	dbExecute: (request: RequestId, id: string, statements: SqlStatement[], skip: number, maxRows: number, schema: string | null, cellLimit: number | null) => typedError<DbStatementOutcome[], IdeError>(__TAURI_INVOKE("db_execute", { request, id, statements, skip, maxRows, schema, cellLimit })),
+	dbExecuteStream: (request: RequestId, id: string, statements: SqlStatement[], maxRows: number, schema: string | null, cellLimit: number | null, onProgress: Channel<ExecutionEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("db_execute_stream", { request, id, statements, maxRows, schema, cellLimit, onProgress })),
 	dbExplain: (request: RequestId, id: string, statement: string, schema: string | null) => typedError<DbPlanNode[], IdeError>(__TAURI_INVOKE("db_explain", { request, id, statement, schema })),
 	/**
 	 *  Writes exported result data (CSV, JSON, SQL…) to `path`. Stays in the
@@ -340,8 +359,15 @@ export const commands = {
 	dbJdbcDriverClasses: (jars: string[]) => typedError<string[], IdeError>(__TAURI_INVOKE("db_jdbc_driver_classes", { jars })),
 	dbJdbcDrivers: () => typedError<DbJdbcDriver_Serialize[], IdeError>(__TAURI_INVOKE("db_jdbc_drivers")),
 	dbObjectDdl: (id: string, schema: string, kind: DbObjectKind, name: string) => typedError<string, IdeError>(__TAURI_INVOKE("db_object_ddl", { id, schema, kind, name })),
+	/**  Closes what the pages of a result keep open on the server (its result tab was closed). */
+	dbReleaseResult: (id: string, statement: string, schema: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("db_release_result", { id, statement, schema })),
 	dbRemoveHistory: (id: string, texts: string[] | null) => typedError<null, IdeError>(__TAURI_INVOKE("db_remove_history", { id, texts })),
 	dbRemoveJdbcDriver: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_remove_jdbc_driver", { id })),
+	/**
+	 *  Row `row` (from 0) of the result of `statement`, whole: what a page of a run with a
+	 *  `cell_limit` shows cut short.
+	 */
+	dbResultRow: (request: RequestId, id: string, statement: SqlStatement, row: number, schema: string | null) => typedError<DbQueryResult, IdeError>(__TAURI_INVOKE("db_result_row", { request, id, statement, row, schema })),
 	dbRetainCatalog: (id: string, databases: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("db_retain_catalog", { id, databases })),
 	/**
 	 *  Runs `job` against target `id` and streams the tool's output; returns its exit code. Stays
@@ -365,9 +391,12 @@ export const commands = {
 	dbSources: () => typedError<DataSource_Serialize[], IdeError>(__TAURI_INVOKE("db_sources")),
 	dbStatements: (id: string, text: string, from: number, to: number) => typedError<SqlStatement[], IdeError>(__TAURI_INVOKE("db_statements", { id, text, from, to })),
 	dbTableDetails: (id: string, schema: string, table: string) => typedError<DbTableDetails, IdeError>(__TAURI_INVOKE("db_table_details", { id, schema, table })),
+	dbTableGrants: (id: string, schema: string, table: string) => typedError<DbTableGrant[], IdeError>(__TAURI_INVOKE("db_table_grants", { id, schema, table })),
 	dbTablePage: (request: RequestId, id: string, schema: string, table: string, filter: string | null, sort: DbSortKey[], offset: number, limit: number) => typedError<DbTablePage, IdeError>(__TAURI_INVOKE("db_table_page", { request, id, schema, table, filter, sort, offset, limit })),
 	dbTables: (id: string, schema: string) => typedError<DbTableInfo[], IdeError>(__TAURI_INVOKE("db_tables", { id, schema })),
 	dbTest: (source: DataSource_Deserialize, password: string | null, sshSecret: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("db_test", { source, password, sshSecret })),
+	/**  Tests the reviewed helper once, without persisting approval for subsequent connections. */
+	dbTestExternalTunnel: (request: RequestId, source: DataSource_Deserialize, password: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("db_test_external_tunnel", { request, source, password })),
 	/**  Data Source › SSH/SSL › Test SSH Tunnel. */
 	dbTestTunnel: (source: DataSource_Deserialize, sshSecret: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("db_test_tunnel", { source, sshSecret })),
 	/**  Installed copies of `tool`, newest first. */
@@ -436,6 +465,11 @@ export const commands = {
 	debugJvmMemoryInstances: (session: DebugSessionId, className: string, limit: number) => typedError<JvmInstancesResult, IdeError>(__TAURI_INVOKE("debug_jvm_memory_instances", { session, className, limit })),
 	/**  The objects that hold a reference to `object`; `limit` 0 selects the default. */
 	debugJvmMemoryReferrers: (session: DebugSessionId, object: JvmObjectRef, limit: number) => typedError<JvmReferrersResult, IdeError>(__TAURI_INVOKE("debug_jvm_memory_referrers", { session, object, limit })),
+	/**
+	 *  A `Thread.print -l` of the debuggee JVM (with the JSON dump on JDK 21+), or why it cannot be
+	 *  taken.
+	 */
+	debugJvmThreadDump: (session: DebugSessionId) => typedError<JvmThreadsResult, IdeError>(__TAURI_INVOKE("debug_jvm_thread_dump", { session })),
 	/**
 	 *  Remote JVM Debug in listen mode: waits (cancellable through `request`) for the remote
 	 *  JVM to connect to `host:port`; returns the loopback port java-debug attaches to.
@@ -561,6 +595,11 @@ export const commands = {
 	docOutline: (doc: DocId) => typedError<OutlineItem[], IdeError>(__TAURI_INVOKE("doc_outline", { doc })),
 	/**  Python class facts for the inheritance inspections: tree-sitter, no language server. */
 	docPythonFacts: (doc: DocId) => typedError<PythonFacts, IdeError>(__TAURI_INVOKE("doc_python_facts", { doc })),
+	/**
+	 *  Rearrange Code: the edits that put the document's class members in arrangement order (Python
+	 *  for now); none when they already are or the language has no arrangement.
+	 */
+	docRearrange: (doc: DocId) => typedError<TextEdit[], IdeError>(__TAURI_INVOKE("doc_rearrange", { doc })),
 	/**  Load Changes from Disk: discards the buffer's unsaved changes and reads its file again. */
 	docReloadFromDisk: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_reload_from_disk", { doc })),
 	docSave: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_save", { doc })),
@@ -619,6 +658,8 @@ export const commands = {
 	dockerSettings: () => typedError<DockerSettings, IdeError>(__TAURI_INVOKE("docker_settings")),
 	/**  Availability plus containers, images, volumes and networks. */
 	dockerSnapshot: (endpoint: DockerEndpoint) => typedError<DockerSnapshot, IdeError>(__TAURI_INVOKE("docker_snapshot", { endpoint })),
+	/**  Disk usage per volume name (`docker system df -v`). */
+	dockerVolumeSizes: (endpoint: DockerEndpoint) => typedError<{ [key in string]: string }, IdeError>(__TAURI_INVOKE("docker_volume_sizes", { endpoint })),
 	/**
 	 *  "Clear caches": drops syntax trees and EditorConfig files of the window's
 	 *  project, shrinks the in-memory index and compacts its on-disk cache.
@@ -658,6 +699,14 @@ export const commands = {
 	 *  exited is only started again by the next request.
 	 */
 	flutterDevtoolsUrl: () => typedError<string, IdeError>(__TAURI_INVOKE("flutter_devtools_url")),
+	/**  Starts an emulator from [`FlutterDeviceList::emulators`]. Returns once the launch is under way: the device follows as `IdeEvent::FlutterDevices`. */
+	flutterEmulatorLaunch: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("flutter_emulator_launch", { id })),
+	/**
+	 *  The address of the project's Widget Preview page, its server started on first use with the
+	 *  project's DevTools for its inspector. A server that failed or exited is only started again by
+	 *  the next request.
+	 */
+	flutterWidgetPreviewUrl: () => typedError<string, IdeError>(__TAURI_INVOKE("flutter_widget_preview_url")),
 	fsCompareDirectories: (left: string, right: string, mode: DirectoryCompareMode, request: RequestId, onProgress: Channel<DirectoryCompareProgress>) => typedError<DirectoryCompareEntry[], IdeError>(__TAURI_INVOKE("fs_compare_directories", { left, right, mode, request, onProgress })),
 	fsCopy: (from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy", { from, to })),
 	fsCopyMerge: (sourceRoot: string, destinationRoot: string, path: string, overwrite: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("fs_copy_merge", { sourceRoot, destinationRoot, path, overwrite })),
@@ -667,7 +716,7 @@ export const commands = {
 	 *  `charset` (writes the BOM for `utf-8-bom` / UTF-16).
 	 */
 	fsCreateFile: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_create_file", { path })),
-	fsCreateFileBytes: (path: string, data: number[]) => typedError<null, IdeError>(__TAURI_INVOKE("fs_create_file_bytes", { path, data })),
+	fsCreateFileBytes: (path: string, data: IpcBytes) => typedError<null, IdeError>(__TAURI_INVOKE("fs_create_file_bytes", { path, data })),
 	/**  Moving to the trash can take a while (large trees): kept off the main thread. */
 	fsDelete: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_delete", { path })),
 	/**  Moves an item to the Trash and returns the snapshot for Project View Undo. */
@@ -694,6 +743,11 @@ export const commands = {
 	fsRename: (from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("fs_rename", { from, to })),
 	/**  The existing file or directory a path written in `from` names (`href`, `url()`, a string literal). */
 	fsResolveReference: (from: IpcPath, value: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("fs_resolve_reference", { from, value })),
+	/**
+	 *  The scratch files' folder of this host (`<data dir>/scratches`), created. A remote window
+	 *  keeps its scratches on the server, where its file commands run.
+	 */
+	fsScratchesDir: () => typedError<IpcPath, IdeError>(__TAURI_INVOKE("fs_scratches_dir")),
 	/**
 	 *  Toggle Read-only Attribute: sets the writable bit (and the open document's
 	 *  state). Returns whether the file is read-only now.
@@ -792,12 +846,24 @@ export const commands = {
 	/**  Port of java-debug's DAP server inside the jdtls serving `module` (started on demand). */
 	javaDebugServer: (module: string) => typedError<number, IdeError>(__TAURI_INVOKE("java_debug_server", { module })),
 	/**
+	 *  The JVM of OpenIDEA's JUnit runner for the module at `module`, given its resolved test classpath:
+	 *  the classpath with the runner and `junit-platform-launcher` of the engine's version (unless the
+	 *  classpath has one, or has JUnit 4 alone; from the engine's repository, else downloaded once from
+	 *  Maven Central), and,
+	 *  for a Maven module, what its Surefire configuration gives the forked test JVM.
+	 */
+	javaJunitRunner: (module: string, classPaths: string[]) => typedError<JunitLaunch, IdeError>(__TAURI_INVOKE("java_junit_runner", { module, classPaths })),
+	/**
 	 *  Cancellable with `cancel_request(request)`.
 	 *  Builds according to `policy`, then resolves the runtime (or test)
 	 *  classpath and the JDK of the module at `module` (absolute, or relative to the project root).
 	 *  A module with Kotlin / Groovy / Scala sources is built by its build system, whose class directories come first.
+	 *  The build streams its console, messages and progress on `on_event` while it runs; a launch
+	 *  whose build another launch's build joins receives that build's events.
+	 *  A Maven module is built by the IDE's Java build, except for a `debug` launch the language
+	 *  server serves: java-debug's HotSwap reloads the classes the language server compiles.
 	 */
-	javaResolveLaunch: (module: string, test: boolean, policy: BuildPolicy, request: RequestId) => typedError<JavaLaunchInfo, IdeError>(__TAURI_INVOKE("java_resolve_launch", { module, test, policy, request })),
+	javaResolveLaunch: (module: string, test: boolean, debug: boolean, policy: BuildPolicy, request: RequestId, onEvent: Channel<BuildEvent>) => typedError<JavaLaunchInfo, IdeError>(__TAURI_INVOKE("java_resolve_launch", { module, test, debug, policy, request, onEvent })),
 	/**
 	 *  Downloads the latest `vendor` JDK of Java `version` into `location` (default:
 	 *  [`jdk_download_location`]), streaming progress through `on_event`; cancellable
@@ -836,10 +902,33 @@ export const commands = {
 	lspCodeActionQuery: (request: RequestId, doc: DocId, range: Range, only: string[]) => typedError<CodeActionQuery, IdeError>(__TAURI_INVOKE("lsp_code_action_query", { request, doc, range, only })),
 	lspCodeActions: (doc: DocId, range: Range, only: string[]) => typedError<CodeAction[], IdeError>(__TAURI_INVOKE("lsp_code_actions", { doc, range, only })),
 	lspCodeLens: (doc: DocId) => typedError<CodeLens[], IdeError>(__TAURI_INVOKE("lsp_code_lens", { doc })),
+	/**  How the server that reported `color` writes it with new components. */
+	lspColorPresentations: (doc: DocId, color: DocumentColor) => typedError<ColorPresentation[], IdeError>(__TAURI_INVOKE("lsp_color_presentations", { doc, color })),
 	lspCompletion: (request: RequestId, doc: DocId, pos: Pos, trigger: string | null) => typedError<CompletionList, IdeError>(__TAURI_INVOKE("lsp_completion", { request, doc, pos, trigger })),
+	/**  Colors in a document from its language servers (Tailwind classes, CSS values…). */
+	lspDocumentColors: (doc: DocId) => typedError<DocumentColor[], IdeError>(__TAURI_INVOKE("lsp_document_colors", { doc })),
 	lspDocumentHighlights: (doc: DocId, pos: Pos) => typedError<Highlight[], IdeError>(__TAURI_INVOKE("lsp_document_highlights", { doc, pos })),
 	/**  Links in a document (`href`s, Markdown links, `#include`s…) from its language servers. */
 	lspDocumentLinks: (doc: DocId) => typedError<DocumentLink[], IdeError>(__TAURI_INVOKE("lsp_document_links", { doc })),
+	/**
+	 *  Sets an argument of the call at `pos`; the edit reaches the document as the server's
+	 *  `workspace/applyEdit`, undoable like any other.
+	 */
+	lspEditArgument: (doc: DocId, pos: Pos, name: string, value: boolean | number | number | null | string | null) => typedError<null, IdeError>(__TAURI_INVOKE("lsp_edit_argument", { doc, pos, name, value })),
+	/**  The Flutter Property Editor's arguments of the call at `pos`. */
+	lspEditableArguments: (doc: DocId, pos: Pos) => typedError<{
+	/**  The widget's (or callee's) name. */
+	name: string | null,
+	documentation: string | null,
+	arguments: EditableArgument[],
+} | null, IdeError>(__TAURI_INVOKE("lsp_editable_arguments", { doc, pos })),
+	/**  The Throwable class the caret at `pos` names, for the exception breakpoint intention. */
+	lspExceptionClassAt: (request: RequestId, doc: DocId, pos: Pos) => typedError<{
+	/**  The binary name (`app.Outer$Failure`), as exception breakpoints take it. */
+	qualifiedName: string,
+	/**  The simple name (`Failure`). */
+	displayName: string,
+} | null, IdeError>(__TAURI_INVOKE("lsp_exception_class_at", { request, doc, pos })),
 	lspExecuteCodeAction: (request: RequestId, doc: DocId, action: CodeAction, answers: FormAnswer[]) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("lsp_execute_code_action", { request, doc, action, answers })),
 	/**
 	 *  Runs a server command (`workspace/executeCommand`), e.g. a completion item's
@@ -848,10 +937,16 @@ export const commands = {
 	lspExecuteCommand: (doc: DocId, command: Command) => typedError<null, IdeError>(__TAURI_INVOKE("lsp_execute_command", { doc, command })),
 	lspExtractInterface: (request: RequestId, doc: DocId, pos: Pos, members: string[], name: string, destination: string, confirmation: string | null) => typedError<ServerRefactored, IdeError>(__TAURI_INVOKE("lsp_extract_interface", { request, doc, pos, members, name, destination, confirmation })),
 	lspExtractInterfaceInfo: (request: RequestId, doc: DocId, pos: Pos) => typedError<ExtractInterfaceInfo, IdeError>(__TAURI_INVOKE("lsp_extract_interface_info", { request, doc, pos })),
+	/**
+	 *  Where other files import the document's file (Find Usages on a file, a Vue component's
+	 *  usages). Cancel with `cancel_request(request)`.
+	 */
+	lspFileReferences: (request: RequestId, doc: DocId) => typedError<Location[], IdeError>(__TAURI_INVOKE("lsp_file_references", { request, doc })),
 	lspFormat: (doc: DocId, range: {
 	start: Pos,
 	end: Pos,
 } | null, options: FormatOptions) => typedError<TextEdit[], IdeError>(__TAURI_INVOKE("lsp_format", { doc, range, options })),
+	lspFormatText: (path: string, text: string, options: FormatOptions) => typedError<TextEdit[], IdeError>(__TAURI_INVOKE("lsp_format_text", { path, text, options })),
 	lspGoto: (doc: DocId, pos: Pos, kind: GotoKind) => typedError<Location[], IdeError>(__TAURI_INVOKE("lsp_goto", { doc, pos, kind })),
 	/**
 	 *  Go to Implementation of the symbol at `pos`. Implementations found before a
@@ -960,6 +1055,8 @@ export const commands = {
 	activeParameter: number,
 } | null, IdeError>(__TAURI_INVOKE("lsp_signature_help", { doc, pos })),
 	lspSignatureInfo: (request: RequestId, doc: DocId, pos: Pos) => typedError<MethodSignature, IdeError>(__TAURI_INVOKE("lsp_signature_info", { request, doc, pos })),
+	lspSnapshotDiagnostics: (path: string, text: string, request: RequestId) => typedError<Diagnostic[], IdeError>(__TAURI_INVOKE("lsp_snapshot_diagnostics", { path, text, request })),
+	lspSourceActionText: (path: string, text: string, kind: string, request: RequestId) => typedError<TextEdit[], IdeError>(__TAURI_INVOKE("lsp_source_action_text", { path, text, kind, request })),
 	lspTypeHierarchy: (doc: DocId, pos: Pos, direction: HierarchyDirection) => typedError<HierarchyItem[], IdeError>(__TAURI_INVOKE("lsp_type_hierarchy", { doc, pos, direction })),
 	/**
 	 *  Contents of a read-only language-server document, including JDT library
@@ -1071,6 +1168,11 @@ export const commands = {
 	 */
 	navInheritance: () => typedError<ClassInheritance[], IdeError>(__TAURI_INVOKE("nav_inheritance")),
 	/**
+	 *  The stub (`.pyi`) of a Python document, or the implementation of a stub, and the
+	 *  functions and classes declared in both: PyCharm's stub gutter markers.
+	 */
+	navPythonStubs: (doc: DocId) => typedError<PythonStubLinks, IdeError>(__TAURI_INVOKE("nav_python_stubs", { doc })),
+	/**
 	 *  The file a Python import path (`a.b.c`, or `.x` relative to `from`) names; `None` when
 	 *  no project or content root has it.
 	 */
@@ -1103,7 +1205,7 @@ export const commands = {
 	 *  A window's answer to a plugin's `commitRequested`; false when the call no
 	 *  longer waits.
 	 */
-	pluginAnswerCommit: (requestId: string, answer: CommitAnswer) => __TAURI_INVOKE<boolean>("plugin_answer_commit", { requestId, answer }),
+	pluginAnswerCommit: (requestId: string, answer: CommitAnswer_Deserialize) => __TAURI_INVOKE<boolean>("plugin_answer_commit", { requestId, answer }),
 	/**
 	 *  Reports the user's answer to a plugin's `promptRequested`: the chosen keys
 	 *  (pick), `[text]` (input), anything (confirm: OK), or `None` when dismissed.
@@ -1126,7 +1228,7 @@ export const commands = {
 	 *  Runs plugins' before-commit checks on what `selection` commits, until
 	 *  `request` is cancelled.
 	 */
-	pluginCommitChecks: (selection: CommitSelection, checks: PluginCommitCheckRef[], request: RequestId) => typedError<PluginCommitCheckResult[], IdeError>(__TAURI_INVOKE("plugin_commit_checks", { selection, checks, request })),
+	pluginCommitChecks: (selection: CommitSelection_Deserialize, checks: PluginCommitCheckRef[], request: RequestId) => typedError<PluginCommitCheckResult[], IdeError>(__TAURI_INVOKE("plugin_commit_checks", { selection, checks, request })),
 	/**  Every plugin's console highlight rules (later changes arrive as `consoleRulesChanged`). */
 	pluginConsoleRules: () => __TAURI_INVOKE<{ [key in string]: ConsoleRule[] }>("plugin_console_rules"),
 	/**  Dispatches a wasm content editor action through the owning plugin's event handler. */
@@ -1226,14 +1328,24 @@ export const commands = {
 	 *  cancelled; returns the exit code.
 	 */
 	pluginServiceLog: (request: RequestId, pluginId: string, view: string, key: string, tab: string, on: string[], onLine: Channel<PluginOutputLine>) => typedError<number | null, IdeError>(__TAURI_INVOKE("plugin_service_log", { request, pluginId, view, key, tab, on, onLine })),
-	/**  The UI reports the focused editor's file (`editor-focused` events). */
-	pluginSetActiveFile: (path: string | null) => __TAURI_INVOKE<void>("plugin_set_active_file", { path }),
+	/**
+	 *  The UI reports the focused editor's file (`editor-focused` events), with its
+	 *  caret so plugins can scope line labels without re-reading the document.
+	 */
+	pluginSetActiveFile: (path: string | null, editor: {
+	path: string,
+	language: string,
+	selections: Range[],
+} | null) => __TAURI_INVOKE<void>("plugin_set_active_file", { path, editor }),
 	/**  Grants or revokes one declared capability. */
 	pluginSetCapability: (id: string, capability: string, granted: boolean) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_set_capability", { id, capability, granted })),
 	pluginSetEnabled: (id: string, enabled: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_set_enabled", { id, enabled })),
 	/**  Sets the marketplace index URL (an `https://…/index.json` or a local path; `None` for the default). */
 	pluginSetMarketUrl: (url: string | null) => __TAURI_INVOKE<void>("plugin_set_market_url", { url }),
-	/**  Stores a plugin secret (`None` or empty deletes it). The value never goes back to the UI or the plugin. */
+	/**
+	 *  Stores a plugin secret (`None` or empty deletes it). The value never goes back to the UI or the plugin.
+	 *  The keychain call takes up to hundreds of milliseconds, so it runs on the blocking pool.
+	 */
 	pluginSetSecret: (pluginId: string, name: string, value: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_set_secret", { pluginId, name, value })),
 	/**  Selects a plugin theme; both `None` restores the built-in theme. */
 	pluginSetTheme: (pluginId: string | null, themeId: string | null) => typedError<{
@@ -1332,15 +1444,45 @@ export const commands = {
 	/**
 	 *  Sets a `projectStructure.*` key in the settings of `root`, a project attached to the window's
 	 *  project (Mark Directory as there). Every open window holding that project follows.
+	 *  Like `project_workspace_members`, its `for_project` settings re-parse runs off the IPC thread.
 	 */
 	projectWorkspaceMemberSet: (root: string, key: string, value: string) => typedError<null, IdeError>(__TAURI_INVOKE("project_workspace_member_set", { root, key, value })),
-	/**  The workspace projects outside the window's project folder, for Mark Directory as there. */
+	/**
+	 *  The workspace projects outside the window's project folder, for Mark Directory as there.
+	 *  Each member's `for_project().layer(Project)` re-parses both settings layers and validates the
+	 *  merged tree against `Settings`; that stack-hungry work must not run on the IPC (main) thread,
+	 *  whose 1 MiB stack overflows on project open (STATUS_STACK_OVERFLOW).
+	 */
 	projectWorkspaceMembers: () => typedError<WorkspaceMember[], IdeError>(__TAURI_INVOKE("project_workspace_members")),
 	/**
 	 *  System Settings › HTTP Proxy › Check connection: GETs `url` through `proxy` as
 	 *  edited (not yet applied); the response status, or why there was none.
 	 */
 	proxyCheckConnection: (proxy: ProxySettings, url: string) => typedError<string, IdeError>(__TAURI_INVOKE("proxy_check_connection", { proxy, url })),
+	/**  A project on pypi.org by its exact name; `None` when PyPI has no such project. */
+	pypiPackage: (name: string, request: RequestId) => typedError<{
+	/**  The name as PyPI spells it. */
+	name: string,
+	summary: string,
+	/**  The newest release that is not a pre-release; empty when every release is yanked. */
+	latest: string,
+	/**  Releases with files to install, most recently uploaded first; yanked ones left out. */
+	versions: string[],
+} | null, IdeError>(__TAURI_INVOKE("pypi_package", { name, request })),
+	/**
+	 *  PyPI project names containing `query`, best match first, 51 at most (50 are shown). Answers from a cached copy of
+	 *  PyPI's name list, which the first search downloads and a search a day later refreshes.
+	 */
+	pypiSearch: (query: string, request: RequestId) => typedError<string[], IdeError>(__TAURI_INVOKE("pypi_search", { query, request })),
+	/**
+	 *  The requirements of a `requirements*.txt` / `pyproject.toml` the project's interpreter
+	 *  doesn't satisfy; `None` for other files, or with no local interpreter to ask.
+	 */
+	pythonRequirements: (doc: DocId, request: RequestId) => typedError<{
+	/**  The interpreter checked, which installs go to. */
+	python: IpcPath,
+	unsatisfied: UnsatisfiedRequirement[],
+} | null, IdeError>(__TAURI_INVOKE("python_requirements", { doc, request })),
 	/**  Recently opened files, most recent first (⌘E). */
 	recentFiles: () => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("recent_files")),
 	/**  The welcome screen's project groups. */
@@ -1379,6 +1521,8 @@ export const commands = {
 	/**  `linux`, `macos` or `windows`: the OS the project's commands run on. */
 	os: string,
 	commands: string[],
+	idlePolicy?: RemoteIdlePolicy | null,
+	takenOver?: boolean,
 } | null>("remote_current"),
 	remoteDelete: (connection: FsConnection, path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remote_delete", { connection, path })),
 	remoteDisconnect: () => __TAURI_INVOKE<void>("remote_disconnect"),
@@ -1396,6 +1540,11 @@ export const commands = {
 	remoteForwardPort: (remotePort: number) => typedError<ForwardedPort, IdeError>(__TAURI_INVOKE("remote_forward_port", { remotePort })),
 	/**  The remote ports this window forwards to this machine. */
 	remoteForwardedPorts: () => __TAURI_INVOKE<ForwardedPort[]>("remote_forwarded_ports"),
+	/**
+	 *  Read the same host-wide value for the close dialog and the idle timer: another project's
+	 *  daemon may have edited the file since this host loaded its settings.
+	 */
+	remoteIdleTimeoutMinutes: () => typedError<number, IdeError>(__TAURI_INVOKE("remote_idle_timeout_minutes")),
 	/**  A client OS file belongs to this machine even when its destination is remote. */
 	remoteImportLocal: (from: string, to: string, request: RequestId) => typedError<string[], IdeError>(__TAURI_INVOKE("remote_import_local", { from, to, request })),
 	/**
@@ -1409,12 +1558,18 @@ export const commands = {
 	remoteOf: (path: IpcPath) => __TAURI_INVOKE<[FsConnection, string] | null>("remote_of", { path }),
 	remoteOpen: (connection: FsConnection, path: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("remote_open", { connection, path })),
 	remoteRename: (connection: FsConnection, from: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("remote_rename", { connection, from, to })),
+	/**
+	 *  Stops the persistent `openidea-server` daemon for this window's remote project,
+	 *  terminating its terminals, runs, language servers and agent sessions, then disconnects.
+	 */
+	remoteStopBackend: () => typedError<null, IdeError>(__TAURI_INVOKE("remote_stop_backend")),
 	/**  Stops forwarding `remote_port` of `host` (`None`: the remote host itself). */
 	remoteStopForwarding: (remotePort: number, host: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("remote_stop_forwarding", { remotePort, host })),
 	/**  Records the user's trust decision for the window's remote project on this machine. */
 	remoteTrustSet: (trusted: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("remote_trust_set", { trusted })),
 	/**  This machine's trust decision for the window's remote project (see [`Connection::authorize`]). */
 	remoteTrustStatus: () => typedError<TrustStatus, IdeError>(__TAURI_INVOKE("remote_trust_status")),
+	remoteUploadInto: (connection: FsConnection, paths: IpcPath[], target: string, replace: boolean, request: RequestId) => typedError<TransferReport, IdeError>(__TAURI_INVOKE("remote_upload_into", { connection, paths, target, replace, request })),
 	removeRecent: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remove_recent", { path })),
 	removeRecentProject: (path: string) => typedError<null, IdeError>(__TAURI_INVOKE("remove_recent_project", { path })),
 	/**
@@ -1437,6 +1592,11 @@ export const commands = {
 	runApplicationPublish: (config: RunConfig_Deserialize, classPaths: string[], mainClass: string) => typedError<null, IdeError>(__TAURI_INVOKE("run_application_publish", { config, classPaths, mainClass })),
 	/**  Kept temporary configurations with the current settings applied. */
 	runApplySettings: (configs: RunConfig_Deserialize[]) => typedError<RunConfig_Serialize[], IdeError>(__TAURI_INVOKE("run_apply_settings", { configs })),
+	/**
+	 *  Reattaches to a running process `id` on this host, returning its buffered output
+	 *  and configuration while streaming subsequent chunks to `on_output`.
+	 */
+	runAttach: (id: RunId, onOutput: Channel<OutputChunk>) => typedError<RunAttach_Serialize, IdeError>(__TAURI_INVOKE("run_attach", { id, onOutput })),
 	runCloseStdin: (id: RunId) => typedError<null, IdeError>(__TAURI_INVOKE("run_close_stdin", { id })),
 	/**  Detected configs followed by user-defined ones (user ids win on conflict). */
 	runConfigs: () => typedError<RunConfig_Serialize[], IdeError>(__TAURI_INVOKE("run_configs")),
@@ -1451,6 +1611,11 @@ export const commands = {
 	runImportConfigs: (source: RunImportSource, existing: RunConfig_Deserialize[]) => typedError<RunImport_Serialize, IdeError>(__TAURI_INVOKE("run_import_configs", { source, existing })),
 	/**  Project files run configurations can be imported from (`.vscode/launch.json`). */
 	runImportSources: () => typedError<RunImportSource[], IdeError>(__TAURI_INVOKE("run_import_sources")),
+	/**
+	 *  A `Thread.print -l` of the JVM a run started: the deepest HotSpot JVM of the run's process
+	 *  tree, else the one carrying `token` (the run's marker property).
+	 */
+	runJvmThreadDump: (id: RunId, token: string | null) => typedError<JvmThreadsResult, IdeError>(__TAURI_INVOKE("run_jvm_thread_dump", { id, token })),
 	runList: () => __TAURI_INVOKE<RunInfo[]>("run_list"),
 	/**  Terminal size of a run started with "Emulate terminal in output console". */
 	runResize: (id: RunId, cols: number, rows: number) => typedError<null, IdeError>(__TAURI_INVOKE("run_resize", { id, cols, rows })),
@@ -1552,6 +1717,17 @@ export const commands = {
 } | null, IdeError>(__TAURI_INVOKE("sdk_container_python_refresh")),
 	/**  Installed interpreters / toolchains of `kind`; project-local ones first. */
 	sdkDetect: (kind: SdkKind) => typedError<Sdk[], IdeError>(__TAURI_INVOKE("sdk_detect", { kind })),
+	/**
+	 *  `flutter --version --machine` of the Flutter SDK at `path`, or of the `flutter` on the
+	 *  search path when `path` is empty; `None` when there is no Flutter SDK.
+	 */
+	sdkFlutterAt: (path: string) => typedError<{
+	/**  SDK root (not part of Flutter's answer). */
+	root?: string,
+	frameworkVersion?: string,
+	channel?: string | null,
+	dartSdkVersion?: string | null,
+} | null, IdeError>(__TAURI_INVOKE("sdk_flutter_at", { path })),
 	/**  The JDK whose home is `path`, as the SDK list shows it; `None` when it is no JDK home. */
 	sdkJdkAt: (path: string) => typedError<{
 	/**
@@ -1593,10 +1769,15 @@ export const commands = {
 	 *  with the Maven / Gradle dependency jars of the build model.
 	 */
 	sdkProjectLibraries: (request: RequestId, onGroups: Channel<LibraryGroup[]>) => typedError<LibraryGroup[], IdeError>(__TAURI_INVOKE("sdk_project_libraries", { request, onGroups })),
-	/**  Creates a Python environment with `tool` (`venv` / `uv` / `poetry`); output streams through `on_output`. */
-	sdkPythonCreateVenv: (tool: VenvTool, base: string, location: string, request: RequestId, onOutput: Channel<string>) => typedError<Sdk, IdeError>(__TAURI_INVOKE("sdk_python_create_venv", { tool, base, location, request, onOutput })),
+	/**
+	 *  Creates a Python environment and streams its output through `on_output`.
+	 *  With Pipenv, `install_packages` also installs the packages declared in the project's `Pipfile`.
+	 */
+	sdkPythonCreateVenv: (tool: VenvTool, base: string, location: string, installPackages: boolean, request: RequestId, onOutput: Channel<string>) => typedError<Sdk, IdeError>(__TAURI_INVOKE("sdk_python_create_venv", { tool, base, location, installPackages, request, onOutput })),
 	/**  The interpreter the project uses: the configured one, else its virtualenv. */
 	sdkPythonEffective: (near: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_python_effective", { near })),
+	/**  The environments the window's project defines for Hatch, `default` first (hatch must be on PATH). */
+	sdkPythonHatchEnvs: (request: RequestId) => typedError<string[], IdeError>(__TAURI_INVOKE("sdk_python_hatch_envs", { request })),
 	/**  An existing Python executable or virtualenv folder as an SDK; `None` if Python cannot run. */
 	sdkPythonInterpreter: (path: string) => typedError<{
 	/**
@@ -1617,11 +1798,20 @@ export const commands = {
 	/**  Rust standard library sources, Go default GOPATH. */
 	extra: IpcPath | null,
 } | null, IdeError>(__TAURI_INVOKE("sdk_python_interpreter", { path })),
-	sdkPythonPackages: (python: string, request: RequestId) => typedError<PythonPackage[], IdeError>(__TAURI_INVOKE("sdk_python_packages", { python, request })),
+	/**  A package index other than PyPI that installing from `python` uses; `None` for PyPI. */
+	sdkPythonPackageIndex: (python: string, request: RequestId) => typedError<string | null, IdeError>(__TAURI_INVOKE("sdk_python_package_index", { python, request })),
+	sdkPythonPackages: (python: string, outdated: boolean, request: RequestId) => typedError<PythonPackage[], IdeError>(__TAURI_INVOKE("sdk_python_packages", { python, outdated, request })),
 	/**  Installs (`uninstall = false`) or removes a package; output streams through `on_output`. */
 	sdkPythonPip: (python: string, requirement: string, uninstall: boolean, upgrade: boolean, request: RequestId, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("sdk_python_pip", { python, requirement, uninstall, upgrade, request, onOutput })),
 	/**  The Python interpreters of the recently opened projects, each with its project. */
 	sdkPythonProjectInterpreters: () => typedError<ProjectInterpreter[], IdeError>(__TAURI_INVOKE("sdk_python_project_interpreters")),
+	/**  `sys.path` of the interpreter `python`, for All Interpreters › Show Paths. */
+	sdkPythonSysPath: (python: string, request: RequestId) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("sdk_python_sys_path", { python, request })),
+	/**
+	 *  For each folder added to an interpreter's paths, why it stays off the import path
+	 *  (`None`: it is used). The folders may not be saved yet.
+	 */
+	sdkPythonUserPathProblems: (paths: string[]) => typedError<(UserPathProblem | null)[], IdeError>(__TAURI_INVOKE("sdk_python_user_path_problems", { paths })),
 	/**
 	 *  Find in Files. Results stream through `on_event`; ends with `Done`.
 	 *  Cancel with `cancel_request(request)`.
@@ -1675,6 +1865,14 @@ export const commands = {
 	 *  `cancel_request(request)`.
 	 */
 	spellCheck: (doc: DocId, scope: SpellScope, request: RequestId) => typedError<Typo[], IdeError>(__TAURI_INVOKE("spell_check", { doc, scope, request })),
+	/**
+	 *  Appends `word` to the custom dictionary `dictionary` (a
+	 *  `spelling.customDictionaries` entry: `~/…` from home, relative from the
+	 *  project root) and reports which file was written, creating it when missing.
+	 *  A Hunspell `.dic` with a `.aff` beside it keeps its word count line current;
+	 *  the speller picks the change up through its own mtime cache.
+	 */
+	spellSaveToDictionary: (dictionary: string, word: string) => typedError<string, IdeError>(__TAURI_INVOKE("spell_save_to_dictionary", { dictionary, word })),
 	/**  Replacements for a misspelt `word`, best first (Typo › Change to…). */
 	spellSuggest: (word: string) => typedError<string[], IdeError>(__TAURI_INVOKE("spell_suggest", { word })),
 	/**  Spring Web mapping sources for the request-path index of Search Everywhere. */
@@ -1684,6 +1882,8 @@ export const commands = {
 	/**  Ids of the configurations with an open connection. */
 	sshConnected: () => __TAURI_INVOKE<string[]>("ssh_connected"),
 	sshDisconnect: (id: string) => __TAURI_INVOKE<void>("ssh_disconnect", { id }),
+	/**  `Some` means legacy credentials remain in plaintext on this host. */
+	sshLegacyPasswords: (action: LegacyPasswordAction) => typedError<string | null, IdeError>(__TAURI_INVOKE("ssh_legacy_passwords", { action })),
 	/**  Whether connecting with configuration `id` needs a password first. */
 	sshNeedsSecret: (id: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("ssh_needs_secret", { id })),
 	/**
@@ -1754,6 +1954,11 @@ export const commands = {
 	 *  already registered to another app. Empty everywhere but Windows.
 	 */
 	systemProbeHotkeys: (combos: string[]) => typedError<string[], IdeError>(__TAURI_INVOKE("system_probe_hotkeys", { combos })),
+	/**
+	 *  Reattaches to an existing terminal session `id`, returning its buffered output
+	 *  and streaming subsequent chunks to `on_output`.
+	 */
+	termAttach: (id: TerminalId, cols: number, rows: number, onOutput: Channel<string>) => typedError<TerminalAttach, IdeError>(__TAURI_INVOKE("term_attach", { id, cols, rows, onOutput })),
 	/**  Installed shells for the Terminal's "New Predefined Session" menu. */
 	termAvailableShells: () => __TAURI_INVOKE<string[]>("term_available_shells"),
 	/**  Shell used when Settings › Terminal › Shell path is empty. */
@@ -1764,13 +1969,15 @@ export const commands = {
 	 */
 	termIsBusy: (id: TerminalId) => typedError<boolean, IdeError>(__TAURI_INVOKE("term_is_busy", { id })),
 	termKill: (id: TerminalId) => typedError<null, IdeError>(__TAURI_INVOKE("term_kill", { id })),
+	/**  Live terminal sessions of this window, for reattaching after a reconnect. */
+	termList: () => __TAURI_INVOKE<TerminalSessionInfo[]>("term_list"),
 	termResize: (id: TerminalId, cols: number, rows: number) => typedError<null, IdeError>(__TAURI_INVOKE("term_resize", { id, cols, rows })),
 	/**
 	 *  Async to stay off the main thread: forking the IDE (its whole address space)
 	 *  to start the shell takes tens of milliseconds, a frozen UI if run there.
 	 */
 	termSpawn: (options: TerminalOptions, onOutput: Channel<string>) => typedError<TerminalInfo, IdeError>(__TAURI_INVOKE("term_spawn", { options, onOutput })),
-	termStoreImage: (id: TerminalId, data: number[], mime: string) => typedError<string, IdeError>(__TAURI_INVOKE("term_store_image", { id, data, mime })),
+	termStoreImage: (id: TerminalId, data: IpcBytes, mime: string) => typedError<string, IdeError>(__TAURI_INVOKE("term_store_image", { id, data, mime })),
 	termWrite: (id: TerminalId, data: string) => typedError<null, IdeError>(__TAURI_INVOKE("term_write", { id, data })),
 	/**
 	 *  Installs (or reinstalls) a tool into `<app-data>/tools`, streaming output through
@@ -1787,49 +1994,79 @@ export const commands = {
 	 */
 	toolsUpdates: (request: RequestId) => typedError<ToolUpdate[], IdeError>(__TAURI_INVOKE("tools_updates", { request })),
 	undoWorkspaceEdit: (id: number) => typedError<null, IdeError>(__TAURI_INVOKE("undo_workspace_edit", { id })),
+	vcsAcceptConflictSide: (paths: string[], side: ConflictSide) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_accept_conflict_side", { paths, side })),
 	vcsAddToIgnore: (paths: string[], destination: IgnoreDestination) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("vcs_add_to_ignore", { paths, destination })),
-	vcsAddWorktree: (repo: string | null, path: string, commitish: string, newBranch: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_add_worktree", { repo, path, commitish, newBranch })),
-	vcsApplyPatch: (repo: string | null, patch: string) => typedError<ApplyOutcome, IdeError>(__TAURI_INVOKE("vcs_apply_patch", { repo, patch })),
-	vcsBlame: (path: string, text: string | null, revision: string | null) => typedError<BlameLine[], IdeError>(__TAURI_INVOKE("vcs_blame", { path, text, revision })),
+	vcsAddWorktree: (repo: string | null, path: string, commitish: string, newBranch: string | null, copyConfig: boolean | null, setup: {
+	script: string,
+	request: RequestId,
+} | null) => typedError<WorktreeCreation, IdeError>(__TAURI_INVOKE("vcs_add_worktree", { repo, path, commitish, newBranch, copyConfig, setup })),
+	vcsApplyMappedPatch: (repo: string | null, base: string | null, patch: string, paths: string[] | null, mappings: PatchPathMapping[]) => typedError<ProjectPatchOutcome, IdeError>(__TAURI_INVOKE("vcs_apply_mapped_patch", { repo, base, patch, paths, mappings })),
+	vcsApplyPatch: (repo: string | null, patch: string, paths: string[] | null) => typedError<ApplyOutcome, IdeError>(__TAURI_INVOKE("vcs_apply_patch", { repo, patch, paths })),
+	vcsApplyProjectPatch: (base: string, patch: string, paths: string[] | null) => typedError<ProjectPatchOutcome, IdeError>(__TAURI_INVOKE("vcs_apply_project_patch", { base, patch, paths })),
+	vcsBlame: (path: string, text: string | null, revision: string | null) => typedError<BlameLine_Serialize[], IdeError>(__TAURI_INVOKE("vcs_blame", { path, text, revision })),
 	/**
 	 *  History for Selection: commits that changed `lines` (0-based, inclusive) of `path`'s
 	 *  editor text. Cancellable with `cancel_request(request)`.
 	 */
 	vcsBlockHistory: (request: RequestId, path: string, text: string | null, lines: [number, number]) => typedError<BlockHistory, IdeError>(__TAURI_INVOKE("vcs_block_history", { request, path, text, lines })),
-	vcsBranchInfo: (repo: string | null) => typedError<BranchInfo, IdeError>(__TAURI_INVOKE("vcs_branch_info", { repo })),
+	vcsBranchInfo: (repo: string | null) => typedError<BranchInfo_Serialize, IdeError>(__TAURI_INVOKE("vcs_branch_info", { repo })),
 	vcsBranches: (repo: string | null) => typedError<Branch[], IdeError>(__TAURI_INVOKE("vcs_branches", { repo })),
 	vcsChangelistsLoad: () => typedError<ChangelistState, IdeError>(__TAURI_INVOKE("vcs_changelists_load")),
 	vcsChangelistsSave: (changelists: ChangelistState) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_changelists_save", { changelists })),
+	vcsCheckIncoming: (repo: string, request: RequestId) => typedError<IncomingRefsReport, IdeError>(__TAURI_INVOKE("vcs_check_incoming", { repo, request })),
 	vcsCheckout: (repo: string | null, branch: string, create: boolean, options: {
 	mode?: CheckoutMode,
 	/**  Required when checking out a remote branch whose local namesake is ahead of it. */
 	diverged?: DivergedLocal | null,
 	/**  Check the branch out even though another worktree has it checked out. */
 	ignoreOtherWorktrees?: boolean,
-} | null) => typedError<CheckoutOutcome, IdeError>(__TAURI_INVOKE("vcs_checkout", { repo, branch, create, options })),
+} | null, shelfBatch: string | null) => typedError<CheckoutOutcome, IdeError>(__TAURI_INVOKE("vcs_checkout", { repo, branch, create, options, shelfBatch })),
+	vcsCheckoutAffectedFiles: (repositories: IpcPath[], branch: string) => typedError<([IpcPath, string[]])[], IdeError>(__TAURI_INVOKE("vcs_checkout_affected_files", { repositories, branch })),
 	/**  Clones a repository (Get from VCS). Works without an open project. */
 	vcsClone: (request: RequestId, url: string, dest: string, depth: number | null, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_clone", { request, url, dest, depth, onOutput })),
-	vcsCommit: (repo: string | null, message: string, options: CommitOptions) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_commit", { repo, message, options })),
+	vcsCommit: (repo: string | null, message: string, options: CommitOptions_Deserialize) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_commit", { repo, message, options })),
+	vcsCommitCrlfPaths: (repo: string, paths: string[], options: CommitOptions_Deserialize, request: RequestId) => typedError<IpcPath[], IdeError>(__TAURI_INVOKE("vcs_commit_crlf_paths", { repo, paths, options, request })),
 	vcsCommitFiles: (repo: string | null, commit: string) => typedError<ChangedFile[], IdeError>(__TAURI_INVOKE("vcs_commit_files", { repo, commit })),
+	vcsCommitLargeFiles: (repo: string, paths: string[], options: CommitOptions_Deserialize, limit: number, request: RequestId) => typedError<LargeCommitFile[], IdeError>(__TAURI_INVOKE("vcs_commit_large_files", { repo, paths, options, limit, request })),
+	/**  Chooses the source branch and configured destination for a single Git Log commit. */
+	vcsCommitPushTarget: (repo: string | null, request: RequestId, revision: string) => typedError<CommitPushTarget, IdeError>(__TAURI_INVOKE("vcs_commit_push_target", { repo, request, revision })),
+	vcsCommitSelectionChanges: (repo: string | null, commits: string[], request: RequestId) => typedError<RevisionChange[], IdeError>(__TAURI_INVOKE("vcs_commit_selection_changes", { repo, commits, request })),
 	/**  Combined changes of several commits, `commits` oldest first. */
 	vcsCommitsChanges: (repo: string | null, commits: string[]) => typedError<RevisionChange[], IdeError>(__TAURI_INVOKE("vcs_commits_changes", { repo, commits })),
 	vcsComparePaths: (paths: string[], revision: string, repositories: string[] | null, request: RequestId) => typedError<CompareResult, IdeError>(__TAURI_INVOKE("vcs_compare_paths", { paths, revision, repositories, request })),
 	vcsCompareScope: (paths: string[]) => typedError<CompareScope, IdeError>(__TAURI_INVOKE("vcs_compare_scope", { paths })),
 	/**  `git config --get <key>` in the project repository; `None` when unset. */
 	vcsConfigGet: (repo: string | null, key: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("vcs_config_get", { repo, key })),
+	vcsConfigGetBool: (repo: string | null, key: string) => typedError<boolean | null, IdeError>(__TAURI_INVOKE("vcs_config_get_bool", { repo, key })),
 	/**  The user's side is `ours` (sides swapped during a rebase, as in IDEA). */
 	vcsConflictVersions: (path: string) => typedError<MergeVersions, IdeError>(__TAURI_INVOKE("vcs_conflict_versions", { path })),
 	/**  New Branch: creates `name` at `start` (HEAD when absent), optionally checking it out. */
-	vcsCreateBranch: (repo: string | null, name: string, start: string | null, checkout: boolean, overwrite: boolean | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_create_branch", { repo, name, start, checkout, overwrite })),
-	vcsCreatePatch: (repo: string | null, source: PatchSource) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_create_patch", { repo, source })),
+	vcsCreateBranch: (repo: string | null, name: string, start: string | null, checkout: boolean, overwrite: boolean | null, expectedTip: string | null, options: {
+	mode?: CheckoutMode,
+	/**  Required when checking out a remote branch whose local namesake is ahead of it. */
+	diverged?: DivergedLocal | null,
+	/**  Check the branch out even though another worktree has it checked out. */
+	ignoreOtherWorktrees?: boolean,
+} | null, shelfBatch: string | null) => typedError<BranchCreationOutcome, IdeError>(__TAURI_INVOKE("vcs_create_branch", { repo, name, start, checkout, overwrite, expectedTip, options, shelfBatch })),
+	vcsCreatePatch: (repo: string | null, source: PatchSource, base: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_create_patch", { repo, source, base })),
 	vcsCreateTag: (repo: string | null, name: string, commit: string, message: string | null, force: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_create_tag", { repo, name, commit, message, force })),
-	vcsDeleteBranch: (repo: string | null, branch: string) => typedError<DeletedBranch, IdeError>(__TAURI_INVOKE("vcs_delete_branch", { repo, branch })),
+	/**  Chooses the destination of a local branch or the current HEAD. */
+	vcsDefaultPushTarget: (repo: string | null, branch: string | null) => typedError<{
+	selection: PushSelection,
+	setUpstream: boolean,
+} | null, IdeError>(__TAURI_INVOKE("vcs_default_push_target", { repo, branch })),
+	vcsDeleteBranch: (repo: string | null, branch: string) => typedError<DeletedBranch_Serialize, IdeError>(__TAURI_INVOKE("vcs_delete_branch", { repo, branch })),
+	/**  Deletes a branch offered for cleanup by a successful merge. */
+	vcsDeleteMergedBranch: (repo: string, branch: string, expectedTip: string) => typedError<DeletedBranch_Serialize, IdeError>(__TAURI_INVOKE("vcs_delete_merged_branch", { repo, branch, expectedTip })),
 	/**  Tag › Delete: the result is what "Restore" needs. */
 	vcsDeleteTag: (repo: string | null, name: string) => typedError<DeletedTag, IdeError>(__TAURI_INVOKE("vcs_delete_tag", { repo, name })),
+	/**  Deletes a local tracking branch the user selected along with its remote branch. */
+	vcsDeleteTrackingBranch: (repo: string | null, branch: string, expectedTip: string, expectedUpstream: string) => typedError<DeletedBranch_Serialize, IdeError>(__TAURI_INVOKE("vcs_delete_tracking_branch", { repo, branch, expectedTip, expectedUpstream })),
 	/**  The auto-detected git executable (shown as the field's placeholder). */
 	vcsDetectedGit: () => __TAURI_INVOKE<string | null>("vcs_detected_git"),
 	/**  Directory Mappings: the repository roots detection finds, before any are excluded or added. */
 	vcsDetectedRoots: () => typedError<string[], IdeError>(__TAURI_INVOKE("vcs_detected_roots")),
+	vcsDiffEntries: (entries: DiffEntryRequest[]) => typedError<(DiffEntry | null)[], IdeError>(__TAURI_INVOKE("vcs_diff_entries", { entries })),
 	/**  Line hunks between two arbitrary texts (diff viewer, commit dialog). */
 	vcsDiffHunks: (oldText: string, newText: string) => __TAURI_INVOKE<LineHunk[]>("vcs_diff_hunks", { oldText, newText }),
 	/**
@@ -1844,22 +2081,42 @@ export const commands = {
 	vcsDiffWithWorktree: (repo: string | null, rev: string) => typedError<ChangedFile[], IdeError>(__TAURI_INVOKE("vcs_diff_with_worktree", { repo, rev })),
 	vcsDiscard: (paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_discard", { paths })),
 	vcsEditRemote: (repo: string | null, edit: RemoteEdit) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_edit_remote", { repo, edit })),
+	/**  Updates the selected repository's Git config. */
+	vcsEditSigning: (repo: string, edit: GitSigningEdit) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_edit_signing", { repo, edit })),
+	vcsExtractCommitChanges: (repo: string | null, commit: string, expectedHead: HistoryTip, paths: string[], message: string) => typedError<RewrittenCommit, IdeError>(__TAURI_INVOKE("vcs_extract_commit_changes", { repo, commit, expectedHead, paths, message })),
 	vcsFileAt: (path: string, rev: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("vcs_file_at", { path, rev })),
 	/**
 	 *  The file's git mode at `rev` (`100644`, `100755`, `120000`…), `"WT"` for the
 	 *  worktree; `None` when absent there. Lets the diff viewer report a mode-only change.
 	 */
 	vcsFileMode: (path: string, rev: string | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("vcs_file_mode", { path, rev })),
+	/**  Restores the batch's ready repositories. A repository with an operation in progress keeps its Shelf. */
+	vcsFinishShelfBatch: (batch: string, repositories: (string | null)[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_finish_shelf_batch", { batch, repositories })),
+	vcsFormatApplyCommit: (repo: string | null, checkpoint: string, edits: StagedTextEdit[], request: RequestId) => typedError<ApplyCommitReview, IdeError>(__TAURI_INVOKE("vcs_format_apply_commit", { repo, checkpoint, edits, request })),
 	/**
 	 *  Settings › Git › Test: runs `git --version` on `path`, or on the auto-detected
 	 *  executable when `path` is empty.
 	 */
 	vcsGitVersion: (path: string) => typedError<GitExecutableInfo, IdeError>(__TAURI_INVOKE("vcs_git_version", { path })),
+	/**  Lists OpenPGP key metadata using the signer Git uses for this repository. */
+	vcsGpgSigningKeys: (repo: string, request: RequestId) => typedError<GpgSigningKey[], IdeError>(__TAURI_INVOKE("vcs_gpg_signing_keys", { repo, request })),
+	/**  Whether a revision resolves to an existing Git commit. */
+	vcsHasCommit: (repo: string | null, revision: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("vcs_has_commit", { repo, revision })),
 	/**  Whether the repository has the executable Git hook `name` (Push dialog › Run Git hooks). */
 	vcsHasHook: (repo: string | null, name: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("vcs_has_hook", { repo, name })),
 	vcsIgnoreBlameRevision: (path: string, commit: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_ignore_blame_revision", { path, commit })),
-	/**  `git init` in `dir` (File › New Project… "Create Git repository"). */
+	vcsIgnoredFiles: () => typedError<FileStatus[], IdeError>(__TAURI_INVOKE("vcs_ignored_files")),
+	/**
+	 *  `git init` in `dir` (VCS › Create Git Repository…): with the git of the window's project when
+	 *  it is trusted, the default one in a window without a project.
+	 */
 	vcsInit: (dir: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_init", { dir })),
+	/**  Reads the selected push target without prompting for remote credentials. */
+	vcsInspectPush: (repo: string | null, request: RequestId, selection: PushSelection, live: boolean) => typedError<PushInspection, IdeError>(__TAURI_INVOKE("vcs_inspect_push", { repo, request, selection, live })),
+	/**  Clears cached verification results before refreshing the Git Log. */
+	vcsInvalidateLogSignatures: (repo: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_invalidate_log_signatures", { repo })),
+	/**  Keeps the prepared amend commit after a conflicting history replay. */
+	vcsKeepAmendCommit: (repo: string, commit: string) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_keep_amend_commit", { repo, commit })),
 	/**  Gutter change markers for a file, computed against its current (unsaved) text. */
 	vcsLineHunks: (path: string) => typedError<LineHunk[], IdeError>(__TAURI_INVOKE("vcs_line_hunks", { path })),
 	vcsLog: (repo: string | null, query: LogQuery) => typedError<Commit_Serialize[], IdeError>(__TAURI_INVOKE("vcs_log", { repo, query })),
@@ -1867,34 +2124,68 @@ export const commands = {
 	vcsLogDetailsBatch: (repo: string | null, revisions: string[], request: RequestId) => typedError<LogDetails[], IdeError>(__TAURI_INVOKE("vcs_log_details_batch", { repo, revisions, request })),
 	vcsLogRefs: (repo: string | null) => typedError<{ [key in string]: string }, IdeError>(__TAURI_INVOKE("vcs_log_refs", { repo })),
 	vcsLogUsers: (repo: string | null) => typedError<string[], IdeError>(__TAURI_INVOKE("vcs_log_users", { repo })),
-	vcsMerge: (repo: string | null, branch: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_merge", { repo, branch })),
+	vcsMerge: (repo: string | null, branch: string, shelfBatch: string | null, smart: boolean) => typedError<MergeOutcome, IdeError>(__TAURI_INVOKE("vcs_merge", { repo, branch, shelfBatch, smart })),
+	vcsMergeAffectedFiles: (repositories: IpcPath[], branch: string) => typedError<([IpcPath, string[]])[], IdeError>(__TAURI_INVOKE("vcs_merge_affected_files", { repositories, branch })),
 	/**  The best common ancestor of `a` and `b` (`git merge-base`), if any. */
 	vcsMergeBase: (repo: string | null, a: string, b: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("vcs_merge_base", { repo, a, b })),
 	/**  Merge dialog: merges `branches` into the current branch. */
-	vcsMergeWith: (repo: string | null, branches: string[], options: MergeOptions) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_merge_with", { repo, branches, options })),
+	vcsMergeWith: (repo: string | null, branches: string[], options: MergeOptions) => typedError<MergeOutcome, IdeError>(__TAURI_INVOKE("vcs_merge_with", { repo, branches, options })),
 	vcsMoveWorktree: (repo: string | null, path: string, to: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_move_worktree", { repo, path, to })),
+	vcsNotCherryPicked: (repo: string | null, source: string, target: string, request: RequestId) => typedError<string[] | null, IdeError>(__TAURI_INVOKE("vcs_not_cherry_picked", { repo, source, target, request })),
 	vcsOpenExternalLog: (path: string) => typedError<IpcPath, IdeError>(__TAURI_INVOKE("vcs_open_external_log", { path })),
 	/**
 	 *  Local history operation that may take a while (hooks, large checkouts); git's
 	 *  output streams through `on_output`. Cancellable.
 	 */
-	vcsOperation: (repo: string | null, request: RequestId, op: GitOperation, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_operation", { repo, request, op, onOutput })),
-	vcsPatchPreview: (repo: string | null, patch: string) => typedError<PatchFile[], IdeError>(__TAURI_INVOKE("vcs_patch_preview", { repo, patch })),
-	vcsPendingPatch: (repo: string | null, options: CommitOptions) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_pending_patch", { repo, options })),
-	vcsRebase: (repo: string | null, onto: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_rebase", { repo, onto })),
-	/**  Rebase dialog: rebases the current branch onto `upstream` (or `--onto`). */
-	vcsRebaseWith: (repo: string | null, upstream: string, options: RebaseOptions) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_rebase_with", { repo, upstream, options })),
+	vcsOperation: (repo: string | null, request: RequestId, op: GitOperation_Deserialize, onOutput: Channel<string>) => typedError<RewrittenCommit | ({ rebased: HistoryTip }) & { action?: never; emptyCherryPicks?: never } | ({ emptyCherryPicks: number; action: EmptyCherryPickAction }) & { rebased?: never } | null, IdeError>(__TAURI_INVOKE("vcs_operation", { repo, request, op, onOutput })),
+	vcsPatchFileDiff: (repo: string | null, base: string | null, patch: string, path: string, mappings: PatchPathMapping[] | null) => typedError<PatchFileDiff, IdeError>(__TAURI_INVOKE("vcs_patch_file_diff", { repo, base, patch, path, mappings })),
+	vcsPatchPreview: (repo: string | null, patch: string, target: "project" | "repository" | null, mappings: PatchPathMapping[] | null) => typedError<PatchPreview, IdeError>(__TAURI_INVOKE("vcs_patch_preview", { repo, patch, target, mappings })),
+	vcsPendingPatch: (repo: string | null, options: CommitOptions_Deserialize) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_pending_patch", { repo, options })),
+	vcsPreviewPartialCommit: (file: PartialCommitFile_Deserialize) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_preview_partial_commit", { file })),
 	/**  Network operation; progress lines stream through `on_output`. Cancellable. */
-	vcsRemote: (repo: string | null, request: RequestId, op: RemoteOp, onOutput: Channel<string>) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_remote", { repo, request, op, onOutput })),
+	vcsProjectUpdatePlan: (roots: (string | null)[]) => typedError<ProjectUpdateTarget[], IdeError>(__TAURI_INVOKE("vcs_project_update_plan", { roots })),
+	vcsPruneWorktrees: (repo: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_prune_worktrees", { repo })),
+	/**  Resolves the push source and the configured destination for each remote. */
+	vcsPushTargetChoices: (repo: string | null, request: RequestId, branch: string | null, revision: string | null) => typedError<PushTargetChoices, IdeError>(__TAURI_INVOKE("vcs_push_target_choices", { repo, request, branch, revision })),
+	/**  Reads a patch without normalizing its hunk line endings. */
+	vcsReadPatch: (path: string) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_read_patch", { path })),
+	vcsRebase: (repo: string | null, onto: string, shelfBatch: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_rebase", { repo, onto, shelfBatch })),
+	vcsRebaseEditorReply: (request: RequestId, index: number, reply: {
+	text: string,
+	rewords?: { [key in string]: string },
+} | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_rebase_editor_reply", { request, index, reply })),
+	/**  Rebase dialog: rebases a branch onto an upstream, or replays it from the root. */
+	vcsRebaseWith: (repo: string | null, upstream: string | null, options: RebaseOptions) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_rebase_with", { repo, upstream, options })),
+	vcsRebaseWithEditor: (repo: string | null, operation: RebaseEditorOperation, request: RequestId, onOutput: Channel<string>, onEdit: Channel<RebaseEditorPrompt_Deserialize>, expectedRebase: {
+	original: HistoryTip,
+	onto: string,
+} | null) => typedError<{
+	branch: string | null,
+	commit: string,
+} | null, IdeError>(__TAURI_INVOKE("vcs_rebase_with_editor", { repo, operation, request, onOutput, onEdit, expectedRebase })),
+	vcsRemote: (repo: string | null, request: RequestId, op: RemoteOp, onOutput: Channel<string>, shelfBatch: string | null) => typedError<PushReport | FetchReport | null, IdeError>(__TAURI_INVOKE("vcs_remote", { repo, request, op, onOutput, shelfBatch })),
 	vcsRemotes: (repo: string | null) => typedError<Remote[], IdeError>(__TAURI_INVOKE("vcs_remotes", { repo })),
 	vcsRemoveWorktree: (repo: string | null, path: string, force: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_remove_worktree", { repo, path, force })),
 	vcsRenameBranch: (repo: string | null, from: string, to: string, unsetUpstream: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_rename_branch", { repo, from, to, unsetUpstream })),
 	/**  "Restore" of the branch-deleted notification. */
-	vcsRestoreBranch: (repo: string | null, deleted: DeletedBranch) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_restore_branch", { repo, deleted })),
+	vcsRestoreBranch: (repo: string | null, deleted: DeletedBranch_Deserialize) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_restore_branch", { repo, deleted })),
 	/**  Undo of a history rewrite (Edit Commit Message, Drop, Squash). */
-	vcsRestoreHead: (repo: string | null, before: string, after: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_restore_head", { repo, before, after })),
+	vcsRestoreHead: (repo: string | null, before: string, after: string, branch: string | null, checkout: {
+	branch: string | null,
+	commit: string,
+} | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_restore_head", { repo, before, after, branch, checkout })),
 	/**  "Restore" of the tag-deleted notification. */
 	vcsRestoreTag: (repo: string | null, deleted: DeletedTag) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_restore_tag", { repo, deleted })),
+	vcsRestoreUnstaged: (paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_restore_unstaged", { paths })),
+	vcsRevertResolved: (paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_revert_resolved", { paths })),
+	vcsReviewApplyCommit: (repo: string | null, request: RequestId) => typedError<{
+	kind: CommitApplyKind,
+	checkpoint: string,
+	message: string,
+	paths: IpcPath[],
+	author?: string | null,
+	authorDate?: string | null,
+} | null, IdeError>(__TAURI_INVOKE("vcs_review_apply_commit", { repo, request })),
 	vcsRevisionChildren: (repo: string | null, revision: string, directory: string) => typedError<string[], IdeError>(__TAURI_INVOKE("vcs_revision_children", { repo, revision, directory })),
 	vcsRevisionFiles: (repo: string | null, revision: string) => typedError<string[], IdeError>(__TAURI_INVOKE("vcs_revision_files", { repo, revision })),
 	/**
@@ -1902,37 +2193,58 @@ export const commands = {
 	 *  working tree.
 	 */
 	vcsReword: (repo: string | null, commit: string, message: string) => typedError<HeadChange, IdeError>(__TAURI_INVOKE("vcs_reword", { repo, commit, message })),
+	vcsRollbackSubmodules: (paths: string[], source: SubmoduleRollbackSource, restoreCheckout: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_rollback_submodules", { paths, source, restoreCheckout })),
 	/**  The project's repositories, the primary one first. */
 	vcsRoots: () => typedError<VcsRoot[], IdeError>(__TAURI_INVOKE("vcs_roots")),
+	vcsSaveStagedText: (path: string, version: string, text: string) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_save_staged_text", { path, version, text })),
 	/**
 	 *  Git User Name Is Not Defined: sets `user.name` / `user.email` for commits in the
 	 *  repository, or globally.
 	 */
 	vcsSetUserIdentity: (repo: string | null, name: string, email: string, global: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_set_user_identity", { repo, name, email, global })),
+	vcsSetWorktreeLocked: (repo: string | null, path: string, locked: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_set_worktree_locked", { repo, path, locked })),
 	vcsShelfDelete: (id: string, path: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_shelf_delete", { id, path })),
 	vcsShelfDiff: (id: string) => typedError<ShelfDiffFile[], IdeError>(__TAURI_INVOKE("vcs_shelf_diff", { id })),
 	vcsShelfImport: (repo: string | null, name: string, patch: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_shelf_import", { repo, name, patch })),
-	vcsShelfPatch: (id: string, path: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_shelf_patch", { id, path })),
+	vcsShelfPatch: (id: string, path: string | null, base: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("vcs_shelf_patch", { id, path, base })),
 	vcsShelfRename: (id: string, name: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_shelf_rename", { id, name })),
 	/**  Shelve Changes: saves the changes of `paths` as a patch on the shelf and reverts them. */
 	vcsShelve: (name: string, paths: string[]) => typedError<ShelvedChangeList, IdeError>(__TAURI_INVOKE("vcs_shelve", { name, paths })),
 	vcsShelves: () => typedError<ShelvedChangeList[], IdeError>(__TAURI_INVOKE("vcs_shelves")),
+	/**  The effective signing settings for one registered Git repository. */
+	vcsSigningConfig: (repo: string) => typedError<GitSigningConfig, IdeError>(__TAURI_INVOKE("vcs_signing_config", { repo })),
 	vcsStage: (paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stage", { paths })),
+	vcsStageFormattedText: (path: string, before: string, after: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stage_formatted_text", { path, before, after })),
 	/**
 	 *  Stages only the selected hunks of a file's working-tree changes.
 	 *  Indices refer to `vcs_diff_hunks(index_text, worktree_text)`.
 	 */
 	vcsStageHunks: (path: string, hunks: number[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stage_hunks", { path, hunks })),
 	vcsStagePatch: (patch: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stage_patch", { patch })),
-	vcsStashApply: (repo: string | null, index: number, pop: boolean, reinstateIndex: boolean, branch: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stash_apply", { repo, index, pop, reinstateIndex, branch })),
-	vcsStashDrop: (repo: string | null, index: number) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stash_drop", { repo, index })),
+	vcsStageWithoutContent: (paths: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stage_without_content", { paths })),
+	vcsStagedText: (path: string) => typedError<{
+	text: string,
+	/**  Identifies the index entry, including its mode, when this text was read. */
+	version: string,
+} | null, IdeError>(__TAURI_INVOKE("vcs_staged_text", { path })),
+	vcsStagingLineHunks: (path: string, headPath: string | null) => typedError<{
+	indexVersion: string,
+	hunks: StagingLineHunk[],
+} | null, IdeError>(__TAURI_INVOKE("vcs_staging_line_hunks", { path, headPath })),
+	vcsStashApply: (repo: string | null, stash: Stash_Deserialize, pop: boolean, reinstateIndex: boolean, branch: string | null) => typedError<StashApplyResult, IdeError>(__TAURI_INVOKE("vcs_stash_apply", { repo, stash, pop, reinstateIndex, branch })),
+	vcsStashClear: (repo: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stash_clear", { repo })),
+	vcsStashDrop: (repo: string | null, stash: Stash_Deserialize) => typedError<number, IdeError>(__TAURI_INVOKE("vcs_stash_drop", { repo, stash })),
 	vcsStashPush: (repo: string | null, message: string | null, includeUntracked: boolean, keepIndex: boolean, paths: string[] | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_stash_push", { repo, message, includeUntracked, keepIndex, paths })),
-	vcsStashes: (repo: string | null) => typedError<Stash[], IdeError>(__TAURI_INVOKE("vcs_stashes", { repo })),
+	vcsStashes: (repo: string | null) => typedError<Stash_Serialize[], IdeError>(__TAURI_INVOKE("vcs_stashes", { repo })),
 	/**  Changes of every repository of the project. */
 	vcsStatus: () => typedError<FileStatus[], IdeError>(__TAURI_INVOKE("vcs_status")),
 	/**  Changes of `paths` only: the dirty-scope refresh after a watcher batch. */
 	vcsStatusPaths: (paths: string[]) => typedError<FileStatus[], IdeError>(__TAURI_INVOKE("vcs_status_paths", { paths })),
 	vcsTags: (repo: string | null) => typedError<string[], IdeError>(__TAURI_INVOKE("vcs_tags", { repo })),
+	vcsUndoBranchCreation: (repo: string | null, name: string, created: BranchCreation, previousHead: {
+	branch: string | null,
+	commit: string,
+} | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_undo_branch_creation", { repo, name, created, previousHead })),
 	/**
 	 *  Undo Commit: moves HEAD back to the commit's parent, keeping its changes staged.
 	 *  Returns the undone commit's message.
@@ -1948,10 +2260,13 @@ export const commands = {
 	 *  Branches › Update Selected: fast-forwards local `branches` to their upstreams, one
 	 *  fetch per remote; the result says what happened to each. Cancellable.
 	 */
-	vcsUpdateBranches: (repo: string | null, request: RequestId, branches: string[], onOutput: Channel<string>) => typedError<BranchUpdate[], IdeError>(__TAURI_INVOKE("vcs_update_branches", { repo, request, branches, onOutput })),
+	vcsUpdateBranches: (repo: string | null, request: RequestId, branches: string[], onOutput: Channel<string>, shelfBatch: string | null) => typedError<BranchUpdate_Serialize[], IdeError>(__TAURI_INVOKE("vcs_update_branches", { repo, request, branches, onOutput, shelfBatch })),
+	/**  Streams Git's prepared commit message and template for the selected worktree. */
+	vcsWatchCommitMessages: (repo: string | null, request: RequestId, onMessages: Channel<CommitMessages>) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_watch_commit_messages", { repo, request, onMessages })),
+	vcsWorktreeInclude: (repo: string | null) => typedError<WorktreeInclude, IdeError>(__TAURI_INVOKE("vcs_worktree_include", { repo })),
 	vcsWorktrees: (repo: string | null) => typedError<Worktree[], IdeError>(__TAURI_INVOKE("vcs_worktrees", { repo })),
 	/**  Create Patch › Save to file. */
-	vcsWritePatch: (path: string, patch: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_write_patch", { path, patch })),
+	vcsWritePatch: (path: string, patch: string, encoding: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_write_patch", { path, patch, encoding })),
 	/**  The browsers installed on this machine. */
 	webBrowsers: () => typedError<Browser[], IdeError>(__TAURI_INVOKE("web_browsers")),
 	/**  The web reference at `pos` of `doc` and its targets; `None` when there is no reference. */
@@ -1970,6 +2285,11 @@ export const commands = {
 	 *  HTML (Settings › File Types can make it so) is served as a page, whatever its extension.
 	 */
 	webUrl: (path: IpcPath) => typedError<string, IdeError>(__TAURI_INVOKE("web_url", { path })),
+	/**
+	 *  Acquires the interactive prompt turn for a batch close and brings this window forward.
+	 *  Returns `false` if the batch was cancelled while waiting.
+	 */
+	windowBeginPrompt: () => __TAURI_INVOKE<boolean>("window_begin_prompt"),
 	windowCloseContext: () => __TAURI_INVOKE<CloseContext>("window_close_context"),
 	/**  Release the opening window's reservation after navigation or cancellation. */
 	windowCompleteLaunch: () => typedError<null, IdeError>(__TAURI_INVOKE("window_complete_launch")),
@@ -1981,6 +2301,8 @@ export const commands = {
 	 *  with whether a target took the files.
 	 */
 	windowDragFiles: (paths: string[]) => typedError<boolean, IdeError>(__TAURI_INVOKE("window_drag_files", { paths })),
+	/**  Releases the interactive prompt turn held by this window. */
+	windowEndPrompt: () => __TAURI_INVOKE<void>("window_end_prompt"),
 	/**
 	 *  Flash (`true`) or stop flashing (`false`) this window's taskbar button, like IDEA when a
 	 *  breakpoint is hit while the window is in the background (macOS bounces the dock icon,
@@ -2060,6 +2382,11 @@ export const commands = {
 	 *  `background` (`#rrggbb`) paints a new window until its page has loaded.
 	 */
 	windowOpenSettings: (page: string | null, newProjects: boolean, background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_settings", { page, newProjects, background })),
+	/**
+	 *  Signals that this window passed its close checks and waits for peers closing in the same
+	 *  batch/tab group so they hide together in one frame. Returns `false` if the batch was cancelled.
+	 */
+	windowReadyToClose: () => __TAURI_INVOKE<boolean>("window_ready_to_close"),
 	/**  Appearance › Smooth scrolling for this window's web view (Linux only) */
 	windowSetSmoothScrolling: (enabled: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("window_set_smooth_scrolling", { enabled })),
 	/**  Height of the web title bar in native logical pixels (CSS height × IDE zoom). */
@@ -2373,6 +2700,8 @@ chosen: string | null } | { type: "thought"; text: string;
 startedMs?: number | null } | { type: "tool"; id: string; title: string; 
 /**  ACP tool kind: `read`, `edit`, `execute`, `search`, `fetch`, `think`… */
 kind: string; status: AgentToolStatus; locations: IpcPath[]; 
+/**  Images returned by the tool, kept separately from its truncated text. */
+images?: AgentImage[]; 
 /**  Text the tool reported (command output…), truncated. */
 output: string | null; diffs: AgentToolDiff[]; 
 /**  When the call started and ended (ms since the epoch); `None` in tasks saved before. */
@@ -2413,10 +2742,10 @@ form?: AgentForm | null;
 /**  Name of the chosen option, or `None` while pending. Cancelled requests read "Cancelled". */
 chosen: string | null } | { type: "error"; message: string };
 
-/**  Streamed to the window that subscribed (`AgentManager::subscribe`). */
+/**  Streamed to the window that subscribed (`AgentManager::subscribe_as`). */
 export type AgentEvent = AgentEvent_Serialize | AgentEvent_Deserialize;
 
-/**  Streamed to the window that subscribed (`AgentManager::subscribe`). */
+/**  Streamed to the window that subscribed (`AgentManager::subscribe_as`). */
 export type AgentEvent_Deserialize = 
 /**  A task was created or its metadata changed. */
 ({ type: "task"; task: AgentTask_Deserialize }) & { catalog?: never; entry?: never; eventId?: never; from?: never; id?: never; index?: never; length?: never; limits?: never; provider?: never; reason?: never; subagent?: never; text?: never } | ({ type: "removed"; id: string }) & { catalog?: never; entry?: never; eventId?: never; from?: never; index?: never; length?: never; limits?: never; provider?: never; reason?: never; subagent?: never; task?: never; text?: never } | 
@@ -2429,6 +2758,12 @@ export type AgentEvent_Deserialize =
  *  `from` UTF-16 units of its text when the previous event for it was sent.
  */
 ({ type: "append"; task: string; subagent: string | null; index: number; from: number; text: string }) & { catalog?: never; entry?: never; eventId?: never; id?: never; length?: never; limits?: never; provider?: never; reason?: never } | 
+/**
+ *  Text was appended to the output of tool entry `index`: it read the first `from` UTF-16
+ *  units of its output when the previous event for it was sent. Any other change of the
+ *  tool (status, title, diffs…) arrives as an `Entry`.
+ */
+({ type: "toolOutput"; task: string; subagent: string | null; index: number; from: number; text: string }) & { catalog?: never; entry?: never; eventId?: never; id?: never; length?: never; limits?: never; provider?: never; reason?: never } | 
 /**  An agent reported the usage limits of its account (shared by every task of `provider`). */
 ({ type: "limits"; provider: string; limits: AgentLimit[] }) & { catalog?: never; entry?: never; eventId?: never; from?: never; id?: never; index?: never; length?: never; reason?: never; subagent?: never; task?: never; text?: never } | 
 /**  A model lookup started or completed, including unsuccessful lookups. */
@@ -2438,7 +2773,7 @@ export type AgentEvent_Deserialize =
 /**  The task needs attention once (finished turn, explicit input, or failure). */
 ({ type: "attention"; task: string; eventId: string; reason: AgentAttentionReason }) & { catalog?: never; entry?: never; from?: never; id?: never; index?: never; length?: never; limits?: never; provider?: never; subagent?: never; text?: never };
 
-/**  Streamed to the window that subscribed (`AgentManager::subscribe`). */
+/**  Streamed to the window that subscribed (`AgentManager::subscribe_as`). */
 export type AgentEvent_Serialize = 
 /**  A task was created or its metadata changed. */
 ({ type: "task"; task: AgentTask_Serialize }) & { catalog?: never; entry?: never; eventId?: never; from?: never; id?: never; index?: never; length?: never; limits?: never; provider?: never; reason?: never; subagent?: never; text?: never } | ({ type: "removed"; id: string }) & { catalog?: never; entry?: never; eventId?: never; from?: never; index?: never; length?: never; limits?: never; provider?: never; reason?: never; subagent?: never; task?: never; text?: never } | 
@@ -2451,6 +2786,12 @@ export type AgentEvent_Serialize =
  *  `from` UTF-16 units of its text when the previous event for it was sent.
  */
 ({ type: "append"; task: string; subagent: string | null; index: number; from: number; text: string }) & { catalog?: never; entry?: never; eventId?: never; id?: never; length?: never; limits?: never; provider?: never; reason?: never } | 
+/**
+ *  Text was appended to the output of tool entry `index`: it read the first `from` UTF-16
+ *  units of its output when the previous event for it was sent. Any other change of the
+ *  tool (status, title, diffs…) arrives as an `Entry`.
+ */
+({ type: "toolOutput"; task: string; subagent: string | null; index: number; from: number; text: string }) & { catalog?: never; entry?: never; eventId?: never; id?: never; length?: never; limits?: never; provider?: never; reason?: never } | 
 /**  An agent reported the usage limits of its account (shared by every task of `provider`). */
 ({ type: "limits"; provider: string; limits: AgentLimit[] }) & { catalog?: never; entry?: never; eventId?: never; from?: never; id?: never; index?: never; length?: never; reason?: never; subagent?: never; task?: never; text?: never } | 
 /**  A model lookup started or completed, including unsuccessful lookups. */
@@ -2697,8 +3038,6 @@ export type AgentSettings_Deserialize = {
 	showUsageLimits?: boolean,
 	/**  What the session has cost so far, as the agent reports it. */
 	showCost?: boolean,
-	/**  A finished turn's work folds into one line under its message, leaving the reply. */
-	foldTurns?: boolean,
 	/**  Streaming text is revealed at a steady pace rather than chunk by chunk. */
 	smoothText?: boolean,
 	/**  Conversations and the composer expand to the full width of the pane instead of staying in a centred column. */
@@ -2742,8 +3081,6 @@ export type AgentSettings_Serialize = {
 	showUsageLimits: boolean,
 	/**  What the session has cost so far, as the agent reports it. */
 	showCost: boolean,
-	/**  A finished turn's work folds into one line under its message, leaving the reply. */
-	foldTurns: boolean,
 	/**  Streaming text is revealed at a steady pace rather than chunk by chunk. */
 	smoothText: boolean,
 	/**  Conversations and the composer expand to the full width of the pane instead of staying in a centred column. */
@@ -2778,18 +3115,7 @@ export type AgentSettings_Serialize = {
 };
 
 /**  One discovered skill: a folder with a `SKILL.md`. */
-export type AgentSkill = {
-	/**  The frontmatter `name`, else the folder's name. */
-	name: string,
-	description: string,
-	/**  Canonical folder holding `SKILL.md` (symlinks resolved, so duplicates collapse). */
-	path: IpcPath,
-	source: AgentSkillSource,
-	/**  The `SKILL.md` passes validation (`name` matches its folder, `description` present). */
-	valid: boolean,
-	/**  What validation found (`name` mismatch, missing or over-long description…). */
-	warnings: string[],
-};
+export type AgentSkill = AgentSkill_Serialize | AgentSkill_Deserialize;
 
 /**  How an agent skill may run (`[agents.skills.<name>] mode = …`). */
 export type AgentSkillMode = 
@@ -2824,6 +3150,8 @@ export type AgentSkillSource =
 "workspace" | 
 /**  The user's `~/.agents/skills` (what `npx skills add` fills). */
 "user" | 
+/**  Contributed by an enabled OpenIDEA plugin (`[[contributes.skills]]`). */
+"plugin" | 
 /**  The project's `.claude/skills`. */
 "claudeWorkspace" | 
 /**  `~/.claude/skills`. */
@@ -2845,14 +3173,86 @@ export type AgentSkillSource =
  *  A skill as Settings › Agents › Skills shows it: discovery plus the effective mode and
  *  which layer decided it.
  */
-export type AgentSkillState = {
-	skill: AgentSkill,
+export type AgentSkillState = AgentSkillState_Serialize | AgentSkillState_Deserialize;
+
+/**
+ *  A skill as Settings › Agents › Skills shows it: discovery plus the effective mode and
+ *  which layer decided it.
+ */
+export type AgentSkillState_Deserialize = {
+	skill: AgentSkill_Deserialize,
 	mode: AgentSkillMode,
 	/**
 	 *  What set `mode`: a session override, the workspace, the user's settings, workspace
 	 *  trust, or nothing (the default `auto`).
 	 */
 	origin: AgentSkillOrigin,
+};
+
+/**
+ *  A skill as Settings › Agents › Skills shows it: discovery plus the effective mode and
+ *  which layer decided it.
+ */
+export type AgentSkillState_Serialize = {
+	skill: AgentSkill_Serialize,
+	mode: AgentSkillMode,
+	/**
+	 *  What set `mode`: a session override, the workspace, the user's settings, workspace
+	 *  trust, or nothing (the default `auto`).
+	 */
+	origin: AgentSkillOrigin,
+};
+
+/**  One discovered skill: a folder with a `SKILL.md`. */
+export type AgentSkill_Deserialize = {
+	/**  The frontmatter `name`, else the folder's name. */
+	name: string,
+	description: string,
+	/**  Optional `argument-hint` from frontmatter, completed in the `/` menu. */
+	hint?: string | null,
+	/**  Canonical folder holding `SKILL.md` (symlinks resolved, so duplicates collapse). */
+	path: IpcPath,
+	source: AgentSkillSource,
+	/**  Other skill roots whose symlinked entry resolved to this same canonical `path`. */
+	alsoIn?: AgentSkillSource[],
+	/**  False when frontmatter sets `user-invocable: false` (omitted from `/` completion). */
+	userInvocable?: boolean,
+	/**  True when frontmatter sets `disable-model-invocation: true` (defaults to `slashOnly`). */
+	disableModelInvocation?: boolean,
+	/**  True when frontmatter sets `context: fork` (passed through natively to supporting CLIs). */
+	contextFork?: boolean,
+	/**  Optional `paths` / `globs` patterns from frontmatter (passed through natively to supporting CLIs). */
+	paths?: string[],
+	/**  The `SKILL.md` passes validation (`name` matches its folder, `description` present). */
+	valid: boolean,
+	/**  What validation found (`name` mismatch, missing or over-long description…). */
+	warnings: string[],
+};
+
+/**  One discovered skill: a folder with a `SKILL.md`. */
+export type AgentSkill_Serialize = {
+	/**  The frontmatter `name`, else the folder's name. */
+	name: string,
+	description: string,
+	/**  Optional `argument-hint` from frontmatter, completed in the `/` menu. */
+	hint?: string | null,
+	/**  Canonical folder holding `SKILL.md` (symlinks resolved, so duplicates collapse). */
+	path: IpcPath,
+	source: AgentSkillSource,
+	/**  Other skill roots whose symlinked entry resolved to this same canonical `path`. */
+	alsoIn?: AgentSkillSource[],
+	/**  False when frontmatter sets `user-invocable: false` (omitted from `/` completion). */
+	userInvocable: boolean,
+	/**  True when frontmatter sets `disable-model-invocation: true` (defaults to `slashOnly`). */
+	disableModelInvocation: boolean,
+	/**  True when frontmatter sets `context: fork` (passed through natively to supporting CLIs). */
+	contextFork: boolean,
+	/**  Optional `paths` / `globs` patterns from frontmatter (passed through natively to supporting CLIs). */
+	paths?: string[],
+	/**  The `SKILL.md` passes validation (`name` matches its folder, `description` present). */
+	valid: boolean,
+	/**  What validation found (`name` mismatch, missing or over-long description…). */
+	warnings: string[],
 };
 
 /**  Where an agent comes from. */
@@ -3017,6 +3417,13 @@ export type AgentUsage = {
 	cost?: AgentCost | null,
 };
 
+export type AmendTarget = {
+	commit: string,
+	head: HistoryTip,
+	/**  Remote-tracking branch names protected from history rewrites. */
+	protectedBranches?: string[],
+};
+
 /**  One entry of `adb devices -l`. */
 export type AndroidDevice = {
 	/**  `adb -s` value: a USB serial number, `emulator-5554`, or `host:port`. */
@@ -3100,6 +3507,8 @@ export type AppearanceSettings_Deserialize = {
 	contrastScrollbars?: boolean,
 	/**  Adjust colours for red-green vision deficiency. */
 	redGreenVision?: boolean,
+	/**  Turn off animations and transitions (also on when the OS asks for reduced motion). */
+	reduceMotion?: boolean,
 	differentToolWindowBackground?: boolean,
 	compactMode?: boolean,
 	/**  IDEA "Use smaller indents in trees": tool window trees indent less per level. */
@@ -3175,6 +3584,8 @@ export type AppearanceSettings_Serialize = {
 	contrastScrollbars: boolean,
 	/**  Adjust colours for red-green vision deficiency. */
 	redGreenVision: boolean,
+	/**  Turn off animations and transitions (also on when the OS asks for reduced motion). */
+	reduceMotion: boolean,
 	differentToolWindowBackground: boolean,
 	compactMode: boolean,
 	/**  IDEA "Use smaller indents in trees": tool window trees indent less per level. */
@@ -3224,6 +3635,22 @@ export type AppearanceSettings_Serialize = {
 	presentationAssistant: PresentationAssistantSettings,
 };
 
+export type ApplyCommitOptions = {
+	author?: string | null,
+	authorDate?: string | null,
+	signOff?: boolean,
+	runHooks?: boolean,
+};
+
+export type ApplyCommitReview = {
+	kind: CommitApplyKind,
+	checkpoint: string,
+	message: string,
+	paths: IpcPath[],
+	author?: string | null,
+	authorDate?: string | null,
+};
+
 export type ApplyOutcome = {
 	/**  Repository-relative paths changed without conflicts. */
 	applied: string[],
@@ -3239,6 +3666,9 @@ export type ArduinoSettings = {
 	cliConfig?: string,
 	fqbn?: string,
 };
+
+/**  A literal argument value. Ints stay ints: the server rejects `1.0` for an `int` parameter. */
+export type ArgumentValue = boolean | number | number | null | string;
 
 /**  Packaging artifact definition (Project Structure › Artifacts). */
 export type ArtifactConfig = {
@@ -3326,17 +3756,32 @@ export type BeforeLaunchTask = {
 	target?: string,
 };
 
-export type BlameLine = {
+export type BlameLine = BlameLine_Serialize | BlameLine_Deserialize;
+
+export type BlameLine_Deserialize = {
 	commit: string,
 	author: string,
 	timeMs: number | null,
 	summary: string,
+	/**  The file blamed for this line when it had another path in the attributed commit. */
+	originPath?: IpcPath | null,
+};
+
+export type BlameLine_Serialize = {
+	commit: string,
+	author: string,
+	timeMs: number | null,
+	summary: string,
+	/**  The file blamed for this line when it had another path in the attributed commit. */
+	originPath?: IpcPath | null,
 };
 
 /**  History for Selection: the commits that changed a block of lines, newest first. */
 export type BlockHistory = {
 	/**  The selected lines in HEAD (0-based, inclusive); None when none of them is committed. */
 	headLines: [number, number] | null,
+	/**  Those lines as HEAD has them, each ending with `\n`; None from servers that predate it. */
+	head?: string | null,
 	revisions: BlockRevision[],
 };
 
@@ -3363,35 +3808,93 @@ export type Branch = {
 	remote: boolean,
 	current: boolean,
 	upstream: string | null,
+	trackedTip?: TrackedTip | null,
 	ahead: number,
 	behind: number,
+	outgoing?: OutgoingCommits | null,
 	lastCommitMs: number | null,
 	/**  Tip commit id. */
 	commit?: string,
 };
 
-export type BranchInfo = {
+/**  The branch tip before and after creation, used to roll back a partially successful operation. */
+export type BranchCreation = {
+	tip: string,
+	previousTip: string | null,
+};
+
+export type BranchCreationOutcome = {
+	checkout: CheckoutOutcome,
+	/**  Present once the branch was created, even if restoring local changes needs attention. */
+	created: BranchCreation | null,
+};
+
+export type BranchInfo = BranchInfo_Serialize | BranchInfo_Deserialize;
+
+export type BranchInfo_Deserialize = {
 	/**  `None` when HEAD is detached. */
 	head: string | null,
 	headCommit: string | null,
 	upstream: string | null,
+	/**  The upstream as configured on the current branch, even before its tracking ref is fetched. */
+	upstreamTracking?: UpstreamTracking | null,
+	trackedTip?: TrackedTip | null,
 	ahead: number,
 	behind: number,
+	/**  Outgoing commits to the default Push destination, when it has a local tracking ref. */
+	outgoing?: OutgoingCommits | null,
 	/**  Merge / rebase / cherry-pick in progress. */
 	operation: string | null,
+	rebase?: RebaseState | null,
 };
 
-export type BranchUpdate = {
-	branch: string,
-	status: BranchUpdateStatus,
-	/**  Why it failed. */
-	message: string | null,
+export type BranchInfo_Serialize = {
+	/**  `None` when HEAD is detached. */
+	head: string | null,
+	headCommit: string | null,
+	upstream: string | null,
+	/**  The upstream as configured on the current branch, even before its tracking ref is fetched. */
+	upstreamTracking?: UpstreamTracking | null,
+	trackedTip?: TrackedTip | null,
+	ahead: number,
+	behind: number,
+	/**  Outgoing commits to the default Push destination, when it has a local tracking ref. */
+	outgoing?: OutgoingCommits | null,
+	/**  Merge / rebase / cherry-pick in progress. */
+	operation: string | null,
+	rebase?: RebaseState | null,
 };
+
+export type BranchRebasePlan = {
+	head: HistoryTip,
+	target: string,
+	onto: string,
+};
+
+export type BranchUpdate = BranchUpdate_Serialize | BranchUpdate_Deserialize;
 
 /**  What Update Selected did to one local branch. */
 export type BranchUpdateStatus = "updated" | "upToDate" | 
 /**  Diverged from its upstream: left as it is. */
 "notFastForward" | "noUpstream" | "failed";
+
+export type BranchUpdate_Deserialize = {
+	branch: string,
+	status: BranchUpdateStatus,
+	/**  Why it failed. */
+	message: string | null,
+	/**  Linked worktree where the update was attempted. */
+	worktree?: IpcPath | null,
+};
+
+export type BranchUpdate_Serialize = {
+	branch: string,
+	status: BranchUpdateStatus,
+	/**  Why it failed. */
+	message: string | null,
+	/**  Linked worktree where the update was attempted. */
+	worktree?: IpcPath | null,
+};
 
 /**  Editor › General › Breadcrumbs. */
 export type BreadcrumbsSettings = {
@@ -3563,6 +4066,18 @@ export type CapabilityInfo = {
 };
 
 /**
+ *  The caret moved in the focused editor. Positions are 0-based; `col` counts
+ *  UTF-16 code units, as everywhere in the plugin API.
+ */
+export type CaretMoved = {
+	path: string,
+	line: number,
+	col: number,
+	/**  The caret came to rest at this position; plugins may load what a hover needs. */
+	settled?: boolean,
+};
+
+/**
  *  A plugin package available for installation from a local catalog
  *  directory (the samples shipped with the IDE). Not installed by listing it.
  */
@@ -3610,6 +4125,7 @@ export type Changelist = {
 	id: string,
 	name: string,
 	comment?: string,
+	appliedCommit?: CommitApplySource | null,
 };
 
 /**  User change lists of a project and which list each changed file belongs to. */
@@ -3649,10 +4165,7 @@ export type CheckoutOptions = {
 	ignoreOtherWorktrees?: boolean,
 };
 
-/**
- *  Result of [`Repo::checkout_with`]; the non-`Done` variants other than `Conflicts`
- *  left the repository untouched.
- */
+/**  Result of [`Repo::checkout_with`]. */
 export type CheckoutOutcome = { kind: "done" } | 
 /**  These local changes (repository-relative paths) would be overwritten. */
 { kind: "localChanges"; files: string[] } | 
@@ -3669,11 +4182,27 @@ export type CheckoutOutcome = { kind: "done" } |
  *  on conflicts in these files.
  */
 { kind: "conflicts"; files: string[] } | 
+/**  Switched, but the saved changes could not be restored. */
+{ kind: "restoreFailed"; message: string } | 
 /**
  *  Git refused: `branch` is checked out in the linked worktree at `path`. Nothing
  *  changed; the branch can be worked on there.
  */
 { kind: "checkedOutInWorktree"; branch: string; path: string };
+
+/**  The refs shown before checking out and rebasing a branch onto the current branch. */
+export type CheckoutRebasePlan = {
+	base: HistoryTip,
+	branch: string,
+	branchTip: string | null,
+	remote: CheckoutRebaseRemote | null,
+};
+
+export type CheckoutRebaseRemote = {
+	name: string,
+	commit: string,
+	dropLocalCommits: boolean,
+};
 
 export type ChoiceOption = {
 	value: string,
@@ -3734,6 +4263,10 @@ export type CloseContext = {
 	quitting: boolean,
 	/**  Number of open project windows (settings windows excluded), including the caller. */
 	windows: number,
+	/**  Whether this window currently has auxiliary document windows that must settle first. */
+	hasDocumentWindows: boolean,
+	/**  Whether this close runs alongside other windows or on a background tab (prompts serialize and raise). */
+	batch: boolean,
 };
 
 export type CodeAction = {
@@ -3775,6 +4308,7 @@ export type CodeEditingSettings = {
 	/**  Next / previous error goes to errors only (skips warnings). */
 	nextErrorErrorsOnly?: boolean,
 	stickyLinesMax?: number,
+	stickyLinesDisabledLanguages?: string[],
 };
 
 export type CodeLens = {
@@ -3843,6 +4377,15 @@ export type ColorInfo = {
 	alpha: number | null,
 };
 
+/**
+ *  One way to write a picked color (`textDocument/colorPresentation`): `edits` replace the
+ *  color's range (with `label` unless the server gave its own edit), then any extra edits.
+ */
+export type ColorPresentation = {
+	label: string,
+	edits: TextEdit[],
+};
+
 export type Command = {
 	title: string,
 	command: string,
@@ -3861,20 +4404,56 @@ export type CommandForm = {
 export type Commit = Commit_Serialize | Commit_Deserialize;
 
 /**  A window's answer to a [`CommitRequest`]. */
-export type CommitAnswer = 
+export type CommitAnswer = CommitAnswer_Serialize | CommitAnswer_Deserialize;
+
+/**  A window's answer to a [`CommitRequest`]. */
+export type CommitAnswer_Deserialize = 
 /**  The window's project has no repository. */
-{ kind: "noRepository" } | { kind: "selection"; selection: CommitSelection } | 
+({ kind: "noRepository" }) & { selection?: never } | { kind: "selection"; selection: CommitSelection_Deserialize } | 
 /**  The message was replaced. */
-{ kind: "done" } | 
+({ kind: "done" }) & { selection?: never } | 
 /**  The draft is no longer at the revision. */
-{ kind: "stale" };
+({ kind: "stale" }) & { selection?: never };
+
+/**  A window's answer to a [`CommitRequest`]. */
+export type CommitAnswer_Serialize = 
+/**  The window's project has no repository. */
+({ kind: "noRepository" }) & { selection?: never } | { kind: "selection"; selection: CommitSelection_Serialize } | 
+/**  The message was replaced. */
+({ kind: "done" }) & { selection?: never } | 
+/**  The draft is no longer at the revision. */
+({ kind: "stale" }) & { selection?: never };
+
+export type CommitApplyKind = "cherry-pick" | "revert";
+
+export type CommitApplySource = {
+	kind?: CommitApplyKind,
+	repo: IpcPath,
+	commit: string,
+	base: string,
+	author: string | null,
+	authorDate: string | null,
+};
+
+export type CommitMessages = {
+	template: string | null,
+	prepared: string | null,
+	pendingApply?: PendingCommitApply | null,
+};
 
 /**  Commit Options (IDEA's commit options popup). */
-export type CommitOptions = {
+export type CommitOptions = CommitOptions_Serialize | CommitOptions_Deserialize;
+
+/**  Commit Options (IDEA's commit options popup). */
+export type CommitOptions_Deserialize = {
 	amend: boolean,
+	/**  Amend this older commit instead of HEAD, with the history snapshot selected in the UI. */
+	amendTarget?: AmendTarget | null,
 	signOff: boolean,
 	/**  `--author`, e.g. `Name <mail@example.com>`; `None` or blank uses the configured user. */
 	author: string | null,
+	/**  Explicit Git author date, e.g. an ISO 8601 timestamp with a time zone. */
+	authorDate?: string | null,
 	/**  False skips the pre-commit and commit-msg hooks (`--no-verify`). */
 	runHooks: boolean,
 	/**
@@ -3882,11 +4461,35 @@ export type CommitOptions = {
 	 *  committed through a temporary index, so neither the working tree nor the other
 	 *  entries of the index change; afterwards their index entries match the new commit.
 	 */
-	partial?: PartialCommitFile[],
+	partial?: PartialCommitFile_Deserialize[],
 	/**  Files committed with their working-tree content, staged or not. */
 	stage?: IpcPath[],
 	/**  Staged files left out of the commit; they stay staged afterwards. */
 	exclude?: IpcPath[],
+};
+
+/**  Commit Options (IDEA's commit options popup). */
+export type CommitOptions_Serialize = {
+	amend: boolean,
+	/**  Amend this older commit instead of HEAD, with the history snapshot selected in the UI. */
+	amendTarget: AmendTarget | null,
+	signOff: boolean,
+	/**  `--author`, e.g. `Name <mail@example.com>`; `None` or blank uses the configured user. */
+	author: string | null,
+	/**  Explicit Git author date, e.g. an ISO 8601 timestamp with a time zone. */
+	authorDate: string | null,
+	/**  False skips the pre-commit and commit-msg hooks (`--no-verify`). */
+	runHooks: boolean,
+	/**
+	 *  Files committed with only some of their changes (IDEA's partial commit). They are
+	 *  committed through a temporary index, so neither the working tree nor the other
+	 *  entries of the index change; afterwards their index entries match the new commit.
+	 */
+	partial: PartialCommitFile_Serialize[],
+	/**  Files committed with their working-tree content, staged or not. */
+	stage: IpcPath[],
+	/**  Staged files left out of the commit; they stay staged afterwards. */
+	exclude: IpcPath[],
 };
 
 /**  A problem a plugin's before-commit check reported (WIT `commit-checker.commit-problem`). */
@@ -3895,6 +4498,11 @@ export type CommitProblem = {
 	/**  Absolute path of the file it is in, if any (IPC form). */
 	path: string | null,
 	range: Range | null,
+};
+
+export type CommitPushTarget = {
+	branch: string | null,
+	destination: DefaultPushTarget | null,
 };
 
 /**  What a plugin asks of a window's Commit view. */
@@ -3911,17 +4519,42 @@ export type CommitRequest =
  *  What a window's Commit view would commit: per repository, the options
  *  `vcs_commit` would get.
  */
-export type CommitSelection = {
+export type CommitSelection = CommitSelection_Serialize | CommitSelection_Deserialize;
+
+export type CommitSelectionRepo = CommitSelectionRepo_Serialize | CommitSelectionRepo_Deserialize;
+
+export type CommitSelectionRepo_Deserialize = {
+	root: IpcPath,
+	options: CommitOptions_Deserialize,
+};
+
+export type CommitSelectionRepo_Serialize = {
+	root: IpcPath,
+	options: CommitOptions_Serialize,
+};
+
+/**
+ *  What a window's Commit view would commit: per repository, the options
+ *  `vcs_commit` would get.
+ */
+export type CommitSelection_Deserialize = {
 	/**  Changes whenever the message, the included changes or Amend do. */
 	revision: number,
 	message: string,
 	amend: boolean,
-	repositories: CommitSelectionRepo[],
+	repositories: CommitSelectionRepo_Deserialize[],
 };
 
-export type CommitSelectionRepo = {
-	root: IpcPath,
-	options: CommitOptions,
+/**
+ *  What a window's Commit view would commit: per repository, the options
+ *  `vcs_commit` would get.
+ */
+export type CommitSelection_Serialize = {
+	/**  Changes whenever the message, the included changes or Amend do. */
+	revision: number,
+	message: string,
+	amend: boolean,
+	repositories: CommitSelectionRepo_Serialize[],
 };
 
 /**  Version Control › Commit: commit checks and commit-message inspections. */
@@ -3932,9 +4565,11 @@ export type CommitSettings = {
 	 */
 	nonModal?: boolean,
 	includeChangesByDefault?: boolean,
+	commitAllWhenNothingStaged?: boolean,
 	/**  Start with an empty message instead of the last one / the changelist's. */
 	clearInitialMessage?: boolean,
 	analyzeCode?: boolean,
+	postponeSlowChecks?: boolean,
 	checkTodo?: boolean,
 	reformat?: boolean,
 	optimizeImports?: boolean,
@@ -4143,6 +4778,9 @@ export type ComposerInstallState = {
 	root: IpcPath,
 	reason: ComposerInstall,
 };
+
+/**  Which version the user accepts, relative to the merge editor's labels. */
+export type ConflictSide = "ours" | "theirs";
 
 /**  The user's answer on an install or consent page. */
 export type Consent = {
@@ -4399,6 +5037,7 @@ export type DataSource_Deserialize = {
 	readOnly?: boolean,
 	/**  SSH tunnel settings (`None`: never configured; kept but unused when not `enabled`). */
 	ssh?: DbSsh | null,
+	externalTunnel?: DbExternalTunnel | null,
 	/**  Wire-compatible product preset (`cockroachdb`, `tidb`…; empty: the driver itself). */
 	vendor?: string,
 	color?: DbColor | null,
@@ -4445,6 +5084,7 @@ export type DataSource_Serialize = {
 	readOnly: boolean,
 	/**  SSH tunnel settings (`None`: never configured; kept but unused when not `enabled`). */
 	ssh: DbSsh | null,
+	externalTunnel?: DbExternalTunnel | null,
 	/**  Wire-compatible product preset (`cockroachdb`, `tidb`…; empty: the driver itself). */
 	vendor: string,
 	color: DbColor | null,
@@ -4593,6 +5233,12 @@ export type DbDumpKind =
 "mysqlSql" | "unknown";
 
 export type DbDumpStatements = "copy" | "inserts" | "columnInserts";
+
+/**  A foreground program that forwards an IDE-assigned loopback port to the database. */
+export type DbExternalTunnel = {
+	executable: string,
+	arguments: string[],
+};
 
 /**  `schema.table (columns) REFERENCES ref_schema.ref_table (ref_columns)`. */
 export type DbForeignKey = {
@@ -4809,6 +5455,8 @@ export type DbQueryResult = {
 	elapsedMs: number | null,
 	/**  Until the server's first answer; the rest of `elapsed_ms` is fetching. */
 	executionMs: number | null,
+	/**  Cells of `rows` cut short by [`QueryResult::cap_cells`], in row order. */
+	truncated: DbTruncatedCell[],
 };
 
 export type DbResultColumn = {
@@ -4945,6 +5593,17 @@ export type DbTableDetails = {
 	triggers: DbTriggerInfo[],
 };
 
+/**
+ *  One object privilege on a table: `grantee` may run `privilege` (`SELECT`, …), granted
+ *  by `grantor` (unknown on MySQL), and may grant it on when `grantable`.
+ */
+export type DbTableGrant = {
+	grantee: string,
+	grantor: string | null,
+	privilege: string,
+	grantable: boolean,
+};
+
 export type DbTableInfo = {
 	name: string,
 	kind: DbTableKind,
@@ -4986,6 +5645,19 @@ export type DbTriggerInfo = {
 	timing: string,
 	/**  `insert`, `update or delete`… */
 	events: string,
+};
+
+/**  A cell of a [`QueryResult`] whose text was cut to a prefix. */
+export type DbTruncatedCell = {
+	row: number,
+	column: number,
+	/**  Length of the whole value in UTF-16 code units (what a JavaScript string counts). */
+	length: number,
+	/**
+	 *  FNV-1a (32 bits) of the whole value's UTF-16 code units, each taken as one 16-bit step,
+	 *  so a client that reads the value again can tell whether it is the one that was cut.
+	 */
+	hash: number,
 };
 
 /**  Transaction control of the data source's consoles. */
@@ -5110,6 +5782,8 @@ export type DebuggerSettings = {
 	debugServerPage?: boolean,
 	/**  Flutter: saving a Dart file of a running debug session hot reloads the app. */
 	flutterHotReloadOnSave?: boolean,
+	/**  Java: whether to reload changed classes into running debug sessions after compilation. */
+	hotSwapAfterCompile?: HotSwapPolicy,
 	python?: PythonDebuggerSettings,
 };
 
@@ -5119,6 +5793,19 @@ export type Decoration = {
 	style: string,
 	hover: string | null,
 	after: string | null,
+	/**
+	 *  Markdown rendered in the editor's hover card (API 1.16); `hover` is the
+	 *  plain-text fallback shown when this is absent.
+	 */
+	markdownHover: string | null,
+	/**  The item's own colors (API 1.17 `set-styled`), validated `#rrggbb` / `#rrggbbaa`. */
+	colors?: DecorationColors | null,
+};
+
+/**  Colors of a styled editor decoration (API 1.17). */
+export type DecorationColors = {
+	foreground: string | null,
+	background: string | null,
 };
 
 /**  A plugin-owned editor or project-tree decoration set for one file. */
@@ -5131,14 +5818,41 @@ export type DecorationSet = {
 	file: FileDecoration | null,
 };
 
+export type DefaultPushTarget = {
+	selection: PushSelection,
+	setUpstream: boolean,
+};
+
 /**  A deleted local branch, enough to restore it (IDEA's "Restore" notification action). */
-export type DeletedBranch = {
+export type DeletedBranch = DeletedBranch_Serialize | DeletedBranch_Deserialize;
+
+/**  A deleted local branch, enough to restore it (IDEA's "Restore" notification action). */
+export type DeletedBranch_Deserialize = {
 	name: string,
 	/**  The commit the branch pointed at. */
 	tip: string,
 	/**  Its upstream (`origin/x`), restored with it. */
 	upstream: string | null,
-	/**  It was not fully merged: its own commits are now unreachable from any branch. */
+	/**  Configured remote and source branch, if the upstream is remote. */
+	remoteUpstream?: UpstreamTracking | null,
+	/**  Tip that Git compared the deleted branch with when deciding it was unmerged. */
+	unmergedBase?: string | null,
+	/**  Git required a force delete because the branch was not fully merged. */
+	unmerged: boolean,
+};
+
+/**  A deleted local branch, enough to restore it (IDEA's "Restore" notification action). */
+export type DeletedBranch_Serialize = {
+	name: string,
+	/**  The commit the branch pointed at. */
+	tip: string,
+	/**  Its upstream (`origin/x`), restored with it. */
+	upstream: string | null,
+	/**  Configured remote and source branch, if the upstream is remote. */
+	remoteUpstream?: UpstreamTracking | null,
+	/**  Tip that Git compared the deleted branch with when deciding it was unmerged. */
+	unmergedBase?: string | null,
+	/**  Git required a force delete because the branch was not fully merged. */
 	unmerged: boolean,
 };
 
@@ -5316,6 +6030,17 @@ export type Diagnostic = {
 	server?: string | null,
 };
 
+export type DiffEntry = {
+	mode: string,
+	/**  The recorded commit for a gitlink, independent of the parent's object database. */
+	gitlink: string | null,
+};
+
+export type DiffEntryRequest = {
+	path: IpcPath,
+	rev: string,
+};
+
 /**  The two files of a command-line diff (`openidea diff a.txt b.txt`), both sides editable. */
 export type DiffFilesLaunch = {
 	left: IpcPath,
@@ -5330,9 +6055,13 @@ export type DiffLaunch_Deserialize = {
 	/**  Absolute path of the file (the right side's path). */
 	path: string,
 	left: DiffSide_Deserialize,
+	middle?: DiffSide_Deserialize | null,
 	right: DiffSide_Deserialize,
-	/**  0-based line of the right side to reveal. */
+	/**  0-based line to reveal. */
 	line?: number | null,
+	lineSide?: DiffLineSide | null,
+	col?: number | null,
+	chain?: DiffLaunch_Deserialize[] | null,
 };
 
 /**  The diff a diff window shows (IDEA's "Show Diff in New Window"), from the UI's `DiffData`. */
@@ -5340,10 +6069,16 @@ export type DiffLaunch_Serialize = {
 	/**  Absolute path of the file (the right side's path). */
 	path: string,
 	left: DiffSide_Serialize,
+	middle?: DiffSide_Serialize | null,
 	right: DiffSide_Serialize,
-	/**  0-based line of the right side to reveal. */
+	/**  0-based line to reveal. */
 	line?: number | null,
+	lineSide?: DiffLineSide | null,
+	col?: number | null,
+	chain?: DiffLaunch_Serialize[] | null,
 };
+
+export type DiffLineSide = "left" | "middle" | "right";
 
 /**  One side of a diff window's comparison (the UI's `DiffSide`, `diffInput.ts`). */
 export type DiffSide = DiffSide_Serialize | DiffSide_Deserialize;
@@ -5488,6 +6223,8 @@ export type DockerConnection = {
 	id: string,
 	name: string,
 	endpoint: DockerEndpoint,
+	/**  Whether the user explicitly disconnected this connection in Services. */
+	disconnected?: boolean,
 };
 
 export type DockerContainer = {
@@ -5652,6 +6389,16 @@ export type DocumentChanged = {
 	changes: DocumentTextChange[],
 };
 
+/**  A color a server found in a document (`textDocument/documentColor`); components are 0–1. */
+export type DocumentColor = {
+	range: Range,
+	red: number | null,
+	green: number | null,
+	blue: number | null,
+	alpha: number | null,
+	server: ServerId,
+};
+
 /**  Encoding and BOM currently applied to an open document. */
 export type DocumentEncoding = {
 	encoding: string,
@@ -5767,6 +6514,36 @@ export type DynamicItem = {
 	label: string,
 	/**  Drawn with a check mark in this state; `None` for a plain item. */
 	checked?: boolean | null,
+};
+
+export type EditableArgument = {
+	name: string,
+	documentation: string | null,
+	/**  How to edit it: `string`, `int`, `double`, `bool` or `enum`. */
+	type: string,
+	/**  The literal value in the code (only while `has_argument`); an expression has `display_value`. */
+	value: ArgumentValue | null,
+	hasArgument?: boolean,
+	defaultValue: ArgumentValue | null,
+	displayValue: string | null,
+	isRequired?: boolean,
+	isNullable?: boolean,
+	isDeprecated?: boolean,
+	isEditable?: boolean,
+	notEditableReason: string | null,
+	/**  An enum's values, as `EnumName.value`. */
+	options: string[] | null,
+};
+
+/**
+ *  The arguments the Flutter Property Editor edits: those of the widget (or other) call at a
+ *  position, as the Dart server's `dart/textDocument/editableArguments` reports them.
+ */
+export type EditableArguments = {
+	/**  The widget's (or callee's) name. */
+	name: string | null,
+	documentation: string | null,
+	arguments: EditableArgument[],
 };
 
 /**  Editor › General › Appearance. */
@@ -6032,6 +6809,8 @@ export type EditorTabsSettings = {
 	activateOnClose?: string,
 };
 
+export type EmptyCherryPickAction = "skip" | "createEmpty";
+
 /**  Editor › File Encodings. */
 export type EncodingSettings = {
 	/**  Fallback for files outside the project that are not valid UTF-8 (WHATWG label). */
@@ -6058,16 +6837,29 @@ export type EnvReloaded = {
 	shellRead: boolean,
 };
 
-export type ErrorData = { type: "tool"; tool: string; missing: boolean };
+export type ErrorData = { type: "tool"; tool: string; missing: boolean } | 
+/**  A non-fast-forward push from the current branch to its configured upstream. */
+{ type: "pushRejected"; source: string; upstream: string; divergence: PushDivergence | null; 
+/**  Other refs may already have been published in the same push. */
+report?: PushReport | null } | 
+/**  Git updated some refs before a later ref or push URL failed. */
+{ type: "pushPartiallyApplied"; report: PushReport } | 
+/**  A conflicted history replay left an amend commit ready to keep separately. */
+{ type: "amendConflict"; commit: string } | 
+/**
+ *  jdtls could not set a module up as a Java project: the errors on its build files and
+ *  the builds enclosing it (`path: message`, the path relative to the project), nearest first.
+ */
+{ type: "javaBuildProblems"; problems: string[] };
 
 export type ErrorKind = "notFound" | "alreadyExists" | "permissionDenied" | "invalidInput" | 
-/**  Document version mismatch; the UI must resync the full text. */
+/**  The requested state is stale; the UI must use the current snapshot. */
 "outOfSync" | "cancelled" | "timedOut" | 
 /**  A required external tool (language server, git, debugger) is unavailable. */
 "unavailable" | "io" | "protocol" | "internal";
 
 /**  Kinds of workbench events a plugin can subscribe to (`on-event:<kind>`). */
-export type EventKind = "document-changed" | "websocket-ready" | "file-closed" | "settings-changed" | "input-mode-changed" | "run-exited" | "terminal-exited" | "content-tab-action" | "extensions-changed" | "file-opened" | "file-saved" | "files-changed" | "editor-focused" | "action-performed" | "vcs-changed" | 
+export type EventKind = "document-changed" | "websocket-ready" | "file-closed" | "settings-changed" | "input-mode-changed" | "run-exited" | "terminal-exited" | "content-tab-action" | "extensions-changed" | "file-opened" | "file-saved" | "files-changed" | "editor-focused" | "caret-moved" | "action-performed" | "vcs-changed" | 
 /**  Problems of the window's files changed (a language server or a report). */
 "problems-changed" | "scheduled";
 
@@ -6081,6 +6873,14 @@ export type ExceptionClassBreakpoint = {
 	/**  Patterns (`com.acme.*`, `*Test`, a full name) for the class whose code throws. */
 	classFilters: string[],
 	classExclusionFilters: string[],
+};
+
+/**  The exception class a caret names: a reference to it, its declaration, or a throw of it. */
+export type ExceptionClassRef = {
+	/**  The binary name (`app.Outer$Failure`), as exception breakpoints take it. */
+	qualifiedName: string,
+	/**  The simple name (`Failure`). */
+	displayName: string,
 };
 
 /**  What a session's exception class breakpoints can do. */
@@ -6170,11 +6970,11 @@ export type ExternalDiffSide = {
 };
 
 /**  A formatter that runs outside the language servers, with its own settings group. */
-export type ExternalFormatter = "prettier" | "oxfmt" | "ruff";
+export type ExternalFormatter = "prettier" | "oxfmt" | "biome" | "ruff" | "black";
 
-/**  An external formatter (Prettier, oxfmt, Ruff) and the languages it formats. */
+/**  An external formatter (Prettier, oxfmt, Biome, Ruff, Black) and the languages it formats. */
 export type ExternalFormatterSettings = {
-	/**  Empty path: project node_modules (Prettier/oxfmt), managed installation, then PATH. */
+	/**  Empty path: project node_modules (Prettier/oxfmt/Biome), managed installation, then PATH. */
 	path?: string,
 	/**  Ruff only: directory containing its configuration, or a configuration file. */
 	configurationDirectory?: string,
@@ -6234,6 +7034,18 @@ export type FacetConfig = {
 	webRoot?: string,
 };
 
+export type FetchRemoteResult = {
+	remote: string,
+	pruned: string[],
+	error: IdeError | null,
+};
+
+export type FetchReport = {
+	remotes: FetchRemoteResult[],
+};
+
+export type FetchTagsMode = "auto" | "sync" | "always" | "never";
+
 export type Field = {
 	id: string,
 	label: string,
@@ -6249,8 +7061,11 @@ export type Field = {
 };
 
 export type FieldKind = { type: "text"; pattern: string | null; placeholder: string } | { type: "choice"; options: ChoiceOption[]; segmented: boolean } | { type: "checkbox" } | 
-/**  An installed SDK of this kind (`jdk`); the value is its home, empty = automatic. */
-{ type: "sdk"; sdk: string } | 
+/**
+ *  An installed SDK of this kind (`jdk`); the value is its home (its version when
+ *  `version`), empty = automatic. SDKs older than `min` are not offered.
+ */
+{ type: "sdk"; sdk: string; version: boolean; min: string | null } | 
 /**  Several ids out of grouped items; the value is comma-separated. */
 { type: "dependencies"; groups: DependencyGroup[] };
 
@@ -6517,12 +7332,42 @@ export type FlutterDevice = {
 	emulator: boolean,
 	/**  The adb state keeping it from being used (`unauthorized`, `offline`, …). */
 	unavailable: string | null,
+	/**  The [`FlutterEmulator`] it runs on: an AVD name, or `apple_ios_simulator`. */
+	emulatorId?: string | null,
 };
 
 /**  The project's Flutter devices, best default first. */
 export type FlutterDeviceList = {
 	status: FlutterDaemonStatus,
 	devices: FlutterDevice[],
+	/**  The emulators that no listed device runs on. */
+	emulators?: FlutterEmulator[],
+};
+
+/**  An Android emulator (AVD) or the iOS Simulator that `flutter emulators --launch` can start. */
+export type FlutterEmulator = {
+	id: string,
+	name: string,
+	/**  `android` or `ios`. */
+	platformType: string | null,
+};
+
+/**  The Flutter plugin's "Flutter SDK path". */
+export type FlutterSettings = {
+	/**
+	 *  Flutter SDK root (holding `bin/flutter`); its `flutter` and Dart replace the ones on
+	 *  `PATH`. Empty = `PATH`.
+	 */
+	sdk?: string,
+};
+
+/**  What `flutter --version --machine` reports of an SDK. */
+export type FlutterVersion = {
+	/**  SDK root (not part of Flutter's answer). */
+	root?: string,
+	frameworkVersion?: string,
+	channel?: string | null,
+	dartSdkVersion?: string | null,
 };
 
 export type FocusedEditor = {
@@ -6532,7 +7377,7 @@ export type FocusedEditor = {
 	selectedText: string,
 };
 
-export type FoldKind = "region" | "comment" | "imports";
+export type FoldKind = "region" | "comment" | "imports" | "compact";
 
 export type FoldRange = {
 	start_line: number,
@@ -6549,6 +7394,7 @@ export type FoldingSettings = {
 	fileHeader?: boolean,
 	imports?: boolean,
 	docComments?: boolean,
+	goShortBlocks?: boolean,
 };
 
 /**
@@ -6680,6 +7526,11 @@ export type GeneratorInfo = {
 	/**  Offer "Create Git repository". */
 	git: boolean,
 	fields: Field[],
+	/**
+	 *  The project folder's name when it isn't the project name: a template over the fields
+	 *  shown (a hidden field has its default), like [`Field::default`]; empty renders the name.
+	 */
+	directory: string | null,
 	/**  More fields come from `scaffold_options` (a project service's metadata). */
 	dynamic: boolean,
 };
@@ -6742,6 +7593,13 @@ export type GhRepo = {
 	viewerPermission: string,
 };
 
+export type GitAnnotateMovement = "none" | "withinFile" | "acrossFiles";
+
+export type GitAnnotateSettings = {
+	ignoreWhitespace?: boolean,
+	movement?: GitAnnotateMovement,
+};
+
 export type GitExecutableInfo = {
 	/**  `git version …` output. */
 	version: string,
@@ -6749,19 +7607,38 @@ export type GitExecutableInfo = {
 	path: string,
 };
 
-export type GitOperation = 
+export type GitOperation = GitOperation_Serialize | GitOperation_Deserialize;
+
+export type GitOperationResult = RewrittenCommit | ({ rebased: HistoryTip }) & { action?: never; emptyCherryPicks?: never } | ({ emptyCherryPicks: number; action: EmptyCherryPickAction }) & { rebased?: never };
+
+export type GitOperation_Deserialize = 
 /**  Continue the merge / rebase / cherry-pick / revert in progress. */
-{ op: "continue" } | 
+({ op: "continue" }) & { base?: never; branch?: never; checkpoint?: never; commit?: never; commits?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never } | ({ op: "continueReviewedApply"; checkpoint: string; message: string; options?: ApplyCommitOptions }) & { base?: never; branch?: never; commit?: never; commits?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; mode?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never } | ({ op: "finishMerge"; branch: string | null; head: string; target: string }) & { base?: never; checkpoint?: never; commit?: never; commits?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; message?: never; mode?: never; options?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never } | 
 /**  Stage and Retry: stage the changes of tracked files, then continue. */
-{ op: "stageAndContinue" } | { op: "abort" } | { op: "skip" } | 
-/**  Commits oldest first; `record_origin` adds "(cherry picked from commit …)". */
-{ op: "cherryPick"; commits: string[]; recordOrigin?: boolean } | 
+({ op: "stageAndContinue" }) & { base?: never; branch?: never; checkpoint?: never; commit?: never; commits?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never } | ({ op: "abort"; expected?: string | null; expectedRebase?: RebaseState | null }) & { base?: never; branch?: never; checkpoint?: never; commit?: never; commits?: never; entries?: never; expectedHead?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never } | ({ op: "skip" }) & { base?: never; branch?: never; checkpoint?: never; commit?: never; commits?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never } | 
+/**  Commits oldest first; add the origin for all commits or the specified subset. */
+({ op: "cherryPick"; commits: string[]; recordOrigin?: boolean; recordOriginFor?: string[] }) & { base?: never; branch?: never; checkpoint?: never; commit?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; plan?: never; shelfBatch?: never; target?: never } | 
 /**  Commits newest first. */
-{ op: "revert"; commits: string[] } | { op: "reset"; commit: string; mode: ResetMode } | 
+({ op: "revert"; commits: string[] }) & { base?: never; branch?: never; checkpoint?: never; commit?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never } | ({ op: "reset"; commit: string; mode: ResetMode }) & { base?: never; branch?: never; checkpoint?: never; commits?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; options?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never } | 
 /**  Rebases `base..HEAD` (`base: None` = from the root) following `entries`, oldest first. */
-{ op: "interactiveRebase"; base: string | null; entries: RebaseEntry[] };
+({ op: "interactiveRebase"; base: string | null; entries: RebaseEntry[] }) & { branch?: never; checkpoint?: never; commit?: never; commits?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never } | ({ op: "checkoutRebase"; plan: CheckoutRebasePlan; shelfBatch: string | null }) & { base?: never; branch?: never; checkpoint?: never; commit?: never; commits?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; recordOrigin?: never; recordOriginFor?: never; target?: never } | ({ op: "rebaseBranch"; plan: BranchRebasePlan; shelfBatch: string | null }) & { base?: never; branch?: never; checkpoint?: never; commit?: never; commits?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; recordOrigin?: never; recordOriginFor?: never; target?: never } | ({ op: "dropCommitChanges"; commit: string; expectedHead: HistoryTip; paths: string[] }) & { base?: never; branch?: never; checkpoint?: never; commits?: never; entries?: never; expected?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never };
+
+export type GitOperation_Serialize = 
+/**  Continue the merge / rebase / cherry-pick / revert in progress. */
+({ op: "continue" }) & { base?: never; branch?: never; checkpoint?: never; commit?: never; commits?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never } | ({ op: "continueReviewedApply"; checkpoint: string; message: string; options: ApplyCommitOptions }) & { base?: never; branch?: never; commit?: never; commits?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; mode?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never } | ({ op: "finishMerge"; branch: string | null; head: string; target: string }) & { base?: never; checkpoint?: never; commit?: never; commits?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; message?: never; mode?: never; options?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never } | 
+/**  Stage and Retry: stage the changes of tracked files, then continue. */
+({ op: "stageAndContinue" }) & { base?: never; branch?: never; checkpoint?: never; commit?: never; commits?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never } | ({ op: "abort"; expected: string | null; expectedRebase?: RebaseState | null }) & { base?: never; branch?: never; checkpoint?: never; commit?: never; commits?: never; entries?: never; expectedHead?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never } | ({ op: "skip" }) & { base?: never; branch?: never; checkpoint?: never; commit?: never; commits?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never } | 
+/**  Commits oldest first; add the origin for all commits or the specified subset. */
+({ op: "cherryPick"; commits: string[]; recordOrigin: boolean; recordOriginFor: string[] }) & { base?: never; branch?: never; checkpoint?: never; commit?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; plan?: never; shelfBatch?: never; target?: never } | 
+/**  Commits newest first. */
+({ op: "revert"; commits: string[] }) & { base?: never; branch?: never; checkpoint?: never; commit?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never } | ({ op: "reset"; commit: string; mode: ResetMode }) & { base?: never; branch?: never; checkpoint?: never; commits?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; options?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never } | 
+/**  Rebases `base..HEAD` (`base: None` = from the root) following `entries`, oldest first. */
+({ op: "interactiveRebase"; base: string | null; entries: RebaseEntry[] }) & { branch?: never; checkpoint?: never; commit?: never; commits?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never } | ({ op: "checkoutRebase"; plan: CheckoutRebasePlan; shelfBatch: string | null }) & { base?: never; branch?: never; checkpoint?: never; commit?: never; commits?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; recordOrigin?: never; recordOriginFor?: never; target?: never } | ({ op: "rebaseBranch"; plan: BranchRebasePlan; shelfBatch: string | null }) & { base?: never; branch?: never; checkpoint?: never; commit?: never; commits?: never; entries?: never; expected?: never; expectedHead?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; paths?: never; recordOrigin?: never; recordOriginFor?: never; target?: never } | ({ op: "dropCommitChanges"; commit: string; expectedHead: HistoryTip; paths: string[] }) & { base?: never; branch?: never; checkpoint?: never; commits?: never; entries?: never; expected?: never; expectedRebase?: never; head?: never; message?: never; mode?: never; options?: never; plan?: never; recordOrigin?: never; recordOriginFor?: never; shelfBatch?: never; target?: never };
+
+export type GitSaveChangesPolicy = "shelve" | "stash";
 
 export type GitSettings = {
+	annotate?: GitAnnotateSettings,
 	/**  Show blame after the current editor line. */
 	inlineBlame?: boolean,
 	/**
@@ -6774,20 +7651,29 @@ export type GitSettings = {
 	syncBranchOperations?: boolean,
 	/**  Path to the git executable; empty = auto-detect. */
 	executable?: string,
+	/**  Clone all submodules along with the root repository. */
+	cloneSubmodules?: boolean,
 	/**  Default of Update Project: `merge` | `rebase`. */
 	updateMethod?: string,
+	/**  Where Git operations keep local changes temporarily. */
+	saveChangesPolicy?: GitSaveChangesPolicy,
 	/**  Push rejected (non-fast-forward): update the branch and push again. */
 	autoUpdateOnPushRejected?: boolean,
 	warnCrlf?: boolean,
 	warnDetachedHead?: boolean,
-	/**  Background check for incoming commits: `auto` | `always` | `never`. */
+	/**  Background check for incoming commits: `auto` | `always` | `check` | `never`. */
 	incomingCheck?: string,
 	/**  Minutes between background checks for incoming commits. */
 	incomingCheckInterval?: number,
+	/**  How an explicit fetch or project update handles remote tags. */
+	fetchTagsMode?: FetchTagsMode,
 	/**  Branch name globs, `;`/`,`-separated; force push to them is prohibited. */
 	protectedBranches?: string,
 	/**  Initial state of Commit Options › Sign-off Commit. */
 	signOff?: boolean,
+	/**  Add Git's origin line when cherry-picking commits from protected remote branches. */
+	addCherryPickOrigin?: boolean,
+	emptyCherryPick?: EmptyCherryPickAction,
 	/**  Ask before committing files larger than `large_file_mb`. */
 	warnLargeFiles?: boolean,
 	largeFileMb?: number,
@@ -6799,6 +7685,8 @@ export type GitSettings = {
 	pushDialogOnlyProtected?: boolean,
 	/**  Stashes and shelves share one tab. */
 	combineStashAndShelf?: boolean,
+	/**  What the stash browser compares its saved files against. */
+	stashDiffTarget?: StashDiffTarget,
 	/**
 	 *  The non-modal Commit tool window works on the index: Staged / Unstaged groups,
 	 *  stage and unstage instead of inclusion checkboxes, and no change lists.
@@ -6809,6 +7697,17 @@ export type GitSettings = {
 	 *  the system git reads correctly) instead of in process.
 	 */
 	cliStatus?: boolean,
+};
+
+export type GitSigningConfig = {
+	format: string,
+	enabled: boolean,
+	key: string | null,
+};
+
+export type GitSigningEdit = {
+	enabled: boolean | null,
+	key: string | null,
 };
 
 export type GoBuildTags = {
@@ -6840,6 +7739,11 @@ export type GoSettings = {
 };
 
 export type GotoKind = "definition" | "declaration" | "typeDefinition" | "implementation";
+
+export type GpgSigningKey = {
+	fingerprint: string,
+	userId: string | null,
+};
 
 /**  One line of the report: an occurrence of a dependency where it is requested. */
 export type GradleDependency = {
@@ -7201,8 +8105,17 @@ export type HistoryKind =
  */
 "label";
 
+/**  Branch and tip confirmed in the UI before editing history. */
+export type HistoryTip = {
+	branch: string | null,
+	commit: string,
+};
+
 /**  What triggered a hot reload; `flutter debug_adapter` takes it as `reason`. */
 export type HotReloadReason = "manual" | "save";
+
+/**  Whether compiled classes are reloaded into running Java debug sessions after compilation. */
+export type HotSwapPolicy = "ask" | "always" | "never";
 
 /**  Result of [`DebugManager::redefine_classes`]. */
 export type HotSwapResult = {
@@ -7319,11 +8232,8 @@ export type IdeEvent =
 { type: "mcpBackgroundProjectsChanged" } | 
 /**  A window entered or left full screen, itself or as a member of a full-screen window group. */
 { type: "windowFullscreenChanged" } | 
-/**
- *  This remote window's connection to its host ended on its own (network loss, the host or
- *  its server went away); the window's project is unreachable until it reconnects.
- */
-{ type: "remoteConnectionLost"; host: string } | { type: "projectTrustChanged"; root: IpcPath; trusted: boolean } | 
+/**  This remote window's connection ended or another window took over the session. */
+{ type: "remoteConnectionLost"; host: string; takenOver?: boolean } | { type: "projectTrustChanged"; root: IpcPath; trusted: boolean } | 
 /**
  *  The project's direnv environment (`.envrc`) could not be loaded, or a file it is read
  *  from changed and it can be reloaded.
@@ -7455,6 +8365,16 @@ export type ImportedRunConfig_Serialize = {
 
 export type ImportsOnPaste = "ask" | "always" | "never";
 
+export type IncomingRefsReport = {
+	branches: UnfetchedBranch[],
+	errors: IncomingRemoteError[],
+};
+
+export type IncomingRemoteError = {
+	remote: string,
+	error: IdeError,
+};
+
 export type IndentConfig = IndentConfig_Serialize | IndentConfig_Deserialize;
 
 export type IndentConfig_Deserialize = {
@@ -7542,6 +8462,8 @@ export type InlayHint = {
 	 *  their values concatenate to `label`.
 	 */
 	parts: InlayLabelPart[],
+	/**  The edits that turn the hint into code (an annotation and any import it needs). */
+	textEdits: TextEdit[],
 };
 
 /**  Editor › Inlay Hints. */
@@ -7550,6 +8472,8 @@ export type InlayHintsSettings = {
 	parameters?: boolean,
 	/**  Hints of other kinds (chaining, closing labels…). */
 	other?: boolean,
+	/**  The Dart server's closing labels (`// Column` after a widget's closing bracket). */
+	closingLabels?: boolean,
 	disabledLanguages?: string[],
 	/**  Code vision as a whole (usages, author and language-server lenses); the switches below apply while it is on. */
 	codeVision?: boolean,
@@ -7565,7 +8489,9 @@ export type InlayHintsSettings = {
 	codeVisionAuthorPosition?: CodeVisionPosition,
 };
 
-export type InlayKind = "type" | "parameter" | "other";
+export type InlayKind = "type" | "parameter" | "other" | 
+/**  What a closing bracket ends, at the end of its line (the Dart server's closing labels). */
+"closingLabel";
 
 /**  One part of an inlay hint label, e.g. a type name that navigates to its declaration. */
 export type InlayLabelPart = {
@@ -7708,6 +8634,18 @@ export type InstallPreview = {
 	needsConsent: boolean,
 };
 
+export type InstallRemoteSkillRequest = {
+	owner: string,
+	repo: string,
+	gitRef: string,
+	subpath: string,
+	scope: McpScope,
+	/**  Must be `true` when the static security scan produces any warnings. */
+	confirmWarnings?: boolean,
+	/**  Must be `true` to replace an existing folder of the same name in `scope`. */
+	overwrite?: boolean,
+};
+
 /**  The settings folder of a JetBrains IDE (or Android Studio) of this user. */
 export type InstalledIdeSettings = {
 	/**  The IDE and its version: `IntelliJ IDEA 2025.2`. */
@@ -7770,6 +8708,9 @@ export type InvalidateCachesOptions = {
 	/**  Build tool sync results (Maven / Gradle) and other per-project caches. */
 	buildCaches?: boolean,
 };
+
+/**  A binary argument or result of an IPC command. */
+export type IpcBytes = string;
 
 /**  A path field of an IPC type. */
 export type IpcPath = string;
@@ -7938,6 +8879,17 @@ export type JsResponseRule = {
 	body: string,
 };
 
+/**  The test JVM of OpenIDEA's JUnit runner. */
+export type JunitLaunch = {
+	classPaths: string[],
+	/**  Surefire's `argLine`, then its system properties as `-Dkey=value`. */
+	vmArgs: string[],
+	env: { [key in string]: string },
+	workingDirectory: string | null,
+	/**  The Surefire settings that were applied (`argLine`, `systemPropertyVariables`…), for the console. */
+	surefire: string[],
+};
+
 /**  The backend that reads a debugged JVM's objects (instances, fields, referrers). */
 export type JvmBackendState = { kind: "ready" } | 
 /**  Turned off for the rest of the session: the debug adapter lacks what it needs. */
@@ -8050,6 +9002,30 @@ export type JvmReferrer = {
 
 export type JvmReferrersResult = { status: "ready"; referrers: JvmReferrer[]; truncated: boolean } | { status: "unavailable"; reason: JvmInspectUnavailable };
 
+export type JvmThreadDump = {
+	text: string,
+	pid: number,
+	/**  Empty when unknown. */
+	javaVersion: string,
+	takenWhileSuspended: boolean,
+	/**  Wall time of the `Thread.print` request. */
+	elapsedMs: number,
+	/**  `Thread.dump_to_file -format=json`, which also lists virtual threads; JDK 21+ only. */
+	virtualJson: string | null,
+	/**  Why `virtual_json` is missing from a JDK 21+ dump; none below 21. */
+	virtualNote: VirtualThreadsNote | null,
+};
+
+export type JvmThreadsResult = { status: "ready"; dump: JvmThreadDump } | { status: "unavailable"; reason: JvmThreadsUnavailable };
+
+export type JvmThreadsUnavailable = 
+/**  The reason a class table could not be read applies to the dump too. */
+{ kind: "jvm"; reason: JvmMemoryUnavailable } | 
+/**  The JVM ignored the request to open its attach listener (`-XX:+DisableAttachMechanism`). */
+{ kind: "listenerDidNotStart" } | 
+/**  A run on a remote host, whose JVM this machine cannot attach to. */
+{ kind: "remoteRun" } | { kind: "failed"; message: string };
+
 export type JvmTypeKind = "class" | "abstractClass" | "interface" | "enum" | "record" | "annotation" | "exception" | "object";
 
 export type JvmValue = { kind: "null" } | { kind: "primitive"; typeName: string; text: string } | 
@@ -8077,6 +9053,10 @@ export type LanguageCodeStyle_Deserialize = {
 	alignKeyValuePairs?: boolean | null,
 	/**  PHP: align `=` of consecutive assignment statements after formatting. */
 	alignConsecutiveAssignments?: boolean | null,
+	/**  SQL › Case › Keywords: `upper` | `lower` | `keep` (other languages ignore it). */
+	keywordCase?: string | null,
+	/**  SQL › Case › Identifiers (unquoted names): `upper` | `lower` | `keep`. */
+	identifierCase?: string | null,
 };
 
 /**  Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit). */
@@ -8097,6 +9077,10 @@ export type LanguageCodeStyle_Serialize = {
 	alignKeyValuePairs?: boolean | null,
 	/**  PHP: align `=` of consecutive assignment statements after formatting. */
 	alignConsecutiveAssignments?: boolean | null,
+	/**  SQL › Case › Keywords: `upper` | `lower` | `keep` (other languages ignore it). */
+	keywordCase?: string | null,
+	/**  SQL › Case › Identifiers (unquoted names): `upper` | `lower` | `keep`. */
+	identifierCase?: string | null,
 };
 
 /**  Language identifier, e.g. `rust`, `typescript`, `kotlin`. Matches LSP `languageId`. */
@@ -8240,12 +9224,20 @@ export type LanguagesSettings = {
 	typescript?: TypeScriptSettings,
 	prettier?: ExternalFormatterSettings,
 	oxfmt?: ExternalFormatterSettings,
+	biome?: ExternalFormatterSettings,
 	ruff?: ExternalFormatterSettings,
+	black?: ExternalFormatterSettings,
 	java?: JavaSettings,
 	ruby?: RubySettings,
 	markdown?: MarkdownSettings,
 	arduino?: ArduinoSettings,
 	zig?: ZigSettings,
+	flutter?: FlutterSettings,
+};
+
+export type LargeCommitFile = {
+	path: IpcPath,
+	size: number,
 };
 
 /**  What a freshly opened window should do once its frontend is up. */
@@ -8333,6 +9325,8 @@ export type Launch_Serialize = {
 	/**  Editor windows: the file to show (Open in New Window → lightweight aux editor). */
 	editor: EditorLaunch_Serialize | null,
 };
+
+export type LegacyPasswordAction = "check" | "retry" | "removePlaintext";
 
 /**  One SDK or library with its source folders (`< Python 3.12 (.venv) >`). */
 export type LibraryGroup = {
@@ -8596,11 +9590,15 @@ export type LogcatLine = {
 };
 
 export type LspRefreshKind = "inlayHints" | "semanticTokens" | "codeLens" | 
+/**  An import or classpath update may have changed inheritance search results. */
+"inheritance" | 
 /**  The Dart server published a document's Flutter outline. */
 "flutterOutline";
 
 export type MainToolbarSettings = {
 	left?: string[],
+	/**  Centred in the toolbar (between the other two groups when they leave too little room). */
+	center?: string[],
 	right?: string[],
 	/**  Widgets the user removed. */
 	hidden?: string[],
@@ -8737,6 +9735,16 @@ export type MavenProject = {
 	env: { [key in string]: string },
 };
 
+/**
+ *  Build Tools › Maven › Run tests using. IDEA runs a Maven project's tests itself unless its build
+ *  and run actions are delegated to Maven.
+ */
+export type MavenRunTestsUsing = 
+/**  OpenIDEA's JUnit Platform runner on the language server's test classpath (`java/junit-runner`). */
+"ide" | 
+/**  Surefire (`mvn test -Dtest=…`). */
+"maven";
+
 /**  Build Tools › Maven. */
 export type MavenSettings = {
 	/**  JDK home used to run Maven; empty = Project JDK, else the POM's Java version. */
@@ -8787,6 +9795,8 @@ export type MavenSettings = {
 	 *  dependencies on every sync, build and run, and jdtls on import (`java.maven.updateSnapshots`).
 	 */
 	updateSnapshots?: boolean,
+	/**  Who runs the JUnit 5 tests of the gutter's Run / Debug. */
+	runTestsUsing?: MavenRunTestsUsing,
 };
 
 /**  What keeps an idle background project loaded. */
@@ -9135,9 +10145,14 @@ export type MergeOptions = {
 	ffOnly?: boolean,
 	squash?: boolean,
 	noCommit?: boolean,
+	noVerify?: boolean,
+	/**  Merge histories whose commits have no common ancestor. */
+	allowUnrelatedHistories?: boolean,
 	/**  `-m`: message of the merge commit (Merge dialog only). */
 	message?: string | null,
 };
+
+export type MergeOutcome = { kind: "done" } | { kind: "localChanges"; files: string[] } | { kind: "conflicts" } | { kind: "alreadyUpToDate" } | { kind: "readyToCommit" } | { kind: "squashed" };
 
 /**
  *  Who stands on each side of the conflicts of the operation in progress (merge editor
@@ -9165,6 +10180,8 @@ export type MergeSides = {
 
 /**  The versions of a conflicted file as the merge editor shows them. */
 export type MergeVersions = {
+	/**  Binary versions are available for whole-file acceptance, without decoding their data. */
+	binary?: boolean,
 	base: string | null,
 	/**  The user's side ("Accept Yours"): git's stage 2, or stage 3 when `sides.reversed`. */
 	ours: string | null,
@@ -9432,6 +10449,14 @@ export type OpenProject = {
 	remote: RemoteTarget | null,
 };
 
+export type OutgoingCommits = {
+	remote: string,
+	branch: string,
+	/**  Full local tracking ref, which may use a custom fetch refspec. */
+	reference: string,
+	count: number,
+};
+
 /**  A node of a document outline (Structure tool window, breadcrumbs). */
 export type OutlineItem = {
 	name: string,
@@ -9457,10 +10482,52 @@ export type PackageFile = {
 };
 
 /**  A file of a partial commit: which of its changes against HEAD to commit. */
-export type PartialCommitFile = {
+export type PartialCommitFile = PartialCommitFile_Serialize | PartialCommitFile_Deserialize;
+
+/**  A file of a partial commit: which of its changes against HEAD to commit. */
+export type PartialCommitFile_Deserialize = {
 	path: IpcPath,
 	/**  The hunks to commit, as [`diff_hunks`] of the HEAD and on-disk texts reports them. */
 	hunks: HunkRange[],
+	/**  Hunks whose added and removed lines have individual inclusion. */
+	lineHunks?: PartialCommitHunk[],
+	/**  Before-commit edits against the exact text selected by these hunks. */
+	prepared?: PreparedPartialCommit | null,
+};
+
+/**  A file of a partial commit: which of its changes against HEAD to commit. */
+export type PartialCommitFile_Serialize = {
+	path: IpcPath,
+	/**  The hunks to commit, as [`diff_hunks`] of the HEAD and on-disk texts reports them. */
+	hunks: HunkRange[],
+	/**  Hunks whose added and removed lines have individual inclusion. */
+	lineHunks?: PartialCommitHunk[],
+	/**  Before-commit edits against the exact text selected by these hunks. */
+	prepared?: PreparedPartialCommit | null,
+};
+
+export type PartialCommitHunk = {
+	range: HunkRange,
+	/**  The normalised texts that the user selected from, used to detect stale selections. */
+	oldText: string,
+	newText: string,
+	/**  Included deletions and additions, 0-based offsets within their respective sides. */
+	deletions: number[],
+	additions: number[],
+};
+
+export type PatchDiffContent = { kind: "text"; before: string | null; after: string | null } | { kind: "conflict"; local: string | null; base: string | null; patched: string | null } | { kind: "raw"; local: string | null; patch: string; applies: boolean } | { kind: "binary" };
+
+export type PatchDirectoryCandidate = {
+	directory: IpcPath,
+	source: IpcPath,
+	strip: number,
+	applies: boolean | null,
+};
+
+export type PatchDirectoryMatches = {
+	path: string,
+	candidates: PatchDirectoryCandidate[],
 };
 
 /**  One file of a patch (Apply Patch preview). */
@@ -9474,18 +10541,57 @@ export type PatchFile = {
 	binary: boolean,
 	/**  Applies cleanly to the working tree (otherwise a 3-way merge is attempted). */
 	applies: boolean,
+	missingBase?: boolean,
+};
+
+export type PatchFileDiff = {
+	path: IpcPath,
+	oldPath: IpcPath | null,
+	content: PatchDiffContent,
+};
+
+export type PatchPathMapping = {
+	path: string,
+	directory: IpcPath | null,
+	strip: number,
+	file: IpcPath | null,
+};
+
+export type PatchPlacement = {
+	path: string,
+	target: IpcPath | null,
+	error: string | null,
+};
+
+export type PatchPreview = {
+	files: PatchFile[],
+	base: IpcPath | null,
+	placements: PatchPlacement[] | null,
+	directoryMatches: PatchDirectoryMatches[],
+	automaticMappings: PatchPathMapping[],
 };
 
 export type PatchSource = 
 /**  Local changes of these files (absolute paths). */
 { from: "changes"; paths: IpcPath[]; reverse: boolean } | 
+/**  Changes selected on either side of the index in the staging tree. */
+{ from: "staging"; entries: StagingPatchEntry[]; reverse: boolean } | 
 /**  Changes made by these commits (oldest first). */
-{ from: "commits"; commits: string[]; reverse: boolean };
+{ from: "commits"; commits: string[]; reverse: boolean } | 
+/**  Selected files between two revisions, including both paths of a rename. */
+{ from: "revisions"; before: string; after: string; paths: string[] };
+
+export type PatchTarget = "project" | "repository";
 
 /**  An entry offered when completing a path. */
 export type PathCompletion = {
 	name: string,
 	dir: boolean,
+};
+
+export type PendingCommitApply = {
+	source: CommitApplySource,
+	paths: IpcPath[],
 };
 
 /**  A PHP version and where it comes from. */
@@ -9837,6 +10943,12 @@ actions: NotificationAction[] }) & { arg?: never; args?: never; cancellable?: ne
  *  `plugin_answer_clipboard(request_id, …)`. Closed like a prompt (`PromptClosed`).
  */
 ({ type: "clipboardRequested"; pluginId: string; requestId: string }) & { actions?: never; arg?: never; args?: never; body?: never; cancellable?: never; capabilities?: never; chain?: never; channel?: never; column?: never; connection?: never; cwd?: never; diff?: never; done?: never; fileName?: never; id?: never; item?: never; key?: never; level?: never; line?: never; log?: never; message?: never; newWindow?: never; path?: never; program?: never; prompt?: never; promptId?: never; ranges?: never; reply?: never; request?: never; reveal?: never; root?: never; rules?: never; selection?: never; sets?: never; taskId?: never; text?: never; theme?: never; title?: never; total?: never; updates?: never; url?: never; value?: never; view?: never };
+
+/**  A group of file extensions in a plugin's native chooser. */
+export type PluginFileFilter = {
+	name: string,
+	extensions: string[],
+};
 
 /**  A plugin's own icon (`icon`, `icon-dark` of its manifest): sanitised SVG markup. */
 export type PluginIcon = {
@@ -10219,6 +11331,12 @@ export type PrTimelineItem = {
 	url: string | null,
 };
 
+export type PreparedPartialCommit = {
+	/**  LF version of the selected text before running the language server. */
+	before: string,
+	text: string,
+};
+
 /**  A request ready to send: variables substituted, includes read. */
 export type PreparedRequest = {
 	name: string | null,
@@ -10399,6 +11517,17 @@ export type ProjectLibrary = {
 	scope?: DependencyScope,
 };
 
+export type ProjectPatchFailure = {
+	root: IpcPath,
+	error: IdeError,
+};
+
+export type ProjectPatchOutcome = {
+	outcome: ApplyOutcome,
+	conflictedRepositories: IpcPath[],
+	failures: ProjectPatchFailure[],
+};
+
 export type ProjectRoots = {
 	/**  Effective roots, sorted by path. */
 	roots: SourceFolder[],
@@ -10439,11 +11568,17 @@ export type ProjectStructureSettings = {
 	artifacts?: ArtifactConfig[],
 };
 
+export type ProjectUpdateTarget = {
+	root: IpcPath,
+	parent: IpcPath | null,
+	detachedSubmodule: boolean,
+};
+
 /**
  *  What a plugin asks the user (`ui.pick`, `ui.pick-many`, `ui.input`,
  *  `ui.input-multiline`, `ui.confirm`).
  */
-export type Prompt = { kind: "quickPick"; title: string; items: PickItem[]; multiple: boolean } | { kind: "input"; prompt: string; value: string | null; multiline: boolean } | { kind: "confirm"; title: string; message: string } | { kind: "pickDirectory"; title: string; initial: string | null } | 
+export type Prompt = { kind: "quickPick"; title: string; items: PickItem[]; multiple: boolean } | { kind: "input"; prompt: string; value: string | null; multiline: boolean } | { kind: "confirm"; title: string; message: string } | { kind: "pickDirectory"; title: string; initial: string | null } | { kind: "pickFile"; title: string; save: boolean; name: string | null; filters: PluginFileFilter[] } | 
 /**
  *  The host's own question under `net:ask` (never plugin-initiated): the
  *  plugin reached an HTTPS host its manifest does not list.
@@ -10521,14 +11656,84 @@ export type PullRequestSummary = {
 	deletions: number,
 };
 
+/**
+ *  The two tips shown in the rejected-push dialog. A retry must use this lease
+ *  even if a fetch advances the remote-tracking branch while the dialog is open.
+ */
+export type PushDivergence = {
+	source: string,
+	remote: string,
+	target: string,
+	localTip: string,
+	remoteTip: string,
+	remoteCommits: number,
+};
+
+export type PushInspection = {
+	state: PushTargetState,
+	localTip: string,
+	/**  An empty value expects the branch to be absent. Null means no tip was available. */
+	remoteTip: string | null,
+	remoteCommits: number,
+	remoteChecked: boolean,
+};
+
+export type PushRefResult = {
+	reference: string,
+	status: PushRefStatus,
+	/**  The number of commits between the tips Git reports for a fast-forward. */
+	commits: number | null,
+};
+
+export type PushRefStatus = "fastForward" | "forced" | "created" | "upToDate" | "deleted";
+
+/**
+ *  Git's reported result for each destination ref. A remote with several push URLs can
+ *  report more than one result for the same ref.
+ */
+export type PushReport = {
+	remote: string | null,
+	refs: PushRefResult[],
+};
+
+export type PushSelection = {
+	/**  A local branch. A detached source has no branch and requires a commit ID. */
+	branch: string | null,
+	revision: string | null,
+	remote: string,
+	target: string,
+	/**  A configured non-branch destination, for example a Gerrit review ref. */
+	specialRef?: boolean,
+};
+
 /**  Push dialog › Push tags: every tag, or only annotated tags on the pushed commits. */
 export type PushTags = "all" | "currentBranch";
+
+export type PushTargetChoices = {
+	branch: string | null,
+	destination: DefaultPushTarget | null,
+	destinations: DefaultPushTarget[],
+};
+
+export type PushTargetState = "ready" | "diverged" | "fetchRequired";
+
+export type PypiPackage = {
+	/**  The name as PyPI spells it. */
+	name: string,
+	summary: string,
+	/**  The newest release that is not a pre-release; empty when every release is yanked. */
+	latest: string,
+	/**  Releases with files to install, most recently uploaded first; yanked ones left out. */
+	versions: string[],
+};
 
 /**  A class definition and the methods it declares. */
 export type PythonClassFacts = {
 	name: string,
 	/**  The class name identifier (selection range). */
 	selection: Range,
+	/**  First line of the definition, its decorators included. */
+	definitionLine: number,
 	/**  Base names as written, a qualified name reduced to its last segment. */
 	bases: string[],
 	methods: PythonMethodFacts[],
@@ -10543,6 +11748,8 @@ export type PythonDebuggerSettings = {
 /**  One Python module's classes, in source order. */
 export type PythonFacts = {
 	classes: PythonClassFacts[],
+	/**  `# noinspection` comments, in source order. */
+	suppressions: PythonSuppression[],
 };
 
 /**  A method definition the inspections can reason about. */
@@ -10550,6 +11757,8 @@ export type PythonMethodFacts = {
 	name: string,
 	/**  The method name identifier (selection range). */
 	selection: Range,
+	/**  First line of the definition, its decorators included. */
+	definitionLine: number,
 	/**
 	 *  Parameter names in order; `None` for a form whose forwarding cannot be compared
 	 *  (`*args`, `**kwargs`, keyword-only, positional-only).
@@ -10560,11 +11769,26 @@ export type PythonMethodFacts = {
 	/**  Decorated with `override` from `typing` / `typing_extensions`. */
 	overrideDecorated: boolean,
 	body: MethodBody,
+	/**
+	 *  For 'Method may be static': the receiver parameter up to the next parameter (what
+	 *  Make method static deletes), when the method is undecorated and not a dunder, and its
+	 *  body does more than `pass`, `...`, a docstring or one `raise` without ever naming the
+	 *  receiver, `super` or `__class__`.
+	 */
+	unusedReceiver: Range | null,
 };
 
 export type PythonPackage = {
 	name: string,
 	version: string,
+	/**  The newest release the interpreter can install; only [`list_packages`] with `outdated` sets it. */
+	latestVersion?: string | null,
+};
+
+export type PythonRequirements = {
+	/**  The interpreter checked, which installs go to. */
+	python: IpcPath,
+	unsatisfied: UnsatisfiedRequirement[],
 };
 
 export type PythonSettings = {
@@ -10589,6 +11813,29 @@ export type PythonSettings = {
 	hideOtherProjectInterpreters?: boolean,
 	/**  Show each interpreter's path under its name on the interpreters page. */
 	showInterpreterPaths?: boolean,
+	/**
+	 *  Folders the user added to an interpreter's `sys.path` (All Interpreters › Show Paths),
+	 *  by interpreter executable; absolute or `~/`.
+	 */
+	interpreterPaths?: { [key in string]: string[] },
+};
+
+export type PythonStubLinks = {
+	/**  The stub of a `.py` document, the implementation of a `.pyi` one. */
+	counterpart: IpcPath | null,
+	links: StubLink[],
+	/**  Every place the counterpart was looked for: a change to one of them may change the answer. */
+	candidates: IpcPath[],
+};
+
+/**
+ *  A `# noinspection Id1,Id2` comment (PyCharm's) and the code it covers: the statement
+ *  right below it (a whole `def` / `class` with its decorators), or the whole file when it
+ *  sits among the file's leading comments, followed by a blank line.
+ */
+export type PythonSuppression = {
+	ids: string[],
+	range: Range,
 };
 
 /**  Color Scheme › Language Defaults › Rainbow brackets: which delimiters are coloured. */
@@ -10629,6 +11876,41 @@ export type RebaseAction = "pick" |
 /**  Meld into the previous commit, keeping the previous message. */
 "fixup" | "drop";
 
+export type RebaseEdit = RebaseEdit_Serialize | RebaseEdit_Deserialize;
+
+export type RebaseEditKind = "plan" | "message";
+
+export type RebaseEdit_Deserialize = {
+	kind: RebaseEditKind,
+	text: string,
+	plan: RebaseTodoRow_Deserialize[] | null,
+};
+
+export type RebaseEdit_Serialize = {
+	kind: RebaseEditKind,
+	text: string,
+	plan: RebaseTodoRow_Serialize[] | null,
+};
+
+export type RebaseEditorOperation = { kind: "start"; upstream: string | null; options: RebaseOptions } | { kind: "continue"; stage: boolean } | { kind: "skip" };
+
+export type RebaseEditorPrompt = RebaseEditorPrompt_Serialize | RebaseEditorPrompt_Deserialize;
+
+export type RebaseEditorPrompt_Deserialize = {
+	index: number,
+	edit: RebaseEdit_Deserialize,
+};
+
+export type RebaseEditorPrompt_Serialize = {
+	index: number,
+	edit: RebaseEdit_Serialize,
+};
+
+export type RebaseEditorReply = {
+	text: string,
+	rewords?: { [key in string]: string },
+};
+
 /**  One line of an interactive rebase plan. */
 export type RebaseEntry = {
 	commit: string,
@@ -10637,13 +11919,30 @@ export type RebaseEntry = {
 	message?: string | null,
 };
 
+export type RebaseFixupMessage = "replace" | "edit";
+
 /**  Rebase dialog options. */
 export type RebaseOptions = {
-	/**  `--onto <newbase>`: replay `upstream..HEAD` onto this revision instead. */
+	/**  Replay the selected commits onto this revision instead. */
 	onto?: string | null,
+	/**  Switch to this local branch before rebasing it. */
+	branch?: string | null,
 	rebaseMerges?: boolean,
 	keepEmpty?: boolean,
+	updateRefs?: boolean,
+	autosquash?: boolean | null,
 };
+
+export type RebaseState = {
+	original: HistoryTip,
+	onto: string,
+};
+
+export type RebaseTodoRow = RebaseTodoRow_Serialize | RebaseTodoRow_Deserialize;
+
+export type RebaseTodoRow_Deserialize = ({ kind: "commit"; line: number; action: RebaseAction; fixupMessage: RebaseFixupMessage | null; id: string; revision: string; author: string; summary: string; message: string }) & { reference?: never } | ({ kind: "updateRef"; line: number; reference: string }) & { action?: never; author?: never; fixupMessage?: never; id?: never; message?: never; revision?: never; summary?: never };
+
+export type RebaseTodoRow_Serialize = ({ kind: "commit"; line: number; action: RebaseAction; fixupMessage?: RebaseFixupMessage | null; id: string; revision: string; author: string; summary: string; message: string }) & { reference?: never } | ({ kind: "updateRef"; line: number; reference: string }) & { action?: never; author?: never; fixupMessage?: never; id?: never; message?: never; revision?: never; summary?: never };
 
 export type RecentProject = {
 	path: IpcPath,
@@ -10759,6 +12058,12 @@ export type Remote = {
 	resolvedUrl?: string | null,
 };
 
+/**  Tools › Remote Development. This is a user setting on the remote host. */
+export type RemoteDevelopmentSettings = {
+	/**  Zero disables idle shutdown. Positive values from older configurations keep their meaning. */
+	idleTimeoutMinutes?: number,
+};
+
 /**  Manage Remotes edits. */
 export type RemoteEdit = { op: "add"; name: string; url: string } | { op: "remove"; name: string } | 
 /**  Renames `name` to `new_name` (when different) and sets its URL. */
@@ -10778,13 +12083,20 @@ export type RemoteEntry = {
 	permissions: string,
 };
 
+/**  Advertised only by a persistent backend with an editable idle timeout. */
+export type RemoteIdlePolicy = {
+	overrideSeconds: number | null,
+};
+
 /**  A project folder on an SSH host, in a WSL distribution or in a dev container. */
 export type RemoteLaunch = {
 	target: RemoteTarget,
 	path: string,
 };
 
-export type RemoteOp = { op: "fetch" } | { op: "pull"; rebase: boolean } | 
+export type RemoteOp = { op: "fetch"; 
+/**  The incoming-commit poll keeps Git's tag handling and uses saved credentials only. */
+background?: boolean; report?: boolean; skipRemotes?: string[] } | { op: "fetchRemote"; remote: string; report?: boolean } | { op: "fetchPushTarget"; selection: PushSelection } | { op: "unshallow" } | { op: "pull"; rebase: boolean; expectedBranch?: string | null } | { op: "updateProjectBranch"; rebase: boolean } | { op: "updateSubmodule"; parent: string } | 
 /**  Update Project › Reset to the Remote Branch. */
 { op: "resetToUpstream" } | { op: "push"; force_with_lease: boolean; set_upstream: boolean; 
 /**  Push dialog › Push tags. */
@@ -10792,7 +12104,7 @@ tags?: PushTags | null;
 /**  Plain `--force` (Force push anyway). */
 force?: boolean; 
 /**  Push dialog › Run Git hooks unchecked (`--no-verify`). */
-no_verify?: boolean } | 
+no_verify?: boolean } | { op: "pushSelected"; selection: PushSelection; force_with_lease: boolean; set_upstream: boolean; tags: PushTags | null; no_verify: boolean; inspected?: PushInspection | null } | { op: "forcePushRejected"; divergence: PushDivergence; tags: PushTags | null; no_verify: boolean } | 
 /**  Deletes a remote branch; `branch` is the remote-tracking name (`origin/feature`). */
 { op: "deleteBranch"; branch: string } | 
 /**
@@ -10806,9 +12118,13 @@ set_upstream?: boolean; no_verify?: boolean } |
 /**  Push Tag › Push to `remote`. */
 { op: "pushTag"; tag: string; remote: string } | 
 /**  Deletes tag `tag` on `remote` (Delete on Remote). */
-{ op: "deleteRemoteTag"; tag: string; remote: string } | 
+{ op: "deleteRemoteTag"; tag: string; remote: string } | { op: "deleteTagOnRemotes"; deleted: DeletedTag } | 
 /**  Pull dialog: `branches` of `remote` (none = the configured merge branch). */
-{ op: "pullFrom"; remote: string; branches: string[]; rebase: boolean; options: MergeOptions };
+{ op: "pullFrom"; remote: string; branches: string[]; 
+/**  Explicit rebase or merge. Null uses Git's configured pull behavior. */
+rebase: boolean | null; options: MergeOptions };
+
+export type RemoteOpReport = PushReport | FetchReport;
 
 export type RemoteProgress = {
 	stage: RemoteStage,
@@ -10824,6 +12140,7 @@ export type RemoteProject_Deserialize = {
 	host: string,
 	serverVersion: string,
 	os: string,
+	idlePolicy?: RemoteIdlePolicy | null,
 	/**  Commands routed to the server (the rest run locally). */
 	commands: string[],
 	project: ProjectInfo_Deserialize,
@@ -10836,18 +12153,75 @@ export type RemoteProject_Serialize = {
 	host: string,
 	serverVersion: string,
 	os: string,
+	idlePolicy?: RemoteIdlePolicy | null,
 	/**  Commands routed to the server (the rest run locally). */
 	commands: string[],
 	project: ProjectInfo_Serialize,
 };
 
-export type RemoteSession = {
+export type RemoteSession = RemoteSession_Serialize | RemoteSession_Deserialize;
+
+export type RemoteSession_Deserialize = {
 	target: RemoteTarget,
 	root: string,
 	host: string,
 	/**  `linux`, `macos` or `windows`: the OS the project's commands run on. */
 	os: string,
 	commands: string[],
+	idlePolicy?: RemoteIdlePolicy | null,
+	takenOver?: boolean,
+};
+
+export type RemoteSession_Serialize = {
+	target: RemoteTarget,
+	root: string,
+	host: string,
+	/**  `linux`, `macos` or `windows`: the OS the project's commands run on. */
+	os: string,
+	commands: string[],
+	idlePolicy?: RemoteIdlePolicy | null,
+	takenOver?: boolean,
+};
+
+export type RemoteSkillBrowseResult = {
+	owner: string,
+	repo: string,
+	gitRef: string,
+	treeSha: string,
+	truncated: boolean,
+	skills: RemoteSkillCandidate[],
+};
+
+export type RemoteSkillCandidate = {
+	/**  Target folder name (`<name>` under `.agents/skills/<name>`). */
+	folderName: string,
+	/**  Repository-relative directory holding `SKILL.md` (`""` when at repository root). */
+	subpath: string,
+	fileCount: number,
+	totalBytes: number,
+};
+
+export type RemoteSkillFile = {
+	/**  Path relative to the skill folder (e.g. `"SKILL.md"`, `"scripts/check.sh"`). */
+	path: string,
+	size: number,
+	executable: boolean,
+	symlink: boolean,
+};
+
+export type RemoteSkillPreview = {
+	owner: string,
+	repo: string,
+	gitRef: string,
+	treeSha: string,
+	subpath: string,
+	skillName: string,
+	description: string,
+	skillMarkdown: string,
+	files: RemoteSkillFile[],
+	scanWarnings: SkillScanWarning[],
+	alreadyInstalledUser: boolean,
+	alreadyInstalledWorkspace: boolean,
 };
 
 /**  Where [`remote_connect`] is (`fraction`: 0..1 of a download / upload). */
@@ -10959,6 +12333,11 @@ export type RevisionChange = {
 	link?: LinkTarget | null,
 };
 
+export type RewrittenCommit = {
+	head: HeadChange,
+	commit: string,
+};
+
 /**  How a grant is presented (plan 4.2). */
 export type Risk = 
 /**  Listed on the install page, one confirmation. */
@@ -10978,6 +12357,23 @@ export type RouteSource = {
 export type RubySettings = {
 	/**  Project interpreter executable; empty = auto-detect (`.ruby-version`, mise / asdf, else `ruby` on PATH). */
 	interpreter?: string,
+};
+
+/**  Snapshot and live output binding returned when reattaching to a running process. */
+export type RunAttach = RunAttach_Serialize | RunAttach_Deserialize;
+
+/**  Snapshot and live output binding returned when reattaching to a running process. */
+export type RunAttach_Deserialize = {
+	info: RunInfo,
+	config: RunConfig_Deserialize,
+	buffered: OutputChunk[],
+};
+
+/**  Snapshot and live output binding returned when reattaching to a running process. */
+export type RunAttach_Serialize = {
+	info: RunInfo,
+	config: RunConfig_Serialize,
+	buffered: OutputChunk[],
 };
 
 export type RunConfig = RunConfig_Serialize | RunConfig_Deserialize;
@@ -11074,6 +12470,12 @@ export type RunExtras_Deserialize = {
 	stopCommand?: string | null,
 	/**  Settings › Run Targets id the process runs on (over SSH); `None` = this machine. */
 	target?: string | null,
+	/**
+	 *  The test framework a test configuration runs when detection recognised one that the
+	 *  command line doesn't name (a `package.json` script running `playwright test`): picks the
+	 *  test output parser and how a single test is selected.
+	 */
+	testRunner?: string | null,
 };
 
 export type RunExtras_Serialize = {
@@ -11118,6 +12520,12 @@ export type RunExtras_Serialize = {
 	stopCommand?: string | null,
 	/**  Settings › Run Targets id the process runs on (over SSH); `None` = this machine. */
 	target?: string | null,
+	/**
+	 *  The test framework a test configuration runs when detection recognised one that the
+	 *  command line doesn't name (a `package.json` script running `playwright test`): picks the
+	 *  test output parser and how a single test is selected.
+	 */
+	testRunner?: string | null,
 };
 
 /**  A process started from a run configuration. */
@@ -11311,7 +12719,11 @@ export type SdkKind = "python" | "node" |
 /**  Maven homes. */
 "maven" | "ruby" | 
 /**  Zig toolchain directories. */
-"zig";
+"zig" | 
+/**  .NET SDKs of the `dotnet` on the search path; `version` is what `global.json` pins. */
+"dotnet" | 
+/**  Flutter SDK roots. */
+"flutter";
 
 /**
  *  IDEA's search context: matches anywhere, only in, or outside comments and
@@ -11342,6 +12754,11 @@ export type SearchQuery = {
 	 *  adds none of the project's exclusions either).
 	 */
 	includeExcluded?: boolean,
+	/**
+	 *  Leave out files over [`MAX_CODE_INSIGHT_FILE_BYTES`], as IDEA's TODO and word indexes do:
+	 *  a background scan never reads a log or a database dump.
+	 */
+	skipLargeFiles?: boolean,
 };
 
 export type SearchScope = { kind: "project" } | { kind: "directory"; path: IpcPath } | { kind: "files"; paths: IpcPath[] } | 
@@ -11475,7 +12892,7 @@ export type SettingsWindowInit = SettingsWindowInit_Serialize | SettingsWindowIn
 
 export type SettingsWindowInit_Deserialize = {
 	launch: Launch_Deserialize | null,
-	remote: RemoteSession | null,
+	remote: RemoteSession_Deserialize | null,
 	project: ProjectInfo_Deserialize | null,
 	globalSettings: Settings_Deserialize,
 	updates: boolean,
@@ -11483,7 +12900,7 @@ export type SettingsWindowInit_Deserialize = {
 
 export type SettingsWindowInit_Serialize = {
 	launch: Launch_Serialize | null,
-	remote: RemoteSession | null,
+	remote: RemoteSession_Serialize | null,
 	project: ProjectInfo_Serialize | null,
 	globalSettings: Settings_Serialize,
 	updates: boolean,
@@ -11544,6 +12961,7 @@ export type Settings_Deserialize = {
 	spelling?: SpellingSettings,
 	/**  Tools › SSH Configurations. */
 	ssh?: SshSettings,
+	remoteDevelopment?: RemoteDevelopmentSettings,
 	/**  Build, Execution, Deployment › Deployment. */
 	deployment?: DeploymentSettings,
 	/**  Build, Execution, Deployment › Run Targets. */
@@ -11620,6 +13038,7 @@ export type Settings_Serialize = {
 	spelling: SpellingSettings,
 	/**  Tools › SSH Configurations. */
 	ssh: SshSettings,
+	remoteDevelopment: RemoteDevelopmentSettings,
 	/**  Build, Execution, Deployment › Deployment. */
 	deployment: DeploymentSettings,
 	/**  Build, Execution, Deployment › Run Targets. */
@@ -11664,9 +13083,9 @@ export type ShelvedChangeList = {
 	timeMs: number | null,
 	/**  Branch checked out when the changes were shelved. */
 	branch: string | null,
-	/**  Repository owning the patch; absent in legacy shelves. */
+	/**  Path base of the patch: the owning repository or a common directory for multiple repositories. */
 	repo?: IpcPath | null,
-	/**  Repository-relative paths. */
+	/**  Paths relative to the patch base. */
 	files: ChangedFile[],
 };
 
@@ -11717,6 +13136,14 @@ export type SizeSource =
  *  capture.
  */
 "addressGaps" | "layout";
+
+export type SkillScanWarning = {
+	kind: SkillScanWarningKind,
+	file: string,
+	message: string,
+};
+
+export type SkillScanWarningKind = "hiddenUnicode" | "outOfRootSymlink" | "executableScript" | "allowedToolsShell";
 
 export type SkipReason = 
 /**  A configuration with this name already exists. */
@@ -11804,6 +13231,12 @@ export type SpellingSettings = {
 	projectWords?: string[],
 	/**  Custom dictionaries: plain word lists or Hunspell `.dic` files. */
 	customDictionaries?: string[],
+	/**
+	 *  Where "Save '…' to dictionary" writes: `project`, `application`, or a
+	 *  `spelling.customDictionaries` entry verbatim; empty (the default) is
+	 *  project when one is open, application otherwise.
+	 */
+	defaultDictionary?: string | null,
 };
 
 /**  One row of SQL Resolution Scopes. */
@@ -11863,6 +13296,45 @@ export type StackFrame = {
 	presentationHint: string | null,
 };
 
+export type StagedText = {
+	text: string,
+	/**  Identifies the index entry, including its mode, when this text was read. */
+	version: string,
+};
+
+export type StagedTextEdit = {
+	path: IpcPath,
+	version: string,
+	text: string,
+};
+
+export type StagingLineHunk = {
+	kind: HunkKind,
+	start: number,
+	lines: number,
+	headStart: number,
+	headLines: number,
+	headText: string,
+	indexStart: number,
+	indexLines: number,
+	indexText: string,
+	staged: boolean,
+	unstaged: boolean,
+};
+
+export type StagingLineHunks = {
+	indexVersion: string,
+	hunks: StagingLineHunk[],
+};
+
+export type StagingPatchEntry = {
+	path: IpcPath,
+	renamedFrom: IpcPath | null,
+	side: StagingPatchSide,
+};
+
+export type StagingPatchSide = "staged" | "unstaged" | "both";
+
 export type StartupMetrics = {
 	/**
 	 *  Process start → `main`: exec, code-signature scan (seconds for a freshly
@@ -11877,7 +13349,20 @@ export type StartupMetrics = {
 	firstIpcMs: number | null,
 };
 
-export type Stash = {
+export type Stash = Stash_Serialize | Stash_Deserialize;
+
+/**  Applying or popping a stash can leave the working tree with conflicts. */
+export type StashApplyOutcome = { kind: "done" } | { kind: "conflicts"; repository: IpcPath };
+
+export type StashApplyResult = {
+	/**  The entry's position when the operation started. */
+	index: number,
+	outcome: StashApplyOutcome,
+};
+
+export type StashDiffTarget = "local" | "parent";
+
+export type Stash_Deserialize = {
 	index: number,
 	message: string,
 	timeMs: number | null,
@@ -11885,6 +13370,20 @@ export type Stash = {
 	id: string,
 	/**  The commit the stash was made on (the stash commit's first parent). */
 	base: string | null,
+	/**  The stash's third parent, when untracked files were included. */
+	untracked?: string | null,
+};
+
+export type Stash_Serialize = {
+	index: number,
+	message: string,
+	timeMs: number | null,
+	/**  The stash commit; its changes are those against `base`. */
+	id: string,
+	/**  The commit the stash was made on (the stash commit's first parent). */
+	base: string | null,
+	/**  The stash's third parent, when untracked files were included. */
+	untracked?: string | null,
 };
 
 /**  A plugin's status bar item. */
@@ -12065,6 +13564,20 @@ export type StructureSupport = {
 	locals: boolean,
 };
 
+/**  A declaration of the document and its counterpart in the other file. */
+export type StubLink = {
+	/**  Qualified name, `Class.method`. */
+	name: string,
+	/**  The declaration's identifier in the document. */
+	range: Range,
+	/**  The declaration's whole extent in the document. */
+	extent: Range,
+	/**  The counterpart's identifier in `PythonStubLinks::counterpart`. */
+	target: Range,
+};
+
+export type SubmoduleRollbackSource = "head" | "index";
+
 export type SymbolFilter = "all" | 
 /**  Go to Class (⌘O): classes, interfaces, structs, enums, traits, type aliases. */
 "types";
@@ -12191,6 +13704,12 @@ export type TableSort = {
 /**  A long-running background task shown in the status bar. */
 export type TaskId = number;
 
+/**  Snapshot and live binding returned when reattaching to an existing session. */
+export type TerminalAttach = {
+	session: TerminalSessionInfo,
+	buffered: string,
+};
+
 /**  TerminalExited data exchanged with the IDE. */
 export type TerminalExited = {
 	id: string,
@@ -12218,6 +13737,16 @@ export type TerminalOptions = {
 	rows: number,
 	/**  Make zsh / bash / fish report their working directory (OSC 7) at every prompt. */
 	shellIntegration?: boolean,
+};
+
+/**  Live terminal session state for reattaching across window reconnects. */
+export type TerminalSessionInfo = {
+	id: TerminalId,
+	title: string,
+	pid: number | null,
+	cwd: string,
+	appTitle: string | null,
+	commandRunning: boolean,
 };
 
 /**  Tools › Terminal. */
@@ -12431,10 +13960,10 @@ export type ToolCallDisplay =
 "each";
 
 /**
- *  Tools › Download sources: a mirror the installer tries when `github.com` is slow or
- *  unreachable.
+ *  Tools › Download sources: mirrors the installer tries, in order, when `github.com` is slow
+ *  or unreachable.
  * 
- *  The mirror is a proxy prefix: the official URL is appended to it unchanged
+ *  A mirror is a proxy prefix: the official URL is appended to it unchanged
  *  (`https://mirror.example/https://github.com/o/r/releases/download/…`), which is what the
  *  public GitHub proxies speak. Only `github.com` downloads are affected — those proxies
  *  hard-code that host, so Eclipse JDT LS and Open VSX keep their official addresses. Empty by
@@ -12442,8 +13971,9 @@ export type ToolCallDisplay =
  */
 export type ToolDownloadSettings = {
 	/**
-	 *  Proxy prefix prepended to `https://github.com/…` archive addresses only; empty keeps
-	 *  every download on its official host.
+	 *  Proxy prefixes prepended to `https://github.com/…` archive addresses only, separated by
+	 *  commas or whitespace and tried in order before the official host; empty keeps every
+	 *  download on its official host.
 	 */
 	githubMirror?: string,
 };
@@ -12551,6 +14081,11 @@ export type TraceUnavailable =
 /**  java-debug has no debug session for the JVM. */
 { kind: "noSession" } | { kind: "unsupported"; detail: string };
 
+export type TrackedTip = {
+	tracking: UpstreamTracking,
+	commit: string,
+};
+
 export type TransferError = {
 	path: string,
 	message: string,
@@ -12622,11 +14157,24 @@ export type UndoOutcome = {
 	conflicts: IpcPath[],
 };
 
+export type UnfetchedBranch = {
+	branch: string,
+	trackedTip: TrackedTip,
+	advertisedCommit: string,
+};
+
 export type UnityProjectInfo = {
 	editorVersion: string | null,
 	/**  File names relative to the Unity root, in stable order. */
 	solutions: string[],
 	projects: string[],
+};
+
+/**  A requirement the project's interpreter does not satisfy. */
+export type UnsatisfiedRequirement = {
+	dependency: ManifestDependency,
+	/**  The installed version that misses the specifier; `None` when not installed. */
+	installed: string | null,
 };
 
 export type UpdateCheck = {
@@ -12655,6 +14203,18 @@ export type UpdateStatus = {
 	lastChecked: number | null,
 	checking: boolean,
 };
+
+export type UpstreamTracking = {
+	remote: string,
+	branch: string,
+};
+
+/**  Why a folder added to an interpreter's paths stays off the import path. */
+export type UserPathProblem = 
+/**  Not an existing folder. */
+"missing" | 
+/**  Not absolute or `~/`, or it holds the separator of `PYTHONPATH`. */
+"invalid";
 
 export type Variable = Variable_Serialize | Variable_Deserialize;
 
@@ -12717,16 +14277,25 @@ export type VcsRoot = {
 	branchRoot: IpcPath,
 	/**  Merge / rebase / cherry-pick / revert in progress. */
 	operation: string | null,
+	/**  The current rebase uses Git's interactive mode. */
+	interactiveRebase?: boolean,
 	/**  Current branch; `None` when HEAD is detached (or unreadable). */
 	head: string | null,
 	/**  HEAD commit; `None` before the first commit. */
 	headCommit: string | null,
+	/**  The history ends at a shallow boundary rather than at the initial commit. */
+	shallow?: boolean,
+	/**  Remote availability is unknown in Restricted Mode or when config cannot be read. */
+	hasRemotes?: boolean | null,
+	/**  Conflicts staged during the current operation that can be reopened. */
+	resolvedConflicts?: IpcPath[],
 };
 
 /**  Version Control (main page) and its sub-pages. */
 export type VcsSettings = {
 	/**  Colour folders that contain changed files (project tree, tabs). */
 	showDirtyDirectories?: boolean,
+	createChangelistsAutomatically?: boolean,
 	/**  Diffs the user opens show in an editor tab; off, in a separate window. */
 	diffAsEditorTab?: boolean,
 	/**  Stop file history (Show History) after `history_limit` commits. */
@@ -12751,7 +14320,11 @@ export type VenvTool =
 /**  `poetry env use <base>` in the project, then `poetry env info --path`. */
 "poetry" | 
 /**  `conda create -n <name> -y` for a bare name, else `-p <location>` (conda must be on PATH). */
-"conda";
+"conda" | 
+/**  `pipenv --python <base>` in the project (pipenv must be on PATH). */
+"pipenv" | 
+/**  `hatch env create <env>` in the project (hatch must be on PATH). */
+"hatch";
 
 /**  What a view or custom editor shows. */
 export type View = {
@@ -12840,6 +14413,12 @@ export type VirtualDocument = {
 	 */
 	canReloadEncoding: boolean,
 };
+
+export type VirtualThreadsNote = 
+/**  A debugger holds the VM, which would hang the JSON request until it resumes. */
+"whileSuspended" | 
+/**  Over the attach reply limit (64 MiB). */
+"tooLarge" | "failed";
 
 /**  Declared (or conventional) visibility of an outline symbol. */
 export type Visibility = "public" | "protected" | 
@@ -12942,7 +14521,7 @@ export type WindowTab = {
 /**  A workbench event delivered to plugins. */
 export type WorkbenchEvent = { kind: "documentChanged"; value: DocumentChanged } | { kind: "websocketReady"; value: WebsocketReady } | { kind: "runExited"; value: RunExited } | { kind: "terminalExited"; value: TerminalExited } | { kind: "contentTabAction"; value: ContentTabAction } | { kind: "fileClosed"; value: string } | { kind: "settingsChanged"; value: string[] } | 
 /**  Ids of extension points the receiving plugin declares whose contributions changed. */
-{ kind: "extensionsChanged"; value: string[] } | { kind: "inputModeChanged"; value: InputMode } | { kind: "fileOpened"; value: string } | { kind: "fileSaved"; value: string } | { kind: "filesChanged"; value: FilesChanged } | { kind: "editorFocused"; value: string | null } | { kind: "actionPerformed"; value: ActionPerformed } | { kind: "vcsChanged"; value: string } | 
+{ kind: "extensionsChanged"; value: string[] } | { kind: "inputModeChanged"; value: InputMode } | { kind: "fileOpened"; value: string } | { kind: "fileSaved"; value: string } | { kind: "filesChanged"; value: FilesChanged } | { kind: "editorFocused"; value: string | null } | { kind: "caretMoved"; value: CaretMoved } | { kind: "actionPerformed"; value: ActionPerformed } | { kind: "vcsChanged"; value: string } | 
 /**  Problems of the window's files changed; plugins re-read `problems`. */
 { kind: "problemsChanged" } | { kind: "scheduled" };
 
@@ -13006,6 +14585,23 @@ export type Worktree = {
 	main: boolean,
 	locked: boolean,
 	prunable: boolean,
+	/**  This worktree belongs to a repository checked out as a submodule. */
+	submodule?: boolean,
+};
+
+export type WorktreeCreation = {
+	copyWarning: string | null,
+	setupWarning: string | null,
+};
+
+export type WorktreeInclude = {
+	path: IpcPath,
+	exists: boolean,
+};
+
+export type WorktreeSetup = {
+	script: string,
+	request: RequestId,
 };
 
 export type ZigSettings = {

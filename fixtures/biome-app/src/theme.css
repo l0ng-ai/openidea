@@ -1,0 +1,6 @@
+/* Intentional Biome problem: `color` is declared twice (noDuplicateProperties). */
+.cart {
+    color: #333;
+    padding:4px 8px;
+    color: #444;
+}

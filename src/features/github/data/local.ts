@@ -196,7 +196,7 @@ export async function openInWorktree(number: number): Promise<void> {
     failure: tx`Couldn't create the worktree for #${number}`,
   };
   const added = await withBusy(op, async () => {
-    await call(commands.vcsAddWorktree(revs.root, path, pr.headRefOid, null));
+    await call(commands.vcsAddWorktree(revs.root, path, pr.headRefOid, null, null, null));
     return true;
   });
   if (added) await executeAction("file.openInNewWindow", path);

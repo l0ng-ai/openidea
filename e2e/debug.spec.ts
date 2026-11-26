@@ -3,6 +3,7 @@
  * with its frames and variables, and stepping and resuming go back to the adapter. The adapter is
  * stubbed at the IPC layer; `crates/ide-dap/tests` drives real ones.
  */
+import type { JvmMemoryResult } from "../src/platform/ipc";
 import { expect, ipcCalls, openFromTree, stubDesktop, test } from "./fixtures";
 
 const ROOT = "/dev/acme-api";
@@ -114,6 +115,83 @@ test("stops at a breakpoint, shows frames and variables, steps and resumes", asy
   await expect(debug.getByText("CreateOrderRequest(sku='A-1', qty=2)")).toBeHidden();
 });
 
+test("Memory gives class filtering the available toolbar width and exposes changed-only filtering", async ({
+  workbench: page,
+}) => {
+  const rows = [
+    { name: "OrderCache", instances: 64, deltaInstances: 12 },
+    { name: "OrderRepository", instances: 16, deltaInstances: 0 },
+  ].map((row) => ({ ...row, bytes: row.instances * 16, deltaBytes: null, module: null, ambiguous: false }));
+  const result: JvmMemoryResult = {
+    status: "ready",
+    snapshot: {
+      rows,
+      totalInstances: 80,
+      totalBytes: 1280,
+      javaVersion: "21",
+      takenWhileSuspended: true,
+      hasBaseline: true,
+      elapsedMs: 5,
+      source: "debugger",
+    },
+  };
+  await stubDesktop(page);
+  await page.evaluate(
+    async ({ result, id }) => {
+      const caps = { jvmMemory: true, jvmHeap: true };
+      window.__ipc.handlers.debug_capabilities = () => caps;
+      window.__ipc.handlers.debug_jvm_memory_classes = () => result;
+      const debugPath = "/src/features/debugger/state.ts";
+      const { adoptSession } = await import(/* @vite-ignore */ debugPath);
+      adoptSession(id, { adapter: "java-debug", name: "Billing Service", status: "paused", caps });
+      const dockPath = "/src/workbench/toolwindows/store.ts";
+      const layout = await import(/* @vite-ignore */ dockPath);
+      layout.moveToolWindow("debug", "bottom");
+      layout.setToolWindowSize("bottom", 300);
+      layout.showToolWindow("debug", true);
+    },
+    { result, id: SESSION },
+  );
+
+  const debug = page.getByRole("region", { name: "Debug", exact: true });
+  await debug.getByRole("tab", { name: "Memory" }).click();
+  const toolbar = debug.getByRole("toolbar", { name: "Memory", exact: true });
+  const filter = toolbar.getByRole("textbox", { name: "Filter classes" });
+  const options = toolbar.getByRole("button", { name: "View Options" });
+  const grid = debug.getByRole("grid", { name: "Memory", exact: true });
+  await expect(grid.getByText("OrderRepository", { exact: true })).toBeVisible();
+  expect((await filter.boundingBox())!.width).toBeGreaterThan((await toolbar.boundingBox())!.width / 2);
+
+  await page.evaluate(async () => {
+    const dockPath = "/src/workbench/toolwindows/store.ts";
+    const layout = await import(/* @vite-ignore */ dockPath);
+    layout.moveToolWindow("debug", "right");
+    layout.setToolWindowSize("right", 330);
+  });
+  await expect.poll(async () => (await toolbar.boundingBox())!.width).toBeCloseTo(330, 0);
+  const bar = (await toolbar.boundingBox())!;
+  const gear = (await options.boundingBox())!;
+  const input = (await filter.boundingBox())!;
+  expect(input.width).toBeGreaterThan(bar.width / 2);
+  expect(input.x + input.width).toBeLessThan(gear.x);
+  expect(gear.x + gear.width).toBeLessThanOrEqual(bar.x + bar.width);
+
+  await filter.fill("cache");
+  await expect(grid.getByText("OrderRepository", { exact: true })).toBeHidden();
+  await toolbar.getByRole("button", { name: "Clear", exact: true }).click();
+  await expect(grid.getByText("OrderRepository", { exact: true })).toBeVisible();
+
+  await options.press("Enter");
+  const changed = page.getByRole("menuitemcheckbox", { name: "Changed only" });
+  await expect(changed).not.toBeChecked();
+  await changed.press("Enter");
+  await expect(grid.getByText("OrderRepository", { exact: true })).toBeHidden();
+  await expect(options).toHaveAttribute("aria-pressed", "true");
+  await expect(options).toBeFocused();
+  await options.press("Enter");
+  await expect(changed).toBeChecked();
+});
+
 test("Evaluate keeps a multiline expression and its result visible in a short dialog", async ({ workbench: page }) => {
   await page.setViewportSize({ width: 580, height: 420 });
   await stubDesktop(page);
@@ -199,4 +277,87 @@ test("Evaluate keeps a multiline expression and its result visible in a short di
   await option.press("Enter");
   await expect(field).toHaveValue(expression);
   await expect(field).toBeFocused();
+});
+
+test("Variables keeps evaluation, watches and expression history together in a narrow dock", async ({
+  workbench: page,
+}) => {
+  await page.setViewportSize({ width: 720, height: 620 });
+  await stubDesktop(page);
+  await page.evaluate(async (session) => {
+    const handlers = window.__ipc.handlers;
+    handlers.debug_capabilities = () => ({});
+    handlers.debug_completions = () => [];
+    handlers.debug_scopes = () => [];
+    handlers.debug_evaluate_in = () => ({
+      name: "result",
+      value: "42",
+      typeName: "int",
+      variablesReference: 0,
+      evaluateName: null,
+    });
+    const statePath = "/src/features/debugger/state.ts";
+    const historyPath = "/src/features/debugger/ui/expressionHistory.ts";
+    const projectPath = "/src/platform/project.ts";
+    const servicesPath = "/src/workbench/contributions.ts";
+    const layoutPath = "/src/workbench/toolwindows/store.ts";
+    const { adoptSession } = await import(/* @vite-ignore */ statePath);
+    const { pushHistory } = await import(/* @vite-ignore */ historyPath);
+    const { useProject } = await import(/* @vite-ignore */ projectPath);
+    const { toolWindowService } = await import(/* @vite-ignore */ servicesPath);
+    const { moveToolWindow, setToolWindowSize } = await import(/* @vite-ignore */ layoutPath);
+    const settings = useProject.getState().settings;
+    useProject.setState({
+      settings: { ...settings, editor: { ...settings?.editor, fontFamily: "Consolas", fontSize: 18 } },
+    });
+    pushHistory("evaluate", "order.total + tax");
+    pushHistory("evaluate", "if ready:\n    settle()");
+    adoptSession(session, { name: "Checkout", adapter: "debugpy", status: "paused", selectedFrame: 11 });
+    moveToolWindow("debug", "right");
+    setToolWindowSize("right", 285);
+    toolWindowService().show("debug", true);
+  }, SESSION);
+
+  const debug = page.getByRole("region", { name: "Debug", exact: true });
+  const variables = debug.getByRole("tab", { name: "Variables", exact: true });
+  if (await variables.isVisible()) await variables.click();
+  const field = debug.getByRole("textbox", { name: "Evaluate expression", exact: true });
+  const historyButton = debug.getByRole("button", { name: "History", exact: true });
+  const watch = debug.getByRole("button", { name: "Add to Watches", exact: true });
+  await expect(field).toBeVisible();
+  await expect(historyButton).toBeVisible();
+  await expect(field).toHaveAttribute("placeholder", "Evaluate expression");
+  await expect(field).toHaveCSS("font-family", /^"?Consolas"?,/);
+  await expect(field).toHaveCSS("font-size", "13px");
+  expect((await field.boundingBox())!.width).toBeGreaterThan(100);
+  expect((await watch.boundingBox())!.x).toBeLessThan((await historyButton.boundingBox())!.x);
+
+  await historyButton.click();
+  const menu = page.getByRole("menu", { name: "Expression history", exact: true });
+  await expect(menu.getByRole("menuitem")).toHaveText(["order.total + tax"]);
+  const row = (await field.locator("..").boundingBox())!;
+  const popup = (await menu.locator("..").boundingBox())!;
+  expect(popup.x).toBeCloseTo(row.x, 0);
+  expect(popup.width).toBeCloseTo(row.width, 0);
+  await page.keyboard.press("Escape");
+  await expect(menu).toBeHidden();
+  await expect(historyButton).toBeFocused();
+
+  await historyButton.press("Enter");
+  await menu.getByRole("menuitem", { name: "order.total + tax" }).press("Enter");
+  await expect(field).toBeFocused();
+  await expect(field).toHaveValue("order.total + tax");
+  await field.press("Enter");
+  await expect
+    .poll(() => ipcCalls(page, "debug_evaluate_in"))
+    .toContainEqual(expect.objectContaining({ expression: "order.total + tax", context: "repl" }));
+
+  await field.fill("order.total");
+  await watch.click();
+  await expect(field).toHaveValue("");
+  await expect
+    .poll(() => ipcCalls(page, "debug_evaluate_in"))
+    .toContainEqual(expect.objectContaining({ expression: "order.total", context: "watch" }));
+  await historyButton.click();
+  await expect(menu.getByRole("menuitem")).toHaveText(["order.total", "order.total + tax"]);
 });

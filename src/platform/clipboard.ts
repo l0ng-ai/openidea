@@ -1,5 +1,7 @@
 import { call, commands, isTauri } from "./ipc";
 import { ipcPath } from "./paths";
+import { toBase64 } from "./base64";
+import { usePlatform } from "./platformInfo";
 
 /** Native menu actions and async work can outlive WebKit's user activation. */
 export async function writeClipboardText(text: string): Promise<void> {
@@ -7,15 +9,30 @@ export async function writeClipboardText(text: string): Promise<void> {
   else await navigator.clipboard.writeText(text);
 }
 
+/** Start the browser write before awaiting image conversion, preserving Safari user activation. */
+export async function writeClipboardPng(png: Promise<Blob>): Promise<void> {
+  void png.catch(() => {});
+  if (isTauri()) {
+    const bytes = new Uint8Array(await (await png).arrayBuffer());
+    await call(commands.clipboardWriteImage(toBase64(bytes)));
+  } else {
+    if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined")
+      throw new Error("Image clipboard is unavailable");
+    await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
+  }
+}
+
 /**
- * The clipboard's plain text, read natively where the backend can (macOS, Linux), else
- * through the WebView. A Paste from a menu has no paste event to read, and WebKitGTK's
- * `navigator.clipboard.readText()` gives no text there. Rejects when the WebView refuses.
+ * The clipboard's plain text, read natively in the desktop app, else through the WebView.
+ * A Paste from a menu has no paste event to read, WebKitGTK's `navigator.clipboard.readText()`
+ * gives no text there, and WebView2 prompts for it. Rejects when the WebView refuses.
  */
 export async function readClipboardPlainText(): Promise<string> {
   if (isTauri()) {
-    const text = await call(commands.clipboardText()).catch(() => null);
+    const text = await call(commands.clipboardText()).catch(() => undefined);
     if (text != null) return text;
+    // WebKit on macOS makes the user confirm the read with a "Paste" callout; the backend found no text.
+    if (text === null && usePlatform.getState().os === "macos") return "";
   }
   return (await navigator.clipboard?.readText()) ?? "";
 }

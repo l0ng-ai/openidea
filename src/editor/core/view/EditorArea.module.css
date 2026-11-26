@@ -64,6 +64,33 @@
   content-visibility: hidden;
   z-index: -1;
 }
+/* WebKit leaves a stale selection highlight on a subtree whose rendering was skipped when the selection cleared. */
+.keptHidden[data-selection] {
+  content-visibility: visible;
+  opacity: 0;
+}
+/* Keep the typeset page on its own layer. Hiding every glyph invalidates WebKit's text layout. */
+.keptText {
+  will-change: transform;
+  transform: translateZ(0);
+}
+.keptText.keptHidden {
+  content-visibility: visible;
+  transform: translate3d(-100vw, 0, 0);
+}
+.keptText.keptHidden
+  :is(
+    :any-link,
+    :enabled,
+    summary,
+    iframe,
+    audio[controls],
+    video[controls],
+    [tabindex]:not([tabindex="-1"]),
+    [contenteditable]:not([contenteditable="false"])
+  ) {
+  visibility: hidden;
+}
 .host {
   flex: 1;
   min-height: 0;
@@ -71,9 +98,55 @@
   position: relative;
   overflow: hidden;
 }
-.host > :global(.cm-editor) {
+.editorMount,
+.editorMount > :global(.cm-editor) {
   position: absolute;
   inset: 0;
+}
+.fontZoomIndicator {
+  position: absolute;
+  z-index: 5;
+  left: 50%;
+  bottom: var(--space-3);
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: calc(100% - var(--space-4));
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1) var(--space-2);
+  padding: var(--space-0-5) var(--space-2);
+  background: var(--bg-floating-toolbar);
+  color: var(--fg-strong);
+  border: 1px solid var(--border-popup);
+  border-radius: var(--radius-floating-toolbar);
+  box-shadow: var(--shadow-popup);
+  font: var(--fs-ui) / 1.4 var(--font-ui);
+}
+.fontZoomSize {
+  font-variant-numeric: tabular-nums;
+}
+.fontZoomActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  max-width: 100%;
+}
+.fontZoomReset {
+  min-width: 0;
+  padding: var(--space-1);
+  border-radius: var(--radius-small);
+  color: var(--link);
+  font: inherit;
+  overflow-wrap: anywhere;
+}
+.fontZoomReset:not(:disabled):hover {
+  text-decoration: underline;
+}
+.fontZoomReset:disabled {
+  color: var(--fg-faint);
 }
 .loading {
   flex: 1;
@@ -97,12 +170,30 @@
   gap: var(--space-0-5);
   padding: 0 6px 0 8px;
 }
-.pin {
-  color: var(--fg-muted);
-  margin-left: -2px;
-}
 .deprecated {
   text-decoration-line: line-through;
+}
+.tabPath {
+  --tab-directory-min: min(5ch, 25%);
+  display: flex;
+}
+.tabDirectory > span,
+.tabFilename {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tabDirectory {
+  flex: 0 1000 max-content;
+  /* Leave space for a short prefix without stretching one that already fits. */
+  width: var(--tab-directory-min);
+  color: var(--fg-subtle);
+}
+.tabDirectory > span {
+  display: block;
+}
+.tabFilename {
+  flex: none;
+  max-width: calc(100% - var(--tab-directory-min));
 }
 .dupe {
   color: var(--fg-faint);
@@ -181,16 +272,14 @@
 }
 .find {
   display: grid;
-  grid-template-columns: [mode] auto [field] minmax(0, 420px) [actions] fit-content(50%) [close] minmax(
-      min-content,
-      1fr
-    );
+  grid-template-columns: [mode] auto [field] minmax(0, max(240px, 33%)) [actions] fit-content(50%) minmax(0, 1fr);
   align-items: start;
   row-gap: var(--space-1);
   padding: var(--space-1-5) var(--space-2);
 }
 .findExpand {
   grid-area: 1 / mode;
+  margin-block-start: var(--space-1);
   margin-inline-end: var(--space-1);
 }
 .findField {
@@ -202,15 +291,6 @@
 .findField,
 .replaceField {
   min-width: 0;
-}
-.findClose {
-  grid-area: 1 / close;
-  justify-self: end;
-  margin-inline-start: var(--space-1);
-}
-.findExpand,
-.findClose {
-  margin-block-start: var(--space-1);
 }
 .findButtons,
 .replaceButtons {
@@ -243,7 +323,7 @@
 
 @container editor-find (width < 500px) {
   .find {
-    grid-template-columns: [mode] auto [field] minmax(0, 1fr) [close] auto;
+    grid-template-columns: [mode] auto [field] minmax(0, 1fr);
   }
   .findButtons,
   .replaceButtons {
@@ -275,8 +355,7 @@
   .replaceButtons {
     grid-column: mode / -1;
   }
-  .findExpand,
-  .findClose {
+  .findExpand {
     grid-row: 2;
     margin-block-start: 0;
   }

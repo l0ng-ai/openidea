@@ -41,8 +41,8 @@
   flex: none;
   position: sticky;
   left: 0;
-  width: 48px;
-  padding-right: 12px;
+  width: var(--source-preview-gutter-width, 48px);
+  padding-right: var(--space-3);
   text-align: right;
   color: var(--fg-gutter);
   background-color: var(--bg-app);

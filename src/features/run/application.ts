@@ -1,10 +1,12 @@
 /**
  * IDEA-style "Application" run configurations for Java / Kotlin main classes
  * (Spring Boot applications get their own kind), the module a source file
- * belongs to, and test configurations scoped to one class or method.
+ * belongs to, and test configurations scoped to one class or method: through Maven / Gradle,
+ * or for JUnit 5 in a Maven module, OpenIDEA's own runner (Settings › Maven › Run tests using).
  */
 import type { RunConfig } from "@/platform/ipc";
-import { CLASSPATH, TEST_CLASSPATH, jvmModuleDir } from "@/platform/javaLaunch";
+import { CLASSPATH, JUNIT_RUNNER_MAIN, TEST_CLASSPATH, jvmModuleDir, parseJavaArgs } from "@/platform/javaLaunch";
+import { useProject } from "@/platform/project";
 import { isTestPath, rootFor } from "@/platform/languageSettings";
 import { currentRoots } from "@/platform/projectRoots";
 import { simpleClassName } from "./jvmTargets";
@@ -80,4 +82,42 @@ export function jvmTestConfig(fileConfig: RunConfig, className: string, method: 
       };
   }
   return null;
+}
+
+/** A JUnit test file (JUnit 5 Jupiter, JUnit 4 or JUnit 3): OpenIDEA's runner handles all of them, TestNG goes to Maven. */
+const JUNIT_IMPORT = /^\s*import\s+(?:static\s+)?(?:org\.junit\.|junit\.framework\.)/m;
+
+/** Settings › Build Tools › Maven › Run tests using: OpenIDEA (the default), not Surefire. */
+export function runsJunitInIde(fileConfig: RunConfig, content: string | undefined): boolean {
+  if (fileConfig.kind !== "maven" || !content || !JUNIT_IMPORT.test(content)) return false;
+  return useProject.getState().settings?.languages?.java?.maven?.runTestsUsing !== "maven";
+}
+
+/**
+ * A test class (`method` unset) or method run by OpenIDEA's JUnit Platform runner on the module's
+ * test classpath, like IDEA's JUnit configurations: `java -ea -cp ${testClasspath} <runner> Class#method`.
+ * Its working directory is the module's, as Surefire's.
+ */
+export function junitRunnerConfig(
+  className: string,
+  method: string | undefined,
+  relPath: string,
+  configs: readonly RunConfig[],
+): RunConfig {
+  const app = applicationConfig({ className }, relPath, configs);
+  const selector = `${className}${method ? `#${method}` : ""}`;
+  const simple = simpleClassName(className);
+  return {
+    ...app,
+    id: `junit:${app.module ? `${app.module}:` : ""}${selector}`,
+    name: method ? `${simple}.${method}` : simple,
+    args: ["-ea", "-cp", TEST_CLASSPATH, JUNIT_RUNNER_MAIN, selector],
+    cwd: app.module || null,
+    isTest: true,
+  };
+}
+
+/** A configuration run by OpenIDEA's JUnit runner (its arguments after the main class select the tests). */
+export function isJunitRunner(config: Pick<RunConfig, "kind" | "args">): boolean {
+  return config.kind === "application" && parseJavaArgs(config.args).mainClass === JUNIT_RUNNER_MAIN;
 }

@@ -1,5 +1,7 @@
-use ide_core::{NullSink, RequestId};
-use ide_host::{Host, HostConfig, ops};
+mod common;
+
+use ide_core::RequestId;
+use ide_host::{Host, ops};
 use std::{sync::Arc, time::Duration};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -16,17 +18,7 @@ async fn opens_unity_without_generated_solutions_and_excludes_caches_from_the_in
     std::fs::write(root.join("Library/PackageCache/Cached.cs"), "class Cached {}\n").unwrap();
     std::fs::write(root.join("Temp/Temporary.cs"), "class Temporary {}\n").unwrap();
     std::fs::write(root.join("Logs/Editor.log"), "log\n").unwrap();
-    let host = Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    });
+    let host = Host::new(common::host_config(&base));
     let project = host.open_project("main", &root).unwrap();
     let info = ops::project::info(&project);
     assert_eq!(info.name, "Game");

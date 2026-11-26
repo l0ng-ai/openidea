@@ -30,6 +30,7 @@ test("Rebase shows its command and the two bases for --onto", async ({ workbench
         })),
       ];
     };
+    handlers.vcs_has_commit = () => true;
     handlers.vcs_rebase_with = () => null;
     const store = "/src/features/vcs/store.ts";
     const { useVcs } = await import(/* @vite-ignore */ store);
@@ -88,11 +89,12 @@ test("Rebase shows its command and the two bases for --onto", async ({ workbench
   await flag("--onto");
   const oldBase = dialog.getByRole("button", { name: "Old base", exact: true });
   const newBase = dialog.getByRole("button", { name: "New base", exact: true });
-  await expect(oldBase).toHaveText("release");
+  await expect(newBase).toHaveText("release");
   await expect(submit).toBeDisabled();
   const oldBox = (await oldBase.boundingBox())!;
   const newBox = (await newBase.boundingBox())!;
   expect(oldBox.y).toBeGreaterThan(newBox.y);
+  await pick(oldBase, "release");
   await pick(newBase, "integration");
   await flag("--rebase-merges");
   await flag("--keep-empty");
@@ -110,8 +112,15 @@ test("Rebase shows its command and the two bases for --onto", async ({ workbench
     .toEqual([
       {
         repo: "/dev/acme-api/service",
-        upstream: "release",
-        options: { onto: "integration", rebaseMerges: true, keepEmpty: true },
+        upstream: "refs/heads/release",
+        options: {
+          onto: "refs/heads/integration",
+          branch: null,
+          rebaseMerges: true,
+          keepEmpty: true,
+          updateRefs: false,
+          autosquash: null,
+        },
       },
     ]);
 });

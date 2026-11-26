@@ -13,3 +13,20 @@ command = "vscode-css-language-server"
 args = ["--stdio"]
 initialization-options = { provideFormatter = true, css = {}, scss = {}, less = {} }
 install-hint = "npm i -g vscode-langservers-extracted"
+
+# Stylelint: only below a project's Stylelint configuration; the server runs the project's own
+# stylelint. Diagnostics, quick fixes and fix-all (Code Cleanup, Actions on Save) only: the
+# server's formatting applies the same fixes, and Reformat Code stays the formatter's.
+[[language-servers]]
+name = "stylelint"
+command = "stylelint-language-server"
+args = ["--stdio"]
+root-markers = [".stylelintrc", ".stylelintrc.json", ".stylelintrc.yaml", ".stylelintrc.yml", ".stylelintrc.js", ".stylelintrc.cjs", ".stylelintrc.mjs", ".stylelintrc.ts", ".stylelintrc.cts", ".stylelintrc.mts", "stylelint.config.js", "stylelint.config.cjs", "stylelint.config.mjs", "stylelint.config.ts", "stylelint.config.cts", "stylelint.config.mts", "package.json#stylelint"]
+require-root-marker = true
+features = ["code-action", "diagnostics"]
+install-hint = "npm i -g @stylelint/language-server"
+
+# Read as section `stylelint`: the languages it lints (its default is CSS only).
+[language-servers.settings]
+validate = ["css", "scss", "less"]
+snippet = ["css", "scss", "less"]

@@ -42,6 +42,45 @@ describe("plugin package inference uses built-in rules", () => {
     const builtin = BUILTIN_FILE_TEMPLATES.find((t) => t.extension === extension)!;
     expect(await packageFor(plugin(extension), dir)).toBe(await packageFor(builtin, dir));
   });
+  it.each(["java", "kt"])("uses source sets reported by a Gradle sync for %s", async (extension) => {
+    useProject.setState({ project: { root: "/p", name: "p" } as never });
+    useProjectRoots.setState({
+      root: "/p",
+      detected: [
+        { path: "src/gen", kind: "source", detectedFrom: "Gradle" },
+        { path: "lib/src/gen", kind: "source", detectedFrom: "lib/Gradle" },
+      ],
+    });
+    const builtin = BUILTIN_FILE_TEMPLATES.find((t) => t.extension === extension)!;
+    expect(await packageFor(builtin, "/p/src/gen/com/acme")).toBe("com.acme");
+    expect(await packageFor(builtin, "/p/lib/src/gen/com/acme")).toBe("com.acme");
+  });
+  it("keeps the packages of a synced Gradle project's standard source and resource roots", async () => {
+    // Root shapes a Gradle sync reports for the default layout.
+    useProject.setState({ project: { root: "/p", name: "p" } as never });
+    useProjectRoots.setState({
+      root: "/p",
+      detected: [
+        { path: "src/main/java", kind: "source", detectedFrom: "Gradle" },
+        { path: "src/main/resources", kind: "resources", detectedFrom: "Gradle" },
+        { path: "src/test/java", kind: "test", detectedFrom: "Gradle" },
+        { path: "src/test/resources", kind: "testResources", detectedFrom: "Gradle" },
+      ],
+    });
+    const java = BUILTIN_FILE_TEMPLATES.find((t) => t.extension === "java")!;
+    expect(await packageFor(java, "/p/src/main/java/com/acme")).toBe("com.acme");
+    expect(await packageFor(java, "/p/src/test/java/com/acme")).toBe("com.acme");
+    expect(await packageFor(java, "/p/src/main/java")).toBe("");
+  });
+  it("uses source folders from an Eclipse .classpath", async () => {
+    useProject.setState({ project: { root: "/p", name: "p" } as never });
+    useProjectRoots.setState({
+      root: "/p",
+      detected: [{ path: "app/source", kind: "source", detectedFrom: "app/.classpath" }],
+    });
+    const java = BUILTIN_FILE_TEMPLATES.find((t) => t.extension === "java")!;
+    expect(await packageFor(java, "/p/app/source/com/acme")).toBe("com.acme");
+  });
   it("infers language from an exact filename when extension is omitted", async () => {
     useProject.setState({ project: { root: "/p", name: "p" } as never });
     expect(await packageFor({ ...plugin(""), fileName: "Order.java" }, "/p/src/main/java/com/acme")).toBe("com.acme");

@@ -174,6 +174,8 @@ struct Session {
     mcp_off: Vec<String>,
     /// The staged skills folder passed as `--add-dir` (its `.claude/skills` holds the copies).
     skills_add_dir: Option<PathBuf>,
+    /// The workspace's other roots, each passed as `--add-dir`.
+    additional_dirs: Vec<String>,
     /// The staged skills' `--settings` JSON (`skillOverrides` for the native ones too).
     skills_settings: Option<String>,
     shim: Weak<Shim>,
@@ -366,6 +368,7 @@ impl Shim {
             mcp_config,
             mcp_off,
             skills_add_dir: skills.and_then(|s| s.get("claudeAddDir")).and_then(Value::as_str).map(PathBuf::from),
+            additional_dirs: additional_dirs(params),
             skills_settings: skills.and_then(|s| s.get("claudeSettings")).and_then(Value::as_str).map(str::to_owned),
             shim: Arc::downgrade(self),
             st: Mutex::new(State {
@@ -412,7 +415,7 @@ impl Shim {
                     "agentCapabilities": {
                         "loadSession": true,
                         "promptCapabilities": { "image": true, "embeddedContext": true },
-                        "sessionCapabilities": { "fork": {} },
+                        "sessionCapabilities": { "fork": {}, "additionalDirectories": {} },
                         "mcpCapabilities": { "stdio": true, "http": true, "sse": true },
                         "_meta": { "openidea": { "rollback": true, "steer": true, "backgroundTasks": true, "contextUsage": true } },
                     },
@@ -502,7 +505,16 @@ impl Shim {
             "_openidea/context_usage" => {
                 let session = self.session(&params)?;
                 let proc = session.st.lock().proc.clone().ok_or_else(|| internal("Claude Code is not running"))?;
-                rt.block_on(proc.control(json!({ "subtype": "get_context_usage" }))).map_err(internal)
+                let usage = rt.block_on(proc.control(json!({ "subtype": "get_context_usage" }))).map_err(internal)?;
+                // The meter shows the same numbers as these details from now on.
+                let n = |k: &str| usage.get(k).and_then(Value::as_u64);
+                if let (Some(used), Some(size)) = (n("totalTokens"), n("maxTokens").filter(|m| *m > 0)) {
+                    let update = session.st.lock().tr.on_context_usage(used, size);
+                    if let Some(shim) = session.shim() {
+                        shim.notify(vec![update]);
+                    }
+                }
+                Ok(usage)
             }
             "_openidea/stop_task" => {
                 let session = self.session(&params)?;
@@ -684,6 +696,9 @@ impl Session {
         // project's own, and the settings hold the modes of the skills it sees natively too.
         if let Some(dir) = &self.skills_add_dir {
             args.extend(["--add-dir".to_owned(), dir.to_string_lossy().into_owned()]);
+        }
+        for dir in &self.additional_dirs {
+            args.extend(["--add-dir".to_owned(), dir.clone()]);
         }
         if let Some(settings) = &self.skills_settings {
             args.extend(["--settings".to_owned(), settings.clone()]);
@@ -1001,11 +1016,16 @@ impl Session {
         let mut updates = Vec::new();
         let mut finished = None;
         let mut read_title = false;
+        let mut refresh_usage = false;
         {
             let mut st = self.st.lock();
             let st = &mut *st;
             match kind {
                 "system" => match msg.get("subtype").and_then(Value::as_str) {
+                    Some("compact_boundary") => {
+                        refresh_usage = msg.pointer("/compact_metadata/post_tokens").is_none_or(Value::is_null);
+                        updates.extend(st.tr.on_message(&msg));
+                    }
                     Some("init") => {
                         st.terminal_only = strings(msg.get("terminal_slash_commands"));
                     }
@@ -1109,6 +1129,31 @@ impl Session {
         if read_title {
             self.read_title();
         }
+        if refresh_usage {
+            self.refresh_usage();
+        }
+    }
+
+    /// Sends what the context holds after a compaction that didn't report it, as Claude Code
+    /// counts it (`get_context_usage`); until then the meter would show the count from before.
+    fn refresh_usage(self: &Arc<Self>) {
+        let me = self.clone();
+        tokio::spawn(async move {
+            let Some(proc) = me.st.lock().proc.clone() else { return };
+            let usage = match proc.control(json!({ "subtype": "get_context_usage" })).await {
+                Ok(usage) => usage,
+                Err(e) => {
+                    tracing::debug!("reading claude context usage after compaction: {e}");
+                    return;
+                }
+            };
+            let n = |k: &str| usage.get(k).and_then(Value::as_u64);
+            let (Some(used), Some(size)) = (n("totalTokens"), n("maxTokens").filter(|m| *m > 0)) else { return };
+            let update = me.st.lock().tr.on_context_usage(used, size);
+            if let Some(shim) = me.shim() {
+                shim.notify(vec![update]);
+            }
+        });
     }
 
     /// Sends the session's title once it has one: the one in its transcript, or else one
@@ -1522,6 +1567,12 @@ fn write_mcp_config(json: &str) -> std::io::Result<tempfile::TempPath> {
 /// The servers switched off for the session (`_meta.openidea.mcpServersOff`) as Claude Code
 /// permission rules that deny all of a server's tools (`mcp__<server>`), so a server of
 /// Claude Code's own configuration stays off too.
+/// The session's `additionalDirectories`: the workspace's other roots.
+fn additional_dirs(params: &Value) -> Vec<String> {
+    let dirs = params.get("additionalDirectories").and_then(Value::as_array);
+    dirs.into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect()
+}
+
 fn mcp_off(params: &Value) -> Vec<String> {
     params
         .pointer("/_meta/openidea/mcpServersOff")

@@ -3,6 +3,7 @@
  * install prompts for missing language servers.
  *
  * Actions: `tools.languageServers` (open the page; arg: a tool name to show), `tools.install` (arg: tool name),
+ * `tools.promptInstall` (arg: `{ name, sticky?, formatter?, refactoring?: label }`),
  * `java.downloadJdk` (arg: `DownloadJdkArgs`).
  */
 import { executeAction, registerActions } from "@/platform/actions";
@@ -31,7 +32,11 @@ export function activate(): () => void {
               arg.name,
               !("sticky" in arg) || arg.sticky !== false,
               new Set(),
-              "formatter" in arg && arg.formatter === true,
+              "refactoring" in arg && typeof arg.refactoring === "string"
+                ? { refactoring: arg.refactoring }
+                : "formatter" in arg && arg.formatter === true
+                  ? "formatter"
+                  : "codeInsight",
             );
           }
         },
@@ -64,7 +69,11 @@ export function activate(): () => void {
               return;
             }
           }
-          await executeAction("file.settings", SETTINGS_PAGE_ID);
+          // Opened on that tool, where its manual install hint is.
+          await executeAction(
+            "file.settings",
+            typeof arg === "string" ? `${SETTINGS_PAGE_ID}#${arg}` : SETTINGS_PAGE_ID,
+          );
         },
       },
     ]),

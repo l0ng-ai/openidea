@@ -1,5 +1,7 @@
-use ide_core::{NullSink, RequestId};
-use ide_host::{Host, HostConfig, ops};
+mod common;
+
+use ide_core::RequestId;
+use ide_host::{Host, ops};
 use std::sync::{Arc, Mutex};
 
 async fn find(host: &Host, pattern: &str) -> Vec<ide_search::FileMatches> {
@@ -30,17 +32,7 @@ async fn find_in_files_decodes_closed_files_with_the_project_encoding() {
     std::fs::create_dir(&root).unwrap();
     let text = "class CreditQuerySendUtils {\n    //中文搜索验证 Chinese Chinese Chinese\n}\n";
     std::fs::write(root.join("CreditQuerySendUtils.java"), ide_vfs::encode(text, "gbk", false).unwrap()).unwrap();
-    let host = Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    });
+    let host = Host::new(common::host_config(&base));
     host.trust.decide(&root, true, false).unwrap();
     let project = host.open_project("main", &root).unwrap();
     let mut defaults = project.documents.file_defaults();

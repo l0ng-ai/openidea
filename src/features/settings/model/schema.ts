@@ -41,6 +41,7 @@ import {
   type NotificationsValid,
 } from "./behaviorSchema";
 import { isThemeChoiceId, type ThemeChoiceId } from "@/platform/themes";
+import { DEFAULT_REMOTE_IDLE_MINUTES, validRemoteIdleMinutes } from "@/platform/remoteIdle";
 
 /** Agents › IDE MCP Server › Port: its default (`ide-core::settings::DEFAULT_MCP_PORT`) and range. */
 export const DEFAULT_MCP_PORT = 26371;
@@ -115,6 +116,7 @@ export interface ValidSettings extends WorkflowSettings {
   notifications: NotificationsValid;
   /** System Settings › HTTP Proxy (global). */
   proxy: ProxySettingsValid;
+  remoteDevelopment: { idleTimeoutMinutes: number };
   /** Tools › Download sources: a mirror prefix for the installer's release downloads. */
   toolDownloads: { githubMirror: string };
   languages: LanguagesValid;
@@ -160,6 +162,8 @@ export interface SpellingValid {
   ideWords: string[];
   projectWords: string[];
   customDictionaries: string[];
+  /** Where "Save '…' to dictionary" writes; empty means project (application without a project). */
+  defaultDictionary: string;
 }
 
 const stringList = (v: unknown): string[] =>
@@ -171,6 +175,7 @@ function validateSpelling(raw: unknown): SpellingValid {
     ideWords: stringList(r.ideWords),
     projectWords: stringList(r.projectWords),
     customDictionaries: stringList(r.customDictionaries),
+    defaultDictionary: typeof r.defaultDictionary === "string" ? r.defaultDictionary : "",
   };
 }
 
@@ -221,12 +226,13 @@ export const DEFAULT_SETTINGS: ValidSettings = {
   customKeymaps: {},
   notifications: DEFAULT_NOTIFICATIONS,
   proxy: DEFAULT_PROXY,
+  remoteDevelopment: { idleTimeoutMinutes: DEFAULT_REMOTE_IDLE_MINUTES },
   toolDownloads: { githubMirror: "" },
   languages: DEFAULT_LANGUAGES,
   cmake: {},
   projectStructure: DEFAULT_PROJECT_STRUCTURE,
   inspections: DEFAULT_INSPECTIONS,
-  spelling: { ideWords: [], projectWords: [], customDictionaries: [] },
+  spelling: { ideWords: [], projectWords: [], customDictionaries: [], defaultDictionary: "" },
   tools: {},
   languageServers: {},
   agents: {
@@ -234,7 +240,6 @@ export const DEFAULT_SETTINGS: ValidSettings = {
     showWorkTime: true,
     showUsageLimits: true,
     showCost: false,
-    foldTurns: true,
     smoothText: true,
     fitWindowWidth: false,
     thinking: "auto",
@@ -422,6 +427,9 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
     customKeymaps,
     notifications: validateNotifications(root.notifications),
     proxy: validateProxy(root.proxy),
+    remoteDevelopment: {
+      idleTimeoutMinutes: validRemoteIdleMinutes(obj(root.remoteDevelopment).idleTimeoutMinutes),
+    },
     toolDownloads: {
       githubMirror:
         typeof obj(root.toolDownloads).githubMirror === "string"
@@ -447,7 +455,6 @@ export function validateSettings(raw: Settings | unknown): ValidSettings {
       showWorkTime: bool(agents.showWorkTime, d.agents.showWorkTime),
       showUsageLimits: bool(agents.showUsageLimits, d.agents.showUsageLimits),
       showCost: bool(agents.showCost, d.agents.showCost),
-      foldTurns: bool(agents.foldTurns, d.agents.foldTurns),
       smoothText: bool(agents.smoothText, d.agents.smoothText),
       fitWindowWidth: bool(agents.fitWindowWidth, d.agents.fitWindowWidth),
       thinking: oneOf(agents.thinking, ["auto", "expanded", "collapsed"] as const, d.agents.thinking),

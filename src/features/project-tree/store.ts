@@ -11,9 +11,12 @@ import { withDocument } from "@/editor/lsp/files";
 import { IpcError } from "@/platform/ipc";
 import { libraryEntryPaths } from "@/platform/virtualDocs";
 import { isIgnoredName } from "@/platform/ignoredNames";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 import { notifications } from "@/workbench/contributions";
+import { editorPrefs } from "@/platform/editorSettings";
+import { useProject } from "@/platform/project";
 import { ipcPath } from "@/platform/paths";
+import { projectLocation } from "@/platform/remote";
 import {
   DEFAULT_TREE_OPTIONS,
   GROUP_PREFIX,
@@ -32,6 +35,7 @@ import {
   mergeListing,
   planRefresh,
   visibleEntries,
+  visibleInfo,
   unityPathVisible,
   type Placeholder,
   type ProjectNode,
@@ -46,7 +50,7 @@ import {
   type ProjectViewLead,
   type ProjectViewRootContribution,
 } from "@/workbench/contributions";
-import { ancestorsWithin, isInside, isSameOrInside, nameOf, type PackageKind } from "./paths";
+import { ancestorsWithin, insideAnyOf, isInside, isSameOrInside, nameOf, type PackageKind } from "./paths";
 
 export interface ViewOptions extends TreeOptions {
   /** Select the active editor's file in the tree (IDEA: Always Select Opened File). */
@@ -57,8 +61,6 @@ export interface ViewOptions extends TreeOptions {
   singleClickOpen: boolean;
   /** Single click on a folder row expands / collapses it. */
   singleClickExpand: boolean;
-  /** Single click shows files in the preview tab (IDEA's "Enable Preview Tab"). */
-  previewTab: boolean;
   /** Show a file's declarations as expandable rows below it. */
   showMembers: boolean;
   /** Show the location of each project root beside its name. */
@@ -73,8 +75,6 @@ export const DEFAULT_VIEW_OPTIONS: ViewOptions = {
   autoscrollToSource: false,
   singleClickOpen: false,
   singleClickExpand: false,
-  // IDEA's "Enable Preview Tab" is off by default.
-  previewTab: false,
   showMembers: false,
   showRootPaths: true,
   horizontalScroll: true,
@@ -82,6 +82,8 @@ export const DEFAULT_VIEW_OPTIONS: ViewOptions = {
 
 function storedOptions(): ViewOptions {
   const options = { ...DEFAULT_VIEW_OPTIONS, ...readJson<Partial<ViewOptions>>(OPTIONS_KEY) };
+  // Former view-only switch, now the editor's preview tab setting (`previewTabEnabled`).
+  delete (options as { previewTab?: unknown }).previewTab;
   if (!["name", "type", "modified"].includes(options.sortBy)) options.sortBy = "name";
   return options;
 }
@@ -326,8 +328,21 @@ export const currentModel = () => selectModel(get());
 // Lifecycle
 
 let generation = 0;
-const inflight = new Map<string, Promise<void>>();
+interface Expansion {
+  paths: Set<string>;
+  opened: Map<string, string | null>;
+  cancel: () => void;
+}
+let activeExpansion: Expansion | undefined;
+const inflight = new Map<string, { promise: Promise<void>; batch?: ListingBatch; expansion?: Expansion }>();
+type ListingBatch = "reload" | "visible";
+/** Listings read by a batch and not applied yet; `reload` marks folders that were loaded when read. */
+const pending = new Map<
+  string,
+  { entries: readonly FileEntry[]; reload: boolean; batch: ListingBatch; expansion?: Expansion }
+>();
 let persistTimer: ReturnType<typeof setTimeout> | undefined;
+let visibleFlush: number | undefined;
 
 /** Resets the view for a newly opened project, restoring its expansion state. */
 export function initProjectTree(
@@ -336,8 +351,12 @@ export function initProjectTree(
   members: readonly string[] | null = null,
   unity: UnityProjectInfo | null = null,
 ) {
+  cancelExpansion();
   generation++;
   inflight.clear();
+  pending.clear();
+  if (visibleFlush !== undefined) cancelAnimationFrame(visibleFlush);
+  visibleFlush = undefined;
   outlineInflight.clear();
   clearTimeout(persistTimer);
   modeExpanded.clear();
@@ -390,7 +409,11 @@ function initialExpanded(root: string | null, mode: ViewMode, members = get().me
   // The tree as the user left it, like IDEA: a collapsed project root stays collapsed, and
   // nodes outside it (content roots, contributed roots) stay open.
   // Keys of nodes that no longer exist are inert. Only a first open expands the roots.
-  const persisted = mode === "project" || mode === "unity" ? readJson<string[]>(expandedKey(root)) : null;
+  const scope = projectLocation(root) ?? root;
+  const persisted =
+    mode === "project" || mode === "unity"
+      ? (readJson<string[]>(expandedKey(scope)) ?? (scope !== root ? readJson<string[]>(expandedKey(root)) : null))
+      : null;
   if (persisted) return new Set(persisted);
   return new Set(members ?? [root]);
 }
@@ -401,7 +424,7 @@ function persistExpanded() {
   persistTimer = setTimeout(() => {
     const { root, expanded, mode } = get();
     if (root && (mode === "project" || mode === "unity"))
-      writeJson(expandedKey(root), [...expanded].slice(0, MAX_PERSISTED));
+      writeJson(expandedKey(projectLocation(root) ?? root), [...expanded].slice(0, MAX_PERSISTED));
   }, 300);
 }
 
@@ -410,6 +433,7 @@ export function setViewMode(mode: ViewMode) {
   const s = get();
   if (mode === "unity" && !s.unity) return;
   if (s.mode === mode) return;
+  cancelExpansion();
   modeExpanded.set(s.mode, s.expanded);
   autoExpanded.clear();
   writeJson(MODE_KEY, mode);
@@ -466,6 +490,7 @@ export function setChangedFiles(paths: readonly string[]) {
 }
 
 export function setExpanded(expanded: ReadonlySet<string>) {
+  cancelExpansion();
   set({ expanded });
   persistExpanded();
 }
@@ -499,6 +524,22 @@ export function setViewOption<K extends keyof ViewOptions>(key: K, value: ViewOp
   writeJson(OPTIONS_KEY, options);
 }
 
+/** Single click shows files in the preview tab: IDEA's "Enable Preview Tab" is the editor's own setting. */
+export const previewTabEnabled = () => editorPrefs().tabs.previewTab;
+
+export async function setPreviewTabEnabled(on: boolean): Promise<void> {
+  try {
+    const settings = await call(commands.settingsSet("global", "editor.tabs.previewTab", JSON.stringify(on)));
+    useProject.setState({ settings });
+  } catch (e) {
+    notifications().notify({
+      level: "error",
+      title: "Cannot change the setting",
+      body: e instanceof Error ? e.message : String(e),
+    });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Loading
 
@@ -509,28 +550,123 @@ function putListing(path: string, entries: readonly FileEntry[]) {
   set({ listings: new Map(listings).set(path, merged) });
 }
 
+/** Folder reads a batch runs at once; a checkout can change thousands of folders. */
+const READ_SLOTS = 8;
+let readsRunning = 0;
+const readQueue: (() => void)[] = [];
+
+async function withReadSlot<T>(read: () => Promise<T>): Promise<T> {
+  if (readsRunning < READ_SLOTS) readsRunning++;
+  else await new Promise<void>((resolve) => readQueue.push(resolve));
+  try {
+    return await read();
+  } finally {
+    const next = readQueue.shift();
+    if (next) next();
+    else readsRunning--;
+  }
+}
+
+function flushPending(batch: ListingBatch) {
+  const { listings, expanded } = get();
+  let next: Map<string, readonly FileEntry[]> | undefined;
+  for (const [path, result] of pending) {
+    if (result.batch !== batch) continue;
+    pending.delete(path);
+    if (result.expansion && result.expansion !== activeExpansion) continue;
+    // A folder dropped while the batch was reading stays dropped.
+    if (result.reload && !listings.has(path)) continue;
+    const merged = mergeListing(listings.get(path), result.entries);
+    if (merged !== listings.get(path)) (next ??= new Map(listings)).set(path, merged);
+  }
+  let opened: Set<string> | undefined;
+  if (batch === "visible" && activeExpansion) {
+    for (const [key, path] of activeExpansion.opened) {
+      if (!expanded.has(key) && (path === null || (next ?? listings).has(path)))
+        (opened ??= new Set(expanded)).add(key);
+    }
+    activeExpansion.opened.clear();
+  }
+  if (next || opened) set({ listings: next ?? listings, expanded: opened ?? expanded });
+  if (opened) persistExpanded();
+}
+
+function scheduleVisibleListings() {
+  visibleFlush ??= requestAnimationFrame(flushVisibleListings);
+}
+
+function flushVisibleListings() {
+  if (visibleFlush === undefined) return;
+  cancelAnimationFrame(visibleFlush);
+  visibleFlush = undefined;
+  flushPending("visible");
+}
+
 /** Loads (or reloads) one folder. Concurrent calls for the same folder share a request. */
 export function loadDir(path: string, force = false): Promise<void> {
+  return load(path, force);
+}
+
+/** Loads the expanded folders currently waiting for their children. */
+export function loadVisibleDirs(paths: readonly string[]) {
+  const batch = paths.length > 1 ? "visible" : undefined;
+  for (const path of paths) if (!activeExpansion?.paths.has(path)) void load(path, false, batch);
+}
+
+function load(path: string, force: boolean, batch?: ListingBatch, expansion?: Expansion): Promise<void> {
   const { root, listings } = get();
   if (!root || isGroupKey(path)) return Promise.resolve();
   if (!force && listings.has(path)) return Promise.resolve();
-  const running = inflight.get(path);
-  if (running) return running;
   const gen = generation;
-  const p = (async () => {
+  const running = inflight.get(path);
+  if (running) {
+    if (running.expansion) {
+      running.expansion = expansion;
+      running.batch = batch;
+    }
+    if (batch) return running.promise;
+    return running.promise.then(() => {
+      if (gen === generation && pending.get(path)?.batch === "visible") flushVisibleListings();
+    });
+  }
+  const buffered = pending.get(path);
+  if (!force && buffered && (!buffered.expansion || buffered.expansion === activeExpansion)) {
+    if (batch) return Promise.resolve();
+    if (buffered.batch === "visible") {
+      buffered.expansion = undefined;
+      flushVisibleListings();
+      return Promise.resolve();
+    }
+  }
+  const reload = listings.has(path);
+  const request = { promise: Promise.resolve(), batch, expansion };
+  const isCurrent = () => gen === generation && (!request.expansion || request.expansion === activeExpansion);
+  request.promise = (async () => {
     try {
-      const entries = await projectFs(root).readDir(path);
-      if (gen !== generation) return;
-      putListing(path, entries);
+      const read = () => (isCurrent() ? projectFs(root).readDir(path) : Promise.resolve(null));
+      const entries = await (batch === "reload" || expansion ? withReadSlot(read) : read());
+      if (!entries || !isCurrent()) return;
+      if (request.batch) {
+        pending.set(path, { entries, reload, batch: request.batch, expansion: request.expansion });
+        // Restoring many expanded folders yields several replies in one frame
+        if (request.batch === "visible") scheduleVisibleListings();
+      } else {
+        pending.delete(path);
+        putListing(path, entries);
+      }
       // Compact Middle Packages needs to look one level down a single-folder chain.
       const s = get();
-      if (treeOptions(s).compact) {
+      if (!request.expansion && treeOptions(s).compact) {
         const visible = visibleEntries(entries, treeOptions(s));
         const only = visible.length === 1 ? visible[0]! : null;
-        if (only && isDirEntry(only) && !only.ignored && !s.listings.has(only.path)) void loadDir(only.path);
+        if (only && isRecursiveFolder(only) && !s.listings.has(only.path) && !activeExpansion?.paths.has(only.path)) {
+          const next = load(only.path, false, request.batch);
+          if (request.batch === "reload") await next;
+        }
       }
     } catch (e) {
-      if (gen !== generation) return;
+      if (!isCurrent()) return;
+      pending.delete(path);
       const s = get();
       if (e instanceof IpcError && (e.kind === "notFound" || e.kind === "invalidInput")) {
         const listings = new Map(s.listings);
@@ -546,8 +682,19 @@ export function loadDir(path: string, force = false): Promise<void> {
       if (gen === generation) inflight.delete(path);
     }
   })();
-  inflight.set(path, p);
-  return p;
+  inflight.set(path, request);
+  return request.promise;
+}
+
+function isRecursiveFolder(entry: FileEntry): boolean {
+  return entry.kind === "dir" && !entry.ignored && !entry.excluded;
+}
+
+/** Re-reads `paths` as one batch: bounded concurrent reads, one update of the listings. */
+async function reloadDirs(paths: readonly string[]) {
+  const gen = generation;
+  await Promise.all(paths.map((p) => load(p, true, "reload")));
+  if (gen === generation) flushPending("reload");
 }
 
 /** Applies a backend `fsChanged` event: reloads affected loaded folders only. */
@@ -557,13 +704,15 @@ export async function applyFsChange(event: {
   removed: string[];
   ignoreRules?: string[];
 }) {
+  flushVisibleListings();
   const s = get();
   if (!s.root) return;
   const plan = planRefresh(event, new Set(s.listings.keys()));
   if (plan.drop.length) {
     const listings = new Map(s.listings);
     dropListings(listings, plan.drop);
-    const gone = (k: string) => plan.drop.some((d) => isSameOrInside(pathOfKey(k), d));
+    const dropped = insideAnyOf(plan.drop);
+    const gone = (k: string) => dropped(pathOfKey(k));
     const selected = [...s.selected].filter((k) => !gone(k));
     set({
       listings,
@@ -583,26 +732,27 @@ export async function applyFsChange(event: {
       });
     }
   }
-  await Promise.all(plan.reload.map((p) => loadDir(p, true)));
+  await reloadDirs(plan.reload);
   // Member rows go stale when the file changes on disk: drop and refetch.
   if (event.modified.length) dropOutlines(event.modified);
   if (event.removed.length) {
     const outlines = new Map(get().outlines);
+    const inRemoved = insideAnyOf(event.removed);
     let changed = false;
-    for (const p of event.removed)
-      for (const key of [...outlines.keys()])
-        if (isSameOrInside(key, p)) {
-          outlines.delete(key);
-          changed = true;
-        }
+    for (const key of [...outlines.keys()])
+      if (inRemoved(key)) {
+        outlines.delete(key);
+        changed = true;
+      }
     if (changed) set({ outlines });
   }
 }
 
 /** Re-reads the folders among `dirs` the tree has loaded; the rest stay unread. */
 export async function reloadLoadedDirs(dirs: readonly string[]) {
+  flushVisibleListings();
   const { listings } = get();
-  await Promise.all(dirs.filter((p) => listings.has(p)).map((p) => loadDir(p, true)));
+  await reloadDirs(dirs.filter((p) => listings.has(p)));
 }
 
 /**
@@ -610,15 +760,17 @@ export async function reloadLoadedDirs(dirs: readonly string[]) {
  * a library jar in place (a SNAPSHOT installed again), which no file watcher reports.
  */
 export async function reloadArchiveDirs() {
+  flushVisibleListings();
   const { listings } = get();
   const inArchive = (p: string) => p.endsWith("!") || p.includes("!/") || p.includes("!\\");
-  await Promise.all([...listings.keys()].filter(inArchive).map((p) => loadDir(p, true)));
+  await reloadDirs([...listings.keys()].filter(inArchive));
 }
 
 /** Re-reads every loaded folder (View › Reload from Disk). */
 export async function reloadAll() {
+  flushVisibleListings();
   const { listings } = get();
-  await Promise.all([...listings.keys()].map((p) => loadDir(p, true)));
+  await reloadDirs([...listings.keys()]);
 }
 
 // ---------------------------------------------------------------------------
@@ -674,11 +826,9 @@ export function dropOutlines(paths: readonly string[]) {
 
 let revealSeq = 0;
 
-/** Expands the ancestors of `path` and selects it once visible. */
-export function revealPath(requested: string, focus = false, explain = false) {
-  const { expanded } = get();
+function resolveRevealTarget(requested: string): { path: string; root: string } | null {
   const project = get().root;
-  if (!project) return false;
+  if (!project) return null;
   // Registered archive roots by their `/`-separated form, which candidate paths use.
   const archiveRoots = new Map(
     extraFolders(projectViewRoots(useProjectViewRoots.getState().roots)).flatMap((r) =>
@@ -693,12 +843,26 @@ export function revealPath(requested: string, focus = false, explain = false) {
   };
   // Library documents (`jdt://`, `jar:` URIs) are shown as entries of their archive under External Libraries.
   const path = [requested, ...libraryEntryPaths(requested, archives)].find((p) => rootOf(p) !== null);
-  if (!path) return false;
-  const root = rootOf(path)!;
+  return path ? { path, root: rootOf(path)! } : null;
+}
+
+/** Whether `requested` lies inside any root the Project tree can show. */
+export function canRevealInProjectTree(requested: string): boolean {
+  return resolveRevealTarget(requested) !== null;
+}
+
+/** Expands the ancestors of `path` (and `path` itself when `expand` is true) and selects it once visible. */
+export function revealPath(requested: string, focus = false, explain = false, expand = false) {
+  const resolved = resolveRevealTarget(requested);
+  if (!resolved) return false;
+  const { path, root } = resolved;
+  const { expanded } = get();
+  const project = get().root!;
   // Library folders sit below group nodes (External Libraries › SDK), keyed in their own namespace.
   const model = currentModel();
   const rootKey = root === project ? root : (model.keyOfPath.get(root) ?? root);
-  const folders = ancestorsWithin(root, path);
+  const baseFolders = ancestorsWithin(root, path);
+  const folders = expand && !baseFolders.includes(path) ? [...baseFolders, path] : baseFolders;
   const ancestors = [...groupAncestors(model, rootKey), ...folders.map((a) => keyLike(rootKey, a))];
   const next = new Set(expanded);
   let changed = false;
@@ -806,7 +970,7 @@ export function explainHiddenPath(path: string, shown: string) {
   notifications().notify({
     level: "info",
     key: "project.hiddenPath",
-    title: tx`${nameOf(path)} is hidden because ${title} is off`,
+    title: tx`${nameOf(path)} is hidden because ${txPart(title)} is off`,
     actions: [
       {
         label: tx(title),
@@ -844,6 +1008,7 @@ export async function expandAll(from?: string, limit = 400) {
       continue;
     }
     const path = pathOfKey(dir);
+    // oxlint-disable-next-line no-await-in-loop -- breadth-first walk loads one folder at a time; generation is checked before enqueuing children
     await loadDir(path);
     if (gen !== generation) return;
     const s = get();
@@ -853,9 +1018,95 @@ export async function expandAll(from?: string, limit = 400) {
   setExpanded(toExpand);
 }
 
+export function hasVisibleSelection(state = get()): boolean {
+  if (!state.selected.size) return false;
+  const { visible } = visibleInfo(selectModel(state), state.expanded);
+  for (const key of state.selected) if (visible.has(key)) return true;
+  return false;
+}
+
+/** Opens the selected subtrees as their directory listings become available. */
+export function expandSelected(): Promise<void> {
+  const { expanded, mode, selected } = get();
+  const model = currentModel();
+  const { visible } = visibleInfo(model, expanded);
+  const roots = [...selected].filter((key) => visible.has(key) && isExpandableFolder(model.byKey.get(key)));
+  if (!roots.length) return Promise.resolve();
+  cancelExpansion();
+
+  if (isFilteredMode(mode)) {
+    const keys = new Set(roots);
+    for (const key of keys) for (const child of model.children.get(key) ?? []) if (child.dir) keys.add(child.key);
+    setExpanded(new Set([...expanded, ...keys]));
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    const expansion: Expansion = { paths: new Set(), opened: new Map(), cancel: resolve };
+    activeExpansion = expansion;
+    const queue: string[] = [];
+    const visited = new Set<string>();
+    let cursor = 0;
+    let running = 0;
+
+    const enqueue = (key: string) => {
+      if (visited.has(key)) return;
+      visited.add(key);
+      queue.push(key);
+      if (!isGroupKey(key)) expansion.paths.add(pathOfKey(key));
+    };
+
+    const visit = async (key: string) => {
+      if (isGroupKey(key)) {
+        for (const child of model.children.get(key) ?? []) if (isExpandableFolder(child)) enqueue(child.key);
+        expansion.opened.set(key, null);
+      } else {
+        const path = pathOfKey(key);
+        await load(path, false, "visible", expansion);
+        if (activeExpansion !== expansion) return;
+        const state = get();
+        const entries = pending.get(path)?.entries ?? state.listings.get(path);
+        if (!entries) return;
+        for (const child of visibleEntries(entries, treeOptions(state)))
+          if (isRecursiveFolder(child)) enqueue(keyLike(key, child.path));
+        expansion.opened.set(key, path);
+      }
+      scheduleVisibleListings();
+    };
+
+    const pump = () => {
+      if (activeExpansion !== expansion) return;
+      while (running < READ_SLOTS && cursor < queue.length) {
+        running++;
+        void visit(queue[cursor++]!).finally(() => {
+          running--;
+          pump();
+        });
+      }
+      if (running) return;
+      flushVisibleListings();
+      if (activeExpansion === expansion) activeExpansion = undefined;
+      resolve();
+    };
+
+    for (const key of roots) enqueue(key);
+    pump();
+  });
+}
+
+function isExpandableFolder(node: ProjectNode | undefined): boolean {
+  return !!node?.dir && !node.placeholder && !node.ignored && !node.excluded && !node.symlink;
+}
+
+function cancelExpansion() {
+  const expansion = activeExpansion;
+  if (!expansion) return;
+  activeExpansion = undefined;
+  expansion.cancel();
+}
+
 export function collapseAll() {
-  const { root, mode } = get();
-  if (root) setExpanded(new Set(mode === "project" || mode === "projectFiles" ? [root] : []));
+  if (get().root) setExpanded(new Set());
 }
 
 // ---------------------------------------------------------------------------

@@ -5,6 +5,7 @@
  * burst catches up faster rather than jumping. The store keeps the whole text: only what
  * is painted is paced.
  */
+import { useEditorShown } from "@/workbench/contributions";
 import { useEffect, useState } from "react";
 
 /** The backlog is drained over this long. Longer reads smoother but trails the model. */
@@ -60,14 +61,19 @@ export function withoutBrokenTail(text: string): string {
 /**
  * The part of `text` to paint. While `live`, appended text is revealed at a pace; a text
  * that isn't the painted one continued (another message, an edit), or one that stops
- * being live, is shown whole at once.
+ * being live, is shown whole at once. Hidden behind another tab it is not live: nothing
+ * is painted there, and shown again it has all of the text at once.
  */
-export function useRevealedText(text: string, live: boolean): string {
-  const [state, setState] = useState({ text, count: text.length });
+export function useRevealedText(text: string, streaming: boolean): string {
+  const shown = useEditorShown();
+  const live = streaming && shown;
+  const [state, setState] = useState({ text, count: text.length, shown });
   let count = state.count;
-  if (state.text !== text || (!live && count !== text.length)) {
-    count = live && text.startsWith(state.text.slice(0, count)) ? Math.min(count, text.length) : text.length;
-    setState({ text, count });
+  if (state.text !== text || state.shown !== shown || (!live && count !== text.length)) {
+    // Catch up immediately when showing a hidden tab.
+    count =
+      live && state.shown && text.startsWith(state.text.slice(0, count)) ? Math.min(count, text.length) : text.length;
+    setState({ text, count, shown });
   }
   const behind = count < text.length;
   useEffect(() => {

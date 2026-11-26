@@ -2,6 +2,7 @@ import { LanguageSupport, LRLanguage } from "@codemirror/language";
 import { javascript } from "@codemirror/lang-javascript";
 import { parseMixed, type Input, type NestedParse, type SyntaxNode, type SyntaxNodeRef } from "@lezer/common";
 import { angular, angularLanguage } from "./index";
+import { templateInjection, type TemplateLanguageResolver } from "../templateLanguages";
 
 function nextCode(node: SyntaxNode): SyntaxNode | null {
   let next = node.nextSibling;
@@ -37,10 +38,11 @@ function mixTemplate(node: SyntaxNodeRef, input: Input): NestedParse | null {
 
 const typescript = javascript({ typescript: true });
 
-export function angularTypescript(): LanguageSupport {
+export function angularTypescript(resolve: TemplateLanguageResolver): LanguageSupport {
+  const literals = templateInjection(resolve);
   // Mount on the decorator so changing its name or metadata invalidates the template too.
   const language = (typescript.language as LRLanguage).configure(
-    { wrap: parseMixed(mixTemplate) },
+    { wrap: parseMixed((node, input) => mixTemplate(node, input) ?? literals(node, input)) },
     "angular-typescript",
   );
   return new LanguageSupport(language, [typescript.support, angular().support]);

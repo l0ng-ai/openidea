@@ -1,7 +1,7 @@
 /**
  * Model and settings controls shared by the New Task and session composers.
  */
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import type { AgentConfigOption } from "@/bindings";
 import { useTx } from "@/platform/i18n";
@@ -74,6 +74,103 @@ function switchValues(option: AgentConfigOption): { on: string; off: string } | 
   return on && off ? { on, off } : null;
 }
 
+interface ModeApprovalSwitch {
+  on: string;
+  off: string;
+  /** Switch label inside the Mode popup footer (e.g. "Allow All", "Bypass approvals"). */
+  label: string;
+  /** Concise detail shown on the Mode chip when enabled (e.g. "Allow All", "Bypass"). */
+  chipLabel: string;
+}
+
+/** A two-state permissions or approval option tucked as a switch inside the Mode popup. */
+function modeApprovalSwitch(option: AgentConfigOption): ModeApprovalSwitch | null {
+  if (option.category === "permissions") {
+    const sw = switchValues(option);
+    return sw ? { ...sw, label: option.name, chipLabel: option.name } : null;
+  }
+  if (option.category === "approval" && option.values.length === 2) {
+    const on = option.values.find((v) => v.value.toLowerCase() === "bypass");
+    const off = option.values.find((v) => v !== on);
+    if (on && off) {
+      return { on: on.value, off: off.value, label: on.name || option.name, chipLabel: "Bypass" };
+    }
+  }
+  return null;
+}
+
+export interface OverflowInput {
+  available: number;
+  gap: number;
+  fixedWidths: readonly number[];
+  secondaryWidths: readonly number[];
+  detailWidth: number;
+  detailIndex: number;
+  menuWidth: number;
+}
+
+export interface OverflowLayout {
+  /** Hide secondary detail text inside chips (e.g. "Allow All" / "Bypass") before collapsing items. */
+  compactDetail: boolean;
+  /** Number of trailing secondary items moved into the overflow settings menu. */
+  collapsedCount: number;
+}
+
+/**
+ * Decides how many secondary pickers fit on a single toolbar row before spilling into the
+ * settings menu: first drops optional chip detail labels, then collapses trailing secondary
+ * items one by one from right to left.
+ */
+export function computeOverflowLayout({
+  available,
+  gap,
+  fixedWidths,
+  secondaryWidths,
+  detailWidth,
+  detailIndex,
+  menuWidth,
+}: OverflowInput): OverflowLayout {
+  if (available <= 0 || secondaryWidths.length === 0) {
+    return { compactDetail: false, collapsedCount: 0 };
+  }
+
+  const fixedCount = fixedWidths.length;
+  const fixedTotal = fixedWidths.reduce((sum, w) => sum + w, 0);
+
+  const widthFor = (kept: number, compactDetail: boolean): number => {
+    const hasMenu = kept < secondaryWidths.length;
+    const itemCount = fixedCount + kept + (hasMenu ? 1 : 0);
+    if (itemCount === 0) return 0;
+    let total = fixedTotal;
+    for (let i = 0; i < kept; i++) total += secondaryWidths[i]!;
+    if (compactDetail && detailWidth > 0 && detailIndex >= 0 && detailIndex < kept) {
+      total -= detailWidth;
+    }
+    if (hasMenu) total += menuWidth;
+    return total + gap * (itemCount - 1);
+  };
+
+  if (widthFor(secondaryWidths.length, false) <= available) {
+    return { compactDetail: false, collapsedCount: 0 };
+  }
+  if (detailWidth > 0 && detailIndex >= 0 && widthFor(secondaryWidths.length, true) <= available) {
+    return { compactDetail: true, collapsedCount: 0 };
+  }
+
+  for (let collapsed = 1; collapsed <= secondaryWidths.length; collapsed++) {
+    const kept = secondaryWidths.length - collapsed;
+    if (kept === 0) return { compactDetail: false, collapsedCount: collapsed };
+    if (widthFor(kept, false) <= available) {
+      return { compactDetail: false, collapsedCount: collapsed };
+    }
+    if (detailWidth > 0 && detailIndex >= 0 && detailIndex < kept && widthFor(kept, true) <= available) {
+      return { compactDetail: true, collapsedCount: collapsed };
+    }
+  }
+
+  return { compactDetail: false, collapsedCount: secondaryWidths.length };
+}
+
 const selected = (option: AgentConfigOption, value: string | null) =>
   option.values.find((v) => v.value === value) ?? null;
 
@@ -103,7 +200,9 @@ export function ConfigPickers({
 }) {
   const tx = useTx();
   const [open, setOpen] = useState(false);
+  const [overflow, setOverflow] = useState<OverflowLayout>({ compactDetail: false, collapsedCount: 0 });
   const anchor = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const options = mainOptions(config);
   if (modelRefresh?.draft && !options.some((o) => o.category === "model"))
     options.unshift({
@@ -124,53 +223,144 @@ export function ConfigPickers({
   const tuckedEffort = combinedModel ? (effort ?? null) : null;
   const tuckedModelConfig = new Set(modelConfigs.map((o) => o.id));
   const mode = options.find((o) => o.category === "mode");
-  const allowAll = mode && options.find((o) => switchValues(o));
+  const allowAll = mode && options.find((o) => !!modeApprovalSwitch(o));
   const inline = options.filter(
     (o) => o !== effort && o !== allowAll && !(combinedModel && tuckedModelConfig.has(o.id)),
   );
   if (effort && !tuckedEffort) inline.splice(model ? inline.indexOf(model) + 1 : 0, 0, effort);
-  // The compact menu holds everything but the model, effort, and model-specific parameters.
+  const collapsible = inline.filter((o) => o.category !== "model" && o !== effort);
+  // The overflow menu holds everything except the model, effort, and model-specific parameters.
   const secondary = options.filter(
     (o) => o.category !== "model" && o !== effort && !(combinedModel && tuckedModelConfig.has(o.id)),
   );
+  const signature = [
+    ...inline.map((o) => `${o.id}:${valueOf(o) ?? ""}`),
+    ...(tuckedEffort ? [`${tuckedEffort.id}:${valueOf(tuckedEffort) ?? ""}`] : []),
+    ...modelConfigs.map((o) => `${o.id}:${valueOf(o) ?? ""}`),
+    allowAll ? `${allowAll.id}:${valueOf(allowAll) ?? ""}` : "",
+    modelRefresh?.loadingSettings ? "loading" : "",
+  ].join("|");
+
+  useLayoutEffect(() => {
+    const menuEl = menuRef.current;
+    const toolbar = menuEl?.closest<HTMLElement>("[data-composer-toolbar]");
+    if (!toolbar) return;
+
+    const measure = () => {
+      const style = getComputedStyle(toolbar);
+      const padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      const available = toolbar.getBoundingClientRect().width - padX;
+      if (available <= 0) return;
+
+      toolbar.classList.add(styles.toolbarMeasuring!);
+      const gap = parseFloat(style.columnGap) || 0;
+      const fixedWidths: number[] = [];
+      const secondaryWidths: number[] = [];
+      let detailWidth = 0;
+      let detailIndex = -1;
+      let menuWidth = 0;
+
+      for (const child of Array.from(toolbar.children) as HTMLElement[]) {
+        if (child.hasAttribute("data-config-menu")) {
+          menuWidth = child.getBoundingClientRect().width;
+          continue;
+        }
+        if (child.hasAttribute("data-config-secondary")) {
+          const idx = secondaryWidths.length;
+          secondaryWidths.push(child.getBoundingClientRect().width);
+          const detail = child.querySelector<HTMLElement>("[data-chip-detail]");
+          if (detail) {
+            const chipGap = parseFloat(getComputedStyle(detail.parentElement!).columnGap) || 0;
+            detailWidth = detail.getBoundingClientRect().width + chipGap;
+            detailIndex = idx;
+          }
+          continue;
+        }
+        const w = child.getBoundingClientRect().width;
+        if (w > 0) fixedWidths.push(w);
+      }
+
+      toolbar.classList.remove(styles.toolbarMeasuring!);
+
+      const next = computeOverflowLayout({
+        available,
+        gap,
+        fixedWidths,
+        secondaryWidths,
+        detailWidth,
+        detailIndex,
+        menuWidth,
+      });
+      setOverflow((prev) => {
+        if (prev.compactDetail === next.compactDetail && prev.collapsedCount === next.collapsedCount) return prev;
+        if (prev.collapsedCount > 0 && next.collapsedCount === 0) setOpen(false);
+        return next;
+      });
+    };
+
+    measure();
+    const ro = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    ro?.observe(toolbar);
+    const mo = typeof MutationObserver === "undefined" ? null : new MutationObserver(measure);
+    mo?.observe(toolbar, { childList: true });
+    return () => {
+      ro?.disconnect();
+      mo?.disconnect();
+    };
+  }, [signature, tx]);
+
+  const collapsedCount = Math.min(overflow.collapsedCount, collapsible.length);
+  const modeIndex = mode ? collapsible.indexOf(mode) : -1;
+  const modeVisible = modeIndex >= 0 && modeIndex < collapsible.length - collapsedCount;
   const approval = secondary.find((o) => o.category === "approval" || o.category === "mode");
   const summary = secondary.map((o) => `${tx(o.name)}: ${selected(o, valueOf(o))?.name ?? tx("Default")}`).join(" · ");
   return (
     <>
-      {inline.map((o) => (
-        <span
-          key={o.id}
-          className={clsx(styles.configPicker, o.category !== "model" && o !== effort && styles.inlineSetting)}
-        >
-          {o === model && combinedModel ? (
-            <ModelPicker
-              model={o}
-              modelValue={valueOf(o)}
-              settings={(tuckedEffort ? [tuckedEffort, ...modelConfigs] : modelConfigs)
-                .filter((opt) => opt.values.length > 0)
-                .map((opt) => ({ ...opt, current: valueOf(opt) }))}
-              onChange={onChange}
-              modelRefresh={modelRefresh}
-            />
-          ) : o === mode && allowAll ? (
-            <ModePicker
-              mode={o}
-              modeValue={valueOf(o)}
-              allowAll={allowAll}
-              allowAllValue={valueOf(allowAll)}
-              onChange={onChange}
-            />
-          ) : (
-            <ConfigPicker option={o} value={valueOf(o)} onChange={onChange} />
-          )}
-          {o === model && !combinedModel && modelRefresh?.loadingSettings && <LoadingSettingsChip />}
-        </span>
-      ))}
+      {inline.map((o) => {
+        const secondaryIndex = collapsible.indexOf(o);
+        const isSecondary = secondaryIndex >= 0;
+        const collapsed = isSecondary && secondaryIndex >= collapsible.length - collapsedCount;
+        return (
+          <span
+            key={o.id}
+            data-config-secondary={isSecondary ? "" : undefined}
+            className={clsx(styles.configPicker, isSecondary && styles.inlineSetting, collapsed && styles.collapsed)}
+          >
+            {o === model && combinedModel ? (
+              <ModelPicker
+                model={o}
+                modelValue={valueOf(o)}
+                settings={(tuckedEffort ? [tuckedEffort, ...modelConfigs] : modelConfigs)
+                  .filter((opt) => opt.values.length > 0)
+                  .map((opt) => ({ ...opt, current: valueOf(opt) }))}
+                onChange={onChange}
+                modelRefresh={modelRefresh}
+              />
+            ) : o === mode && allowAll ? (
+              <ModePicker
+                mode={o}
+                modeValue={valueOf(o)}
+                allowAll={allowAll}
+                allowAllValue={valueOf(allowAll)}
+                compactDetail={overflow.compactDetail}
+                onChange={onChange}
+              />
+            ) : (
+              <ConfigPicker option={o} value={valueOf(o)} onChange={onChange} />
+            )}
+            {o === model && !combinedModel && modelRefresh?.loadingSettings && <LoadingSettingsChip />}
+          </span>
+        );
+      })}
       {secondary.length > 0 && (
-        <div className={styles.settingsMenu}>
+        <div
+          ref={menuRef}
+          data-config-menu=""
+          className={clsx(styles.settingsMenu, collapsedCount > 0 && styles.settingsMenuVisible)}
+        >
           <IconButton
             ref={anchor}
-            icon={approval ? modeIcon(valueOf(approval) ?? "") : "settings"}
+            icon={!modeVisible && approval ? modeIcon(valueOf(approval) ?? "") : "settings"}
             title={`${tx("Agent settings")}: ${summary}`}
             aria-label={tx("Agent settings")}
             aria-haspopup="dialog"
@@ -252,9 +442,6 @@ function ConfigPicker({
   );
 }
 
-/** Values a setting shows as a segmented control; a longer list (Codex has six effort levels) is listed. */
-const SEGMENTED_MAX = 5;
-
 function settingName(option: AgentConfigOption) {
   return option.category === "thought_level"
     ? "Effort Level"
@@ -267,13 +454,23 @@ function settingValue(option: AgentConfigOption) {
   return selected(option, option.current) ?? option.values[0];
 }
 
-function settingsSummary(options: AgentConfigOption[], tx: ReturnType<typeof useTx>) {
-  return options
-    .map((o) => {
-      const label = settingValue(o)?.name ?? tx("Default");
-      return o.category === "thought_level" || isContextOption(o.id) ? label : `${tx(o.name)}: ${label}`;
-    })
-    .join(" · ");
+function settingsSummary(options: AgentConfigOption[], tx: ReturnType<typeof useTx>, includeInactiveSwitches = false) {
+  const format = (o: AgentConfigOption) => {
+    const current = settingValue(o);
+    const label = current?.name ?? tx("Default");
+    const sw = switchValues(o);
+    if (sw) {
+      const isOn = current?.value === sw.on;
+      if (!includeInactiveSwitches && !isOn && options.length > 1) return null;
+      return isOn ? tx(o.name) : `${tx(o.name)}: ${label}`;
+    }
+    return o.category === "thought_level" || o.category === "context_tier" || isContextOption(o.id)
+      ? label
+      : `${tx(o.name)}: ${label}`;
+  };
+  const parts = options.map(format).filter((p): p is string => p !== null);
+  if (parts.length > 0) return parts.join(" · ");
+  return options.map((o) => `${tx(o.name)}: ${settingValue(o)?.name ?? tx("Default")}`).join(" · ");
 }
 
 function ModelPicker({
@@ -301,6 +498,7 @@ function ModelPicker({
     : (selectedModel?.name ?? (modelRefresh ? modelValue : null) ?? tx("Default"));
   const shown = settings.filter((o) => o.values.length > 0);
   const summary = settingsSummary(shown, tx);
+  const fullSummary = settingsSummary(shown, tx, true);
   const toggle = (which: "models" | "settings") => {
     if (open === which) return setOpen(null);
     if (which === "models") modelRefresh?.onOpen?.();
@@ -319,7 +517,7 @@ function ModelPicker({
         onClick={() => toggle("models")}
       >
         <span className={styles.chipValue}>{modelName}</span>
-        <Icon name="chevron-down" size={14} className={styles.chipChevron} />
+        <Icon name="chevron-down" size={12} className={styles.chipChevron} />
       </button>
       {!unavailable && modelRefresh?.loadingSettings ? (
         <LoadingSettingsChip />
@@ -328,15 +526,19 @@ function ModelPicker({
         !unavailable && (
           <button
             type="button"
-            className={clsx(styles.chip, styles.modelDetail)}
+            className={styles.chip}
             aria-label={tx`Model settings: ${summary}`}
-            title={tx`Configure ${modelName}…`}
+            title={
+              fullSummary && fullSummary !== summary
+                ? `${tx`Configure ${modelName}…`} (${fullSummary})`
+                : tx`Configure ${modelName}…`
+            }
             aria-haspopup="dialog"
             aria-expanded={open === "settings"}
             onClick={() => toggle("settings")}
           >
             <span className={styles.chipValue}>{summary}</span>
-            <Icon name="chevron-down" size={14} className={styles.chipChevron} />
+            <Icon name="chevron-down" size={12} className={styles.chipChevron} />
           </button>
         )
       )}
@@ -402,9 +604,10 @@ function ModelPicker({
 }
 
 /**
- * The current model's settings (effort, context size, fast mode…), each a click away: an on/off
- * setting as a switch, a short list as a segmented control, a longer one listed. A model with
- * one setting closes on a choice.
+ * The current model's settings (effort, context size, fast mode…), each a click away: on/off
+ * settings as a switch row, and choice settings consistently as a vertical list so every model
+ * shares the same layout, description display, and close behavior. A model with one setting
+ * closes on a choice.
  */
 function ModelSettings({
   settings,
@@ -421,35 +624,31 @@ function ModelSettings({
     <div className={styles.quickSettings}>
       {settings.map((o) => {
         const label = tx(settingName(o));
-        const control = switchValues(o) ? (
-          <ConfigPicker option={o} value={o.current} onChange={onChange} framed />
-        ) : o.values.length <= SEGMENTED_MAX ? (
-          <SegmentedControl
-            ariaLabel={label}
-            options={o.values.map((v) => ({ value: v.value, label: v.name, description: v.description ?? undefined }))}
-            value={settingValue(o)!.value}
-            onChange={(v) => {
-              onChange(o.id, v);
-              if (only) onDone();
-            }}
-          />
-        ) : (
-          <SelectListbox
-            aria-label={label}
-            value={settingValue(o)?.value ?? null}
-            options={o.values.map((v) => ({ value: v.value, label: v.name, detail: v.description ?? undefined }))}
-            onChoose={(v) => {
-              onChange(o.id, v);
-              if (only) onDone();
-            }}
-          />
-        );
+        if (switchValues(o)) {
+          return (
+            <div key={o.id} className={clsx(styles.quickRow, styles.quickToggleRow)}>
+              <span className={styles.quickLabel} title={o.description ?? undefined}>
+                {label}
+              </span>
+              <ConfigPicker option={o} value={o.current} onChange={onChange} framed />
+            </div>
+          );
+        }
+        const currentValue = settingValue(o)?.value ?? null;
         return (
           <div key={o.id} className={styles.quickRow}>
             <span className={styles.quickLabel} title={o.description ?? undefined}>
               {label}
             </span>
-            {control}
+            <SelectListbox
+              aria-label={label}
+              value={currentValue}
+              options={o.values.map((v) => ({ value: v.value, label: v.name, detail: v.description ?? undefined }))}
+              onChoose={(v) => {
+                if (v !== currentValue) onChange(o.id, v);
+                if (only) onDone();
+              }}
+            />
           </div>
         );
       })}
@@ -507,94 +706,41 @@ function CostBadge({ category }: { category: string | null | undefined }) {
     ) : null;
   if (!label) return null;
   return (
-    <span
-      className={clsx(
-        styles.costBadge,
-        (category === "free" || category === "low") && styles.costBadgeLow,
-        (category === "high" || category === "very_high") && styles.costBadgeHigh,
-      )}
-    >
+    <span className={clsx(styles.costBadge, (category === "high" || category === "very_high") && styles.costBadgeHigh)}>
       {label}
     </span>
   );
 }
 
-/** Accessible segmented pill selector (`role="radiogroup"`) with Left/Right arrow navigation. */
-export function SegmentedControl({
-  ariaLabel,
-  options,
-  value,
-  onChange,
-}: {
-  ariaLabel: string;
-  options: readonly { value: string; label: string; description?: string }[];
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  const groupRef = useRef<HTMLDivElement>(null);
-  const currentIndex = Math.max(
-    0,
-    options.findIndex((o) => o.value === value),
-  );
-
-  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
-    e.preventDefault();
-    const delta = e.key === "ArrowRight" ? 1 : -1;
-    const nextIndex = (currentIndex + delta + options.length) % options.length;
-    const next = options[nextIndex];
-    if (!next) return;
-    onChange(next.value);
-    const buttons = groupRef.current?.querySelectorAll<HTMLButtonElement>('button[role="radio"]');
-    buttons?.[nextIndex]?.focus();
-  };
-
-  return (
-    <div ref={groupRef} role="radiogroup" aria-label={ariaLabel} className={styles.segmented} onKeyDown={onKeyDown}>
-      {options.map((opt, idx) => {
-        const active = idx === currentIndex;
-        return (
-          <button
-            key={opt.value}
-            type="button"
-            role="radio"
-            aria-checked={active}
-            tabIndex={active ? 0 : -1}
-            title={opt.description}
-            className={clsx(styles.segment, active && styles.segmentActive)}
-            onClick={() => {
-              if (opt.value !== value) onChange(opt.value);
-            }}
-          >
-            {opt.label}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-/** The mode menu, with the agent's on/off permissions option (Allow All) as a switch under it. */
+/** The mode menu, with the agent's two-state permissions or approval option as a switch under it. */
 function ModePicker({
   mode,
   modeValue,
   allowAll,
   allowAllValue,
+  compactDetail = false,
   onChange,
 }: {
   mode: AgentConfigOption;
   modeValue: string | null;
   allowAll: AgentConfigOption;
   allowAllValue: string | null;
+  compactDetail?: boolean;
   onChange: (option: string, value: string) => void;
 }) {
   const tx = useTx();
   const [open, setOpen] = useState(false);
   const anchor = useRef<HTMLButtonElement>(null);
-  const toggle = switchValues(allowAll)!;
+  const toggle = modeApprovalSwitch(allowAll)!;
   const current = selected(mode, modeValue);
   const on = allowAllValue === toggle.on;
-  const summary = `${tx(mode.name)}: ${current?.name ?? tx("Default")} · ${tx(allowAll.name)}: ${on ? tx("On") : tx("Off")}`;
+  const approvalText =
+    allowAll.category === "approval"
+      ? (selected(allowAll, allowAllValue)?.name ?? (on ? tx("On") : tx("Off")))
+      : on
+        ? tx("On")
+        : tx("Off");
+  const summary = `${tx(mode.name)}: ${current?.name ?? tx("Default")} · ${tx(allowAll.name)}: ${approvalText}`;
   return (
     <>
       <button
@@ -607,10 +753,14 @@ function ModePicker({
         title={summary}
         onClick={() => setOpen((v) => !v)}
       >
-        <Icon name={on ? "unlock" : modeIcon(current?.value ?? "")} size={14} />
+        <Icon name={on ? "unlock" : modeIcon(current?.value ?? "")} size={13} />
         <span className={styles.chipValue}>{current?.name ?? tx("Default")}</span>
-        {on && <span className={styles.chipDetail}>{tx(allowAll.name)}</span>}
-        <Icon name="chevron-down" size={14} className={styles.chipChevron} />
+        {on && (
+          <span className={clsx(styles.chipDetail, compactDetail && styles.compactDetail)} data-chip-detail="">
+            {tx(toggle.chipLabel)}
+          </span>
+        )}
+        <Icon name="chevron-down" size={12} className={styles.chipChevron} />
       </button>
       <Popup
         open={open}
@@ -640,10 +790,10 @@ function ModePicker({
           ))}
         </div>
         <div className={styles.modeFooter}>
-          <span title={allowAll.description ?? undefined}>{tx(allowAll.name)}</span>
+          <span title={allowAll.description ?? undefined}>{tx(toggle.label)}</span>
           <Toggle
             checked={on}
-            aria-label={tx(allowAll.name)}
+            aria-label={tx(toggle.label)}
             onChange={(checked) => onChange(allowAll.id, checked ? toggle.on : toggle.off)}
           />
         </div>

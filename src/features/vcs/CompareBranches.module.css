@@ -1,5 +1,15 @@
-.dialog {
-  height: min(540px, calc(100vh - 48px));
+﻿.editor {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.header {
+  display: flex;
+  justify-content: flex-end;
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--border);
 }
 
 .ranges {
@@ -7,75 +17,21 @@
   min-height: 0;
 }
 
-.range,
-.list {
+.range {
   display: flex;
   flex-direction: column;
+  height: 100%;
   min-height: 0;
 }
 
-.range {
-  height: 100%;
-}
-
-.list {
-  flex: 1;
-}
-
-.rangeHeader {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  border-bottom: 1px solid var(--border-strong);
-  background: var(--bg-elev);
-}
-
-.rangeHeader h3 {
+.rangeTitle {
+  flex: none;
   min-width: 0;
   margin: 0;
+  padding: var(--space-1) var(--space-2);
   overflow-wrap: anywhere;
   font-size: var(--fs-ui);
   font-weight: 500;
-}
-
-.count,
-.metadata {
-  color: var(--fg-secondary);
-  font-size: var(--fs-small);
-}
-
-.count {
-  font-variant-numeric: tabular-nums;
-}
-
-.commit {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: var(--space-0-5);
-  min-width: 0;
-}
-
-.subject,
-.author {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.metadata {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-}
-
-.date {
-  flex-shrink: 0;
-}
-
-.error {
-  padding: var(--space-3);
-  overflow-wrap: anywhere;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
 }

@@ -146,19 +146,28 @@ export async function superMethodTargets(
   for (let d = 0; d < depth && level.length; d++) {
     const next: Array<{ path: string; pos: Pos }> = [];
     const found: SuperMethod[] = [];
-    for (const t of level) {
-      const supers = await deps.supertypes(t.path, t.pos).catch(() => [] as HierarchyItem[]);
+    // oxlint-disable-next-line no-await-in-loop -- levels are sequential; supertypes within a level are parallel
+    const allSupers = await Promise.all(
+      level.map((t) => deps.supertypes(t.path, t.pos).catch(() => [] as HierarchyItem[])),
+    );
+    const pending: HierarchyItem[] = [];
+    for (const supers of allSupers) {
       for (const s of supers) {
         const key = `${s.path}:${s.selectionRange.start.line}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        const methods = methodsInType(await deps.outline(s.path).catch(() => [] as OutlineItem[]), s, method);
-        if (methods.length)
-          for (const m of methods)
-            found.push({ location: { path: s.path, range: m.selection_range }, owner: s, method: m });
-        else next.push({ path: s.path, pos: s.selectionRange.start });
+        pending.push(s);
       }
     }
+    // oxlint-disable-next-line no-await-in-loop -- levels are sequential; outlines within a level are parallel
+    const outlines = await Promise.all(pending.map((s) => deps.outline(s.path).catch(() => [] as OutlineItem[])));
+    pending.forEach((s, i) => {
+      const methods = methodsInType(outlines[i]!, s, method);
+      if (methods.length)
+        for (const m of methods)
+          found.push({ location: { path: s.path, range: m.selection_range }, owner: s, method: m });
+      else next.push({ path: s.path, pos: s.selectionRange.start });
+    });
     if (found.length) return found;
     level = next;
   }

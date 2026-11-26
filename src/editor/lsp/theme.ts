@@ -1,5 +1,11 @@
 /** Editor-side styling for LSP features (CodeMirror theme; tokens only). */
 import { EditorView } from "@codemirror/view";
+import {
+  inlineBackground,
+  inlineFramedFallback,
+  inlineFramedModern,
+  inlineTokenBackground,
+} from "@/editor/core/cm/inlineBg";
 import { RAINBOW_COLORS } from "./semantic";
 
 const tooltipSurface = {
@@ -11,12 +17,13 @@ const tooltipSurface = {
 };
 
 const completionInsets = { edge: 4, padding: 6, icon: 16, gap: 6 };
+const lookupRowHeight = "max(var(--h-list-row), calc(var(--openidea-editor-font-size, var(--fs-code)) * 1.7))";
 export const completionLabelOffset =
   1 + completionInsets.edge + completionInsets.padding + completionInsets.icon + completionInsets.gap;
 
 const completionRowMetrics = {
   // Rows grow with the editor font size (lookup text uses the editor font, as typed text does).
-  "--cm-completion-row": "max(var(--h-list-row), calc(var(--openidea-editor-font-size, var(--fs-code)) * 1.7))",
+  "--cm-completion-row": lookupRowHeight,
   "--cm-completion-edge": `${completionInsets.edge}px`,
   "--cm-completion-inset": `${completionInsets.padding}px`,
   "--cm-completion-icon": `${completionInsets.icon}px`,
@@ -82,15 +89,19 @@ const markdown = {
   ".tok-invalid": { color: "var(--syn-invalid)" },
 };
 
-function semanticStyle(token: string, fallback: string) {
+function semanticAttributes(token: string, fallback: string) {
   return {
     color: `var(--syn-${token}, var(--syn-${fallback}))`,
     fontWeight: `var(--syn-${token}-bold, inherit)`,
     fontStyle: `var(--syn-${token}-italic, inherit)`,
-    backgroundColor: `var(--syn-${token}-bg, transparent)`,
+    "--openidea-token-bg": `var(--syn-${token}-bg, initial)`,
     textDecoration: `var(--syn-${token}-effect, none)`,
     WebkitTextDecoration: `var(--syn-${token}-effect, none)`,
   };
+}
+
+function semanticStyle(token: string, fallback: string) {
+  return { ...semanticAttributes(token, fallback), ...inlineTokenBackground };
 }
 
 /** A token that shows `parent`'s colour and style while its own are unset (an `inherit` attribute). */
@@ -101,7 +112,23 @@ function inheritedStyle(token: string, parent: string) {
     color: v("", "inherit"),
     fontWeight: v("-bold", "inherit"),
     fontStyle: v("-italic", "inherit"),
-    backgroundColor: v("-bg", "transparent"),
+    "--openidea-token-bg": v("-bg", "initial"),
+    ...inlineTokenBackground,
+    textDecoration: v("-effect", "none"),
+    WebkitTextDecoration: v("-effect", "none"),
+  };
+}
+
+/** `token`'s style, else the first of `parents` that is set (`--syn-function-call`, then `--syn-function`). */
+function fallbackStyle(token: string, parents: string[]) {
+  const v = (suffix: string, fallback: string) =>
+    [token, ...parents].reduceRight((inner, name) => `var(--syn-${name}${suffix}, ${inner})`, fallback);
+  return {
+    color: v("", "inherit"),
+    fontWeight: v("-bold", "inherit"),
+    fontStyle: v("-italic", "inherit"),
+    "--openidea-token-bg": v("-bg", "initial"),
+    ...inlineTokenBackground,
     textDecoration: v("-effect", "none"),
     WebkitTextDecoration: v("-effect", "none"),
   };
@@ -163,19 +190,28 @@ export const lspTheme = EditorView.theme({
     justifyContent: "center",
   },
   ".cm-lsp-completion .cm-completionLabel": {
-    flex: "0 1 auto",
+    flex: "none",
+    maxWidth:
+      "calc(100% - var(--cm-completion-icon) - var(--cm-completion-gap) - var(--cm-completion-detail-gap, 0px) - var(--cm-completion-type-space, 0px))",
     minWidth: "0",
     overflow: "hidden",
     textOverflow: "ellipsis",
   },
   ".cm-lsp-completion .cm-completionDetail": {
-    flex: "0 1 auto",
+    // Parameters use the space left by the name and type.
+    flex: "1 1 0px",
     minWidth: "0",
     marginLeft: "0",
     fontStyle: "normal",
     color: "var(--fg-subtle)",
     overflow: "hidden",
     textOverflow: "ellipsis",
+  },
+  ".cm-lsp-completion li:not(.cm-lsp-option):has(> .cm-completionDetail)": {
+    "--cm-completion-detail-gap": "var(--cm-completion-gap)",
+  },
+  ".cm-lsp-completion li:has(> .cm-lsp-type)": {
+    "--cm-completion-type-space": "calc(2 * var(--space-4) + var(--cm-completion-gap))",
   },
   ".cm-lsp-completion .cm-completionMatchedText": {
     textDecoration: "none",
@@ -189,9 +225,7 @@ export const lspTheme = EditorView.theme({
   ".cm-lsp-completion .cm-lsp-type": {
     flex: "0 1 auto",
     minWidth: "0",
-    maxWidth: "60%",
     marginLeft: "auto",
-    paddingLeft: "16px",
     textAlign: "right",
     color: "var(--fg-subtle)",
     overflow: "hidden",
@@ -202,23 +236,29 @@ export const lspTheme = EditorView.theme({
     textDecoration: "line-through",
     color: "var(--fg-muted)",
   },
-  ".cm-lsp-completion-footer": {
-    display: "flex",
+  ".cm-lsp-completion-footer, .cm-lsp-inplace-footer": {
     flex: "none",
-    flexWrap: "wrap",
     alignItems: "center",
-    padding: "5px 12px",
     backgroundColor: "var(--bg-popup-inline, var(--bg-elev))",
     color: "var(--fg-subtle)",
     fontFamily: "var(--font-ui)",
     fontSize: "var(--fs-small)",
-    gap: "var(--space-1) var(--space-3)",
-    justifyContent: "space-between",
     borderRadius: "0 0 calc(var(--radius-popup) - 1px) calc(var(--radius-popup) - 1px)",
   },
+  ".cm-lsp-completion-footer": {
+    display: "grid",
+    gridTemplateColumns: "minmax(0, 1fr) minmax(0, max-content)",
+    gap: "var(--space-2)",
+    paddingBlock: "var(--space-1) 3px",
+    paddingInline: "var(--space-3) var(--space-2)",
+  },
+  ".cm-lsp-completion-footer > span, .cm-lsp-completion-sort": {
+    minWidth: "0",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+  },
   ".cm-lsp-completion-sort": {
-    flex: "none",
-    maxWidth: "100%",
     padding: "0",
     border: "none",
     background: "none",
@@ -387,7 +427,8 @@ export const lspTheme = EditorView.theme({
   ".cm-lsp-occurrence-write, .cm-lsp-occurrence-tail-write": {
     "--lsp-occurrence-bg": "var(--bg-identifier-under-caret-write, color-mix(in srgb, var(--danger) 12%, transparent))",
   },
-  ".cm-lsp-occurrence": { backgroundColor: "var(--lsp-occurrence-bg)" },
+  ".cm-line.cm-lsp-occurrence": { backgroundColor: "var(--lsp-occurrence-bg)" },
+  "span.cm-lsp-occurrence": inlineBackground("var(--lsp-occurrence-bg)"),
   // Text fill, not `color`: it reaches the syntax and semantic spans nested inside, and with the
   // variable unset the declaration drops, so they keep their own colours.
   "span.cm-lsp-occurrence, .cm-lsp-occurrence-text": { WebkitTextFillColor: "var(--fg-identifier-under-caret)" },
@@ -421,16 +462,20 @@ export const lspTheme = EditorView.theme({
     borderBottomColor: "var(--bg-popup)",
   },
   // Chooser highlight (tempHighlight.ts): the expression / occurrences a choice would take.
-  ".cm-lsp-chooser-highlight": { backgroundColor: "var(--bg-text-search-result)" },
+  ".cm-lsp-chooser-highlight": inlineBackground("var(--bg-text-search-result)"),
+  ".cm-lsp-chooser-removed": inlineBackground("var(--diff-deleted)"),
 
   // --- in-place rename (inplaceRename.ts) ------------------------------------
   ".cm-lsp-inplace": {
-    backgroundColor: "var(--bg-identifier-under-caret, color-mix(in srgb, var(--accent) 14%, transparent))",
+    "--lsp-inplace-bg": "var(--bg-identifier-under-caret, color-mix(in srgb, var(--accent) 14%, transparent))",
+    ...inlineBackground("var(--lsp-inplace-bg)"),
   },
   ".cm-lsp-inplace-primary": {
-    outline: "1px solid var(--focus-ring)",
-    outlineOffset: "-1px",
+    ...inlineFramedFallback("var(--lsp-inplace-bg)", "var(--focus-ring)"),
     borderRadius: "2px",
+  },
+  "@supports (height: 1lh)": {
+    ".cm-lsp-inplace-primary": inlineFramedModern("var(--lsp-inplace-bg)", "var(--focus-ring)"),
   },
   ".cm-lsp-inplace-hint": {
     color: "var(--fg-secondary)",
@@ -438,18 +483,56 @@ export const lspTheme = EditorView.theme({
     padding: "3px 8px",
     cursor: "default",
   },
+  ".cm-tooltip.cm-lsp-inplace-lookup": {
+    ...tooltipSurface,
+    "--cm-inplace-row": lookupRowHeight,
+    boxSizing: "border-box",
+    display: "flex",
+    flexDirection: "column",
+    width: "max-content",
+    maxWidth: "min(480px, 100vw)",
+    overflow: "hidden",
+    fontFamily: "var(--openidea-editor-font, var(--font-mono))",
+    fontSize: "var(--openidea-editor-font-size, var(--fs-code))",
+    fontWeight: "var(--fw-code, 400)",
+  },
   ".cm-lsp-inplace-suggestions": {
     listStyle: "none",
-    margin: "0 -8px 4px",
-    padding: "0",
-    fontFamily: "var(--openidea-editor-font, var(--font-mono))",
-    fontWeight: "var(--fw-code, 400)",
-    fontSize: "var(--fs-ui)",
-    color: "var(--fg)",
+    margin: "0",
+    padding: "var(--space-1)",
+    minHeight: "0",
+    maxHeight: "calc(var(--cm-inplace-row) * 8 + var(--space-2))",
+    overflowY: "auto",
+    color: "var(--fg-editor, var(--fg-strong))",
   },
-  ".cm-lsp-inplace-suggestions li": { padding: "1px 8px" },
-  ".cm-lsp-inplace-suggestions li:hover": { backgroundColor: "var(--bg-hover)" },
-  ".cm-lsp-inplace-suggestion-active": { backgroundColor: "var(--bg-selected)" },
+  ".cm-lsp-inplace-suggestions button": {
+    display: "block",
+    width: "100%",
+    minHeight: "var(--cm-inplace-row)",
+    padding: "0 var(--space-2)",
+    border: "none",
+    borderRadius: "var(--radius-small)",
+    background: "none",
+    color: "inherit",
+    font: "inherit",
+    textAlign: "start",
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    cursor: "pointer",
+  },
+  ".cm-lsp-inplace-suggestions button:hover": { backgroundColor: "var(--bg-hover)" },
+  '.cm-lsp-inplace-suggestions button[aria-current="true"]': {
+    backgroundColor: "var(--bg-list-selected, var(--bg-tree-selected, var(--bg-selected-strong)))",
+  },
+  ".cm-lsp-inplace-footer": {
+    display: "flex",
+    flexWrap: "wrap",
+    padding: "5px 12px",
+    gap: "var(--space-1) var(--space-3)",
+    justifyContent: "space-between",
+    overflowWrap: "anywhere",
+  },
 
   // --- floating lightbulb (intentions.ts) -----------------------------------
   ".cm-lsp-bulb": {
@@ -474,10 +557,12 @@ export const lspTheme = EditorView.theme({
     color: "var(--fg-inlay, var(--syn-inline-value))",
     backgroundColor: "var(--bg-inlay, color-mix(in srgb, var(--fg-subtle) 12%, transparent))",
     borderRadius: "var(--radius-small)",
-    padding: "0 4px",
-    fontSize: "0.9em",
+    padding: "1px var(--space-1-5)",
+    fontSize: "max(1px, calc(1em - 1px))",
     fontFamily: "var(--font-ui)",
-    verticalAlign: "1px",
+    lineHeight: "1",
+    verticalAlign: "baseline",
+    whiteSpace: "pre",
     WebkitUserSelect: "none",
     userSelect: "none",
   },
@@ -501,7 +586,8 @@ export const lspTheme = EditorView.theme({
   ".cm-sem-python-nested": semanticStyle("python-nested-function", "function"),
   ".cm-sem-python-predefined-definition": semanticStyle("python-predefined-definition", "predefined"),
   ".cm-sem-python-predefined-usage": semanticStyle("python-predefined-usage", "predefined"),
-  ".cm-sem-python-docstring, .cm-sem-python-docstring *": semanticStyle("docstring", "string"),
+  ".cm-sem-python-docstring": inlineTokenBackground,
+  ".cm-sem-python-docstring, .cm-sem-python-docstring *": semanticAttributes("docstring", "string"),
   // After the docstring wildcard above so the tag's own colour wins inside it.
   ".cm-sem-python-docstring-tag": {
     ...semanticStyle("python-docstring-tag", "doc-comment-tag"),
@@ -514,11 +600,21 @@ export const lspTheme = EditorView.theme({
     "python-fstring",
     "string",
   ),
-  ".cm-sem-python-escape": semanticStyle("escape", "escape"),
+  ".cm-sem-python-escape, .cm-sem-escape": semanticStyle("escape", "escape"),
+  // IDEA's Invalid escape sequence: the escape colour with an error wave.
+  ".cm-sem-invalid-escape": {
+    ...semanticStyle("escape", "escape"),
+    textDecoration: "underline wavy var(--wave-error)",
+    WebkitTextDecoration: "underline wavy var(--wave-error)",
+  },
   ".cm-sem-python-format": semanticStyle("python-format", "escape"),
   ".cm-sem-python-keyword-arg": semanticStyle("keyword-arg", "param"),
   // --- semantic tokens -----------------------------------------------------
   ".cm-sem-type, .cm-sem-typeParameter": semanticStyle("type", "type"),
+  // WebStorm's Interface / Type alias / Type parameter: unset, they keep the type colour.
+  ".cm-sem-js-interface": inheritedStyle("javascript-interface", "type"),
+  ".cm-sem-js-type-alias": inheritedStyle("javascript-type-alias", "type"),
+  ".cm-sem-js-type-parameter": inheritedStyle("javascript-type-parameter", "type"),
   // IDEA colours declarations, calls stay (nearly) plain text.
   ".cm-sem-function": semanticStyle("function-call", "function"),
   // Keep role selectors at one class so static/deprecated modifiers can override their styles.
@@ -531,6 +627,12 @@ export const lspTheme = EditorView.theme({
   ".cm-sem-function.cm-sem-python-method-call": semanticStyle("python-method-call", "function-call"),
   // WebStorm's Global function: a module-level function, its declaration and its calls.
   ".cm-sem-global-function": inheritedStyle("global-function", "function"),
+  // WebStorm's Instance / Static member function: unset, a method keeps the function call or
+  // declaration style. One class each, so the static modifier's italic still applies.
+  ".cm-sem-js-instance-method": fallbackStyle("javascript-instance-method", ["function-call", "function"]),
+  ".cm-sem-js-instance-method:where(.cm-sem-declaration)": fallbackStyle("javascript-instance-method", ["function"]),
+  ".cm-sem-js-static-method": fallbackStyle("javascript-static-method", ["function-call", "function"]),
+  ".cm-sem-js-static-method:where(.cm-sem-declaration)": fallbackStyle("javascript-static-method", ["function"]),
   ".cm-sem-macro": semanticStyle("annotation", "annotation"),
   ".cm-sem-annotation": semanticStyle("decorator", "annotation"),
   ".cm-sem-namespace": semanticStyle("namespace", "type"),
@@ -555,7 +657,7 @@ export const lspTheme = EditorView.theme({
     color: "var(--syn-static-property, var(--syn-property))",
     fontStyle: "var(--syn-static-property-italic, var(--syn-static-italic, italic))",
     fontWeight: "var(--syn-static-property-bold, var(--syn-property-bold, inherit))",
-    backgroundColor: "var(--syn-static-property-bg, transparent)",
+    "--openidea-token-bg": "var(--syn-static-property-bg, initial)",
     textDecoration: "var(--syn-static-property-effect, none)",
     WebkitTextDecoration: "var(--syn-static-property-effect, none)",
   },
@@ -586,6 +688,12 @@ export const lspTheme = EditorView.theme({
       },
     ]),
   ),
+  // Java's unterminated string or char literal, over the spans the parser's error recovery left inside.
+  ".cm-sem-java-unterminated-string, .cm-sem-java-unterminated-string *": {
+    color: "var(--syn-string)",
+    fontWeight: "var(--syn-string-bold, normal)",
+    fontStyle: "var(--syn-string-italic, normal)",
+  },
   // After the semantic classes: the link wraps their (innermost) spans, and its colour must win.
   ".cm-lsp-link *": { color: "var(--link)" },
 

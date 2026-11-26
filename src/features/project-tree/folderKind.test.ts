@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { folderKind, outputFolderKind } from "./folderKind";
-import type { RootFolder } from "@/platform/languageSettings";
+import { validateProjectStructure, type RootFolder } from "@/platform/languageSettings";
+import { directoryIconName } from "@/ui/folderPresentation";
 const build = {
   modules: new Map([
     ["", "maven"],
@@ -40,6 +41,13 @@ describe("JVM folder presentation", () => {
     expect(kind(path, true)).toBe("excluded");
     expect(outputFolderKind(path, new Map())).toBeNull();
   });
+  it("shows packages below source sets a Gradle sync or an Eclipse .classpath reported", () => {
+    const noModules = { modules: new Map(), spring: false };
+    for (const detectedFrom of ["Gradle", "lib/Gradle", "lib/.classpath"]) {
+      const rs: RootFolder[] = [{ path: "lib/src", kind: "source", detectedFrom }];
+      expect(folderKind({ path: "/p/lib/src/com/example", excluded: false }, rs, "/p", noModules)).toBe("package");
+    }
+  });
   it("shows packages below custom marked JVM source roots", () => {
     expect(kind("custom/com/example", false, [{ path: "custom", kind: "source", detectedFrom: null }])).toBe("package");
   });
@@ -58,4 +66,41 @@ describe("JVM folder presentation", () => {
     "does not guess output roles for %s",
     (path) => expect(outputFolderKind(path, build.modules)).toBeNull(),
   );
+  it("isolates output folder detection for attached workspace members from the primary relative key space", () => {
+    const emptyStructure = validateProjectStructure(undefined);
+    const attached = [
+      { root: "/other", structure: emptyStructure, detected: [] },
+      { root: "/web", structure: emptyStructure, detected: [] },
+    ];
+    expect(
+      directoryIconName({
+        path: "/other/target/generated-sources/gen",
+        root: "/p",
+        roots: [],
+        attached,
+        build: {
+          modules: new Map([
+            ["", "gradle"],
+            ["/other", "maven"],
+          ]),
+          spring: false,
+        },
+      }),
+    ).toBe("folder-generated-source");
+    expect(
+      directoryIconName({
+        path: "/web/target/classes",
+        root: "/p",
+        roots: [],
+        attached,
+        build: {
+          modules: new Map([
+            ["", "maven"],
+            ["/other", "maven"],
+          ]),
+          spring: false,
+        },
+      }),
+    ).toBe("folder");
+  });
 });

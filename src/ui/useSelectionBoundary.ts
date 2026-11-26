@@ -111,6 +111,63 @@ function textEdge(root: HTMLElement, side: "start" | "end"): { node: Node; offse
 }
 
 /**
+ * Marks the pane or its intersecting rows with `data-selection` while the document's selection intersects it, and keeps the
+ * mark until the frame after the selection leaves. WebKit never clears the selection highlight of
+ * a subtree that skips rendering (`content-visibility: auto` or `hidden`); pairing `[data-selection]`
+ * with `content-visibility: visible` lets WebKit apply the deselection before skipping again.
+ */
+export function useSelectionVisibility(ref: RefObject<HTMLElement | null>, enabled = true, rowSelector?: string): void {
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !enabled) return;
+    const doc = el.ownerDocument;
+    const win = doc.defaultView ?? window;
+    let frame = 0;
+    const marked = new Set<Element>();
+    const selectionRange = () => {
+      const sel = doc.getSelection();
+      return sel && !sel.isCollapsed && sel.rangeCount ? sel.getRangeAt(0) : null;
+    };
+    const update = () => {
+      win.cancelAnimationFrame(frame);
+      const range = selectionRange();
+      if (range?.intersectsNode(el)) {
+        // Keep unrelated history at its remembered size while selecting visible text.
+        let targets: Iterable<Element> = [el];
+        if (rowSelector) {
+          const node = range.commonAncestorContainer;
+          const row = (node instanceof Element ? node : node.parentElement)?.closest(rowSelector);
+          targets = row?.parentElement === el ? [row] : el.querySelectorAll(`:scope > ${rowSelector}`);
+        }
+        for (const target of targets) {
+          if (!range.intersectsNode(target) || marked.has(target)) continue;
+          marked.add(target);
+          target.setAttribute("data-selection", "");
+        }
+      }
+      if (![...marked].some((target) => !range?.intersectsNode(target))) return;
+      frame = win.requestAnimationFrame(() => {
+        frame = win.requestAnimationFrame(() => {
+          const current = selectionRange();
+          for (const target of marked) {
+            if (current?.intersectsNode(target)) continue;
+            target.removeAttribute("data-selection");
+            marked.delete(target);
+          }
+        });
+      });
+    };
+    update();
+    doc.addEventListener("selectionchange", update);
+    return () => {
+      win.cancelAnimationFrame(frame);
+      doc.removeEventListener("selectionchange", update);
+      for (const target of marked) target.removeAttribute("data-selection");
+    };
+  }, [ref, enabled, rowSelector]);
+}
+
+/**
  * Selects the text of the reading pane (`useSelectionBoundary`) that `focused` is in, unless it
  * is an editable field, which selects its own text. False when it isn't in one.
  */

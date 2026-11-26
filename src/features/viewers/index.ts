@@ -124,8 +124,11 @@ export function activate(): () => void {
     }),
     registerTextEditorWrapper({
       id: "viewers.markdown",
+      keepAlive: true,
       matches: isMarkdownPath,
-      component: lazyComponent(() => import("./markdown/MarkdownEditor").then((m) => m.MarkdownEditor)),
+      component: lazyComponent(() => import("./markdown/MarkdownEditor").then((m) => m.MarkdownEditor), {
+        prefetch: true,
+      }),
       tabActions: MarkdownLayoutActions,
       useSourceHidden: useMarkdownSourceHidden,
     }),

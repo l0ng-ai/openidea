@@ -109,11 +109,18 @@ export function targetMenuItems(target: RunTarget, path: string, content: string
       : { run: () => void launch(target, path, debug, content) };
   const debuggable = !p || canDebugProduced(p);
   return [
-    { label: tx`Run '${name}'`, icon: "run", shortcut: shortcutLabel("run.runContext"), ...pick(false) } as MenuItem,
+    {
+      label: tx`Run '${name}'`,
+      preserveLabelEnd: true,
+      icon: "run",
+      shortcut: shortcutLabel("run.runContext"),
+      ...pick(false),
+    } as MenuItem,
     ...(debuggable
       ? [
           {
             label: tx`Debug '${name}'`,
+            preserveLabelEnd: true,
             icon: "debug",
             shortcut: shortcutLabel("run.debugContext"),
             ...pick(true),

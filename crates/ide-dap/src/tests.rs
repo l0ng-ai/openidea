@@ -122,6 +122,8 @@ struct Script {
     run_in_terminal: Option<Vec<String>>,
     /// Send a `startDebugging` reverse request (child session) when a non-child `launch` arrives.
     start_debugging: bool,
+    /// The child's `startDebugging` arguments instead of a js-debug style `launch`.
+    child_request: Option<Value>,
     ignore_configuration_done: bool,
     source_path: Option<String>,
     /// Report this process id in the adapter's `process` event (the program being debugged).
@@ -157,6 +159,11 @@ struct Script {
     breakpoints_after_continue: usize,
     /// The `reason` of the stop a `next` ends with (`step` when unset; kotlin-lsp says `breakpoint`).
     step_reason: Option<&'static str>,
+    /// Send `stopped` before answering `next` / `stepIn` / `stepOut` / `continue` (like php-debug
+    /// when Xdebug finishes a step before the DAP reply is handled).
+    stop_before_reply: bool,
+    /// Send `continued` before answering `next` / `continue`.
+    continued_before_reply: bool,
     /// Refuse `next`, then stop at a breakpoint (one the program hit meanwhile).
     refuse_next: bool,
     /// Send `invalidated { areas: ["variables"] }` right after the first `stopped` event.
@@ -196,6 +203,7 @@ impl Default for Script {
         Self {
             run_in_terminal: None,
             start_debugging: false,
+            child_request: None,
             ignore_configuration_done: false,
             source_path: None,
             debuggee_pid: None,
@@ -213,6 +221,8 @@ impl Default for Script {
             refuse_continue: false,
             breakpoints_after_continue: 0,
             step_reason: None,
+            stop_before_reply: false,
+            continued_before_reply: false,
             refuse_next: false,
             invalidated_after_stop: false,
             stop_during_threads: false,
@@ -358,10 +368,11 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                     );
                 }
                 if script.start_debugging && msg["arguments"]["isChild"] != true {
-                    send!(
+                    let arguments = script.child_request.clone().unwrap_or_else(
                         // Like js-debug, the child's configuration repeats the launch's `type`.
-                        json!({"type": "request", "command": "startDebugging", "arguments": {"request": "launch", "configuration": {"name": "child", "isChild": true, "type": msg["arguments"]["type"]}}})
+                        || json!({"request": "launch", "configuration": {"name": "child", "isChild": true, "type": msg["arguments"]["type"]}}),
                     );
+                    send!(json!({"type": "request", "command": "startDebugging", "arguments": arguments}));
                 }
                 if script.pending_startup != Some(false) {
                     tokio::time::sleep(script.initialized_delay).await;
@@ -413,6 +424,19 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                 // Lets the client handle the refusal before the stop.
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 send!(json!({"type": "event", "event": "stopped", "body": {"reason": "breakpoint", "threadId": 1}}));
+            }
+            "next" if script.stop_before_reply => {
+                let reason = script.step_reason.unwrap_or("step");
+                send!(json!({"type": "event", "event": "stopped", "body": {"reason": reason, "threadId": 1}}));
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                ok!(msg, Value::Null);
+            }
+            "next" if script.continued_before_reply => {
+                send!(
+                    json!({"type": "event", "event": "continued", "body": {"threadId": 1, "allThreadsContinued": false}})
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                ok!(msg, Value::Null);
             }
             "next" => {
                 ok!(msg, Value::Null);
@@ -553,6 +577,20 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
             "stepOut" if script.refuse_step_out => send!(
                 json!({"type": "response", "request_seq": msg["seq"], "command": "stepOut", "success": false, "message": "Thread is not suspended"})
             ),
+            "continue" if script.stop_before_reply => {
+                send!(
+                    json!({"type": "event", "event": "stopped", "body": {"reason": "breakpoint", "threadId": 1, "allThreadsStopped": true}})
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                ok!(msg, json!({"allThreadsContinued": true}));
+            }
+            "continue" if script.continued_before_reply => {
+                send!(
+                    json!({"type": "event", "event": "continued", "body": {"threadId": 1, "allThreadsContinued": true}})
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                ok!(msg, json!({"allThreadsContinued": true}));
+            }
             "continue" if script.stop_after_continue => {
                 ok!(msg, json!({"allThreadsContinued": true}));
                 send!(
@@ -574,6 +612,11 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                     let reason = if i + 1 == script.step_out_stops.len() { "step" } else { "breakpoint" };
                     send!(json!({"type": "event", "event": "stopped", "body": {"reason": reason, "threadId": thread}}));
                 }
+            }
+            "stepIn" | "stepOut" if script.stop_before_reply => {
+                send!(json!({"type": "event", "event": "stopped", "body": {"reason": "step", "threadId": 1}}));
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                ok!(msg, Value::Null);
             }
             "stepIn" | "stepOut" | "pause" => ok!(msg, Value::Null),
             "hotReload" => {
@@ -1152,6 +1195,46 @@ async fn child_of(h: &Harness, parent: DebugSessionId) -> DebugSessionId {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     panic!("no child session of {parent:?}");
+}
+
+/// debugpy's subprocess (`subProcess: true`): an `attach` whose `connect` is the running adapter's
+/// client listener, so the child session connects there instead of starting another adapter.
+#[tokio::test]
+async fn a_debugpy_subprocess_connects_to_the_running_adapter() {
+    /// Each launch's reused port and remote host.
+    type Launches = Arc<Mutex<Vec<(Option<u16>, Option<String>)>>>;
+    struct CaptureLauncher {
+        inner: FakeLauncher,
+        launches: Launches,
+    }
+    impl AdapterLauncher for CaptureLauncher {
+        fn launch(&self, spec: AdapterSpec, reuse: Option<u16>) -> LaunchFuture {
+            self.launches.lock().push((reuse, spec.server_host.clone()));
+            self.inner.launch(spec, reuse)
+        }
+    }
+    let child = |host: &str| {
+        json!({"request": "attach", "configuration": {"name": "Subprocess 42", "isChild": true, "subProcessId": 42,
+            "connect": {"host": host, "port": 51234}}})
+    };
+    for (host, server_host) in [("127.0.0.1", None), ("10.0.0.5", Some("10.0.0.5".to_owned()))] {
+        let launches: Launches = Arc::default();
+        let script = Script { start_debugging: true, child_request: Some(child(host)), ..Script::default() };
+        let launcher =
+            CaptureLauncher { inner: FakeLauncher { log: Arc::default(), script }, launches: launches.clone() };
+        let manager =
+            DebugManager::with_launcher(Arc::new(LanguageRegistry::from_configs(Vec::new())), Arc::new(launcher));
+        let (owner, _) = recording_owner("main");
+        let parent = manager.start(config(), owner).await.unwrap();
+        for _ in 0..200 {
+            if launches.lock().len() == 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(*launches.lock(), [(None, None), (Some(51234), server_host)], "{host}");
+        manager.stop(parent).await.unwrap();
+    }
 }
 
 #[tokio::test]
@@ -2789,6 +2872,74 @@ async fn step_of_one_thread_keeps_the_others_suspended() {
     }
 }
 
+/// When an adapter emits the next `stopped` event before replying to `next` / `stepIn` / `stepOut`
+/// / `continue` (as php-debug / Xdebug can on fast steps), no trailing synthetic `continued` may
+/// overwrite the new stop.
+#[tokio::test]
+async fn stop_before_reply_does_not_emit_trailing_continued() {
+    let h = harness(Script { stop_before_reply: true, ..Script::default() });
+    let id = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    let session = h.manager.session(id).unwrap();
+
+    let run_events = |from: usize| {
+        h.events
+            .lock()
+            .iter()
+            .skip(from)
+            .filter_map(|e| match e {
+                IdeEvent::Debug { event: DebugEvent::Stopped { reason, .. }, .. } => Some(format!("stopped:{reason}")),
+                IdeEvent::Debug { event: DebugEvent::Continued { .. }, .. } => Some("continued".into()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+
+    for (label, expected) in [
+        ("over", "stopped:step"),
+        ("into", "stopped:step"),
+        ("out", "stopped:step"),
+        ("target", "stopped:step"),
+        ("resume", "stopped:breakpoint"),
+    ] {
+        let before = h.events.lock().len();
+        match label {
+            "over" => h.manager.step(id, 1, StepKind::Over).await.unwrap(),
+            "into" => h.manager.step(id, 1, StepKind::Into).await.unwrap(),
+            "out" => h.manager.step(id, 1, StepKind::Out).await.unwrap(),
+            "target" => h.manager.step_in_target(id, 1, 1).await.unwrap(),
+            "resume" => h.manager.resume(id, 1).await.unwrap(),
+            _ => unreachable!(),
+        }
+        assert!(session.suspended.get(), "{label}: session must remain suspended");
+        assert_eq!(run_events(before), [expected], "{label}: must not emit continued after stopped");
+    }
+}
+
+#[tokio::test]
+async fn continued_event_before_reply_does_not_emit_duplicate_continued() {
+    for is_resume in [false, true] {
+        let h = harness(Script { continued_before_reply: true, ..Script::default() });
+        let id = h.start(config()).await.unwrap();
+        h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+
+        let before = h.events.lock().len();
+        if is_resume {
+            h.manager.resume(id, 1).await.unwrap();
+        } else {
+            h.manager.step(id, 1, StepKind::Over).await.unwrap();
+        }
+        let continued = h
+            .events
+            .lock()
+            .iter()
+            .skip(before)
+            .filter(|e| matches!(e, IdeEvent::Debug { event: DebugEvent::Continued { .. }, .. }))
+            .count();
+        assert_eq!(continued, 1, "is_resume={is_resume}: adapter continued event already reported it");
+    }
+}
+
 #[tokio::test]
 async fn lazy_variables_are_resolved_when_the_adapter_declares_them_safe() {
     let h = harness(Script::default());
@@ -2965,6 +3116,55 @@ async fn local_attach_finds_its_jvm_before_the_debugger_connects() {
     let id = h.start(cfg).await.unwrap();
     let session = h.manager.session(id).unwrap();
     assert_eq!(session.jvm_pid.load(Ordering::Acquire), 4242);
+}
+
+/// Gradle bootRun Debug: the JVM has no attach listener, so the session never learns its pid. The
+/// run's dump still goes through the session and, the program being stopped, signals nothing.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_run_dump_goes_through_the_session_attached_to_the_run() {
+    let h = harness(Script::default());
+    let project = tempfile::tempdir().unwrap();
+    let mut cfg = remote_attach("java-debug", project.path());
+    let mut extra: Value = serde_json::from_str(cfg.extra_json.as_deref().unwrap()).unwrap();
+    extra[RUN_LINK] = json!(7);
+    cfg.extra_json = Some(extra.to_string());
+    let id = h.start(cfg).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    assert!(h.request("attach")["arguments"].get(RUN_LINK).is_none(), "IDE-side only");
+    let session = h.manager.session(id).unwrap();
+    assert_eq!((session.run, session.jvm_pid.load(Ordering::Acquire)), (Some(RunId(7)), 0));
+
+    // `sleep` stands in for the JVM: a SIGQUIT would end it.
+    let mut jvm = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+    let pid = jvm.id();
+    assert_eq!(h.manager.jvm_session_of(RunId(7), pid).map(|s| s.id), Some(id));
+    assert!(h.manager.jvm_session_of(RunId(8), pid).is_none());
+    let dump = h.manager.debugged_jvm_thread_dump(RunId(7), pid, None).await.unwrap().unwrap();
+    let alive = jvm.try_wait().unwrap().is_none();
+    let _ = jvm.kill();
+    let _ = jvm.wait();
+    assert_eq!(
+        dump,
+        JvmThreadsResult::Unavailable {
+            reason: JvmThreadsUnavailable::Jvm { reason: JvmMemoryUnavailable::ListenerNotRunning }
+        }
+    );
+    assert!(alive, "the stopped JVM was signalled");
+}
+
+/// A run's Dump Threads reaches the session attached to the run's JVM, not the plain run path.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_run_jvm_is_found_by_the_session_attached_to_it() {
+    let h = harness(Script::default());
+    h.manager.set_jvm_finder(Arc::new(|port, _| (port == 5005).then_some(4242)));
+    let mut cfg = java_config("attach");
+    cfg.extra_json = Some(json!({"hostName": "127.0.0.1", "port": 5005}).to_string());
+    let id = h.start(cfg).await.unwrap();
+    assert_eq!(h.manager.jvm_session_of(RunId(1), 4242).map(|s| s.id), Some(id));
+    assert!(h.manager.jvm_session_of(RunId(1), 4243).is_none());
+    assert!(h.manager.debugged_jvm_thread_dump(RunId(1), 4243, None).await.is_none());
 }
 
 #[cfg(unix)]

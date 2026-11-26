@@ -180,6 +180,11 @@ pub const DYNAMIC_LAYOUTS: &str = "toolWindowLayouts";
 pub const DYNAMIC_STATUS_BAR_WIDGETS: &str = "statusBarWidgets";
 /// Tools › entries of plugins (`[[contributes.menus]] menu = "tools"`).
 pub const DYNAMIC_PLUGIN_TOOLS: &str = "pluginTools";
+/// Build › Flutter: the Flutter build actions, filled only in Flutter projects. Shown as a submenu
+/// first in Build (the Flutter plugin's anchor) when it has items, nothing otherwise.
+pub const DYNAMIC_FLUTTER_BUILD: &str = "flutterBuild";
+/// Id (and `menu.` label key) of the Build › Flutter submenu.
+const FLUTTER_BUILD_MENU: &str = "build.flutter";
 
 /// The menu bar for `os`. Labels are English defaults; the frontend replaces
 /// them with `menu.<id>` strings from the active locale catalog.
@@ -249,6 +254,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
         act("remote.connect", "Remote Development…"),
         act("remote.reopenInContainer", "Reopen in Container"),
         act("remote.disconnect", "Disconnect from Remote Host"),
+        act("remote.stopBackend", "Stop Remote Backend"),
         act("remote.reloadEnvironment", "Reload Environment"),
         SEP,
         act("file.save", "Save All"),
@@ -495,6 +501,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
                 "Code Completion",
                 vec![
                     act("code.completion", "Basic"),
+                    act("code.smartTypeCompletion", "Smart Type"),
                     SEP,
                     act("code.cyclicExpandWord", "Cyclic Expand Word"),
                     act("code.cyclicExpandWordBackward", "Cyclic Expand Word (Backward)"),
@@ -518,6 +525,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
             act("code.reformat", "Reformat Code"),
             act("code.autoIndentLines", "Auto-Indent Lines"),
             act("code.optimizeImports", "Optimize Imports"),
+            act("code.rearrange", "Rearrange Code"),
             act("code.cleanup", "Code Cleanup…"),
             SEP,
             act("code.commentLine", "Comment with Line Comment"),
@@ -563,6 +571,9 @@ pub fn spec(os: Os) -> Vec<Entry> {
                             act("code.expandAllToLevel5", "5"),
                         ],
                     ),
+                    SEP,
+                    act("code.expandDocComments", "Expand Doc Comments"),
+                    act("code.collapseDocComments", "Collapse Doc Comments"),
                     SEP,
                     act("code.collapseBlock", "Fold Code Block"),
                     act("code.foldSelection", "Fold Selection / Remove Region"),
@@ -612,8 +623,10 @@ pub fn spec(os: Os) -> Vec<Entry> {
         "build",
         "Build",
         vec![
+            Entry::Dynamic(DYNAMIC_FLUTTER_BUILD),
             act("build.buildProject", "Build Project"),
             act("build.buildModule", "Build Module"),
+            act("build.compileFile", "Recompile"),
             act("build.rebuildProject", "Rebuild Project"),
             SEP,
             act("build.buildArtifacts", "Build Artifacts"),
@@ -678,6 +691,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
             act("vcs.update", "Update Project…"),
             act("vcs.pull", "Pull…"),
             act("vcs.fetch", "Fetch"),
+            act("vcs.unshallow", "Fetch Full History"),
             SEP,
             // Operation items (Abort Merge, Continue Rebase…) are enabled only while it is in progress.
             act("vcs.merge", "Merge…"),
@@ -713,6 +727,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
                     act("vcs.shelve", "Shelve Changes…"),
                     act("vcs.showShelf", "Show Shelf"),
                     act("vcs.stash", "Stash Changes…"),
+                    act("vcs.showStashes", "Show Stash"),
                     act("vcs.unstash", "Unstash Changes…"),
                     act("vcs.rollback", "Rollback…"),
                 ],
@@ -819,6 +834,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
             "Active Tool Window",
             vec![
                 act("toolwindow.hideActive", "Hide Active Tool Window"),
+                act("toolwindow.hideSide", "Hide Side Tool Windows"),
                 act("toolwindow.maximize", "Maximize Tool Window"),
                 act("toolwindow.closeContent", "Close Active Tab"),
                 sub(
@@ -1283,6 +1299,18 @@ fn render_items(entries: &[Entry], config: &MenuConfig, recent: &[RecentItem]) -
                     }
                 }));
             }
+            Entry::Dynamic(DYNAMIC_FLUTTER_BUILD) => {
+                let items = config.dynamic_items(DYNAMIC_FLUTTER_BUILD);
+                if !items.is_empty() {
+                    out.push(RenderedItem::Submenu {
+                        id: FLUTTER_BUILD_MENU.into(),
+                        title: config.label(FLUTTER_BUILD_MENU, "Flutter"),
+                        current: false,
+                        items: items.iter().map(|item| item.render(config)).collect(),
+                    });
+                    out.push(RenderedItem::Separator);
+                }
+            }
             Entry::Dynamic(slot) => out.extend(config.dynamic_items(slot).iter().map(|item| item.render(config))),
             Entry::Native(kind) => {
                 out.push(RenderedItem::Native { kind: *kind, text: config.label(kind.key(), kind.default_label()) })
@@ -1624,6 +1652,18 @@ pub fn model(spec: &[Entry], recent: &[RecentItem], config: &MenuConfig) -> Vec<
                             .collect(),
                     }
                 }));
+            }
+            Entry::Dynamic(DYNAMIC_FLUTTER_BUILD) => {
+                let items = config.dynamic_items(DYNAMIC_FLUTTER_BUILD);
+                if !items.is_empty() {
+                    out.push(MenuNode::Submenu {
+                        id: FLUTTER_BUILD_MENU.into(),
+                        label: "Flutter".into(),
+                        current: None,
+                        children: items.iter().map(DynamicItem::model).collect(),
+                    });
+                    out.push(MenuNode::Separator);
+                }
             }
             Entry::Dynamic(slot) => out.extend(config.dynamic_items(slot).iter().map(DynamicItem::model)),
             Entry::Action { id, label, hint, .. } => out.push(MenuNode::Action {
@@ -2378,7 +2418,13 @@ mod tests {
             slots(&spec, &mut found);
             assert_eq!(
                 found,
-                [DYNAMIC_TOOL_WINDOWS, DYNAMIC_STATUS_BAR_WIDGETS, DYNAMIC_PLUGIN_TOOLS, DYNAMIC_LAYOUTS],
+                [
+                    DYNAMIC_TOOL_WINDOWS,
+                    DYNAMIC_STATUS_BAR_WIDGETS,
+                    DYNAMIC_FLUTTER_BUILD,
+                    DYNAMIC_PLUGIN_TOOLS,
+                    DYNAMIC_LAYOUTS
+                ],
                 "{os:?}"
             );
             assert!(!action_ids(&spec).iter().any(|id| {
@@ -2386,6 +2432,7 @@ mod tests {
                     && *id != "toolwindow.hideAll"
                     && ![
                         "toolwindow.hideActive",
+                        "toolwindow.hideSide",
                         "toolwindow.maximize",
                         "toolwindow.closeContent",
                         "toolwindow.jumpToLast",
@@ -2451,6 +2498,7 @@ mod tests {
                 "vcs.update",
                 "vcs.pull",
                 "vcs.fetch",
+                "vcs.unshallow",
                 "|",
                 "vcs.merge",
                 "vcs.merge.abort",
@@ -2526,9 +2574,70 @@ mod tests {
                 "toolwindow.hideActive",
                 "editor.closeOtherTabs",
                 "toolbar.customize",
+                "build.compileFile",
             ] {
                 assert!(ids.contains(&required), "{required} missing on {os:?}");
             }
         }
+    }
+
+    #[test]
+    fn flutter_build_submenu_leads_build_only_when_filled() {
+        let build_items = |config: &MenuConfig| {
+            render_bar(&spec(Os::Mac), config, &[]).into_iter().find(|m| m.id == "build").expect("Build menu").items
+        };
+        let mut config = MenuConfig::default();
+        assert!(matches!(&build_items(&config)[0], RenderedItem::Action { id, .. } if id == "build.buildProject"));
+
+        config.labels.insert("menu.build.flutter".into(), "Flutter".into());
+        config.dynamic.insert(
+            DYNAMIC_FLUTTER_BUILD.into(),
+            vec![
+                dynamic_item("flutter.build.apk", None, "Build APK"),
+                dynamic_item("flutter.build.web", None, "Build Web"),
+            ],
+        );
+        let items = build_items(&config);
+        let RenderedItem::Submenu { id, title, items: flutter, .. } = &items[0] else { panic!("no Flutter submenu") };
+        assert_eq!((id.as_str(), title.as_str(), flutter.len()), ("build.flutter", "Flutter", 2));
+        assert!(matches!(items[1], RenderedItem::Separator));
+        let model = model(&spec(Os::Mac), &[], &config);
+        let build = model.iter().find_map(|n| match n {
+            MenuNode::Submenu { id, children, .. } if id == "build" => Some(children),
+            _ => None,
+        });
+        assert!(
+            matches!(&build.unwrap()[0], MenuNode::Submenu { id, children, .. } if id == "build.flutter" && children.len() == 2)
+        );
+    }
+
+    #[test]
+    fn build_menu_lists_recompile_and_patches_its_label() {
+        for os in ALL_OS {
+            let entries = spec(os);
+            let Entry::Submenu { children, .. } =
+                entries.iter().find(|e| matches!(e, Entry::Submenu { id: "build", .. })).unwrap()
+            else {
+                panic!("Build menu missing")
+            };
+            assert_eq!(
+                action_ids(children),
+                [
+                    "build.buildProject",
+                    "build.buildModule",
+                    "build.compileFile",
+                    "build.rebuildProject",
+                    "build.buildArtifacts",
+                ],
+                "{os:?}"
+            );
+            assert!(!fires_natively(&entries, "build.compileFile"));
+        }
+        let entries = spec(Os::Mac);
+        let mut base = MenuConfig::default();
+        base.labels.insert("menu.build.compileFile".into(), "Recompile".into());
+        let mut active = base.clone();
+        active.labels.insert("menu.build.compileFile".into(), "Recompile 'Main.java'".into());
+        assert_eq!(changed_menus(&render_bar(&entries, &base, &[]), &render_bar(&entries, &active, &[])), ["build"]);
     }
 }

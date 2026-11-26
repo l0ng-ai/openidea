@@ -22,7 +22,7 @@ import {
   selectableText,
   T,
 } from "@/ui";
-import { basename, relativePath, useProject } from "@/platform/project";
+import { basename, relativeDir, relativePath, useProject } from "@/platform/project";
 import {
   closePopup,
   updatePopup,
@@ -70,7 +70,11 @@ function ListPreviewPanel({
       ) : (
         <pre className={styles.diff}>
           {preview.lines.map((l, i) => (
-            <div key={i} className={clsx(styles.diffLine, styles[`diff-${l.kind}`])}>
+            <div
+              // oxlint-disable-next-line react/no-array-index-key -- diff lines repeat; position is the identity
+              key={i}
+              className={clsx(styles.diffLine, styles[`diff-${l.kind}`])}
+            >
               {l.kind === "gap" ? "⋯" : l.text || " "}
             </div>
           ))}
@@ -112,23 +116,17 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
   const [query, setQuery] = useState("");
   const rows = useMemo(() => listPopupRows(popup.items, query), [popup.items, query]);
   const firstEnabled = rows.findIndex((row) => row.kind === "action" && !row.item.disabled);
-  const [active, setActive] = useState(firstEnabled);
-  const clamped = Math.min(active, rows.length - 1);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const selected = rows.findIndex((row) => row.kind === "action" && row.item.id === activeId);
   const activeIndex =
-    rows[clamped]?.kind === "action"
-      ? clamped
-      : firstEnabled >= 0
-        ? firstEnabled
-        : firstSelectable(rows, isListSection);
+    selected >= 0 ? selected : firstEnabled >= 0 ? firstEnabled : firstSelectable(rows, isListSection);
   const activeRow = rows[activeIndex];
   const activeItem = activeRow?.kind === "action" ? activeRow.item : undefined;
   const showIcons = !popup.compact || popup.items.some((item) => item.icon || item.symbol);
   const hasTargets = popup.items.some((item) => item.target);
 
   // Choosers highlight what the selected row would act on.
-  useEffect(() => {
-    activeItem?.onActive?.();
-  }, [activeItem]);
+  useEffect(() => activeItem?.onActive?.(), [activeItem]);
 
   const [preview, setPreview] = useState<{ id: string; data: ListPreview | null } | null>(null);
   const fetchPreview = popup.preview;
@@ -185,11 +183,11 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
       if (item) activate(item);
     } else if (e.key === "Backspace" && query) {
       setQuery(query.slice(0, -1));
-      setActive(-1);
+      setActiveId(null);
       e.preventDefault();
     } else if (e.key.length === 1 && !(e.key === " " && !query)) {
       setQuery(query + e.key);
-      setActive(-1);
+      setActiveId(null);
       e.preventDefault();
     }
   };
@@ -299,7 +297,10 @@ function ListPopup({ popup }: { popup: Extract<LspPopup, { kind: "list" }> }) {
               row.kind === "section" && row.label ? <T>{row.label}</T> : <span className={styles.listDivider} />
             }
             activeIndex={activeIndex}
-            onActiveChange={setActive}
+            onActiveChange={(index) => {
+              const row = rows[index];
+              setActiveId(row?.kind === "action" ? row.item.id : null);
+            }}
             hoverSelects
             autoFocus
             aria-label={popup.title}
@@ -745,13 +746,13 @@ function PreviewDialog({ popup }: { popup: Extract<LspPopup, { kind: "preview" }
           className={clsx(styles.previewList, styles.previewOccurrences, popup.renameThemeClasses)}
           aria-label={tx("Occurrences")}
         >
-          {popup.occurrences.map((o, i) => {
+          {popup.occurrences.map((o) => {
             const lead = o.text.length - o.text.trimStart().length;
             const text = o.text.trim();
             const from = Math.max(0, o.from - lead);
             const to = Math.max(from, Math.min(text.length, o.to - lead));
             return (
-              <li key={i} className={styles.previewRow}>
+              <li key={`${o.line}:${o.from}:${o.to}`} className={styles.previewRow}>
                 <span className={styles.previewLine}>{o.line + 1}</span>
                 <span className={styles.previewCode}>
                   {text.slice(0, from)}
@@ -764,25 +765,34 @@ function PreviewDialog({ popup }: { popup: Extract<LspPopup, { kind: "preview" }
         </ul>
       ) : (
         <ul data-testid="refactor-preview" className={styles.previewList} aria-label={tx("Changes")}>
-          {summary.entries.map((e) => (
-            <li key={e.path} className={styles.previewRow}>
-              <Icon name={fileIconName(basename(e.path), e.path)} size={14} className={styles.itemIcon} />
-              <span className={styles.previewName} title={relativePath(root, e.path)}>
-                {basename(e.path)}
-              </span>
-              <span className={styles.previewPath} title={relativePath(root, e.path)}>
-                {relativePath(root, e.path)}
-              </span>
-              <span className={styles.spacer} />
-              {e.operation === "rename" && e.to && <span className={styles.previewOp}>→ {basename(e.to)}</span>}
-              {e.operation && e.operation !== "rename" && <span className={styles.previewOp}>{e.operation}</span>}
-              {e.edits > 0 && (
-                <span className={styles.previewCount}>
-                  {e.edits} {e.edits === 1 ? "occurrence" : "occurrences"}
+          {summary.entries.map((e) => {
+            const name = basename(e.path);
+            const directory = relativeDir(root, e.path);
+            return (
+              <li key={e.path} className={styles.previewRow}>
+                <Icon name={fileIconName(name, e.path)} size={14} className={styles.itemIcon} />
+                <span className={styles.previewFile} title={relativePath(root, e.path)}>
+                  <span className={styles.previewName}>{name}</span>
+                  {directory && (
+                    <span className={styles.previewDirectory}>
+                      <bdi>{directory}</bdi>
+                    </span>
+                  )}
                 </span>
-              )}
-            </li>
-          ))}
+                {e.operation === "rename" && e.to && (
+                  <span className={styles.previewOp} title={relativePath(root, e.to)}>
+                    → {basename(e.to)}
+                  </span>
+                )}
+                {e.operation && e.operation !== "rename" && <span className={styles.previewOp}>{e.operation}</span>}
+                {e.edits > 0 && (
+                  <span className={styles.previewCount}>
+                    {e.edits} {e.edits === 1 ? "occurrence" : "occurrences"}
+                  </span>
+                )}
+              </li>
+            );
+          })}
         </ul>
       )}
     </Dialog>
@@ -872,7 +882,7 @@ function ImportsOnPasteDialog({ popup }: { popup: Extract<LspPopup, { kind: "imp
         <div className={styles.pasteImportList}>
           {popup.imports.map((label, i) => (
             <Checkbox
-              key={i}
+              key={label}
               label={label}
               checked={selected.includes(i)}
               onChange={(checked) =>

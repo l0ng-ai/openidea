@@ -1,12 +1,17 @@
 import { useEffect, useRef, useState } from "react";
+import clsx from "clsx";
 import type { AgentContextUsage, AgentTask, AgentUsage } from "@/bindings";
 import { call, commands } from "@/platform/ipc";
 import { useTx } from "@/platform/i18n";
-import { Popup, T, tooltipAttrs } from "@/ui";
-import { usageLabel } from "../composerModel";
+import { reducedMotion } from "@/platform/motion";
+import { Button, Popup, T, tooltipAttrs } from "@/ui";
+import { meterTone, usageLabel } from "../composerModel";
 import { isBusy } from "../model";
 import { resendMessage } from "../store";
 import styles from "../Session.module.css";
+
+const RING_RADIUS = 5;
+const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
 
 const categoryTones = new Map([
   ["System prompt", "var(--accent)"],
@@ -31,23 +36,44 @@ export function ContextMeter({ task, usage }: { task: AgentTask; usage: AgentUsa
   const anchor = useRef<HTMLButtonElement>(null);
   const [phase, setPhase] = useState<"closed" | "open" | "closing">("closed");
   const open = phase === "open";
-  const close = () => setPhase(window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "closed" : "closing");
+  const close = () => setPhase(reducedMotion() ? "closed" : "closing");
   useEffect(() => {
     if (phase !== "closing") return;
     const timer = window.setTimeout(() => setPhase("closed"), 100);
     return () => window.clearTimeout(timer);
   }, [phase]);
+  const severity = meterTone(label.percent);
+  const severityClass =
+    severity === "danger" ? styles.meterDanger : severity === "warning" ? styles.meterWarning : undefined;
+  const dashOffset = RING_CIRCUMFERENCE * (1 - label.percent / 100);
   const meter = (
     <>
-      <span className={styles.usageBar} aria-hidden>
-        <span style={{ width: label.percent + "%" }} />
-      </span>
-      {label.percent}%
+      <svg className={styles.usageRing} viewBox="0 0 14 14" aria-hidden>
+        <circle className={styles.usageRingTrack} cx="7" cy="7" r={RING_RADIUS} />
+        <circle
+          className={styles.usageRingArc}
+          cx="7"
+          cy="7"
+          r={RING_RADIUS}
+          strokeDasharray={RING_CIRCUMFERENCE}
+          strokeDashoffset={dashOffset}
+          strokeOpacity={label.percent > 0 ? 1 : 0}
+          transform="rotate(-90 7 7)"
+          data-percent={label.percent}
+        />
+      </svg>
+      <span className={styles.meterValue}>{label.percent}%</span>
     </>
   );
   if (!task.capabilities?.contextUsage)
     return (
-      <span tabIndex={0} className={styles.meter} aria-label={hint} {...tooltipAttrs(hint, undefined, true)}>
+      <span
+        tabIndex={0}
+        className={clsx(styles.meter, severityClass)}
+        data-tone={severity}
+        aria-label={hint}
+        {...tooltipAttrs(hint, undefined, true)}
+      >
         {meter}
       </span>
     );
@@ -56,7 +82,8 @@ export function ContextMeter({ task, usage }: { task: AgentTask; usage: AgentUsa
       <button
         type="button"
         ref={anchor}
-        className={styles.meterButton}
+        className={clsx(styles.meterButton, severityClass)}
+        data-tone={severity}
         aria-label={hint}
         aria-haspopup="dialog"
         aria-expanded={open}
@@ -166,14 +193,14 @@ function ContextDetails({ task, onClose, closing }: { task: AgentTask; onClose: 
             </span>
           )}
           {task.commands.some((c) => c.name === "compact") && (
-            <button
-              type="button"
+            <Button
+              size="small"
               className={styles.contextCompact}
               disabled={sending || isBusy(task.status)}
               onClick={() => void compact()}
             >
               <T>Compact session</T>
-            </button>
+            </Button>
           )}
         </>
       )}

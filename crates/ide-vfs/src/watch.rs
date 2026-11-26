@@ -17,6 +17,7 @@ use notify::event::{CreateKind, DataChange, ModifyKind, RemoveKind, RenameMode};
 use notify::{ErrorKind, Event, EventKind, PollWatcher, RecommendedWatcher, RecursiveMode, WatcherKind};
 use parking_lot::{Condvar, Mutex, RwLock};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
@@ -783,10 +784,31 @@ impl EventFilter {
         }
     }
 
+    /// Relative to `.git/worktrees`: the first component is the worktree ID. Like the main
+    /// gitdir, a linked worktree's gitdir only reports the files that describe its state; the
+    /// rest is Git's (and our own) scratch space. Even read-only queries write there
+    /// (fsmonitor cookies, temporary indexes, reflogs), and reporting those would schedule
+    /// another query.
+    fn worktree_metadata(parts: &[&OsStr]) -> bool {
+        match parts {
+            [] | [_] => true,
+            [_, name] => matches!(
+                name.to_str(),
+                Some("HEAD" | "index" | "config.worktree" | "gitdir" | "commondir" | "locked" | "refs")
+            ),
+            [_, first, ..] => *first == "refs",
+        }
+    }
+
+    /// Directories below `.git/worktrees` that need a watch: the worktree entries and their refs.
+    fn watch_worktree_dir(parts: &[&OsStr]) -> bool {
+        matches!(parts, [] | [_]) || matches!(parts, [_, first, ..] if *first == "refs")
+    }
+
     /// `Some(true)` for interesting VCS metadata, `Some(false)` for other `.git`
     /// internals, `None` outside `.git`.
     fn git_internal(rel: &Path) -> Option<bool> {
-        let comps: Vec<&std::ffi::OsStr> = rel
+        let comps: Vec<&OsStr> = rel
             .components()
             .filter_map(|c| match c {
                 Component::Normal(s) => Some(s),
@@ -800,12 +822,15 @@ impl EventFilter {
             // registration event (`git init`, the first `git worktree add`);
             // they must surface even though the depth below them is handled
             // separately.
-            [one] => matches!(one.to_str(), Some("HEAD" | "index" | "packed-refs" | "refs" | "worktrees" | "info")),
-            [first, ..] => {
+            [one] => matches!(
+                one.to_str(),
+                Some("HEAD" | "index" | "config" | "config.worktree" | "packed-refs" | "refs" | "worktrees" | "info")
+            ),
+            [first, parts @ ..] => {
                 let metadata = *first == "refs"
                     // Linked-worktree gitdirs: a worktree added or removed below
                     // the project writes its HEAD here.
-                    || *first == "worktrees";
+                    || (*first == "worktrees" && Self::worktree_metadata(parts));
                 metadata && !rest.last().is_some_and(|l| l.to_string_lossy().ends_with(".lock"))
             }
             // The `.git` path itself: a linked worktree's `.git` is a plain
@@ -838,7 +863,7 @@ impl EventFilter {
             return match rest.as_slice() {
                 [] => true,
                 [first, ..] if *first == "refs" => true,
-                [first, ..] if *first == "worktrees" => true,
+                [first, parts @ ..] if *first == "worktrees" => Self::watch_worktree_dir(parts),
                 [only] => *only == "info",
                 _ => false,
             };
@@ -1480,6 +1505,9 @@ mod tests {
         assert_eq!(g("src/main.rs"), None);
         assert_eq!(g(".git/HEAD"), Some(true));
         assert_eq!(g(".git/index"), Some(true));
+        assert_eq!(g(".git/config"), Some(true));
+        assert_eq!(g(".git/config.worktree"), Some(true));
+        assert_eq!(g(".git/config.lock"), Some(false));
         assert_eq!(g(".git/refs/heads/main"), Some(true));
         assert_eq!(g(".git/refs/heads/main.lock"), Some(false));
         assert_eq!(g(".git/objects/aa/bb"), Some(false));
@@ -1489,12 +1517,48 @@ mod tests {
         // Linked-worktree gitdir metadata below the main repository.
         assert_eq!(g(".git/worktrees/wt/HEAD"), Some(true));
         assert_eq!(g(".git/worktrees/wt/index.lock"), Some(false));
+        for path in ["index", "config.worktree", "gitdir", "commondir", "locked", "refs", "refs/bisect/bad"] {
+            assert_eq!(g(&format!(".git/worktrees/wt/{path}")), Some(true), "{path}");
+        }
+        // Scratch files Git and the IDE write during read-only queries.
+        for path in ["openidea-index-1-2", "openidea-partial-index", "logs/HEAD", "ORIG_HEAD", "rebase-merge/done"] {
+            assert_eq!(g(&format!(".git/worktrees/wt/{path}")), Some(false), "{path}");
+        }
         // The depth-1 directories themselves: `git init` or the first
         // `git worktree add` creates them in an already-watched gitdir.
         assert_eq!(g(".git/refs"), Some(true));
         assert_eq!(g(".git/worktrees"), Some(true));
         assert_eq!(g(".git/info"), Some(true));
         assert_eq!(g(".git/objects"), Some(false));
+    }
+
+    #[test]
+    fn fsmonitor_queries_in_linked_worktrees_do_not_refresh_vcs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let filter = EventFilter::new(root.clone(), &[]);
+        let git = root.join("repo/.git");
+        let worktree = git.join("worktrees/topic");
+        let daemon = worktree.join("fsmonitor--daemon");
+        let cookie = daemon.join("cookies/123-1");
+        let socket = worktree.join("fsmonitor--daemon.ipc");
+        let head = worktree.join("HEAD");
+        let mut pending = PendingEvents::default();
+        for event in [
+            ev(EventKind::Create(CreateKind::Folder), vec![daemon.clone()]),
+            ev(EventKind::Create(CreateKind::File), vec![cookie.clone()]),
+            ev(EventKind::Remove(RemoveKind::File), vec![cookie]),
+            ev(EventKind::Modify(ModifyKind::Name(RenameMode::Any)), vec![socket]),
+            ev(EventKind::Modify(ModifyKind::Any), vec![head.clone()]),
+        ] {
+            push_event(&mut pending, &filter, &event);
+        }
+        let batch = filter.batch(&pending.into_events());
+        assert_eq!(batch.vcs, [head]);
+        assert!(batch.created.is_empty() && batch.modified.is_empty() && batch.removed.is_empty());
+        assert!(!filter.should_watch_dir(&daemon));
+        assert!(!filter.should_watch_dir(&daemon.join("cookies")));
+        assert!(filter.should_watch_dir(&git.join("worktrees/fsmonitor--daemon")));
     }
 
     #[test]
@@ -1677,7 +1741,8 @@ mod tests {
         assert!(!w(".git/objects") && !w(".git/objects/ab") && !w(".git/logs"));
         // Linked-worktree gitdirs are watched so worktrees added below the
         // project while it is open are discovered.
-        assert!(w(".git/worktrees") && w(".git/worktrees/wt") && w(".git/worktrees/wt/rebase-merge"));
+        assert!(w(".git/worktrees") && w(".git/worktrees/wt") && w(".git/worktrees/wt/refs/bisect"));
+        assert!(!w(".git/worktrees/wt/rebase-merge") && !w(".git/worktrees/wt/logs"));
         assert!(!filter.should_watch_dir(Path::new("/elsewhere")));
         // Excludes are replaced in place (Watcher::set_excludes).
         *filter.excludes.write() = ExcludeMatcher::new(&["gen".into()]);
@@ -1747,7 +1812,8 @@ mod tests {
         std::fs::write(root.join("src/a/after.rs"), "x").unwrap();
         assert!(wait_for(&batches, |b| all_paths(b).contains(&root.join("src/a/after.rs"))));
         let paths = all_paths(&batches.lock());
-        assert!(!paths.iter().any(|p| p.starts_with(root.join("node_modules"))), "{paths:?}");
+        let excluded = root.join("node_modules");
+        assert!(!paths.iter().any(|p| p != &excluded && p.starts_with(&excluded)), "{paths:?}");
         assert!(!paths.contains(&root.join("lib/out/o.txt")));
 
         // Un-ignoring lib/out keeps its existing filename watch.

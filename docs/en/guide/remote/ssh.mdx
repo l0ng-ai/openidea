@@ -46,6 +46,11 @@ through the app-wide SSH configurations.
 Saved passwords and passphrases go to the macOS Keychain, Windows Credential Manager or the Secret Service on Linux,
 never to a settings file. The **+**, **−** and copy buttons above the list add, remove and duplicate configurations.
 
+Older versions stored saved credentials in plaintext in `ssh-passwords.json`. On startup, OpenIDEA moves them into
+the OS credential store. If the file still contains passwords, unlock the store and choose **Retry migration**, or
+choose **Remove plaintext copy** and re-enter any credentials that were not migrated. New credentials that cannot
+be saved are kept only for the session. Migration does not change old backups: rotate any exposed password.
+
 ### `~/.ssh/config` support
 
 OpenIDEA has its own SSH client and reads `~/.ssh/config` itself. It understands `Host`, `Match`, `Include`,
@@ -96,7 +101,8 @@ After the project opens you are asked whether to trust it, as for a local folder
 - Your keymap, appearance, editor font and colour scheme stay on the desktop. Project and tool settings live on the
   host.
 - Your code plugins are synced to the server and run next to the project.
-- **File › Disconnect from Remote Host** closes the project and ends the connection.
+- **Keep Backend Running** when closing a remote window, or **File › Disconnect from Remote Host**, leaves the remote IDE backend and its workloads running. Reopen the project to reattach.
+- **Stop Backend** when closing the window, or **File › Stop Remote Backend**, shuts down the backend and its workloads. See [Stopping a remote backend](/en/guide/remote/server#closing-or-stopping-a-remote-backend) for idle timeout and manual cleanup.
 
 ### Forward ports
 
@@ -133,6 +139,10 @@ needed. The status bar then shows **WSL: `<distribution>`**.
 
 Opening a folder under `\\wsl.localhost\<distribution>\` also opens it through the distribution.
 **Browse** is not available for WSL.
+
+The **Ports** tool window is available in a WSL window too. Because the distribution shares this machine's
+`localhost`, a forwarded port is reachable here on the same port; the window lists, opens and remembers ports as it
+does for SSH.
 
 ## Other uses of SSH configurations
 

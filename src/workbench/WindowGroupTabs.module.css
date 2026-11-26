@@ -56,7 +56,7 @@
   background: var(--tab-tint-mix);
 }
 .item[data-tinted]:hover {
-  background: linear-gradient(var(--bg-hover), var(--bg-hover)), var(--tab-tint-mix);
+  background: color-mix(in srgb, var(--project-color) 12%, var(--bg-hover));
 }
 .selected[data-tinted],
 .selected[data-tinted]:hover {

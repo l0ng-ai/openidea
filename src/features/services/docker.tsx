@@ -59,6 +59,7 @@ import {
   VolumeDashboard,
 } from "./dashboard";
 import { openContainerLogInEditor } from "./logEditor";
+import { hasComposeSource, jumpToComposeProjectSource, jumpToContainerComposeSource } from "./composeSource";
 import {
   canRemove,
   canRestart,
@@ -255,7 +256,7 @@ function menu(item: ServiceTreeItem): MenuItem[] {
       { kind: "separator" },
       connectionState(c.id).disconnected
         ? { label: "Connect", run: () => void connectConnection(c.id) }
-        : { label: "Disconnect", run: () => disconnectConnection(c.id) },
+        : { label: "Disconnect", run: () => void disconnectConnection(c.id) },
       { label: "Edit Connection…", icon: "edit", run: () => openConnectionDialog(c) },
       { label: "Remove Connection", icon: "trash", danger: true, run: () => void removeConnectionPrompt(c) },
     );
@@ -467,7 +468,12 @@ function DockerDetail({ item }: { item: ServiceTreeItem }) {
   if (node.kind === "compose") {
     return (
       <div className={styles.detailPane}>
-        <ComposeProjectDashboard conn={parsed.conn} project={node.project} containers={node.containers} />
+        <ComposeProjectDashboard
+          conn={parsed.conn}
+          project={node.project}
+          containers={node.containers}
+          snapshot={snapshot}
+        />
       </div>
     );
   }
@@ -582,6 +588,18 @@ export const dockerProvider: ServiceProviderContribution = {
     if (t?.node.kind === "container") useServices.setState({ detailTab: "log" });
     const r = registryOf(item.key);
     if (r) openRegistryDialog(r);
+  },
+  jumpToSource: (item) => {
+    const t = resolveTarget(item.key);
+    if (t?.node.kind === "container" && hasComposeSource(t.node.container)) {
+      void jumpToContainerComposeSource(t.node.container);
+      return;
+    }
+    if (t?.node.kind === "compose" && t.node.containers[0] && hasComposeSource(t.node.containers[0])) {
+      void jumpToComposeProjectSource(t.node.project, t.node.containers);
+      return;
+    }
+    dockerProvider.activate?.(item);
   },
   detail: DockerDetail,
   banner: DockerTaskBanner,

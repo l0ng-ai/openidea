@@ -1,4 +1,5 @@
 /** Creates a file from a template and fills it through the editor. */
+import { toBase64 } from "@/platform/base64";
 import { tx } from "@/platform/i18n";
 import { notifyFileOperation } from "@/platform/fileOps";
 import { EditorSelection } from "@codemirror/state";
@@ -45,7 +46,8 @@ async function siblingGoPackage(directory: string): Promise<string | null> {
   }
 }
 
-const JVM_BUILD = /(^|\/)(pom\.xml|build\.gradle(\.kts)?)$/;
+// `Gradle` / `<module>/Gradle` marks the source sets a Gradle sync reported (ide-host `with_gradle_roots`).
+const JVM_BUILD = /(^|\/)(Gradle|pom\.xml|build\.gradle(\.kts)?|\.classpath)$/;
 
 /** JVM source and test roots (project-relative) that packages are counted from. */
 function packageRoots(): string[] {
@@ -62,6 +64,7 @@ async function composerNamespace(directory: string, root: string | null): Promis
   for (;;) {
     let text: string | null = null;
     try {
+      // oxlint-disable-next-line no-await-in-loop -- nearest composer.json wins; ancestors are read in order and stop at the first
       text = await call(commands.fsReadText(`${dir}/composer.json`));
     } catch {
       /* no composer.json here */
@@ -79,11 +82,13 @@ async function csharpNamespace(directory: string, root: string | null): Promise<
   const start = directory.replace(/\/+$/, "");
   const top = root?.replace(/\/+$/, "") ?? null;
   for (let dir = start; ; dir = dirname(dir)) {
+    // oxlint-disable-next-line no-await-in-loop -- nearest .csproj wins; ancestors are listed in order and stop at the first
     const csproj = await call(commands.fsReadDir(dir)).then(
       (entries) => entries.find((e) => e.kind === "file" && /\.csproj$/i.test(e.name)),
       () => undefined,
     );
     if (csproj) {
+      // oxlint-disable-next-line no-await-in-loop -- the nearest .csproj's text is read before returning its namespace
       const text = await call(commands.fsReadText(csproj.path)).catch(() => "");
       const rootNamespace = csprojRootNamespace(text, csproj.name);
       return { name: inferCsharpNamespace(start.slice(dir.length), rootNamespace), fileScoped: csprojFileScoped(text) };
@@ -191,7 +196,7 @@ export async function createFromTemplate(
   // A provided editor (a notebook shows cells, not text) reads the file from
   // disk and has no view to insert into, so its body is written on create.
   const provided = await providedEditor(plan.path);
-  if (provided && text) await call(commands.fsCreateFileBytes(plan.path, [...new TextEncoder().encode(text)]));
+  if (provided && text) await call(commands.fsCreateFileBytes(plan.path, toBase64(new TextEncoder().encode(text))));
   else await call(commands.fsCreateFile(plan.path));
   notifyFileOperation({ kind: "created", paths: [plan.path] });
   onCreated?.();

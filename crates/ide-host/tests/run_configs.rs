@@ -1,19 +1,10 @@
-use ide_core::NullSink;
-use ide_host::{Host, HostConfig, ops};
+mod common;
+
+use ide_host::{Host, ops};
 use std::sync::Arc;
 
 fn host(base: &std::path::Path) -> Arc<Host> {
-    Arc::new(Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    }))
+    Arc::new(Host::new(common::host_config(base)))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

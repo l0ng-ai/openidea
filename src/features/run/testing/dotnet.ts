@@ -32,7 +32,10 @@ export class DotnetReports {
 
   async read(readText: (path: string) => Promise<string>): Promise<TestEvent[]> {
     const events: TestEvent[] = [];
-    for (const path of this.paths) events.push(...trxEvents(await readText(path)));
+    for (const path of this.paths) {
+      // oxlint-disable-next-line no-await-in-loop -- keep read/parse order: the first invalid report wins and paths added during the loop are still read
+      events.push(...trxEvents(await readText(path)));
+    }
     return events;
   }
 }

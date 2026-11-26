@@ -33,6 +33,12 @@ her şeyi arama alışkanlığını) çekirdeği Rust ile yazılmış yerel bir 
 Editör, kod analizi, hata ayıklayıcı (debugger), Git, terminal, veritabanı ve HTTP istemcileri;
 60'tan fazla dil için. macOS, Windows ve Linux sürümleri var.
 
+macOS'ta Homebrew ile de kurabilirsiniz:
+
+```bash
+brew install --cask l0ng-ai/tap/openidea
+```
+
 ## Performans karşılaştırması
 
 [freqtrade](https://github.com/freqtrade/freqtrade) projesini (Python, ~770 dosya)
@@ -68,7 +74,7 @@ Eklentileri Ayarlar › Eklentiler (Settings › Plugins) bölümünden kur ya d
 - [Discord](https://discord.gg/2Zy4yn7gP): sorular, geri bildirim ve sürüm haberleri.
 - WeChat grubu, katılmak için kodu okut:
 
-  <img src=".github/assets/wechat-group-3.png" alt="WeChat grubu QR kodu" width="200">
+  <img src=".github/assets/wechat-group-4.png" alt="WeChat grubu QR kodu" width="200">
 
 - Katkıda bulunmak için: [CONTRIBUTING.md](CONTRIBUTING.md) ve [katkıcı belgeleri](https://openidea.sh/en/contribute/setup).
 

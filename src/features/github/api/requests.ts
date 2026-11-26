@@ -52,6 +52,7 @@ export async function allPages<T>(page: (cursor: string | null) => Promise<GHCon
   const out: T[] = [];
   let cursor: string | null = null;
   for (;;) {
+    // oxlint-disable-next-line no-await-in-loop -- cursor pagination: each page must be fetched and appended in order before requesting the next cursor.
     const c: GHConnection<T> | null = await page(cursor);
     if (!c) return out;
     out.push(...c.nodes);

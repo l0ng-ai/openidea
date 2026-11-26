@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { getAction } from "@/platform/actions";
 import { onIdeEvent } from "@/platform/ipc";
+import { useRemote } from "@/platform/remote";
 import { useProjectViewRoots } from "@/workbench/contributions";
 import {
   chooserRows,
@@ -102,9 +103,8 @@ describe("creating scratch files", () => {
     opened = [];
     carets = [];
     backend = {
-      dataDir: async () => "/data/",
+      scratchesDir: async () => "/data/scratches/",
       listNames: async (dir) => [...files].filter((f) => f.startsWith(dir + "/")).map((f) => f.slice(dir.length + 1)),
-      createDir: async () => {},
       createFile: async (p, text) => {
         files.add(p);
         contents.set(p, text);
@@ -177,14 +177,43 @@ describe("creating scratch files", () => {
   });
 });
 
+describe("scratches of a remote window", () => {
+  afterEach(() => {
+    useRemote.setState({ session: null });
+    setScratchBackend(tauriScratchBackend);
+  });
+
+  it("moves the Scratches root to the server's folder when the window attaches to it in place", async () => {
+    const remote = () => useRemote.getState().session !== null;
+    setScratchBackend({
+      scratchesDir: async () => (remote() ? "/home/me/.openidea/data/scratches" : "C:/Users/me/AppData/scratches"),
+      listNames: async () => [],
+      createFile: async () => {},
+      languages: async () => [],
+      open: async () => {},
+    });
+    const root = () => useProjectViewRoots.getState().roots.get("scratches")?.path;
+    const dispose = activate();
+    try {
+      await vi.waitFor(() => expect(root()).toBe("C:/Users/me/AppData/scratches"));
+      useRemote.setState({ session: { root: "/home/me/project" } as never });
+      await vi.waitFor(() => expect(root()).toBe("/home/me/.openidea/data/scratches"));
+      useRemote.setState({ session: null });
+      await vi.waitFor(() => expect(root()).toBe("C:/Users/me/AppData/scratches"));
+    } finally {
+      dispose();
+    }
+    expect(root()).toBeUndefined();
+  });
+});
+
 describe("deleting scratch files", () => {
   afterEach(() => setScratchBackend(tauriScratchBackend));
 
   it("reports deletions inside the scratches folder as file system changes", async () => {
     setScratchBackend({
-      dataDir: async () => "/data",
+      scratchesDir: async () => "/data/scratches",
       listNames: async () => [],
-      createDir: async () => {},
       createFile: async () => {},
       languages: async () => [],
       open: async () => {},

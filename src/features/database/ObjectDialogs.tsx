@@ -4,9 +4,22 @@
  * Preview of the SQL they run), Remove Data Source, Data Source from URL, and the Quick Documentation popup.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { call, commands, type DbColumnInfo, type DbDriver } from "@/platform/ipc";
+import { call, commands, type DbColumnInfo, type DbDriver, type DbTableGrant } from "@/platform/ipc";
 import { highlightInto } from "@/editor/lsp/markdown";
-import { Button, Checkbox, Dialog, IconButton, Input, Popup, Icon, Select, T, type SelectOption } from "@/ui";
+import {
+  Button,
+  Checkbox,
+  Dialog,
+  IconButton,
+  Input,
+  Popup,
+  Icon,
+  Select,
+  T,
+  Tabs,
+  tooltipAttrs,
+  type SelectOption,
+} from "@/ui";
 import { parseSourceUrl, sourceLabel, splitTarget } from "./model";
 import { nodeTarget, schemaObjectOf, tableOf, type DbNode } from "./nodes";
 import {
@@ -17,6 +30,9 @@ import {
   createTableSql,
   draftOf,
   dropDatabaseSql,
+  grantMatrix,
+  grantsSupported,
+  renameDatabaseSql,
   dropSql,
   ident,
   reference,
@@ -33,7 +49,9 @@ import {
   connectedTargets,
   createDatabase,
   dropDatabase,
+  renameDatabase,
   loadDetails,
+  loadGrants,
   openSourceDialog,
   readableDdl,
   refresh,
@@ -46,7 +64,7 @@ import {
 } from "./store";
 import { openTableData } from "./treeActions";
 import styles from "./Database.module.css";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 
 /** Read-only SQL with the editor's syntax colours (IDEA's dialog Preview pane). */
 function SqlPreview({ sql, label = "Preview" }: { sql: string; label?: string }) {
@@ -103,20 +121,34 @@ function useRunner() {
 
 // ---- Rename ------------------------------------------------------------------
 
-function RenameDialog({ id, object }: { id: string; object: DbObjectRef | null }) {
+/** Renames a data source, a schema object, or (with `database`) a database of the server. */
+function RenameDialog({ id, object, database }: { id: string; object: DbObjectRef | null; database?: string }) {
   const source = sourceById(id);
-  const initial = object ? objectName(object) : (source?.name ?? "");
+  const initial = database ?? (object ? objectName(object) : (source?.name ?? ""));
   const [name, setName] = useState(initial);
   const { busy, runAndClose } = useRunner();
+  const [renaming, setRenaming] = useState(false);
   const driver = driverOf(id);
   const changed = !!name.trim() && name.trim() !== initial;
-  const sql = object && changed ? renameSql(driver, object, name.trim()) : "";
-  const submit = () => {
+  const sql = !changed
+    ? ""
+    : database !== undefined
+      ? renameDatabaseSql(driver, database, name.trim())
+      : object
+        ? renameSql(driver, object, name.trim())
+        : "";
+  const submit = async () => {
     if (!changed) return closeDialog();
+    if (database !== undefined) {
+      setRenaming(true);
+      if (await renameDatabase(id, database, sql)) closeDialog();
+      else setRenaming(false);
+      return;
+    }
     if (!object) return void renameSource(id, name).then(closeDialog);
     void runAndClose(id, [sql]);
   };
-  const what = object ? KIND_LABEL[object.kind] : "data source";
+  const what = database !== undefined ? "database" : object ? KIND_LABEL[object.kind] : "data source";
   return (
     <Dialog
       open
@@ -125,12 +157,17 @@ function RenameDialog({ id, object }: { id: string; object: DbObjectRef | null }
       width={480}
       buttons={[
         { label: "Cancel", role: "cancel" },
-        { label: "Refactor", role: "default", disabled: busy || !name.trim(), onClick: () => void submit() },
+        {
+          label: "Refactor",
+          role: "default",
+          disabled: busy || renaming || !name.trim(),
+          onClick: () => void submit(),
+        },
       ]}
     >
       <div className={styles.dialogBody}>
         <label className={styles.formLabelLeft} htmlFor="db-rename">
-          {tx`Rename ${what} '${initial}' to:`}
+          {tx`Rename ${txPart(what)} '${initial}' to:`}
         </label>
         <Input
           id="db-rename"
@@ -139,7 +176,7 @@ function RenameDialog({ id, object }: { id: string; object: DbObjectRef | null }
           onFocus={(e) => e.currentTarget.select()}
           onChange={(e) => setName(e.target.value)}
         />
-        {object && <SqlPreview sql={sql || `-- ${what} keeps its name`} />}
+        {(object || database !== undefined) && <SqlPreview sql={sql || `-- ${what} keeps its name`} />}
       </div>
     </Dialog>
   );
@@ -166,7 +203,7 @@ function DropDialog({ id, object }: { id: string; object: DbObjectRef }) {
     >
       <div className={styles.dialogBody}>
         <div className={styles.dialogLead}>
-          {tx`Drop ${KIND_LABEL[object.kind]}`} <strong>{reference(driver, object)}</strong>
+          {tx`Drop ${txPart(KIND_LABEL[object.kind])}`} <strong>{reference(driver, object)}</strong>
           {tx`? This cannot be undone.`}
         </div>
         <Checkbox
@@ -574,6 +611,8 @@ function ModifyTableForm({
     }
   };
   const locked = !!current && !canAlterColumn(driver, current);
+  const showGrants = !!table && grantsSupported(driver);
+  const [tab, setTab] = useState<"columns" | "grants">("columns");
   const title = table ? `Modify Table ${table}` : "Create Table";
   const typeList = `db-types-${driver}`;
 
@@ -607,107 +646,123 @@ function ModifyTableForm({
           />
           <span className={styles.formHint}>{schema}</span>
         </div>
-        <div className={styles.modifyMain}>
-          <div className={styles.modifyColumns}>
-            <div className={styles.modifyToolbar}>
-              <IconButton icon="plus" title="Add Column" size="small" onClick={add} />
-              <IconButton
-                icon="minus"
-                title={current?.dropped ? "Keep Column" : "Drop Column"}
-                size="small"
-                disabled={!current}
-                onClick={remove}
-              />
+        {showGrants && (
+          <Tabs
+            variant="compact"
+            aria-label={tx("Table properties")}
+            activeId={tab}
+            onSelect={(t) => setTab(t as "columns" | "grants")}
+            items={[
+              { id: "columns", label: tx("Columns") },
+              { id: "grants", label: tx("Grants") },
+            ]}
+          />
+        )}
+        {showGrants && tab === "grants" ? (
+          <GrantsPanel id={id} schema={schema} table={table} />
+        ) : (
+          <div className={styles.modifyMain}>
+            <div className={styles.modifyColumns}>
+              <div className={styles.modifyToolbar}>
+                <IconButton icon="plus" title="Add Column" size="small" onClick={add} />
+                <IconButton
+                  icon="minus"
+                  title={current?.dropped ? "Keep Column" : "Drop Column"}
+                  size="small"
+                  disabled={!current}
+                  onClick={remove}
+                />
+              </div>
+              <div role="listbox" aria-label={tx("Columns")} className={styles.modifyList}>
+                {columns.map((c) => (
+                  <div
+                    key={c.key}
+                    role="option"
+                    aria-selected={c.key === selected}
+                    tabIndex={-1}
+                    className={styles.modifyItem}
+                    data-dropped={c.dropped || undefined}
+                    onMouseDown={() => setSelected(c.key)}
+                  >
+                    <Icon name={c.primaryKey ? "db-column-key" : "db-column"} size={16} />
+                    <span className={styles.nodeLabel}>{c.name || "<unnamed>"}</span>
+                    <span className={styles.treeType}>{c.dataType}</span>
+                  </div>
+                ))}
+              </div>
             </div>
-            <div role="listbox" aria-label={tx("Columns")} className={styles.modifyList}>
-              {columns.map((c) => (
-                <div
-                  key={c.key}
-                  role="option"
-                  aria-selected={c.key === selected}
-                  tabIndex={-1}
-                  className={styles.modifyItem}
-                  data-dropped={c.dropped || undefined}
-                  onMouseDown={() => setSelected(c.key)}
-                >
-                  <Icon name={c.primaryKey ? "db-column-key" : "db-column"} size={16} />
-                  <span className={styles.nodeLabel}>{c.name || "<unnamed>"}</span>
-                  <span className={styles.treeType}>{c.dataType}</span>
-                </div>
-              ))}
+            <div className={styles.modifyProps}>
+              {current ? (
+                <>
+                  <label className={styles.formLabel} htmlFor="db-col-name">
+                    <T>Name</T>
+                  </label>
+                  <Input
+                    id="db-col-name"
+                    value={current.name}
+                    disabled={current.dropped}
+                    onChange={(e) => patch({ name: e.target.value })}
+                  />
+                  <label className={styles.formLabel} htmlFor="db-col-type">
+                    <T>Data type</T>
+                  </label>
+                  <Input
+                    id="db-col-type"
+                    mono
+                    list={typeList}
+                    value={current.dataType}
+                    disabled={current.dropped || locked}
+                    onChange={(e) => patch({ dataType: e.target.value })}
+                  />
+                  {driver !== "clickhouse" && (
+                    <>
+                      <span />
+                      <Checkbox
+                        checked={current.notNull}
+                        disabled={current.dropped || locked}
+                        onChange={(notNull) => patch({ notNull })}
+                        label="Not null"
+                      />
+                    </>
+                  )}
+                  {!table && driver !== "clickhouse" && (
+                    <>
+                      <span />
+                      <Checkbox
+                        checked={current.primaryKey}
+                        onChange={(primaryKey) => patch({ primaryKey })}
+                        label="Primary key"
+                      />
+                    </>
+                  )}
+                  <label className={styles.formLabel} htmlFor="db-col-default">
+                    <T>Default</T>
+                  </label>
+                  <Input
+                    id="db-col-default"
+                    mono
+                    placeholder="expression"
+                    value={current.default}
+                    disabled={current.dropped || locked}
+                    onChange={(e) => patch({ default: e.target.value })}
+                  />
+                  {locked && (
+                    <>
+                      <span />
+                      <span className={styles.formHint}>
+                        <T>SQLite can rename or drop an existing column, not change its type, NOT NULL or default.</T>
+                      </span>
+                    </>
+                  )}
+                </>
+              ) : (
+                <span className={styles.formHint}>
+                  <T>Select a column</T>
+                </span>
+              )}
             </div>
           </div>
-          <div className={styles.modifyProps}>
-            {current ? (
-              <>
-                <label className={styles.formLabel} htmlFor="db-col-name">
-                  <T>Name</T>
-                </label>
-                <Input
-                  id="db-col-name"
-                  value={current.name}
-                  disabled={current.dropped}
-                  onChange={(e) => patch({ name: e.target.value })}
-                />
-                <label className={styles.formLabel} htmlFor="db-col-type">
-                  <T>Data type</T>
-                </label>
-                <Input
-                  id="db-col-type"
-                  mono
-                  list={typeList}
-                  value={current.dataType}
-                  disabled={current.dropped || locked}
-                  onChange={(e) => patch({ dataType: e.target.value })}
-                />
-                {driver !== "clickhouse" && (
-                  <>
-                    <span />
-                    <Checkbox
-                      checked={current.notNull}
-                      disabled={current.dropped || locked}
-                      onChange={(notNull) => patch({ notNull })}
-                      label="Not null"
-                    />
-                  </>
-                )}
-                {!table && driver !== "clickhouse" && (
-                  <>
-                    <span />
-                    <Checkbox
-                      checked={current.primaryKey}
-                      onChange={(primaryKey) => patch({ primaryKey })}
-                      label="Primary key"
-                    />
-                  </>
-                )}
-                <label className={styles.formLabel} htmlFor="db-col-default">
-                  <T>Default</T>
-                </label>
-                <Input
-                  id="db-col-default"
-                  mono
-                  placeholder="expression"
-                  value={current.default}
-                  disabled={current.dropped || locked}
-                  onChange={(e) => patch({ default: e.target.value })}
-                />
-                {locked && (
-                  <>
-                    <span />
-                    <span className={styles.formHint}>
-                      <T>SQLite can rename or drop an existing column, not change its type, NOT NULL or default.</T>
-                    </span>
-                  </>
-                )}
-              </>
-            ) : (
-              <span className={styles.formHint}>
-                <T>Select a column</T>
-              </span>
-            )}
-          </div>
-        </div>
+        )}
         <datalist id={typeList}>
           {TYPES[driver].map((t) => (
             <option key={t} value={t} />
@@ -716,6 +771,92 @@ function ModifyTableForm({
         <SqlPreview sql={statements.join("\n") || "-- no changes"} />
       </div>
     </Dialog>
+  );
+}
+
+type GrantsState =
+  | { status: "loading" }
+  | { status: "ok"; grants: DbTableGrant[] }
+  | { status: "error"; message: string };
+
+/** The Modify Table dialog's Grants tab: who holds which privilege on `table`, read-only. */
+function GrantsPanel({ id, schema, table }: { id: string; schema: string; table: string }) {
+  const [state, setState] = useState<GrantsState>({ status: "loading" });
+  useEffect(() => {
+    let live = true;
+    loadGrants(id, schema, table).then(
+      (grants) => live && setState({ status: "ok", grants }),
+      (e: unknown) => live && setState({ status: "error", message: e instanceof Error ? e.message : String(e) }),
+    );
+    return () => {
+      live = false;
+    };
+  }, [id, schema, table]);
+  if (state.status !== "ok")
+    return (
+      <div className={styles.grantsPanel}>
+        <span className={styles.formHint}>{state.status === "error" ? state.message : tx("Loading…")}</span>
+      </div>
+    );
+  const { privileges, rows } = grantMatrix(state.grants);
+  if (!rows.length)
+    return (
+      <div className={styles.grantsPanel}>
+        <span className={styles.formHint}>
+          <T>No privileges are granted on this table.</T>
+        </span>
+      </div>
+    );
+  return (
+    <div className={styles.grantsPanel}>
+      <div className={styles.grantsScroll}>
+        <table className={styles.grantsTable} aria-label={tx("Grants")}>
+          <thead>
+            <tr>
+              <th>
+                <T>Grantee</T>
+              </th>
+              <th>
+                <T>Grantor</T>
+              </th>
+              {privileges.map((p) => (
+                <th key={p} className={styles.grantsFlag}>
+                  {p}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={`${r.grantee}\u0000${r.grantor ?? ""}`}>
+                <td>{r.grantee}</td>
+                <td className={r.grantor ? undefined : styles.grantsNone}>{r.grantor ?? "—"}</td>
+                {privileges.map((p) => {
+                  const grantable = r.privileges.get(p);
+                  return (
+                    <td key={p} className={styles.grantsFlag}>
+                      {grantable !== undefined && (
+                        <span
+                          className={styles.grantsMark}
+                          aria-label={grantable ? tx("Granted with grant option") : tx("Granted")}
+                          {...tooltipAttrs(grantable ? tx("Granted with grant option") : undefined)}
+                        >
+                          <Icon name="check" size={16} />
+                          {grantable && <span className={styles.grantsOption}>*</span>}
+                        </span>
+                      )}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <span className={styles.formHint}>
+        <T>* With grant option: the grantee may grant the privilege to others.</T>
+      </span>
+    </div>
   );
 }
 
@@ -895,6 +1036,10 @@ export function ObjectDialogs() {
   switch (dialog.kind) {
     case "rename":
       return <RenameDialog key={`${dialog.id}`} id={dialog.id} object={dialog.object} />;
+    case "renameDatabase":
+      return (
+        <RenameDialog key={`${dialog.id}:${dialog.database}`} id={dialog.id} object={null} database={dialog.database} />
+      );
     case "drop":
       return <DropDialog id={dialog.id} object={dialog.object} />;
     case "truncate":

@@ -78,7 +78,7 @@
 }
 .row {
   display: grid;
-  grid-template-columns: min(34%, 176px) 5ch minmax(0, 1fr);
+  grid-template-columns: min(38%, 176px) 5ch minmax(0, 1fr);
   align-items: center;
   gap: var(--space-2);
   min-width: 0;
@@ -94,9 +94,15 @@
   flex: none;
   color: var(--fg-muted);
 }
-.fileName {
+.fileName,
+.directory {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.directory {
+  flex: 0 2 auto;
+  color: var(--fg-subtle);
 }
 .line {
   overflow: hidden;

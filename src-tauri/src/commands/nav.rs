@@ -9,11 +9,11 @@ use tauri::{State, Window};
 #[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
-pub fn spring_route_sources(
+pub async fn spring_route_sources(
     window: Window,
     state: State<'_, AppState>,
 ) -> IdeResult<Vec<ide_host::ops::routes::RouteSource>> {
-    ide_host::ops::routes::spring_route_sources(&state.host, window.label())
+    ide_host::ops::routes::spring_route_sources(&state.host, window.label()).await
 }
 
 /// Cucumber feature files and step definition files, for step navigation.

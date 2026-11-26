@@ -3,7 +3,7 @@ import { useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { useActions } from "@/platform/actions";
 import { shortcutLabel, useKeymap } from "@/platform/keymap";
-import { useProject } from "@/platform/project";
+import { basename, useProject } from "@/platform/project";
 import { BarButton, Icon, IconButton, Menu, type MenuItem, showContextMenu, T } from "@/ui";
 import { useChromeIconSize } from "@/ui/density";
 import { useContributions, useWorkbenchSlots, type TitleItemContribution } from "./contributions";
@@ -25,7 +25,7 @@ import {
 import { WindowControls } from "./WindowControls";
 import { captionButtons } from "./windowButtons";
 import { usePlatform } from "@/platform/platformInfo";
-import { projectInitials } from "./projectColor";
+import { ProjectAvatar } from "./ProjectBadge";
 import { keymapItems, themeItems, themePreview, type ThemePreview, VIEW_MODE_ITEMS } from "./quickSwitch";
 import { useContributedThemes } from "@/platform/themes";
 import { currentThemeChoice, useThemeOverride } from "./theme";
@@ -33,6 +33,9 @@ import styles from "./TitleBar.module.css";
 import { useNativeTitlebar } from "./nativeTitlebar";
 import { useDocumentTitle } from "./documentTitle";
 import { windowDragRegion } from "./window-drag";
+import { useToolbarCenter } from "./toolbarCenter";
+import { useProjectGradientAnchor } from "./projectGradient";
+import { useToolbarLabelWidth } from "./toolbarLabelWidth";
 
 export function orderTitleItems(items: Iterable<TitleItemContribution>) {
   const all = [...items];
@@ -54,8 +57,10 @@ function TitleItem({ item }: { item: TitleItemContribution }) {
 }
 
 function ProjectButton() {
-  const name = useProject((s) => s.project?.displayName || s.project?.name);
-  const root = useProject((s) => s.project?.root);
+  const name = useProject((s) =>
+    s.openingPath ? basename(s.openingPath) || s.openingPath : s.project?.displayName || s.project?.name,
+  );
+  const root = useProject((s) => s.openingPath ?? s.project?.root);
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLButtonElement>(null);
   const actions = useActions((s) => s.actions);
@@ -76,15 +81,18 @@ function ProjectButton() {
         variant="title"
         className={styles.widget}
         tooltip={root}
+        data-toolbar-icon-dropdown=""
         aria-label={label}
         aria-haspopup={Popup ? "dialog" : "menu"}
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
       >
-        <span className={styles.avatar} aria-hidden="true">
-          {projectInitials(label)}
+        <span className={styles.avatar} aria-hidden="true" data-project-widget-icon="">
+          <ProjectAvatar name={label} root={root} />
         </span>
-        <span className={styles.widgetText}>{label}</span>
+        <span className={styles.widgetText} data-toolbar-label="">
+          {label}
+        </span>
         <Icon name="chevron-down" size={12} className={styles.chevron} />
       </BarButton>
       {Popup ? (
@@ -118,7 +126,7 @@ function VcsFallback() {
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
       >
-        <span className={styles.widgetText}>
+        <span className={styles.widgetText} data-toolbar-label="">
           <T>Version Control</T>
         </span>
         <Icon name="chevron-down" size={12} className={styles.chevron} />
@@ -133,13 +141,18 @@ function VcsFallback() {
  * dialog and Restore Default. Also the title bar's context menu.
  */
 export function customizeToolbarItems(
-  shown: { left: string[]; right: string[] },
+  shown: { left: string[]; center?: string[]; right: string[] },
   hidden: readonly string[],
   items: ReadonlyMap<string, TitleItemContribution>,
   toggle: (id: string) => void,
   reset: () => void,
 ): MenuItem[] {
-  const entries = [...shown.left, ...shown.right, ...hidden.filter((id) => !isActionEntry(id))];
+  const entries = [
+    ...shown.left,
+    ...(shown.center ?? []),
+    ...shown.right,
+    ...hidden.filter((id) => !isActionEntry(id)),
+  ];
   return [
     ...entries.map<MenuItem>((id) => ({
       id: `toolbar.${id}`,
@@ -294,7 +307,7 @@ function CompactTitle({ title }: { title?: string }) {
  * the caption buttons. `dialog`: a dialog window's bar (Settings), close button only.
  * `lightEdit`: a LightEdit window's bar, its title and the menu but no toolbar widgets.
  * `compact`: IDEA's compact header (Distraction Free, View › Appearance › Toolbar off).
- * `bare`: the window frame only, while a project opens.
+ * `bare`: the window frame only.
  */
 export function TitleBar({
   minimal = false,
@@ -319,6 +332,11 @@ export function TitleBar({
   const separateMenu = useProject((s) => s.settings?.appearance?.mainMenuStyle === "toolbar");
   const [bar, setBar] = useState<HTMLElement | null>(null);
   useNativeTitlebar(bar);
+  const toolbar = !minimal && !lightEdit && !compact && !bare;
+  useToolbarLabelWidth(toolbar ? bar : null);
+  const centered = toolbar && !menuExpanded && !minimal && shown.center.length > 0;
+  useToolbarCenter(bar, centered);
+  useProjectGradientAnchor(bar, toolbar);
   const className = clsx(
     styles.bar,
     overlay && styles.overlay,
@@ -343,7 +361,6 @@ export function TitleBar({
       </header>
     );
   const entry = (id: string) => <ToolbarEntry key={id} id={id} items={map} />;
-  const toolbar = !minimal && !lightEdit;
   const menuRow = frameless && !minimal && separateMenu;
   const header = (
     <header
@@ -364,7 +381,20 @@ export function TitleBar({
         </span>
       )}
       {toolbar && !menuExpanded && shown.left.map(entry)}
-      <div className={styles.drag} {...windowDragRegion} />
+      <div
+        className={styles.drag}
+        {...windowDragRegion}
+        data-toolbar-spacer=""
+        data-toolbar-center-spacer={centered ? "" : undefined}
+      />
+      {centered && (
+        <>
+          <div className={styles.centerGroup} data-toolbar-center="">
+            {shown.center.map(entry)}
+          </div>
+          <div className={styles.drag} {...windowDragRegion} data-toolbar-spacer="" />
+        </>
+      )}
       {!minimal && (
         <>
           {toolbar && !menuExpanded && shown.right.map(entry)}

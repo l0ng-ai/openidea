@@ -423,8 +423,11 @@ describe("Options tab", () => {
     ]);
     const idle = (busy: string[]) =>
       idleTargets(["a", "a:other", "b", "c"], sources, used, (t) => busy.includes(t), 60_000);
-    expect(idle([])).toEqual(["a"]);
-    expect(idle(["a"])).toEqual([]);
+    expect(idle([])).toEqual([]);
+    used.set("a:other", 0);
+    expect(idle(["a:other"])).toEqual([]);
+    expect(idle([])).toEqual(["a", "a:other"]);
+    expect(idle(["a"])).toEqual(["a:other"]);
   });
 
   it("names the colour tokens", () => {
@@ -453,6 +456,7 @@ describe("closing result tabs", () => {
           hasMore: false,
           elapsedMs: 1,
           executionMs: 1,
+          truncated: [],
         },
       },
     };

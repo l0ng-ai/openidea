@@ -33,10 +33,12 @@ vi.mock("@tauri-apps/api/core", async (orig) => ({
 }));
 
 const { lensTargets, usagesLensExtension } = await import("./codeLens");
+const { navigationStarted } = await import("./foreground");
 const { lspDoc } = await import("./lsp");
 const { useProject } = await import("@/platform/project");
 const { emitLocalIdeEvent } = await import("@/platform/ipc");
 const { useProjectRoots } = await import("@/platform/projectRoots");
+const { _resetLanguages, loadLanguageInfos } = await import("@/editor/core/cm/languages");
 
 const ctx = { doc: 7, path: "/p/a.rs", language: "rust", uiMode: "Rust", readOnly: false };
 const views: EditorView[] = [];
@@ -81,6 +83,7 @@ beforeEach(() => {
 
 afterEach(() => {
   views.splice(0).forEach((v) => v.destroy());
+  _resetLanguages();
   useProject.setState({ settings: null });
   vi.useRealTimers();
 });
@@ -126,6 +129,30 @@ describe("author hint", () => {
     author.run!(view, new MouseEvent("click"));
     author.run!(view, new MouseEvent("click"));
     expect(executeAction.mock.calls).toEqual([["vcs.annotate"], ["vcs.annotate"]]);
+  });
+});
+
+describe("Vue component usages", () => {
+  const vue = { doc: 8, path: "/p/Hello.vue", language: "vue", uiMode: "Vue", readOnly: false };
+
+  it("offers Show component usages above a .vue file, and nothing extra elsewhere", async () => {
+    ipc.docOutline.mockResolvedValue(ok([]));
+    const view = editor(1, undefined, vue);
+    await settle();
+    const lens = view.state.facet(codeLenses).find((l) => l.title === "Show component usages");
+    expect(lens).toMatchObject({ pos: 0, kind: "usages" });
+    const rust = editor();
+    await settle();
+    expect(titles(rust)).not.toContain("Show component usages");
+  });
+
+  it("is hidden with the usages hints", async () => {
+    useProject.setState({
+      settings: { editor: { inlay: { codeVisionUsages: false, codeVisionAuthor: false } } } as never,
+    });
+    const view = editor(1, undefined, vue);
+    await settle();
+    expect(titles(view)).toEqual([]);
   });
 });
 
@@ -272,7 +299,10 @@ describe("background usage counts", () => {
   it("stops asking again while the server keeps saying it is indexing, until it settles", async () => {
     ipc.lspReferences.mockResolvedValue(refs(0, "indexing"));
     const view = editor();
-    for (let i = 0; i < 10; i++) await settle();
+    for (let i = 0; i < 10; i++) {
+      // oxlint-disable-next-line no-await-in-loop -- each settle advances fake timers one retry step at a time
+      await settle();
+    }
     expect(ipc.lspReferences).toHaveBeenCalledTimes(4);
     expect(titles(view)).toEqual([]);
     ipc.lspReferences.mockResolvedValue(refs(2));
@@ -377,6 +407,33 @@ describe("background usage counts", () => {
     pending.resolve(refs(1));
     await settle();
     expect(ipc.lspReferences).toHaveBeenCalledTimes(4);
+  });
+
+  it("gives way to Go to Declaration: cancels in-flight counts and asks again once it is done", async () => {
+    const pending = deferred<ReturnType<typeof refs>>();
+    ipc.lspReferences.mockReturnValueOnce(pending.promise);
+    const view = editor();
+    await settle();
+    const request = ipc.lspReferences.mock.calls[0]![0];
+    const done = navigationStarted();
+    expect(ipc.cancelRequest).toHaveBeenCalledWith(request);
+    pending.resolve(refs(99));
+    await settle();
+    expect(ipc.lspReferences).toHaveBeenCalledTimes(1);
+    done();
+    await settle();
+    expect(ipc.lspReferences).toHaveBeenCalledTimes(2);
+    expect(titles(view)).toEqual(["2 usages"]);
+  });
+
+  it("starts no counts while a navigation runs", async () => {
+    const done = navigationStarted();
+    const view = editor();
+    await settle();
+    expect(ipc.lspReferences).not.toHaveBeenCalled();
+    done();
+    await settle();
+    expect(titles(view)).toEqual(["2 usages"]);
   });
 
   it("cancels pending counts when the feature is disabled", async () => {
@@ -486,5 +543,89 @@ describe("recounting when the project's documents change", () => {
     _emitEditorEvent({ type: "docClosed", doc: 9, path: "/p/b.rs" });
     await settle();
     expect(titles(view)).toEqual(["4 usages"]);
+  });
+});
+
+describe("file changes on disk", () => {
+  const language = (id: string, extensions: string[], languageServers: string[], filenames: string[] = []) =>
+    ({ id, name: id, extensions, filenames, languageServers, uiMode: null }) as never;
+  const fsChanged = (modified: string[], ignoreRules: string[] = []) =>
+    emitLocalIdeEvent({ type: "fsChanged", created: [], modified, removed: [], ignoreRules });
+
+  async function settledEditors(views: number) {
+    await loadLanguageInfos({
+      languages: async () => [
+        language("rust", ["rs"], ["rust-analyzer"]),
+        language("log", ["log"], []),
+        language("dockerfile", [], ["docker-langserver"], ["Dockerfile.*"]),
+      ],
+    } as never);
+    ipc.docOutline.mockResolvedValue(ok(Array.from({ length: 60 }, (_, i) => item(`f${i}`, "function", i))));
+    for (let i = 0; i < views; i++) editor(60);
+    await settle();
+    const first = ipc.lspReferences.mock.calls.length;
+    expect(first).toBe(40 * views);
+    return first;
+  }
+
+  it.each([1, 4])("asks no new counts for events that no source file caused (%i views)", async (n) => {
+    const first = await settledEditors(n);
+    for (let i = 0; i < 10; i++) {
+      fsChanged(["/p/logo.png"]);
+      // oxlint-disable-next-line no-await-in-loop -- fake timers must advance one debounce window per file event
+      await vi.advanceTimersByTimeAsync(1000);
+    }
+    fsChanged([], ["/p"]);
+    fsChanged(["/p/debug.log", "/p/Cargo.lock"]);
+    emitLocalIdeEvent({ type: "fsChanged", created: [], modified: [], removed: [] });
+    await settle();
+    expect(ipc.lspReferences).toHaveBeenCalledTimes(first);
+  });
+
+  it("recounts once when a source file is among the changed paths", async () => {
+    const first = await settledEditors(1);
+    for (let i = 0; i < 5; i++) fsChanged(["/p/logo.png", "/p/b.rs", "/p/debug.log"]);
+    await settle();
+    expect(ipc.lspReferences).toHaveBeenCalledTimes(2 * first);
+  });
+
+  it.each([
+    ["a created source file", { created: ["/p/new.rs"], modified: [], removed: [] }],
+    ["a removed source file", { created: [], modified: [], removed: ["/p/old.RS"] }],
+    ["a file the registry matches by name", { created: [], modified: ["/p/Dockerfile.dev"], removed: [] }],
+    [
+      "a path without an extension (a folder, or a script found by its first line)",
+      { created: [], modified: [], removed: ["/p/src/gen"] },
+    ],
+  ])("recounts for %s", async (_, paths) => {
+    const first = await settledEditors(1);
+    emitLocalIdeEvent({ type: "fsChanged", ...paths });
+    await settle();
+    expect(ipc.lspReferences).toHaveBeenCalledTimes(2 * first);
+  });
+
+  it("recounts for a file Settings › File Types assigns to a language with a server", async () => {
+    useProject.setState({
+      settings: {
+        editor: { inlay: { codeVisionUsages: true, codeVisionAuthor: false } },
+        files: { fileTypes: { rust: { patterns: ["*.tpl"] } }, fileTypeOverrides: { "/p/x.log": "rust" } },
+      } as never,
+    });
+    const first = await settledEditors(1);
+    fsChanged(["/p/page.tpl"]);
+    await settle();
+    expect(ipc.lspReferences).toHaveBeenCalledTimes(2 * first);
+    fsChanged(["/p/x.log"]);
+    await settle();
+    expect(ipc.lspReferences).toHaveBeenCalledTimes(3 * first);
+  });
+
+  it("recounts for any path while the languages are not loaded", async () => {
+    ipc.docOutline.mockResolvedValue(ok(Array.from({ length: 60 }, (_, i) => item(`f${i}`, "function", i))));
+    editor(60);
+    await settle();
+    fsChanged(["/p/logo.png"]);
+    await settle();
+    expect(ipc.lspReferences).toHaveBeenCalledTimes(80);
   });
 });

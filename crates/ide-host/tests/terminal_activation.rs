@@ -1,8 +1,9 @@
 //! Own test process: the inherited shell deliberately differs from the login shell.
 #![cfg(unix)]
 
-use ide_core::NullSink;
-use ide_host::{Host, HostConfig, ops};
+mod common;
+
+use ide_host::{Host, ops};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -21,17 +22,7 @@ fn terminal_activation_uses_the_resolved_default_shell() {
     }
     let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
     runtime.block_on(async {
-        let host = Arc::new(Host::new(HostConfig {
-            config_dir: tmp.path().join("config"),
-            data_dir: tmp.path().join("data"),
-            local_data_dir: tmp.path().join("data"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(NullSink)),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        }));
+        let host = Arc::new(Host::new(common::host_config(tmp.path())));
         host.trust.decide(&root, true, false).unwrap();
         host.open_project("main", &root).unwrap();
         for shell in [None, Some("".to_owned()), Some(" \t ".to_owned())] {

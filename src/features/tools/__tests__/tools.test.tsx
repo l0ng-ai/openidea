@@ -15,11 +15,14 @@ import { installMissingServerPrompts, installServerWarningPrompts, missingKey, p
 import { resetTestForm, stagedFor, TestSettingsForm } from "./settingsForm";
 
 type Note = Parameters<NotificationService["notify"]>[0];
+const focusConsume = vi.fn();
+const FOCUS_CONTEXT = { focus: "pyrefly", consume: focusConsume } as const;
 let notes: Note[];
 let backend: MemoryToolsBackend;
 
 beforeEach(() => {
   notes = [];
+  focusConsume.mockClear();
   provideNotificationService({ notify: (n) => void notes.push(n) });
   backend = new MemoryToolsBackend(sampleTools(), 1);
   setToolsBackend(backend);
@@ -232,7 +235,7 @@ describe("missing language server prompt", () => {
       alternatives: [],
       companion: false,
     });
-    await promptInstall("ruff", true, new Set(), true);
+    await promptInstall("ruff", true, new Set(), "formatter");
     expect(notes.at(-1)).toMatchObject({
       title: "Ruff is not installed",
       body: "Reformat Code needs Ruff. Install it via uv (virtualenv)?",
@@ -254,6 +257,27 @@ describe("missing language server prompt", () => {
     });
     expect(await promptInstall("pylsp")).toBe(false);
     expect(notes).toEqual([]);
+  });
+
+  it("offers a companion server when one of its refactorings is invoked", async () => {
+    const installed = sampleTools().find((t) => t.name === "basedpyright")!;
+    backend.tools.push({
+      ...installed,
+      name: "pylsp",
+      displayName: "pylsp-rope (Python refactorings)",
+      command: "pylsp",
+      status: "missing",
+      installMethod: "uv (virtualenv)",
+      alternatives: [],
+      companion: true,
+    });
+    // basedpyright (installed) serves Python: the refactoring still needs pylsp-rope.
+    expect(await promptInstall("pylsp", true, new Set(), { refactoring: "Extract Method" })).toBe(true);
+    expect(notes.at(-1)).toMatchObject({
+      title: "pylsp-rope (Python refactorings) is not installed",
+      body: "Extract Method needs pylsp-rope (Python refactorings). Install it via uv (virtualenv)?",
+      key: missingKey("pylsp"),
+    });
   });
 
   it("stays silent when an installed alternative serves the same languages", async () => {
@@ -455,9 +479,8 @@ describe("LanguageServersPage", () => {
   });
 
   it("opens on the tool it was asked to show (languages.servers#<tool>)", async () => {
-    const consume = vi.fn();
     render(
-      <SettingsPageFocusContext.Provider value={{ focus: "pyrefly", consume }}>
+      <SettingsPageFocusContext.Provider value={FOCUS_CONTEXT}>
         <TestSettingsForm>
           <LanguageServersPage />
         </TestSettingsForm>
@@ -466,7 +489,7 @@ describe("LanguageServersPage", () => {
     await waitFor(() => expect(toolItem("pyrefly")).toHaveAttribute("aria-current", "true"));
     expect(language("Python")).toHaveAttribute("aria-current", "true");
     expect(screen.getByLabelText("Python tools")).toContainElement(toolItem("pyrefly"));
-    expect(consume).toHaveBeenCalled();
+    expect(focusConsume).toHaveBeenCalled();
   });
 
   it("jumps to a missing tool from the language's banner", async () => {
@@ -574,7 +597,7 @@ describe("LanguageServersPage", () => {
 });
 
 describe("tools.install action", () => {
-  it("installs installable tools and opens the page for the rest", async () => {
+  it("installs installable tools and opens the page on the rest", async () => {
     const { executeAction, registerAction } = await import("@/platform/actions");
     const { activate } = await import("../index");
     const opened: unknown[] = [];
@@ -591,7 +614,8 @@ describe("tools.install action", () => {
       expect(useTools.getState().tools.find((t) => t.name === "gopls")?.status).toBe("installed");
       expect(opened).toEqual([]);
       await executeAction("tools.install", "solargraph");
-      expect(opened).toEqual(["languages.servers"]);
+      // Opened on that tool, where its manual install hint is.
+      expect(opened).toEqual(["languages.servers#solargraph"]);
     } finally {
       disposers.reverse().forEach((d) => d());
     }

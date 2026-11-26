@@ -1,105 +1,266 @@
 /** "Resolve Conflicts" dialog and in-editor conflict resolution actions. */
-import { useEffect, useRef, useState } from "react";
-import type { FileStatus } from "@/bindings";
+import { useState } from "react";
+import type { ConflictSide, FileStatus } from "@/bindings";
 import { activeEditor } from "@/editor/api";
 import { call, commands } from "@/platform/ipc";
-import { Button, Dialog, Icon, List, fileIconName, T } from "@/ui";
+import {
+  Button,
+  Dialog,
+  Icon,
+  List,
+  fileIconName,
+  rowSelectionMode,
+  selectRow,
+  selectedRows,
+  showContextMenu,
+  T,
+} from "@/ui";
 import { editorService, notifications } from "@/workbench/contributions";
 import { blockAt, parseConflicts, resolutionText, type Resolution } from "./conflicts";
-import { openDialog } from "./dialogs";
+import { confirmDialog, openDialog } from "./dialogs";
+import { mergeConflictSession, type MergeConflictSession } from "./mergeCompletion";
 import { mergeInput } from "./mergeKind";
-import { baseName, dirName, relTo, stripSlash } from "./model";
-import { controlLabel, controlOperation, inProgress, operationTitle, type InProgress } from "./operations";
-import { runOp, writeFileText } from "./ops";
+import { baseName, dirName, effectiveKind, relTo, stashLabel, stripSlash } from "./model";
+import { controlLabel, controlOperation, inProgress, operationTitle } from "./operations";
+import { runOp, saveAll } from "./ops";
 import { executeAction } from "@/platform/actions";
-import { conflictedFiles, useVcs } from "./store";
+import { conflictedFiles, currentRepoRoot, refreshNow, repoOf, useVcs, type VcsState } from "./store";
 import styles from "./ConflictsDialog.module.css";
 import { tx } from "@/platform/i18n";
 
-/**
- * The stopped rebase / cherry-pick / revert whose conflicts are being resolved from the
- * Conflicts dialog (there or in the merge editor it opened): once the last one is
- * resolved the operation continues by itself, as IDEA does. Closing the dialog
- * without resolving them leaves it stopped.
- */
-let continueWhenResolved: InProgress | null = null;
-
-/** The operation to continue now that its conflicts are resolved, if any (only once). */
-export function takeContinueWhenResolved(): InProgress | null {
-  const op = continueWhenResolved;
-  continueWhenResolved = null;
-  return op;
+export interface UnstashConflictContext {
+  repo: string;
+  index: number;
+  message: string;
 }
 
-export function showConflictsDialog() {
-  if (!conflictedFiles().length) {
+const unstashNotices = new Map<string, () => void>();
+
+export function clearUnstashConflictNotices() {
+  for (const clear of unstashNotices.values()) clear();
+}
+
+function showUnresolvedUnstashNotice(stash: UnstashConflictContext, files: FileStatus[], description: string) {
+  const { root, heads } = useVcs.getState();
+  const head = heads[stash.repo]?.headCommit;
+  const paths = new Set(files.map((file) => file.path));
+  const stillUnresolved = (state: VcsState) =>
+    state.root === root &&
+    state.roots.includes(stash.repo) &&
+    !state.operations[stash.repo] &&
+    state.heads[stash.repo]?.headCommit === head &&
+    state.status.some(
+      (file) =>
+        paths.has(file.path) && effectiveKind(file) === "conflicted" && repoOf(file.path, state.roots) === stash.repo,
+    );
+  if (!stillUnresolved(useVcs.getState())) return;
+
+  const key = `vcs.unstash-conflicts:${stash.repo}`;
+  unstashNotices.get(stash.repo)?.();
+  const service = notifications();
+  const clear = () => {
+    unsubscribe();
+    unstashNotices.delete(stash.repo);
+    service.expire?.(key);
+  };
+  const unsubscribe = useVcs.subscribe((state) => {
+    if (!stillUnresolved(state)) clear();
+  });
+  unstashNotices.set(stash.repo, clear);
+  service.notify({
+    key,
+    group: "vcs",
+    level: "warning",
+    sticky: true,
+    userInitiated: true,
+    title: "Unstash has unresolved conflicts",
+    body: description,
+    actions: [
+      {
+        label: "Resolve Conflicts…",
+        run: () => {
+          void refreshNow().then(() => {
+            if (unstashNotices.get(stash.repo) !== clear) return;
+            service.expire?.(key);
+            return executeAction("vcs.resolveConflicts", stash);
+          });
+        },
+      },
+    ],
+  });
+}
+
+function inConflictScope(path: string, roots: readonly string[], scope?: readonly string[]): boolean {
+  if (!scope) return true;
+  const repo = repoOf(path, roots);
+  return repo !== null && scope.includes(repo);
+}
+
+export function showConflictsDialog(arg?: unknown) {
+  const repositories =
+    arg && typeof arg === "object" && "repositories" in arg && Array.isArray(arg.repositories)
+      ? arg.repositories.filter((root): root is string => typeof root === "string")
+      : undefined;
+  const stash: UnstashConflictContext | undefined =
+    arg &&
+    typeof arg === "object" &&
+    "repo" in arg &&
+    typeof arg.repo === "string" &&
+    "index" in arg &&
+    typeof arg.index === "number" &&
+    "message" in arg &&
+    typeof arg.message === "string"
+      ? { repo: arg.repo, index: arg.index, message: arg.message }
+      : undefined;
+  const mergeRepo =
+    arg && typeof arg === "object" && "mergeRepo" in arg && typeof arg.mergeRepo === "string"
+      ? arg.mergeRepo
+      : currentRepoRoot();
+  const session = stash || repositories ? undefined : mergeConflictSession(mergeRepo);
+  const scope = stash ? [stash.repo] : (session?.roots ?? repositories);
+  const { resolvedConflicts, roots } = useVcs.getState();
+  if (
+    !session &&
+    !conflictedFiles().some((file) => inConflictScope(file.path, roots, scope)) &&
+    (stash || ![...resolvedConflicts].some((path) => inConflictScope(path, roots, scope)))
+  ) {
     notifications().notify({ group: "vcs", level: "info", title: "No merge conflicts" });
     return;
   }
-  openDialog((close) => <ConflictsDialog onClose={close} />);
+  openDialog((close) => (
+    <ConflictsDialog stash={stash} session={session} repositories={repositories} onClose={close} />
+  ));
+}
+
+export function canRevertResolved(paths: readonly string[]): boolean {
+  const { resolvedConflicts } = useVcs.getState();
+  return paths.length > 0 && paths.every((path) => resolvedConflicts.has(stripSlash(path)));
+}
+
+export async function revertResolved(paths: string[]) {
+  if (!canRevertResolved(paths)) return;
+  const count = paths.length;
+  const name = baseName(paths[0]!);
+  const message = count === 1 ? tx`Revert the resolution of ${name}?` : tx`Revert resolutions for ${count} files?`;
+  if (!(await confirmDialog({ title: "Revert Resolved Files", message, okLabel: "Revert", danger: true }))) return;
+  await saveAll();
+  await runOp(tx("Reverting resolved conflicts"), () => call(commands.vcsRevertResolved(paths)), {
+    success: tx("Resolved conflicts reopened"),
+  });
 }
 
 export function openMergeEditor(path: string) {
   void editorService().openInput(mergeInput(stripSlash(path)), { focus: true });
 }
 
-/** Accept Yours / Accept Theirs for a whole conflicted file. */
-export async function acceptSide(f: FileStatus, side: "ours" | "theirs") {
-  const path = stripSlash(f.path);
-  await runOp(
-    side === "ours" ? tx`Accept yours for ${baseName(path)}` : tx`Accept theirs for ${baseName(path)}`,
+/** Accept Yours / Accept Theirs for whole conflicted files. */
+export async function acceptConflictSide(files: readonly string[], side: ConflictSide): Promise<boolean> {
+  if (!files.length) return false;
+  const paths = files.map(stripSlash);
+  const count = paths.length;
+  const path = paths[0]!;
+  const title =
+    side === "ours"
+      ? count === 1
+        ? tx`Accept yours for ${baseName(path)}`
+        : tx`Accept yours for ${count} files`
+      : count === 1
+        ? tx`Accept theirs for ${baseName(path)}`
+        : tx`Accept theirs for ${count} files`;
+  const accepted = await runOp(
+    title,
     async () => {
-      const v = await call(commands.vcsConflictVersions(path));
-      const text = side === "ours" ? v.ours : v.theirs;
-      if (text === null) {
-        // The file was deleted on that side: resolving means removing it.
-        await call(commands.fsDelete(path));
-      } else {
-        await writeFileText(path, text, { save: true });
-      }
-      await call(commands.vcsStage([path]));
+      await saveAll();
+      await call(commands.vcsAcceptConflictSide(paths, side));
+      return true;
     },
-    { success: tx`${baseName(path)} resolved` },
+    { success: count === 1 ? tx`${baseName(path)} resolved` : tx`${count} files resolved` },
   );
+  return accepted === true;
 }
 
-function ConflictsDialog({ onClose }: { onClose: () => void }) {
-  const files = useVcs((s) => s.status).filter((f) => f.unstaged === "conflicted");
+type ConflictRow = { key: string } & ({ header: "Unresolved" | "Resolved" } | { path: string; conflict?: FileStatus });
+const isSection = (row: ConflictRow) => "header" in row;
+
+function ConflictsDialog({
+  stash,
+  session,
+  repositories,
+  onClose,
+}: {
+  stash?: UnstashConflictContext;
+  session?: MergeConflictSession;
+  repositories?: readonly string[];
+  onClose: () => void;
+}) {
+  const roots = useVcs((s) => s.roots);
+  const scope = stash ? [stash.repo] : (session?.roots ?? repositories);
+  const files = conflictedFiles(useVcs((s) => s.status)).filter((file) => inConflictScope(file.path, roots, scope));
+  const resolved = useVcs((s) => s.resolvedConflicts);
   const root = useVcs((s) => s.root) ?? "";
-  const op = useVcs((s) => inProgress(s.branch?.operation));
-  useEffect(() => {
-    continueWhenResolved = op && op !== "merge" ? op : null;
-  }, [op]);
-  // The last conflict resolved here: the operation continues (see onConflictsCleared), the dialog goes.
-  const hadConflicts = useRef(files.length > 0);
-  useEffect(() => {
-    if (hadConflicts.current && !files.length && op && op !== "merge") onClose();
-    hadConflicts.current = files.length > 0;
-  }, [files.length, op, onClose]);
-  // Closed without going on to resolve them: the operation stays stopped.
-  const dismiss = () => {
-    continueWhenResolved = null;
+  const repo = useVcs((s) => (repositories ? (repositories.find((root) => s.operations[root]) ?? null) : s.repo));
+  const mergeRoot = useVcs((s) => session?.roots.find((root) => s.operations[root] === "merge"));
+  const busy = useVcs((s) => s.remoteBusy !== null);
+  const op = useVcs((s) => {
+    if (stash) return null;
+    if (session) return mergeRoot ? "merge" : null;
+    return inProgress(repositories ? (repo ? s.operations[repo] : null) : s.branch?.operation);
+  });
+  const operationRoot = mergeRoot ?? (repositories ? repo : null);
+  const head = useVcs((s) => (operationRoot ? s.heads[operationRoot]?.head : s.branch?.head) ?? null);
+  const [selection, setSelection] = useState<{ lead: string; anchor: string; keys: ReadonlySet<string> | null }>();
+  const unresolved = new Set(files.map((f) => stripSlash(f.path)));
+  const resolvedPaths = stash
+    ? []
+    : [...resolved].filter((path) => !unresolved.has(path) && inConflictScope(path, roots, scope));
+  const rows: ConflictRow[] = [
+    ...(files.length
+      ? [
+          { key: "unresolved", header: "Unresolved" as const },
+          ...files.map((f) => ({ key: f.path, path: f.path, conflict: f })),
+        ]
+      : []),
+    ...(resolvedPaths.length
+      ? [{ key: "resolved", header: "Resolved" as const }, ...resolvedPaths.map((path) => ({ key: path, path }))]
+      : []),
+  ];
+  const selectedIndex = rows.findIndex((row) => row.key === selection?.lead);
+  const active = selectedIndex >= 0 ? selectedIndex : rows.findIndex((row) => "path" in row);
+  const anchor = rows.findIndex((row) => row.key === selection?.anchor);
+  const rowSelection = { lead: active, anchor: anchor < 0 ? active : anchor, keys: selection?.keys ?? null };
+  const selected = selectedRows(rows, rowSelection);
+  const conflicts = selected.flatMap((row) => ("path" in row && row.conflict ? [row.conflict] : []));
+  const restore = selected.flatMap((row) => ("path" in row && !row.conflict ? [row.path] : []));
+  const canAccept = conflicts.length > 0 && conflicts.length === selected.length;
+  const canRestore = restore.length > 0 && restore.length === selected.length;
+  const merge = selected.length === 1 ? conflicts[0] : undefined;
+  const stashDescription = stash ? `stash@{${stash.index}}: ${stashLabel(stash.message).text}` : null;
+  const close = () => {
     onClose();
+    if (stash && stashDescription && files.length) showUnresolvedUnstashNotice(stash, files, stashDescription);
   };
-  const head = useVcs((s) => s.branch?.head ?? null);
-  const [active, setActive] = useState(0);
-  const current = files[Math.min(active, files.length - 1)];
-  const edit = (file: FileStatus) => {
-    onClose();
-    openMergeEditor(file.path);
+  const edit = (path: string) => {
+    close();
+    openMergeEditor(path);
   };
-  // Once everything is resolved the dialog concludes the stopped operation, as IDEA does.
-  const conclude =
-    op && !files.length
-      ? op === "merge"
-        ? { label: "Commit…", run: () => void executeAction("vcs.commit") }
-        : { label: controlLabel(op, "continue"), run: () => void controlOperation("continue", op) }
+  const pending = files.some((file) => !repo || repoOf(file.path) === repo);
+  const conclude = session
+    ? { label: "Accept and Finish", disabled: !!files.length || !mergeRoot || busy, run: () => void session.finish() }
+    : op && !pending
+      ? op === "merge" && !repositories
+        ? { label: "Commit…", disabled: false, run: () => void executeAction("vcs.commit") }
+        : {
+            label: controlLabel(op, "continue"),
+            disabled: !!repositories && busy,
+            run: () => void controlOperation("continue", op, repositories ? repo : undefined),
+          }
       : null;
+  const canConclude = conclude !== null && !conclude.disabled;
   return (
     <Dialog
       open
       title="Conflicts"
-      onClose={dismiss}
+      onClose={close}
       className={styles.dialog}
       width={680}
       resizable="both"
@@ -111,9 +272,10 @@ function ConflictsDialog({ onClose }: { onClose: () => void }) {
               {
                 label: conclude.label,
                 role: "default" as const,
-                autoFocus: true,
+                disabled: conclude.disabled,
+                autoFocus: canConclude,
                 onClick: () => {
-                  dismiss();
+                  onClose();
                   conclude.run();
                 },
               },
@@ -124,7 +286,11 @@ function ConflictsDialog({ onClose }: { onClose: () => void }) {
     >
       <div className={styles.content}>
         <div className={styles.summary}>
-          {op && <span>{operationTitle(op, head)}</span>}
+          {stashDescription ? (
+            <span>{tx`Conflicts during unstashing ${stashDescription}`}</span>
+          ) : (
+            op && <span>{operationTitle(op, head)}</span>
+          )}
           <span className={styles.count} role="status">
             {files.length
               ? files.length === 1
@@ -139,26 +305,52 @@ function ConflictsDialog({ onClose }: { onClose: () => void }) {
               <T>Name</T>
             </div>
             <List
-              autoFocus={!!current}
-              items={files}
-              getKey={(f) => f.path}
-              activeIndex={Math.min(active, files.length - 1)}
-              onActiveChange={setActive}
+              autoFocus={active >= 0 && !canConclude}
+              items={rows}
+              getKey={(row) => row.key}
+              isSection={isSection}
+              renderSection={(row) =>
+                "header" in row && (row.header === "Unresolved" ? tx("Unresolved") : tx("Resolved"))
+              }
+              activeIndex={active}
+              isSelected={(row) => !!rowSelection.keys?.has(row.key)}
+              onSelect={(index, event) => {
+                const next = selectRow(rows, rowSelection, index, rowSelectionMode(event), isSection);
+                setSelection({ lead: rows[next.lead]!.key, anchor: rows[next.anchor]!.key, keys: next.keys });
+              }}
               aria-label={tx("Conflicted files")}
               className={styles.list}
-              empty={<T>No conflicts</T>}
-              onActivate={(f, _i, e) => {
-                if (e.type === "click" && (e as unknown as MouseEvent).detail < 2) return;
-                edit(f);
+              empty={
+                <span>
+                  <T>No conflicts</T>
+                </span>
+              }
+              onActivate={(row, _i, e) => {
+                if ("header" in row || (e.type === "click" && (e as unknown as MouseEvent).detail < 2)) return;
+                if (row.conflict) edit(row.path);
+                else {
+                  onClose();
+                  void executeAction("vcs.showDiff", row.path);
+                }
               }}
-              renderItem={(f) => {
-                const path = relTo(root, stripSlash(f.path));
-                const name = baseName(f.path);
+              onContextMenu={(row, _i, e) => {
+                if ("path" in row && !row.conflict) {
+                  e.preventDefault();
+                  const paths = canRestore && restore.includes(row.path) ? restore : [row.path];
+                  showContextMenu(e, [{ kind: "action", action: "vcs.revertResolved", arg: paths }]);
+                }
+              }}
+              renderItem={(row) => {
+                if (!("path" in row)) return null;
+                const path = relTo(root, stripSlash(row.path));
+                const name = baseName(row.path);
                 const dir = dirName(path);
                 return (
                   <span className={styles.row} title={path}>
-                    <Icon name={fileIconName(name, f.path)} size={16} />
-                    <span className={styles.fileName}>{name}</span>
+                    <Icon name={row.conflict ? fileIconName(name, row.path) : "check"} size={16} />
+                    <span className={styles.fileName} data-resolved={row.conflict ? undefined : true}>
+                      {name}
+                    </span>
                     {dir && <span className={styles.fileDir}>{dir}</span>}
                   </span>
                 );
@@ -166,19 +358,41 @@ function ConflictsDialog({ onClose }: { onClose: () => void }) {
             />
           </div>
           <div className={styles.actions} role="group" aria-label={tx("Conflict resolution")}>
-            <Button disabled={!current} onClick={() => current && void acceptSide(current, "ours")}>
-              Accept Yours
-            </Button>
-            <Button disabled={!current} onClick={() => current && void acceptSide(current, "theirs")}>
-              Accept Theirs
-            </Button>
-            <Button
-              variant={conclude ? "secondary" : "primary"}
-              disabled={!current}
-              onClick={() => current && edit(current)}
-            >
-              Merge…
-            </Button>
+            {canRestore ? (
+              <Button onClick={() => void executeAction("vcs.revertResolved", restore)}>Revert Resolved</Button>
+            ) : (
+              <>
+                <Button
+                  disabled={!canAccept}
+                  onClick={() =>
+                    void acceptConflictSide(
+                      conflicts.map((f) => f.path),
+                      "ours",
+                    )
+                  }
+                >
+                  Accept Yours
+                </Button>
+                <Button
+                  disabled={!canAccept}
+                  onClick={() =>
+                    void acceptConflictSide(
+                      conflicts.map((f) => f.path),
+                      "theirs",
+                    )
+                  }
+                >
+                  Accept Theirs
+                </Button>
+                <Button
+                  variant={canConclude ? "secondary" : "primary"}
+                  disabled={!merge}
+                  onClick={() => merge && edit(merge.path)}
+                >
+                  Merge…
+                </Button>
+              </>
+            )}
           </div>
         </div>
       </div>

@@ -1,0 +1,58 @@
+// OpenIDEA single-file javac classpath probe for Gradle projects.
+// Prints the target source set's output directory, compile classpath, source dirs and release version.
+import groovy.json.JsonOutput
+
+def identity = { Project p -> try { p.identityPath.toString() } catch (ignored) { p.path } }
+
+gradle.projectsEvaluated { g ->
+    def wantedTarget = g.rootProject.findProperty('openidea.target')?.toString() ?: ':'
+    def scope = g.rootProject.findProperty('openidea.scope')?.toString() ?: 'main'
+    def project = g.rootProject.allprojects.find { identity(it) == wantedTarget }
+    if (project == null && g.parent == null) {
+        project = g.rootProject.allprojects.find { it.path == wantedTarget }
+    }
+    if (project == null) return
+
+    def sets = project.extensions.findByName('sourceSets') ?: project.findProperty('sourceSets')
+    def ss = sets?.findByName(scope)
+    if (ss == null) return
+
+    def outDir = null
+    try { outDir = ss.java.destinationDirectory.get().asFile.canonicalPath } catch (ignored) {}
+    if (outDir == null) {
+        try { outDir = ss.output.classesDirs.files.iterator().next().canonicalPath } catch (ignored) {}
+    }
+
+    def cp = []
+    if (scope == 'test') {
+        def mainSet = sets.findByName('main')
+        try { mainSet?.output?.classesDirs?.files?.each { cp << it.canonicalPath } } catch (ignored) {}
+    }
+    try { ss.compileClasspath.files.each { cp << it.canonicalPath } } catch (ignored) {}
+    cp = cp.unique()
+
+    def srcDirs = []
+    try { ss.java.srcDirs.each { srcDirs << it.canonicalPath } } catch (ignored) {}
+    if (scope == 'test') {
+        def mainSet = sets.findByName('main')
+        try { mainSet?.java?.srcDirs?.each { srcDirs << it.canonicalPath } } catch (ignored) {}
+    }
+    srcDirs = srcDirs.unique()
+
+    def release = null
+    try {
+        def compileTask = project.tasks.findByName(ss.compileJavaTaskName)
+        release = compileTask?.options?.release?.getOrNull()
+    } catch (ignored) {}
+    if (release == null) {
+        try {
+            def java = project.extensions.findByName('java')
+            def lv = null
+            try { lv = java?.toolchain?.languageVersion?.getOrNull() } catch (ignored) {}
+            def target = java != null ? java.targetCompatibility : project.findProperty('targetCompatibility')
+            release = lv != null ? lv.asInt() : (target?.majorVersion as Integer)
+        } catch (ignored) {}
+    }
+
+    println '@openidea-compile-cp\t' + JsonOutput.toJson([outDir: outDir, classpath: cp, srcDirs: srcDirs, release: release])
+}

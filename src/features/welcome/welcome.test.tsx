@@ -42,7 +42,7 @@ import { MessagesHost } from "@/workbench/messages";
 import { projectInitials } from "@/workbench/projectColor";
 import { handleListKey } from "./ProjectsPage";
 import { customizeView } from "./CustomizePage";
-import { recentMenu } from "./RecentList";
+import { RecentList, recentMenu } from "./RecentList";
 import { filterRecent, useRecent } from "./recent";
 import { WelcomeView } from "./WelcomeView";
 
@@ -159,6 +159,56 @@ describe("Welcome › Projects", () => {
     dispose();
   });
 
+  it("opens in a new window with Shift or Ctrl, in this one with Alt, over 'Open project in'", async () => {
+    const chosen: unknown[] = [];
+    const dispose = registerActions([
+      { id: "file.openRecentProject", title: "Open Recent Project", run: (c) => void chosen.push(c.arg) },
+    ]);
+    await renderWelcome();
+    const acme = { path: "/Users/me/repo/acme-api" };
+    const row = () => screen.getAllByRole("option")[0]!;
+    const search = screen.getByLabelText("Search projects");
+    for (const mod of [{ shiftKey: true }, { ctrlKey: true }]) {
+      fireEvent.click(row(), mod);
+      // oxlint-disable-next-line no-await-in-loop -- each modifier's result is asserted before the next one is exercised
+      await act(async () => {});
+      expect(chosen.at(-1)).toEqual({ ...acme, window: "new" });
+      fireEvent.keyDown(search, { key: "Enter", ...mod });
+      // oxlint-disable-next-line no-await-in-loop -- the Enter result is asserted before the next modifier is exercised
+      await act(async () => {});
+      expect(chosen.at(-1)).toEqual({ ...acme, window: "new" });
+    }
+    fireEvent.click(row(), { altKey: true });
+    await act(async () => {});
+    expect(chosen.at(-1)).toEqual({ ...acme, window: "same" });
+    fireEvent.keyDown(search, { key: "Enter", altKey: true });
+    await act(async () => {});
+    expect(chosen.at(-1)).toEqual({ ...acme, window: "same" });
+    expect(openProject).not.toHaveBeenCalled();
+    dispose();
+  });
+
+  it("gives File › Open Recent the same modifier keys", async () => {
+    const chosen: unknown[] = [];
+    const dispose = registerActions([
+      { id: "file.openRecentProject", title: "Open Recent Project", run: (c) => void chosen.push(c.arg) },
+    ]);
+    useRecent.setState({ projects: recent, loaded: true });
+    const view = render(<RecentList compact autoFocus />);
+    const delta = { path: "/Users/me/repo/delta" };
+    const row = screen.getAllByRole("option")[1]!;
+    // As with a real click, the press selects the row and the release opens it.
+    fireEvent.mouseDown(row);
+    fireEvent.click(row, { ctrlKey: true });
+    await act(async () => {});
+    expect(chosen.at(-1)).toEqual({ ...delta, window: "new" });
+    fireEvent.keyDown(screen.getByLabelText("Search recent projects"), { key: "Enter", altKey: true });
+    await act(async () => {});
+    expect(chosen.at(-1)).toEqual({ ...delta, window: "same" });
+    view.unmount();
+    dispose();
+  });
+
   // Regression: the welcome menus are shared by the projects page and the two
   // recent-project popups, and used to hardcode "Show in Finder" on every OS.
   it("names the platform's file manager for the reveal action", () => {
@@ -191,6 +241,20 @@ describe("Welcome › Projects", () => {
     const path = target ? remoteLocation(target, "/home/me/app") : "/Users/me/app";
     const items = resolveMenuItems(recentMenu(p("app", path)));
     expect(items.some((i) => i.key === "reveal")).toBe(shown);
+  });
+
+  it("changes any recent project's colour, and a local one's icon", async () => {
+    const { useTabColorPicker } = await import("@/workbench/TabColorPicker");
+    const local = resolveMenuItems(recentMenu(p("app", "/Users/me/app")));
+    expect(local.map((i) => i.key)).toEqual(expect.arrayContaining(["color", "icon"]));
+    // Nothing to reset until the project shows an icon set here.
+    expect(local.some((i) => i.key === "resetIcon")).toBe(false);
+    local.find((i) => i.key === "color")!.run!();
+    expect(useTabColorPicker.getState().target).toMatchObject({ root: "/Users/me/app", name: "app" });
+    useTabColorPicker.setState({ target: null });
+    const remote = resolveMenuItems(recentMenu(p("app", remoteLocation({ kind: "ssh", config: "box" }, "/srv/app"))));
+    expect(remote.map((i) => i.key)).toContain("color");
+    expect(remote.map((i) => i.key)).not.toContain("icon");
   });
 
   it("reveals a local recent project from an SSH window's project switcher", async () => {

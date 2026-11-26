@@ -3,7 +3,7 @@
  * Drop, Truncate, SQL Scripts › …, Modify Table, Copy Reference), per dialect.
  * Pure functions.
  */
-import type { DbColumnInfo, DbDriver } from "@/platform/ipc";
+import type { DbColumnInfo, DbDriver, DbTableGrant } from "@/platform/ipc";
 import { isReserved } from "./sql/dialect";
 
 export function quoteIdent(driver: DbDriver, name: string): string {
@@ -86,12 +86,15 @@ export const canRename = (driver: DbDriver, o: DbObjectRef) =>
   (o.kind === "table" ||
     o.kind === "column" ||
     (o.kind === "view" && driver !== "sqlite") ||
-    (o.kind === "index" && driver === "postgres"));
+    (o.kind === "index" && driver === "postgres") ||
+    (o.kind === "schema" && (driver === "postgres" || driver === "snowflake")));
 
 /** The statement renaming `o` to `to`. */
 export function renameSql(driver: DbDriver, o: DbObjectRef, to: string): string {
   const q = qualifiedName(driver, o.schema, o.name);
   switch (o.kind) {
+    case "schema":
+      return `alter schema ${ident(driver, o.name)} rename to ${ident(driver, to)};`;
     case "column":
       return `alter table ${q} rename column ${ident(driver, o.column ?? "")} to ${ident(driver, to)};`;
     case "index":
@@ -237,6 +240,12 @@ export function dropDatabaseSql(driver: DbDriver, name: string, force: boolean):
   if (driver === "sqlServer" && force)
     return `alter database ${db} set single_user with rollback immediate;\ndrop database ${db};`;
   return `drop database ${db}${force && driver === "postgres" ? " with (force)" : ""};`;
+}
+
+/** The statement renaming database `name` of a server to `to` (PostgreSQL, SQL Server). */
+export function renameDatabaseSql(driver: DbDriver, name: string, to: string): string {
+  if (driver === "sqlServer") return `alter database ${ident(driver, name)} modify name = ${ident(driver, to)};`;
+  return `alter database ${ident(driver, name)} rename to ${ident(driver, to)};`;
 }
 
 export type ScriptKind = "selectAll" | "selectFirst" | "insert" | "update" | "delete";
@@ -434,4 +443,56 @@ export function alterTableSql(
   if (name.trim() && name.trim() !== table)
     out.push(renameSql(driver, { kind: "table", schema, name: table }, name.trim()));
   return out;
+}
+
+// ---- Grants -------------------------------------------------------------------
+
+/** Engines whose table privileges the Modify Table dialog shows (others run no query). */
+export function grantsSupported(driver: DbDriver): boolean {
+  return driver === "postgres" || driver === "mysql";
+}
+
+/** Column order of the Grants table: the SQL standard's table privileges, then the engine's own. */
+const PRIVILEGE_ORDER = [
+  "SELECT",
+  "INSERT",
+  "UPDATE",
+  "DELETE",
+  "TRUNCATE",
+  "REFERENCES",
+  "TRIGGER",
+  "MAINTAIN",
+  "INDEX",
+  "ALTER",
+  "CREATE",
+  "DROP",
+  "CREATE VIEW",
+  "SHOW VIEW",
+  "DELETE HISTORY",
+];
+
+export interface GrantRow {
+  grantee: string;
+  grantor: string | null;
+  /** Privilege → granted with GRANT OPTION. */
+  privileges: Map<string, boolean>;
+}
+
+/** One row per grantee and grantor, with the privileges they hold as columns. */
+export function grantMatrix(grants: DbTableGrant[]): { privileges: string[]; rows: GrantRow[] } {
+  const rows = new Map<string, GrantRow>();
+  const seen = new Set<string>();
+  for (const g of grants) {
+    const key = JSON.stringify([g.grantee, g.grantor]);
+    let row = rows.get(key);
+    if (!row) rows.set(key, (row = { grantee: g.grantee, grantor: g.grantor, privileges: new Map() }));
+    row.privileges.set(g.privilege, (row.privileges.get(g.privilege) ?? false) || g.grantable);
+    seen.add(g.privilege);
+  }
+  const rank = (p: string) => {
+    const i = PRIVILEGE_ORDER.indexOf(p);
+    return i < 0 ? PRIVILEGE_ORDER.length : i;
+  };
+  const privileges = [...seen].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+  return { privileges, rows: [...rows.values()] };
 }

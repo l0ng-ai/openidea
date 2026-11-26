@@ -69,3 +69,49 @@ test("the bottom single row keeps a long selected tab visible alongside the hidd
   await pane.getByRole("tab", { name: shortFile, exact: true }).press("End");
   await expectCloseToFit(tab);
 });
+
+test("same-name tabs keep the filename beside a shortened directory", async ({ workbench: page }) => {
+  const filename = "AllocationRule.ts";
+  const first = "qa";
+  const second = "backoffice-reconciliation";
+  await openSplit(page, [`${first}/${filename}`, `${second}/${filename}`], "top");
+  await page.setViewportSize({ width: 900, height: 760 });
+
+  const pane = page.locator("section[data-pane-id]").filter({
+    has: page.getByRole("tab").filter({ hasText: second }),
+  });
+  const selected = pane.getByRole("tab").filter({ hasText: second });
+  await expect(selected).toHaveText(`${second}/${filename}`);
+  await expectCloseToFit(selected);
+  const directory = selected.getByText(`${second}/`, { exact: true });
+  const name = selected.getByText(filename, { exact: true });
+  await expect.poll(() => directory.evaluate((el) => el.clientWidth > 0 && el.scrollWidth > el.clientWidth)).toBe(true);
+  await expect
+    .poll(() =>
+      name.evaluate((el) => {
+        const text = document.createRange();
+        text.selectNodeContents(el);
+        return el.getBoundingClientRect().width >= text.getBoundingClientRect().width;
+      }),
+    )
+    .toBe(true);
+
+  await pane.getByRole("button", { name: "Show Hidden Tabs" }).click();
+  const picker = page.getByRole("grid", { name: "Hidden Editor Tabs" });
+  await expect(picker.getByRole("gridcell").filter({ hasText: `${first}/${filename}` })).toBeVisible();
+  await page.keyboard.press("Enter");
+  const firstTab = pane.getByRole("tab").filter({ hasText: first });
+  await expectCloseToFit(firstTab);
+  await expect
+    .poll(() =>
+      firstTab.getByText(`${first}/`, { exact: true }).evaluate((el) => {
+        const text = document.createRange();
+        text.selectNodeContents(el);
+        return Math.abs(el.clientWidth - text.getBoundingClientRect().width);
+      }),
+    )
+    .toBeLessThanOrEqual(1);
+
+  await firstTab.locator("..").getByRole("button", { name: "Close Tab", exact: true }).click();
+  await expect(page.getByRole("tab", { name: filename, exact: true })).toHaveAttribute("aria-selected", "true");
+});

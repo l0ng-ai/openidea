@@ -23,7 +23,27 @@ const DEFAULT_TREE_DEPTH: i64 = 5;
 const TREE_LIMIT: usize = 100;
 
 pub fn tools() -> Vec<Tool> {
-    vec![read_file(), list_directory_tree()]
+    vec![get_workspace_roots(), read_file(), list_directory_tree()]
+}
+
+// --- get_workspace_roots ---------------------------------------------------------
+
+fn get_workspace_roots() -> Tool {
+    Tool::new(
+        "get_workspace_roots",
+        "Returns the root directories of the IDE workspace: this project and the trusted projects attached to it
+in the same window, as absolute paths. A task works in one directory, but its workspace can hold several projects.
+Call this before the first project-related operation in a session, and when asked about the workspace, project or
+working directories. `projectRoot` is the project this connection serves, the default base for paths; `roots` is
+every project in the workspace, the scope to search and read, not a list of projects to change. It doesn't change the
+working directory or permissions. Other tools reach an attached project by its root as `projectPath`.",
+        |call| async move {
+            let root = call.root().to_path_buf();
+            let mut roots = vec![root.clone()];
+            roots.extend(crate::mcp::tool::trusted_attachments(&call.host.trust, &root));
+            Output::json(json!({ "projectRoot": root, "roots": roots }))
+        },
+    )
 }
 
 // --- read_file -----------------------------------------------------------------

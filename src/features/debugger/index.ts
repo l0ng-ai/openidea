@@ -32,7 +32,8 @@ import { breakpointGutter } from "./editor/breakpointGutter";
 import { executionPoint } from "./editor/execution";
 import { runToCursorInlay } from "./editor/runToCursor";
 import { installSmartStepPicking, smartStepTargets } from "./editor/smartStep";
-import { hotSwapMenuItems, onHotCodeReplace } from "./hotswap";
+import { exceptionBreakpointIntention } from "./editor/exceptionBreakpointIntention";
+import { hotSwapMenuItems, installBuildHotSwap, onHotCodeReplace } from "./hotswap";
 import { installFlutterHotReloadOnSave } from "./flutterReload";
 import {
   activeSession,
@@ -68,7 +69,8 @@ const useAnyOverlay = () =>
         s.attach ||
         s.smartStep ||
         s.streamChooser ||
-        s.streamAbort != null
+        s.streamAbort != null ||
+        s.tableView
       ),
   );
 
@@ -155,10 +157,12 @@ export function activate(): () => void {
         selectionValueTooltip(),
         quickEvaluateMouse(),
         smartStepTargets(ctx),
+        exceptionBreakpointIntention(ctx),
       ],
     }),
     installSmartStepPicking(),
     installFlutterHotReloadOnSave(),
+    installBuildHotSwap(),
     onIdeEvent("debug", (e) => {
       if (e.event.kind === "hotCodeReplace") onHotCodeReplace(e.session, e.event);
       else handleDebugEvent(e.session, e.event);

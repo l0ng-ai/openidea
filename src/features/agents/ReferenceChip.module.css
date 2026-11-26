@@ -15,14 +15,14 @@
   font-size: var(--agent-fs-small, var(--fs-small));
   line-height: calc(20px + max(0px, var(--agent-font-zoom, 0px)) * 1.4);
   white-space: nowrap;
-  cursor: pointer;
+  cursor: default;
   user-select: none;
   transition:
     background var(--dur-fast) var(--ease),
     box-shadow var(--dur-fast) var(--ease);
 }
 .chip:hover {
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  background: var(--accent-soft);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent);
 }
 .chip:focus-visible {
@@ -58,7 +58,6 @@
   border-radius: var(--radius-small);
   background: none;
   color: var(--fg-muted);
-  cursor: pointer;
 }
 .chipRemove:hover {
   background: var(--bg-hover);
@@ -84,7 +83,7 @@
   -webkit-box-decoration-break: clone;
   box-decoration-break: clone;
   color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  background: var(--accent-soft);
 }
 /* `@something` that names no referenced file: as typed, just marked. */
 .pending {
@@ -227,7 +226,6 @@
   border-radius: var(--radius-small);
   background: none;
   color: var(--fg-muted);
-  cursor: pointer;
 }
 .codeRemove:hover,
 .codeCopy:hover {
@@ -259,15 +257,11 @@
   background: none;
   color: var(--link);
   font-size: var(--fs-small);
-  cursor: pointer;
 }
 .codeMore:hover {
   background: var(--bg-hover);
 }
 /* In the composer: the card opens as text on a click. */
-.codeCard[title] {
-  cursor: pointer;
-}
 .codeCard[title]:hover {
   box-shadow: inset 0 0 0 1px var(--border-strong);
 }

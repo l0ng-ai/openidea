@@ -16,6 +16,13 @@ export interface ConsoleLine {
 /** Oldest lines are dropped beyond this (IDEA's console cycle buffer). */
 export const MAX_CONSOLE_LINES = 20_000;
 
+/** The lines of streamed text (one or more `\n`-terminated lines). */
+export function outputLines(text: string): string[] {
+  const parts = text.split("\n");
+  if (parts.at(-1) === "") parts.pop();
+  return parts;
+}
+
 /**
  * Appends streamed text (one or more `\n`-terminated lines) to `lines`.
  * `cwd` is the running step's directory (a step may append several chunks).
@@ -26,8 +33,7 @@ export function appendOutput(
   kind: ConsoleLine["kind"],
   cwd?: string,
 ): ConsoleLine[] {
-  const parts = text.split("\n");
-  if (parts.at(-1) === "") parts.pop();
+  const parts = outputLines(text);
   const next = lines.concat(
     parts.map((t) => ({ text: t.replace(/\r$/, ""), kind, ...(cwd !== undefined ? { cwd } : {}) })),
   );

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { Text } from "@codemirror/state";
 import { javascriptLanguage, typescriptLanguage } from "@codemirror/lang-javascript";
+import { TreeFragment, type Tree } from "@lezer/common";
 import { semanticRanges } from "../index";
+import { decoratorRanges } from "./index";
 
 // tsserver's legend (vtsls and typescript-language-server send the same one).
 const tokenTypes = ["class", "variable", "function", "member", "property"];
@@ -83,5 +85,105 @@ describe("JavaScript and TypeScript semantic tokens (#4059)", () => {
     expect(at(1, "helper")).toBe("cm-sem-function");
     expect(at(1, "Math")).toBe("cm-sem-builtin");
     expect(at(1, "parseInt")).toBe("cm-sem-function cm-sem-builtin");
+  });
+});
+
+describe("decorator names after an edit", () => {
+  const parser = typescriptLanguage.parser;
+  const decorated = "@Component({ selector: 'a' })\nexport class Home {\n  @Input() title = ''\n}\n\n";
+  const plain = (count: number) =>
+    Array.from(
+      { length: count },
+      (_, i) =>
+        `/** Service ${i}, documented. */\nexport class Service${i} {\n  load(id: number) {\n    return id\n  }\n}\n\n`,
+    ).join("");
+
+  /** The decorator names by walking the whole tree: what each edit used to cost. */
+  function everyDecorator(tree: Tree): Array<[number, number]> {
+    const out: Array<[number, number]> = [];
+    tree.iterate({
+      enter(ref) {
+        if (ref.name !== "Decorator") return;
+        let head = ref.node.firstChild?.nextSibling ?? null;
+        while (head) {
+          if (head.name === "CallExpression") head = head.firstChild;
+          else if (head.name === "MemberExpression") {
+            if (head.lastChild?.name === "PropertyName") out.push([head.lastChild.from, head.lastChild.to]);
+            head = head.firstChild;
+          } else {
+            if (head.name === "VariableName") out.push([head.from, head.to]);
+            head = null;
+          }
+        }
+      },
+    });
+    return out;
+  }
+
+  /** Scans the tree of a file that is `count` services after its decorated classes, then the tree of the same file after one typed letter. */
+  function scanAfterTyping(count: number) {
+    const doc = decorated + plain(count) + decorated;
+    const tree = parser.parse(doc);
+    decoratorRanges(tree);
+    const at = doc.indexOf("return", doc.length >> 1);
+    const fragments = TreeFragment.applyChanges(TreeFragment.addTree(tree), [
+      { fromA: at, toA: at, fromB: at, toB: at + 1 },
+    ]);
+    const edited = parser.parse(doc.slice(0, at) + "a" + doc.slice(at), fragments);
+    const probe = { visited: 0 };
+    const ranges = decoratorRanges(edited, probe);
+    return { edited, ranges, visited: probe.visited };
+  }
+
+  it("finds the decorators of the whole file", () => {
+    const { edited, ranges } = scanAfterTyping(50);
+    expect(ranges.map((r) => [r.from, r.to])).toEqual(everyDecorator(edited));
+    expect(ranges).toHaveLength(4);
+  });
+
+  it("looks at as many tree nodes in a long file as in a short one", () => {
+    // The nodes an edit leaves alone were already known to hold no decorator.
+    const short = scanAfterTyping(100).visited;
+    const long = scanAfterTyping(1600).visited;
+    expect(long).toBeLessThan(short * 2);
+  });
+});
+
+describe("JavaScript and TypeScript methods", () => {
+  it("marks instance and static methods, declarations and calls, but not library methods", () => {
+    const doc = Text.of(["run of get log"]);
+    const tokens = {
+      tokenTypes: ["method", "member", "function"],
+      tokenModifiers: ["declaration", "static", "defaultLibrary", "local"],
+      // run: instance method declaration; of: static member call; get: library method; log: local function.
+      data: [0, 0, 3, 0, 0b0001, 0, 4, 2, 1, 0b0010, 0, 7, 3, 0, 0b0100, 0, 11, 3, 2, 0b1000],
+    };
+    expect(semanticRanges(doc, tokens, false, "typescript").map((r) => r.className)).toEqual([
+      "cm-sem-function cm-sem-declaration cm-sem-js-instance-method",
+      "cm-sem-function cm-sem-static cm-sem-js-static-method",
+      "cm-sem-function cm-sem-builtin",
+      "cm-sem-function",
+    ]);
+  });
+});
+
+describe("TypeScript kinds of type (#5619)", () => {
+  it("marks interfaces, type aliases and type parameters, but not library types", () => {
+    const doc = Text.of(["Named Pair T Promise Quiz"]);
+    const tokens = {
+      tokenTypes: ["interface", "type", "typeParameter", "class"],
+      tokenModifiers: ["declaration", "defaultLibrary"],
+      data: [0, 0, 5, 0, 0b01, 0, 6, 4, 1, 0, 0, 11, 1, 2, 0b01, 0, 13, 7, 0, 0b10, 0, 21, 4, 3, 0],
+    };
+    const classes = Object.fromEntries(
+      semanticRanges(doc, tokens, false, "typescript").map((r) => [doc.sliceString(r.from, r.to), r.className]),
+    );
+    expect(classes).toEqual({
+      Named: "cm-sem-type cm-sem-declaration cm-sem-js-interface",
+      Pair: "cm-sem-type cm-sem-js-type-alias",
+      T: "cm-sem-typeParameter cm-sem-declaration cm-sem-js-type-parameter",
+      Promise: "cm-sem-type cm-sem-builtin",
+      Quiz: "cm-sem-type",
+    });
   });
 });

@@ -122,6 +122,7 @@ pub fn client_capabilities() -> Value {
             },
             "codeLens": { "dynamicRegistration": false },
             "documentLink": { "dynamicRegistration": false, "tooltipSupport": true },
+            "colorProvider": { "dynamicRegistration": false },
             "formatting": { "dynamicRegistration": false },
             "rangeFormatting": { "dynamicRegistration": false },
             "rename": {

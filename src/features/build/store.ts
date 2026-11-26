@@ -26,9 +26,17 @@ import {
 } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { workflowSettings, type BuildToolWindowWhen } from "@/platform/workflowSettings";
-import { maybeEditorService, notifications, toolWindowService } from "@/workbench/contributions";
+import { maybeEditorService, notifications, notifyBuildCompleted, toolWindowService } from "@/workbench/contributions";
 import { cancelTask, removeTask, upsertTask, useTasks } from "@/workbench/tasks";
-import { appendOutput, finishSummary, firstError, messageFiles, type BuildStatus, type ConsoleLine } from "./model";
+import {
+  appendOutput,
+  finishSummary,
+  firstError,
+  messageFiles,
+  outputLines,
+  type BuildStatus,
+  type ConsoleLine,
+} from "./model";
 
 function whenMatches(when: BuildToolWindowWhen, reason: "start" | "error"): boolean {
   return when === "always" || (when === "onError" && reason === "error");
@@ -100,6 +108,8 @@ export interface BuildState {
   kind: BuildKind | null;
   /** Module file or folder of a Build Module, `null` for the project. */
   file: string | null;
+  /** CMake build configuration ID when building a CMake target. */
+  cmake: string | null;
   title: string;
   system: BuildSystem | null;
   status: BuildStatus | null;
@@ -107,6 +117,8 @@ export interface BuildState {
   durationMs: number | null;
   messages: BuildMessage[];
   lines: ConsoleLine[];
+  /** Lines dropped from the front by `MAX_CONSOLE_LINES`. */
+  dropped: number;
   /** Files with diagnostics from the last build. */
   files: string[];
   /** Key of the selected tree node (a message node shows its detail beside the tree). */
@@ -119,6 +131,7 @@ const INITIAL: BuildState = {
   request: null,
   kind: null,
   file: null,
+  cmake: null,
   title: "",
   system: null,
   status: null,
@@ -126,6 +139,7 @@ const INITIAL: BuildState = {
   durationMs: null,
   messages: [],
   lines: [],
+  dropped: 0,
   files: [],
   selected: null,
   stepCwd: null,
@@ -135,15 +149,21 @@ export const useBuildRun = create<BuildState>(() => INITIAL);
 
 const TITLES: Record<BuildKind, string> = { build: "Build", rebuild: "Rebuild", artifacts: "Build Artifacts" };
 
+/** Appends console output, counting the lines the cap drops from the front. */
+function withOutput(s: BuildState, text: string, kind: ConsoleLine["kind"], cwd?: string) {
+  const lines = appendOutput(s.lines, text, kind, cwd);
+  return { lines, dropped: s.dropped + s.lines.length + outputLines(text).length - lines.length };
+}
+
 /** Applies one streamed event (pure; batched by the caller). */
 export function applyBuildEvent(s: BuildState, e: BuildEvent): Partial<BuildState> {
   switch (e.kind) {
     case "started":
       return { title: e.title, system: e.system, stepCwd: null };
     case "step":
-      return { stepCwd: e.cwd, lines: appendOutput(s.lines, `${e.command}\n`, "system", e.cwd) };
+      return { stepCwd: e.cwd, ...withOutput(s, `${e.command}\n`, "system", e.cwd) };
     case "output":
-      return { lines: appendOutput(s.lines, e.text, e.stderr ? "err" : "out", s.stepCwd ?? undefined) };
+      return withOutput(s, e.text, e.stderr ? "err" : "out", s.stepCwd ?? undefined);
     case "message":
       return { messages: [...s.messages, e.message] };
     case "progress":
@@ -170,7 +190,16 @@ export async function startBuild(
   const taskTitle = TITLES[kind];
   const cancel = () => backend.cancel(request);
   const previous = useBuildRun.getState().files;
-  useBuildRun.setState({ ...INITIAL, request, kind, file, title: taskTitle, status: "running", files: previous });
+  useBuildRun.setState({
+    ...INITIAL,
+    request,
+    kind,
+    file,
+    cmake,
+    title: taskTitle,
+    status: "running",
+    files: previous,
+  });
   setContext(BUILD_LAST_STATUS, null);
   setContext(BUILD_RUNNING, true);
   showBuildWindow("start", activate);
@@ -178,6 +207,7 @@ export async function startBuild(
   return executeBuild(
     request,
     taskTitle,
+    { kind, file, userInitiated: activate },
     (files, onEvent) => backend.run(kind, file, request, files, onEvent, cmake),
     cancel,
   );
@@ -201,6 +231,7 @@ export async function startCompileFile(file: string, activate = true): Promise<B
   return executeBuild(
     request,
     taskTitle,
+    { kind: "compileFile", file, userInitiated: activate },
     (files, onEvent) => backend.compileFile(file, request, files, onEvent),
     cancel,
   );
@@ -210,6 +241,7 @@ export async function startCompileFile(file: string, activate = true): Promise<B
 async function executeBuild(
   request: RequestId,
   taskTitle: string,
+  meta: { kind: "compileFile" | BuildKind; file: string | null; userInitiated: boolean },
   invoke: (previous: string[], onEvent: (e: BuildEvent) => void) => Promise<BuildResult>,
   cancel: () => void,
 ): Promise<BuildResult | null> {
@@ -266,7 +298,16 @@ async function executeBuild(
           ? undefined
           : [{ label: "Show Build", run: () => toolWindowService().show("build", true) }],
     });
-    if (!result.success) showFailure();
+    if (result.success) {
+      notifyBuildCompleted({
+        kind: meta.kind,
+        file: meta.file,
+        system: result.system,
+        userInitiated: meta.userInitiated,
+      });
+    } else {
+      showFailure();
+    }
   } catch (e) {
     if (!ownsBuild()) return null;
     flush();
@@ -278,7 +319,7 @@ async function executeBuild(
         status: "failed",
         files: [],
         message: null,
-        lines: appendOutput(s.lines, `${text}\n`, "err"),
+        ...withOutput(s, `${text}\n`, "err"),
         messages: [...s.messages, { severity: "error", text, path: null, range: null, code: null }],
       }));
       notifications().notify({
@@ -303,6 +344,77 @@ async function executeBuild(
     }
   }
   return result;
+}
+
+/** Follows the build of a Run / Debug launch: see {@link followLaunchBuild}. */
+export interface LaunchBuildFollower {
+  onEvent(e: BuildEvent): void;
+  /** The launch's build is over (the launch itself may still fail later). */
+  finish(status: BuildStatus): void;
+}
+
+/**
+ * Follows the before-launch build of a Java launch (`javaResolveLaunch`), as IDEA shows it:
+ * progress (the phase, the Maven module being built) as a cancellable status bar task, the
+ * commands it runs in the launch's console (`report`), and, when no other build is running,
+ * its whole output in the Build tool window, which opens per Settings › Compiler like any
+ * before-launch build. Cancelling cancels `request`, which stops the build and the launch.
+ */
+export function followLaunchBuild(
+  request: RequestId,
+  title: string,
+  report?: (text: string, kind?: "system" | "stderr") => void,
+): LaunchBuildFollower {
+  const taskId = `launch-build:${request}`;
+  const cancel = () => backend.cancel(request);
+  let owned = false;
+  let done = false;
+  const ownsBuild = () => owned && useBuildRun.getState().request === request;
+  let queue: BuildEvent[] = [];
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const flush = () => {
+    clearTimeout(timer);
+    timer = undefined;
+    const events = queue;
+    queue = [];
+    if (!ownsBuild() || !events.length) return;
+    let s = useBuildRun.getState();
+    for (const e of events) s = { ...s, ...applyBuildEvent(s, e) };
+    useBuildRun.setState(s);
+  };
+  const take = () => {
+    if (owned || isBuilding()) return;
+    owned = true;
+    const previous = useBuildRun.getState().files;
+    useBuildRun.setState({ ...INITIAL, request, kind: "build", title, status: "running", files: previous });
+    setContext(BUILD_LAST_STATUS, null);
+    setContext(BUILD_RUNNING, true);
+    showBuildWindow("start", false);
+  };
+  return {
+    onEvent(e) {
+      if (done) return;
+      if (e.kind === "progress")
+        upsertTask({ id: taskId, title, message: e.message, fraction: e.fraction, done: false, cancel });
+      if (e.kind === "started") take();
+      if (e.kind === "step") report?.(`${e.command}\n`, "system");
+      if (!ownsBuild()) return;
+      queue.push(e);
+      timer ??= setTimeout(flush, 16);
+    },
+    finish(status) {
+      if (done) return;
+      done = true;
+      upsertTask({ id: taskId, title, message: null, fraction: 1, done: true });
+      if (!ownsBuild()) return;
+      flush();
+      const { messages } = useBuildRun.getState();
+      useBuildRun.setState({ status, request: null, message: null });
+      setContext(BUILD_LAST_STATUS, status);
+      setContext(BUILD_RUNNING, false);
+      if (status === "failed" && messages.length) showFailure();
+    },
+  };
 }
 
 /** Opens the source of a build message; `focus` moves focus to the editor (otherwise a preview). */
@@ -340,9 +452,9 @@ export function stopBuild() {
 
 /** Runs the last build again (the tool window's rerun button). */
 export function rerunBuild() {
-  const { kind, file } = useBuildRun.getState();
+  const { kind, file, cmake } = useBuildRun.getState();
   if (!kind) return file ? startCompileFile(file) : startBuild("build", null);
-  return startBuild(kind, file);
+  return startBuild(kind, file, true, cmake);
 }
 
 export function resetBuildRun() {

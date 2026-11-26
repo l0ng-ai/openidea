@@ -9,6 +9,7 @@
  * through `settingsChanged`, which re-reads the effective settings.
  */
 import { LOCALES } from "@/platform/i18n";
+import { installMonoStack } from "@/platform/fonts";
 import { isTauri, onIdeEvent } from "@/platform/ipc";
 import { applyKeymapSettings } from "@/platform/keymap";
 import { loadSettings, useProject } from "@/platform/project";
@@ -66,6 +67,7 @@ export function trackRuntimeSettings(): () => void {
     installIdleSave(() => ({ enabled: current().general.saveOnIdle, seconds: current().general.idleSeconds })),
     installIconFont(),
   ];
+  installMonoStack();
   // Without a project nothing loads the global settings; do it so theme / keymap apply on the welcome screen.
   if (isTauri() && !useProject.getState().settings) {
     loadSettings().catch((e) => console.warn("cannot load settings", e));

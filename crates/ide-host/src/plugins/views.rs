@@ -4,6 +4,7 @@
 //! the desktop for local projects, `openidea-server` for remote ones.
 
 use super::{PluginEditor, PluginHost, PluginOutputLine};
+use crate::ops::blocking;
 use ide_command::command;
 use ide_core::{DocId, IdeError, IdeResult};
 use ide_plugin::{EditorContext, Invocation, ServiceTab, View, ViewEvent, Viewport};
@@ -33,10 +34,6 @@ pub fn view_invocation(
         editor,
         ..Invocation::default()
     })
-}
-
-async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send + 'static) -> IdeResult<T> {
-    tokio::task::spawn_blocking(f).await.map_err(|e| IdeError::internal(e.to_string()))?
 }
 
 /// Content of a plugin view (`doc`: the document of a custom editor; `editor`: for
@@ -130,17 +127,7 @@ mod tests {
     #[tokio::test]
     async fn a_tool_window_call_carries_the_active_editor() {
         let tmp = tempfile::tempdir().unwrap();
-        let host = Host::new(HostConfig {
-            config_dir: tmp.path().join("config"),
-            data_dir: tmp.path().join("data"),
-            local_data_dir: tmp.path().join("data"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let host = Host::new(HostConfig::for_test(tmp.path()));
         let range = ide_core::Range::new(ide_core::Pos::new(1, 0), ide_core::Pos::new(1, 4));
         let active = PluginEditor { path: "/p/a.rs".into(), language: "rust".into(), selections: vec![range] };
         let inv = view_invocation(&host, "main", None, Some(active)).unwrap();

@@ -46,9 +46,13 @@ const vertical = (b: KeyBinding): KeyBinding =>
     ? { ...b, run: VERTICAL.get(b.run) ?? b.run, shift: VERTICAL.get(b.shift) ?? b.shift }
     : b;
 
-export const editorBaseKeymap: readonly KeyBinding[] = [
-  ...defaultKeymap.filter((b) => !DROPPED.has(b.run)).map(vertical),
+export const editorHistoryKeymap: readonly KeyBinding[] = [
   ...historyKeymap,
   // IDEA's Windows Redo is Ctrl+Shift+Z (Ctrl+Y is Delete Line); CodeMirror only binds it on macOS and Linux.
   { win: "Ctrl-Shift-z", run: redo, preventDefault: true },
+];
+
+export const editorBaseKeymap: readonly KeyBinding[] = [
+  ...defaultKeymap.filter((b) => !DROPPED.has(b.run)).map(vertical),
+  ...editorHistoryKeymap,
 ];

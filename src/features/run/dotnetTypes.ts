@@ -70,6 +70,31 @@ export function dotnetProjectFile(config: RunConfig): string | null {
   return root ? `${root}/${project}` : null;
 }
 
+/** An MSBuild project file of C#, F# or Visual Basic (not its `.csproj.user`). */
+export const isDotnetProjectFile = (path: string) => /\.(?:cs|fs|vb)proj$/i.test(path);
+
+/**
+ * "Run '<name>'" on a project file in the project view (Rider's project node): `dotnet run
+ * --project` without launch profiles — those are the launchSettings.json gutter's entries.
+ * Debugged by netcoredbg like the saved configurations of the type.
+ */
+export function dotnetProjectProduction(project: string): RunConfig {
+  return {
+    id: `context:dotnet:${project}`,
+    name: project.replace(/^.*\//, "").replace(/\.(?:cs|fs|vb)proj$/i, ""),
+    kind: "dotnet",
+    command: "dotnet",
+    args: dotnetCommand({ project }).args,
+    cwd: null,
+    env: {},
+    detected: true,
+    isTest: false,
+    debugAdapter: "netcoredbg",
+    beforeLaunch: [{ kind: "dotnetBuild", target: "" }],
+    params: { project },
+  };
+}
+
 export const dotnetProjectType: RunConfigTypeContribution = {
   id: "dotnet",
   label: ".NET Project",

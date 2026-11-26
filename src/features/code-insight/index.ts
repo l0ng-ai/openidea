@@ -13,20 +13,42 @@ import {
   registerToolWindow,
 } from "@/workbench/contributions";
 import { getContext } from "@/platform/context";
+import { formatMessage, tx } from "@/platform/i18n";
+import { basename } from "@/platform/project";
+import { showContextMenu } from "@/ui/Menu";
 import { clearProblems, installProblemsEvents, problemsReport, useProblems } from "./problemsStore";
 import { installProblemDecorations } from "./decorations";
 import { ProblemsTabs, ProblemsView, useProblemsHeaderMenu } from "./ProblemsView";
 import { UsagesTabs, UsagesView, useUsagesHeaderMenu } from "./UsagesView";
 import { UsagesPopup } from "./UsagesPopup";
-import { findUsages, rerunActiveUsages, resetUsages, showUsageResults, showUsagesPopup } from "./usages";
+import {
+  findUsages,
+  recentUsageSearches,
+  rerunActiveUsages,
+  rerunRecentUsages,
+  resetUsages,
+  showUsageResults,
+  showUsagesPopup,
+} from "./usages";
 import { HierarchyTabs, HierarchyView } from "./HierarchyView";
 import { resetHierarchy, showHierarchy } from "./hierarchy";
-import { eslintCovers, installServerEvents } from "./servers";
+import { installServerEvents, linterCovers } from "./servers";
 import { ServerStatus } from "./ServerStatus";
 import { reportProblems } from "./problemsReport";
 import { installWorkspaceEditUndo } from "./workspaceUndo";
 
 const EDITOR_WHEN = "textEditorActive && (editorFocus || !toolWindowFocus)";
+
+/** Recent Find Usages: IDEA's list of the last searches; the chosen one runs again in the tool window. */
+function showRecentUsages() {
+  const items = recentUsageSearches().map((search) => ({
+    label: search.symbol ? formatMessage(tx("Usages of '{symbol}'"), { symbol: search.symbol }) : tx("Usages"),
+    verbatim: true,
+    shortcut: `${basename(search.path)}:${search.line + 1}`,
+    run: () => void rerunRecentUsages(search),
+  }));
+  showContextMenu("center", items, { title: "Recent Find Usages" });
+}
 
 function useErrorBadge(): number | null {
   return useProblems((s) => s.counts.error || null);
@@ -60,15 +82,21 @@ export function activate(): () => void {
     reportProblems(),
     installProblemDecorations(),
     installServerEvents(),
-    // WebStorm's editor popup offers Fix ESLint Problems wherever ESLint lints the file.
+    // WebStorm's editor popup offers Fix ESLint / Stylelint Problems wherever that linter lints the file.
     registerMenuGroup({
       id: "codeInsight.eslint",
       menus: ["editor"],
       order: 40,
-      items: (_menu, { paths }) =>
-        paths.length === 1 && eslintCovers(paths[0]!, getContext().editorLangId as string | null)
-          ? [{ kind: "action", action: "code.fixEslintProblems" }]
-          : [],
+      items: (_menu, { paths }) => {
+        if (paths.length !== 1) return [];
+        const language = getContext().editorLangId as string | null;
+        return [
+          ["eslint", "code.fixEslintProblems"],
+          ["stylelint", "code.fixStylelintProblems"],
+        ]
+          .filter(([server]) => linterCovers(server!, paths[0]!, language))
+          .map(([, action]) => ({ kind: "action" as const, action: action! }));
+      },
     }),
     installWorkspaceEditUndo(),
     registerToolWindow({
@@ -120,6 +148,14 @@ export function activate(): () => void {
         category: "Find",
         when: EDITOR_WHEN,
         run: () => showUsagesPopup(),
+      },
+      {
+        id: "find.recentUsages",
+        title: "Recent Find Usages",
+        category: "Find",
+        when: "projectOpen",
+        enabled: () => recentUsageSearches().length > 0,
+        run: showRecentUsages,
       },
       {
         // ⌘R in the Find Usages tool window, as in IDEA.

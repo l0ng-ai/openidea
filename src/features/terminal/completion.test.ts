@@ -119,7 +119,10 @@ describe("command completion detection", () => {
   });
 
   const feed = async (session: TerminalSession, ...chunks: string[]) => {
-    for (const chunk of chunks) await write(session, chunk);
+    for (const chunk of chunks) {
+      // oxlint-disable-next-line no-await-in-loop -- chunks are written to the same session in order
+      await write(session, chunk);
+    }
   };
 
   it("reports C → D with the exit status once", async () => {

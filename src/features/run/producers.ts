@@ -28,11 +28,20 @@ import {
   relToCwd as relativeToCwd,
 } from "./context";
 import { djangoLabel, djangoTestsOf, hasDjangoTests } from "./djangoTypes";
+import { dotnetProjectProduction, isDotnetProjectFile } from "./dotnetTypes";
 import { firstTopLevelType, scanJvmTargets, simpleClassName } from "./jvmTargets";
 import { isWindows } from "./jvmTypes";
 import { inheritedRunTargets } from "./inheritedMain";
 import { withMavenTests } from "./mavenTests";
-import { detectRunTargets, goFuzzConfig, targetConfig, targetLanguage, zigTargets, type RunTarget } from "./targets";
+import {
+  detectRunTargets,
+  goFuzzConfig,
+  targetConfig,
+  targetLanguage,
+  testsInTestDirectory,
+  zigTargets,
+  type RunTarget,
+} from "./targets";
 import { tx } from "@/platform/i18n";
 
 export interface LocatedTool {
@@ -475,6 +484,8 @@ function fileConfig(
     detected: true,
     isTest: false,
     debugAdapter,
+    // A script reads and prompts like it would in a shell: run it in a terminal (a PTY, TERM set).
+    ...(kind === "shell" ? { emulateTerminal: true } : {}),
   };
 }
 
@@ -809,6 +820,11 @@ export function produceFile(input: ContextInput, env: ToolEnv): Produced | null 
   const rel = s.idPath;
 
   if (s.inProject) {
+    // #5635: Rider's "Run '<name>'" on a project file, Debug through its netcoredbg adapter.
+    if (isDotnetProjectFile(rel)) {
+      const config = dotnetProjectProduction(rel);
+      return { name: config.name, scope: "file", config };
+    }
     if (lang === "c" || lang === "cpp") {
       const target = cmakeTargets(input)[0];
       if (target) return { name: target.name, scope: "file", config: target };
@@ -1137,7 +1153,7 @@ export function fileTargets(
       (t) => t.kind === "main" && (!t.className || /\.(java|kt)$/.test(input.path)),
     );
   }
-  const targets = detectRunTargets(content, s.rel, hasDjangoTests(input.configs));
+  const targets = detectRunTargets(content, s.rel, hasDjangoTests(input.configs), testsInTestDirectory(input.configs));
   return /\.java$/.test(input.path) ? [...targets, ...inheritedRunTargets(input.path, content)] : targets;
 }
 
@@ -1216,7 +1232,7 @@ export function produceContextChoices(input: ContextInput, env: ToolEnv): Produc
   const rel = relTo(input.path, input.root);
   const cmake = cmakeTargets(input);
   if (cmake.length > 1) return cmake.map((config) => ({ name: config.name, scope: produced.scope, config }));
-  const bases = testBasesFor(rel, [...input.configs]);
+  const bases = testBasesFor(rel, [...input.configs], input.content);
   if (bases.length < 2) return [produced];
   let element: RunTarget | null = null;
   if (produced.scope === "element") {

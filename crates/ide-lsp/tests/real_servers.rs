@@ -939,11 +939,78 @@ async fn angular_language_server_end_to_end() {
     assert_eq!((edited_lines(&edit, &app_ts), edited_lines(&edit, &app_html)), (vec![7], vec![0]), "{edit:?}");
     // Its usage in the template, the declaration left out, from either file.
     for (doc, pos) in [(ts, title), (html, Pos::new(0, 8))] {
-        let refs = mgr.references(doc, pos, false, false, Default::default()).await.unwrap();
+        let refs = mgr.references_streaming(doc, pos, false, false, true, Default::default(), None).await.unwrap();
         let found: Vec<(std::path::PathBuf, u32)> =
             refs.locations.iter().map(|l| (l.path.to_path_buf(), l.range.start.line)).collect();
         assert_eq!(found, [(app_html.clone(), 0)]);
     }
+    tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
+}
+
+/// The Tailwind CSS server on `fixtures/tailwind-app` (Tailwind 4, `@theme` colours), with
+/// the built-in definitions: class completion in JSX and `@apply`, hover with the generated
+/// CSS, and the class conflict warning. Set `OPENIDEA_TEST_NPM_TOOLS` to a dir with
+/// `npm i @tailwindcss/language-server`; the fixture's own `tailwindcss` isn't needed.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires @tailwindcss/language-server (OPENIDEA_TEST_NPM_TOOLS)"]
+async fn tailwindcss_language_server_end_to_end() {
+    let tools = std::path::PathBuf::from(std::env::var("OPENIDEA_TEST_NPM_TOOLS").expect("OPENIDEA_TEST_NPM_TOOLS"));
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/tailwind-app");
+    for file in ["package.json", "index.html", "src/app.css", "src/App.tsx"] {
+        std::fs::create_dir_all(root.join(file).parent().unwrap()).unwrap();
+        std::fs::copy(fixture.join(file), root.join(file)).unwrap();
+    }
+    let builtin = LanguageRegistry::load(None).unwrap();
+    let languages = ["typescriptreact", "css"].map(|id| {
+        let mut cfg = builtin.get(&LanguageId::new(id)).unwrap();
+        cfg.language_servers.retain(|s| s.name == "tailwindcss-language-server");
+        let bin = tools.join("node_modules/.bin/tailwindcss-language-server");
+        cfg.language_servers[0].command = bin.to_string_lossy().into_owned();
+        cfg
+    });
+    let (mgr, events) = manager(&root, LanguageRegistry::from_configs(languages.to_vec()));
+    let (tsx, css) = (DocId::next(), DocId::next());
+    let tsx_path = root.join("src/App.tsx");
+    let css_path = root.join("src/app.css");
+    let tsx_text = std::fs::read_to_string(&tsx_path).unwrap();
+    let css_text = std::fs::read_to_string(&css_path).unwrap();
+    mgr.did_open(tsx, &tsx_path, &LanguageId::new("typescriptreact"), 1, &tsx_text);
+    mgr.did_open(css, &css_path, &LanguageId::new("css"), 1, &css_text);
+    let at = |text: &str, needle: &str, offset: usize| {
+        let (line, l) = text.lines().enumerate().find(|(_, l)| l.contains(needle)).unwrap();
+        Pos::new(line as u32, (l.find(needle).unwrap() + offset) as u32)
+    };
+
+    // The project's own `@theme` colour, in `className` and after `@apply`.
+    let in_class = at(&tsx_text, "className=\"flex flex-col", "className=\"".len());
+    let in_apply = at(&css_text, "@apply rounded-md", "@apply ".len());
+    for (doc, pos) in [(tsx, in_class), (css, in_apply)] {
+        retry("class completion", Duration::from_secs(60), || {
+            let mgr = mgr.clone();
+            async move {
+                let list = mgr.completion(doc, pos, None, Default::default()).await.ok()?;
+                list.items.iter().any(|i| i.label == "bg-brand-500").then_some(())
+            }
+        })
+        .await;
+    }
+    let hover = mgr.hover(tsx, at(&tsx_text, "bg-white", 1), Default::default()).await.unwrap().unwrap();
+    assert!(hover.contents.value.contains("background-color"), "{}", hover.contents.value);
+    let hover = mgr.hover(tsx, at(&tsx_text, "text-brand-700", 1), Default::default()).await.unwrap().unwrap();
+    assert!(hover.contents.value.contains("--color-brand-700"), "{}", hover.contents.value);
+
+    // `flex block`: both set `display`.
+    retry("class conflict", Duration::from_secs(30), || {
+        let found = events.lock().iter().any(|e| {
+            matches!(e, IdeEvent::Diagnostics { path, items, .. }
+                if path.ends_with("src/App.tsx")
+                    && items.iter().any(|d| d.message.contains("applies the same CSS properties")))
+        });
+        async move { found.then_some(()) }
+    })
+    .await;
     tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
 }
 
@@ -1120,4 +1187,108 @@ async fn phoxite_pulls_a_member_up_end_to_end() {
     assert_eq!(refused.kind, ide_core::error::ErrorKind::InvalidInput, "{refused:?}");
     assert!(!refused.message.is_empty() && !refused.message.starts_with("phoxite:"), "{refused:?}");
     mgr.shutdown_all().await;
+}
+
+/// jdtls keeps building incrementally even though the IDE's Java build compiles what runs:
+/// its build is what reports an API change in one Maven module in the files of the modules
+/// that use it, open or not. With `java.autobuild.enabled: false` (and
+/// `validateAllOpenBuffersOnChanges`), neither updates.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires jdtls on PATH (or OPENIDEA_TEST_JDTLS) and a compatible JDK"]
+async fn jdtls_build_reports_cross_module_errors_in_open_and_closed_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(dir.path()).unwrap().join("project");
+    let write = |rel: &str, text: &str| {
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, text).unwrap();
+        path
+    };
+    let parent = r#"<parent><groupId>t</groupId><artifactId>root</artifactId><version>1</version></parent>"#;
+    write(
+        "pom.xml",
+        r#"<project><modelVersion>4.0.0</modelVersion><groupId>t</groupId><artifactId>root</artifactId><version>1</version><packaging>pom</packaging><modules><module>lib</module><module>app</module></modules><properties><maven.compiler.release>11</maven.compiler.release></properties></project>"#,
+    );
+    write(
+        "lib/pom.xml",
+        &format!("<project><modelVersion>4.0.0</modelVersion>{parent}<artifactId>lib</artifactId></project>"),
+    );
+    write(
+        "app/pom.xml",
+        &format!(
+            "<project><modelVersion>4.0.0</modelVersion>{parent}<artifactId>app</artifactId><dependencies><dependency><groupId>t</groupId><artifactId>lib</artifactId><version>1</version></dependency></dependencies></project>"
+        ),
+    );
+    let lib_source = "package l;\npublic class L { public static String name() { return \"lib\"; } }\n";
+    let app_source = "package a;\npublic class A { String s = l.L.name(); }\n";
+    let lib = write("lib/src/main/java/l/L.java", lib_source);
+    let app = write("app/src/main/java/a/A.java", app_source);
+    let closed = write("app/src/main/java/a/B.java", "package a;\nclass B { String s = l.L.name(); }\n");
+    let mut java = LanguageRegistry::load(None).unwrap().get(&LanguageId::new("java")).unwrap();
+    java.language_servers.retain(|s| s.name == "jdtls");
+    let server = &mut java.language_servers[0];
+    if let Ok(bin) = std::env::var("OPENIDEA_TEST_JDTLS") {
+        server.command = bin;
+    }
+    server.args.extend(["-data".into(), dir.path().join("jdtls-data").to_string_lossy().into_owned()]);
+    let (mgr, events) = manager(&root, LanguageRegistry::from_configs(vec![java]));
+    let (lib_doc, app_doc) = (DocId::next(), DocId::next());
+    mgr.did_open(lib_doc, &lib, &LanguageId::new("java"), 1, lib_source);
+    mgr.did_open(app_doc, &app, &LanguageId::new("java"), 1, app_source);
+    let errors = |path: &Path| {
+        events.lock().iter().rev().find_map(|e| match e {
+            IdeEvent::Diagnostics { path: p, items, .. } if p.0 == path => Some(
+                items
+                    .iter()
+                    .filter(|d| d.severity == ide_core::Severity::Error)
+                    .map(|d| d.message.clone())
+                    .collect::<Vec<_>>(),
+            ),
+            _ => None,
+        })
+    };
+    // The import resolves `lib` from source: the open editor of `app` has no errors.
+    retry("app imported", Duration::from_secs(300), || {
+        let status = last_status(&events, "jdtls");
+        if let Some((ServerStatus::Crashed | ServerStatus::Missing | ServerStatus::Misconfigured, message)) = &status {
+            panic!("jdtls failed: {message:?}");
+        }
+        let clean = errors(&app).is_some_and(|e| e.is_empty());
+        let mgr = mgr.clone();
+        let app = app.clone();
+        async move {
+            let cp =
+                tokio::time::timeout(Duration::from_secs(10), mgr.java_classpath(&app, false, &Default::default()))
+                    .await
+                    .ok()?
+                    .ok()?;
+            (clean && cp.class_paths.iter().any(|p| p.contains("/lib/"))).then_some(())
+        }
+    })
+    .await;
+    // Rename the method in the editor of `lib`, and save.
+    let renamed = lib_source.replace("name()", "title()");
+    let line = lib_source.lines().nth(1).unwrap();
+    mgr.did_change(
+        lib_doc,
+        2,
+        &[AppliedChange {
+            range: Range::new(Pos::new(1, 0), Pos::new(1, line.len() as u32)),
+            text: renamed.lines().nth(1).unwrap().to_owned(),
+        }],
+        &|| renamed.clone(),
+    );
+    std::fs::write(&lib, &renamed).unwrap();
+    mgr.did_save(lib_doc, &renamed);
+    retry("the open editor of app reports the removed method", Duration::from_secs(120), || {
+        let found = errors(&app).is_some_and(|e| e.iter().any(|m| m.contains("name()")));
+        async move { found.then_some(()) }
+    })
+    .await;
+    retry("the closed file of app reports it too", Duration::from_secs(60), || {
+        let found = errors(&closed).is_some_and(|e| e.iter().any(|m| m.contains("name()")));
+        async move { found.then_some(()) }
+    })
+    .await;
+    tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
 }

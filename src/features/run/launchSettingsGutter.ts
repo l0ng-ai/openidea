@@ -82,6 +82,7 @@ async function profileMenu(entry: ScriptEntry, path: string): Promise<MenuItem[]
   return [
     {
       label: tx`Run '${config.name}'`,
+      preserveLabelEnd: true,
       icon: "run",
       shortcut: shortcutLabel("run.runContext"),
       run: () =>
@@ -91,6 +92,7 @@ async function profileMenu(entry: ScriptEntry, path: string): Promise<MenuItem[]
     },
     {
       label: tx`Debug '${config.name}'`,
+      preserveLabelEnd: true,
       icon: "debug",
       shortcut: shortcutLabel("run.debugContext"),
       run: () => void executeAction("run.debugConfig", config),

@@ -1,6 +1,7 @@
 /** Query History (browse / paste / delete) and Import Data from File dialogs. */
 import { useEffect, useMemo, useState } from "react";
 import { call, commands, type DbHistoryEntry } from "@/platform/ipc";
+import { readDesktopText } from "@/platform/desktopFiles";
 import { editorsFor } from "@/editor/api";
 import { Checkbox, Dialog, EmptyState, IconButton, Input, List, Select, T } from "@/ui";
 import { notifications } from "@/workbench/contributions";
@@ -157,7 +158,7 @@ export function ImportDialog({ id, schema, table }: { id: string; schema: string
         filters: [{ name: "CSV / TSV", extensions: ["csv", "tsv", "txt"] }],
       });
       if (typeof f !== "string") return;
-      const content = await call(commands.fsReadText(f));
+      const content = await readDesktopText(f);
       setFile(f);
       setText(content);
       setSep(guessSeparator(content));
@@ -240,9 +241,18 @@ export function ImportDialog({ id, schema, table }: { id: string; schema: string
           <table>
             <tbody>
               {preview.map((r, i) => (
-                <tr key={i} className={header && i === 0 ? styles.importHeader : undefined}>
+                <tr
+                  // oxlint-disable-next-line react/no-array-index-key -- preview rows are immutable; position is the identity
+                  key={i}
+                  className={header && i === 0 ? styles.importHeader : undefined}
+                >
                   {r.map((v, j) => (
-                    <td key={j}>{v}</td>
+                    <td
+                      // oxlint-disable-next-line react/no-array-index-key -- preview cells repeat; position is the identity
+                      key={j}
+                    >
+                      {v}
+                    </td>
                   ))}
                 </tr>
               ))}

@@ -119,6 +119,206 @@ fn quiet() -> (CancellationToken, impl Fn(String)) {
     (CancellationToken::new(), |_line: String| {})
 }
 
+#[test]
+fn not_cherry_picked_matches_patch_and_manual_resolutions() {
+    let fx = Fixture::new();
+    fx.write("base.txt", "base\n");
+    fx.commit_all("shared");
+    fx.git(&["switch", "-qc", "release"]);
+    fx.write("equivalent.txt", "unchanged patch\n");
+    let equivalent = fx.commit_all("patch match");
+    fx.write("origin.txt", "original patch\n");
+    let origin = fx.commit_all("recorded pick");
+    fx.write("metadata.txt", "source patch\n");
+    let metadata = fx.commit_all("metadata match");
+    fx.write("waiting.txt", "to pick\n");
+    let waiting = fx.commit_all("still waiting");
+    fx.git(&["switch", "-q", "main"]);
+    fx.write("main.txt", "main only\n");
+    fx.commit_all("different history");
+    fx.git(&["cherry-pick", &equivalent]);
+    fx.write("origin.txt", "resolved differently\n");
+    fx.commit_all(&format!("Conflict resolution\n\n(cherry picked from commit {origin})"));
+    fx.write("metadata.txt", "other conflict resolution\n");
+    fx.git(&["add", "metadata.txt"]);
+    fx.git(&["commit", "-C", &metadata]);
+    fx.git(&["tag", "release", "HEAD"]);
+
+    let repo = fx.repo();
+    repo.set_execution_allowed(false);
+    let cancel = CancellationToken::new();
+    assert_eq!(repo.not_cherry_picked("release", "HEAD", &cancel).unwrap(), Some(vec![waiting]));
+    assert_eq!(repo.not_cherry_picked("HEAD", "HEAD", &cancel).unwrap(), Some(vec![]));
+    assert_eq!(repo.not_cherry_picked("missing", "HEAD", &cancel).unwrap(), None);
+    cancel.cancel();
+    assert!(repo.not_cherry_picked("release", "HEAD", &cancel).is_err());
+}
+
+#[test]
+fn checkout_and_rebase_restores_staged_and_unstaged_changes_after_conflict() {
+    let fx = Fixture::new();
+    fx.write("shared.txt", "base\n");
+    fx.write("staged.txt", "base\n");
+    fx.commit_all("base");
+    fx.git(&["switch", "-qc", "feature"]);
+    fx.write("shared.txt", "feature\n");
+    let feature = fx.commit_all("feature");
+    fx.git(&["switch", "-q", "main"]);
+    fx.write("shared.txt", "main\n");
+    let main = fx.commit_all("main");
+    fx.git(&["tag", "feature", &main]);
+    fx.write("shared.txt", "working edit\n");
+    fx.write("staged.txt", "staged edit\n");
+    fx.git(&["add", "staged.txt"]);
+    fx.write("untracked.txt", "untracked edit\n");
+
+    let plan = CheckoutRebasePlan {
+        base: HistoryTip { branch: Some("main".into()), commit: main.clone() },
+        branch: "feature".into(),
+        branch_tip: Some(feature),
+        remote: None,
+    };
+    let repo = fx.repo();
+    let (cancel, out) = quiet();
+    assert!(repo.checkout_rebase(&plan, &cancel, &out).is_err());
+    assert_eq!(repo.branch_info().unwrap().operation.as_deref(), Some("rebase"));
+    assert_eq!(fx.git(&["show", ":2:shared.txt"]), "main");
+    assert_eq!(fx.git(&["show", ":3:shared.txt"]), "feature");
+    assert_eq!(fx.read("staged.txt"), "base\n");
+    assert_eq!(fx.read("untracked.txt"), "untracked edit\n");
+    assert!(fx.exists(".git/openidea-saved-changes"));
+    let stash = repo.stashes().unwrap().remove(0);
+    fx.write(".git/openidea-saved-changes", &stash.id);
+
+    repo.skip_operation(&cancel, &out).unwrap();
+    assert_eq!(fx.git(&["branch", "--show-current"]), "feature");
+    assert_eq!(fx.head(), main);
+    assert_eq!(fx.git(&["rev-parse", "refs/heads/main"]), main);
+    assert_eq!(fx.git(&["show", ":staged.txt"]), "staged edit");
+    assert_eq!(fx.git(&["show", ":shared.txt"]), "main");
+    assert_eq!(fx.read("shared.txt"), "working edit\n");
+    assert_eq!(fx.read("untracked.txt"), "untracked edit\n");
+    assert!(!fx.exists(".git/openidea-saved-changes"));
+    assert!(fx.git(&["stash", "list"]).is_empty());
+}
+
+#[test]
+fn checkout_and_rebase_remote_checks_the_confirmed_refs_before_resetting() {
+    let (fx, _) = Fixture::with_origin();
+    fx.git(&["config", "branch.autoSetupMerge", "true"]);
+    fx.git(&["switch", "-qc", "remote"]);
+    fx.write("remote.txt", "remote\n");
+    let remote = fx.commit_all("remote");
+    fx.git(&["push", "-qu", "origin", "HEAD:refs/heads/topic"]);
+    fx.git(&["switch", "-qc", "topic", "--no-track", "HEAD~"]);
+    fx.write("topic.txt", "local\n");
+    let local = fx.commit_all("local");
+    fx.git(&["switch", "-q", "main"]);
+    fx.write("main.txt", "main\n");
+    let main = fx.commit_all("main");
+    fx.write("remote.txt", "untracked\n");
+
+    let plan = CheckoutRebasePlan {
+        base: HistoryTip { branch: Some("main".into()), commit: main.clone() },
+        branch: "topic".into(),
+        branch_tip: Some(local.clone()),
+        remote: Some(CheckoutRebaseRemote {
+            name: "origin/topic".into(),
+            commit: remote.clone(),
+            drop_local_commits: true,
+        }),
+    };
+    let repo = fx.repo();
+    let (cancel, out) = quiet();
+    fx.git(&["branch", "-f", "topic", &main]);
+    let err = repo.checkout_rebase(&plan, &cancel, &out).unwrap_err();
+    assert!(err.message.contains("a branch changed"));
+    assert_eq!(fx.git(&["rev-parse", "refs/heads/topic"]), main);
+
+    fx.git(&["branch", "-f", "topic", &local]);
+    assert!(repo.checkout_rebase(&plan, &cancel, &out).is_err(), "untracked file prevents switching");
+    assert_eq!(fx.git(&["rev-parse", "refs/heads/topic"]), local);
+    assert_eq!(fx.git(&["branch", "--show-current"]), "main");
+    assert_eq!(fx.read("remote.txt"), "untracked\n");
+
+    std::fs::remove_file(fx.path("remote.txt")).unwrap();
+    repo.checkout_rebase(&plan, &cancel, &out).unwrap();
+    assert_eq!(fx.git(&["branch", "--show-current"]), "topic");
+    assert_eq!(fx.git(&["rev-parse", "HEAD^"]), main);
+    assert_eq!(fx.git(&["rev-parse", "refs/remotes/origin/topic"]), remote);
+    assert_eq!(fx.git(&["rev-parse", "--abbrev-ref", "@{upstream}"]), "origin/topic");
+    assert_eq!(fx.read("remote.txt"), "remote\n");
+    assert!(!fx.exists("topic.txt"));
+}
+
+#[test]
+fn checkout_and_rebase_keeps_a_divergent_local_branch_and_can_restore_the_checkout() {
+    let (fx, _) = Fixture::with_origin();
+    fx.git(&["switch", "-qc", "remote"]);
+    fx.write("remote.txt", "remote\n");
+    let remote = fx.commit_all("remote work");
+    fx.git(&["push", "-q", "origin", "HEAD:refs/heads/topic"]);
+    fx.git(&["switch", "-qc", "topic", "HEAD~"]);
+    fx.write("topic.txt", "local\n");
+    let local = fx.commit_all("local work");
+    fx.git(&["branch", "--set-upstream-to=origin/topic"]);
+    fx.git(&["switch", "-q", "main"]);
+    fx.write("main.txt", "main\n");
+    let main = fx.commit_all("main work");
+    fx.git(&["tag", "topic", &main]);
+    let repo = fx.repo();
+    let (cancel, out) = quiet();
+    let plan = CheckoutRebasePlan {
+        base: HistoryTip { branch: Some("main".into()), commit: main.clone() },
+        branch: "topic".into(),
+        branch_tip: Some(local.clone()),
+        remote: Some(CheckoutRebaseRemote { name: "origin/topic".into(), commit: remote, drop_local_commits: false }),
+    };
+
+    let rebased = repo.checkout_rebase(&plan, &cancel, &out).unwrap();
+    assert_eq!(rebased.branch.as_deref(), Some("topic"));
+    assert_eq!(rebased.commit, fx.head());
+    assert_eq!(fx.git(&["rev-parse", "HEAD^"]), main);
+    assert_eq!(fx.read("topic.txt"), "local\n");
+    assert!(!fx.exists("remote.txt"));
+    assert_eq!(fx.git(&["rev-parse", "--abbrev-ref", "@{upstream}"]), "origin/topic");
+
+    assert!(repo.restore_rebase_checkout(&local, &local, "topic", &plan.base).is_err());
+    fx.git(&["branch", "-f", "main", &local]);
+    assert!(repo.restore_rebase_checkout(&local, &rebased.commit, "topic", &plan.base).is_err());
+    assert_eq!(fx.head(), rebased.commit);
+    fx.git(&["branch", "-f", "main", &main]);
+    fx.write("main.txt", "local after rebase\n");
+    fx.git(&["add", "main.txt"]);
+    repo.restore_rebase_checkout(&local, &rebased.commit, "topic", &plan.base).unwrap();
+    assert_eq!(fx.git(&["branch", "--show-current"]), "main");
+    assert_eq!(fx.head(), main);
+    assert_eq!(fx.git(&["rev-parse", "refs/heads/topic"]), local);
+    assert_eq!(fx.git(&["show", ":main.txt"]), "local after rebase");
+}
+
+#[test]
+fn checkout_and_rebase_creates_a_tracking_branch_under_the_chosen_name() {
+    let (fx, _) = Fixture::with_origin();
+    fx.git(&["config", "branch.autoSetupMerge", "true"]);
+    let main = fx.head();
+    fx.git(&["switch", "--detach"]);
+    let (cancel, out) = quiet();
+    let repo = fx.repo();
+    let plan = CheckoutRebasePlan {
+        base: HistoryTip { branch: None, commit: main.clone() },
+        branch: "review".into(),
+        branch_tip: None,
+        remote: Some(CheckoutRebaseRemote { name: "origin/main".into(), commit: main, drop_local_commits: false }),
+    };
+    let rebased = repo.checkout_rebase(&plan, &cancel, &out).unwrap();
+    assert_eq!(fx.git(&["branch", "--show-current"]), "review");
+    assert_eq!(fx.git(&["rev-parse", "--abbrev-ref", "@{upstream}"]), "origin/main");
+    repo.restore_rebase_checkout(&rebased.commit, &rebased.commit, "review", &plan.base).unwrap();
+    assert!(fx.git(&["branch", "--show-current"]).is_empty());
+    assert_eq!(fx.head(), plan.base.commit);
+}
+
 fn status_of<'a>(st: &'a [FileStatus], rel: &str) -> Option<&'a FileStatus> {
     st.iter().find(|s| s.rel_path == rel)
 }
@@ -339,6 +539,27 @@ fn interactive_rebase_squash_without_message_combines_messages() {
 }
 
 #[test]
+fn interactive_rebase_amends_the_message_after_the_last_fixup() {
+    let (fx, ids) = linear();
+    let (cancel, out) = quiet();
+    let message = "Combined commits\n\n# Details";
+    fx.repo()
+        .interactive_rebase(
+            Some(&ids[0]),
+            &[
+                entry(&ids[1], RebaseAction::Pick, None),
+                entry(&ids[2], RebaseAction::Fixup, None),
+                entry(&ids[3], RebaseAction::Fixup, Some(message)),
+            ],
+            &cancel,
+            &out,
+        )
+        .unwrap();
+    assert_eq!(fx.git(&["log", "-1", "--format=%B"]), message);
+    assert_eq!(fx.git(&["show", "--format=", "--name-only", "HEAD"]), "f2.txt\nf3.txt\nf4.txt");
+}
+
+#[test]
 fn interactive_rebase_keeps_local_changes() {
     let (fx, ids) = linear();
     fx.write("f1.txt", "dirty\n");
@@ -541,6 +762,7 @@ fn interactive_rebase_edit_stops_for_amend() {
     let (fx, ids) = linear();
     let repo = fx.repo();
     let (cancel, out) = quiet();
+    assert!(!repo.is_interactive_rebase());
     repo.interactive_rebase(
         Some(&ids[1]),
         &[entry(&ids[2], RebaseAction::Edit, None), entry(&ids[3], RebaseAction::Pick, None)],
@@ -549,11 +771,13 @@ fn interactive_rebase_edit_stops_for_amend() {
     )
     .unwrap();
     assert_eq!(repo.branch_info().unwrap().operation.as_deref(), Some("rebase"));
+    assert!(repo.is_interactive_rebase());
     fx.write("f3.txt", "edited\n");
     repo.stage(&[fx.path("f3.txt")]).unwrap();
     repo.commit("", true, false).unwrap();
     repo.continue_operation(&cancel, &out).unwrap();
     assert_eq!(repo.branch_info().unwrap().operation, None);
+    assert!(!repo.is_interactive_rebase());
     assert_eq!(fx.git(&["show", "HEAD~1:f3.txt"]), "edited");
 }
 
@@ -795,6 +1019,454 @@ fn reset_to_the_remote_branch_needs_a_tracked_branch_that_exists() {
     assert!(err.message.contains("no tracked branch"), "{}", err.message);
 }
 
+#[test]
+fn fetching_one_remote_only_refreshes_its_tracking_branches() {
+    let (fx, bare) = Fixture::with_origin();
+    let head = fx.head();
+    fx.git(&["remote", "add", "vendor/team", bare.to_str().unwrap()]);
+    git_in(&bare, &["branch", "published-later", &head]);
+    let (cancel, out) = quiet();
+    let repo = fx.repo();
+    repo.fetch_remote("vendor/team", &cancel, &out).unwrap();
+    assert_eq!(fx.git(&["rev-parse", "vendor/team/published-later"]), head);
+    assert!(!fx.git(&["branch", "-r"]).contains("origin/published-later"));
+    assert_eq!(fx.head(), head);
+    assert!(repo.fetch_remote("not-configured", &cancel, &out).is_err());
+    // Git's remote command rejects overlapping names, but repositories can have them in config.
+    fx.git(&["config", "remote.vendor.url", bare.to_str().unwrap()]);
+    fx.git(&["config", "remote.vendor.fetch", "+refs/heads/*:refs/remotes/vendor/*"]);
+    fx.git(&["config", "branch.main.remote", "vendor"]);
+    fx.git(&["config", "branch.main.merge", "refs/heads/team/main"]);
+    let info = repo.branch_info().unwrap();
+    assert_eq!(info.upstream.as_deref(), Some("vendor/team/main"));
+    let tracking = info.upstream_tracking.unwrap();
+    assert_eq!((tracking.remote.as_str(), tracking.branch.as_str()), ("vendor", "team/main"));
+}
+
+#[test]
+fn pull_from_without_a_mode_uses_the_repositorys_pull_config() {
+    let (fx, bare) = Fixture::with_origin();
+    fx.git(&["config", "pull.ff", "true"]);
+    fx.write("local.txt", "local work");
+    fx.commit_all("local");
+    fx.push_from_other(&bare, "remote.txt", "remote work");
+    let remote = git_in(&bare, &["rev-parse", "main"]);
+    let (cancel, out) = quiet();
+    fx.repo().pull_from("origin", &["main".into()], None, &MergeOptions::default(), &cancel, &out).unwrap();
+    assert_eq!(fx.git(&["rev-parse", "HEAD^"]), remote);
+    assert_eq!(fx.subjects()[..2], ["local", "remote remote.txt"]);
+}
+
+#[test]
+fn rebase_a_named_branch_from_root_updates_refs_and_preserves_changes() {
+    let (fx, _) = Fixture::with_origin();
+    let main = fx.head();
+    fx.git(&["switch", "--orphan", "topic"]);
+    fx.write("topic.txt", "root of topic");
+    let old_root = fx.commit_all("Topic root");
+    fx.git(&["branch", "bookmark"]);
+    fx.write("next.txt", "next step");
+    let old_tip = fx.commit_all("Topic tip");
+    fx.git(&["switch", "main"]);
+    fx.write("a.txt", "staged local changes");
+    fx.git(&["add", "a.txt"]);
+    fx.write("a.txt", "working copy changes");
+    let repo = fx.repo();
+    let options = RebaseOptions {
+        onto: Some("refs/heads/main".into()),
+        branch: Some("topic".into()),
+        update_refs: true,
+        autosquash: Some(false),
+        ..Default::default()
+    };
+    repo.rebase_with(None, &options).unwrap();
+    assert_eq!(fx.git(&["symbolic-ref", "--short", "HEAD"]), "topic");
+    assert_ne!(fx.head(), old_tip);
+    assert_ne!(fx.git(&["rev-parse", "bookmark"]), old_root);
+    assert_eq!(fx.git(&["rev-parse", "bookmark"]), fx.git(&["rev-parse", "HEAD^"]));
+    assert_eq!(fx.git(&["rev-parse", "HEAD^^"]), main);
+    assert_eq!(fx.git(&["rev-parse", "main"]), main);
+    assert_eq!(fx.git(&["show", ":a.txt"]), "staged local changes");
+    assert_eq!(fx.read("a.txt"), "working copy changes");
+}
+
+#[test]
+fn interactive_rebase_edits_gits_merge_plan_and_commit_message() {
+    let (fx, _) = Fixture::with_origin();
+    fx.git(&["switch", "-c", "topic"]);
+    fx.write("primary.txt", "primary");
+    fx.commit_all("Primary change");
+    fx.git(&["switch", "-c", "side"]);
+    fx.write("side.txt", "side");
+    fx.commit_all("Side change");
+    fx.git(&["switch", "topic"]);
+    fx.write("topic.txt", "topic");
+    fx.commit_all("Topic change");
+    fx.git(&["merge", "--no-ff", "-m", "Merge side", "side"]);
+    fx.write("primary.txt", "fixed");
+    let head = fx.commit_all("fixup! Primary change");
+    fx.git(&["switch", "main"]);
+    fx.write("upstream.txt", "upstream");
+    let upstream = fx.commit_all("Upstream change");
+    fx.git(&["switch", "topic"]);
+    fx.write("local.txt", "staged");
+    fx.git(&["add", "local.txt"]);
+    fx.write("local.txt", "working");
+
+    let repo = fx.repo();
+    let options = RebaseOptions { rebase_merges: true, autosquash: Some(true), ..Default::default() };
+    let (cancel, out) = quiet();
+    let declined = repo.rebase_with_editor(Some("main"), &options, &cancel, &out, &|prompt| {
+        assert!(matches!(prompt.kind, RebaseEditKind::Plan));
+        None
+    });
+    assert!(matches!(declined, Err(e) if e.kind == ide_core::error::ErrorKind::Cancelled));
+    assert_eq!(fx.head(), head);
+    assert_eq!(repo.operation().unwrap(), None);
+    assert_eq!(fx.git(&["show", ":local.txt"]), "staged");
+    assert_eq!(fx.read("local.txt"), "working");
+
+    let abort_request = CancellationToken::new();
+    let cancelled = repo.rebase_with_editor(Some("main"), &options, &abort_request, &out, &|_| {
+        abort_request.cancel();
+        None
+    });
+    assert!(matches!(cancelled, Err(e) if e.kind == ide_core::error::ErrorKind::Cancelled));
+    assert_eq!(fx.head(), head);
+    assert_eq!(repo.operation().unwrap(), None);
+    assert_eq!(fx.git(&["show", ":local.txt"]), "staged");
+
+    let message_prompt = std::cell::Cell::new(false);
+    repo.rebase_with_editor(Some("main"), &options, &cancel, &out, &|prompt| match prompt.kind {
+        RebaseEditKind::Plan => {
+            assert!(prompt.plan.is_none());
+            for instruction in ["label ", "reset ", "merge -C ", "fixup "] {
+                assert!(prompt.text.lines().any(|line| line.starts_with(instruction)), "missing {instruction}");
+            }
+            let primary =
+                prompt.text.lines().find(|line| line.starts_with("pick ") && line.ends_with("Primary change")).unwrap();
+            Some(prompt.text.replacen(primary, &primary.replacen("pick ", "reword ", 1), 1).into())
+        }
+        RebaseEditKind::Message => {
+            assert!(prompt.text.starts_with("Primary change"));
+            message_prompt.set(true);
+            Some("Primary change with fixup\n\n# Markdown section\n".to_owned().into())
+        }
+    })
+    .unwrap();
+    assert!(message_prompt.get());
+    assert_ne!(fx.head(), head);
+    assert_eq!(fx.git(&["show", "-s", "--format=%P", "HEAD"]).split_whitespace().count(), 2);
+    assert_eq!(fx.git(&["merge-base", "HEAD", "main"]), upstream);
+    assert_eq!(fx.git(&["log", "--format=%s", "main..HEAD"]).lines().count(), 4);
+    assert!(fx.subjects().iter().any(|subject| subject == "Primary change with fixup"));
+    assert_eq!(
+        fx.git(&["log", "--format=%b", "--fixed-strings", "--grep=Primary change with fixup", "-1"]),
+        "# Markdown section"
+    );
+    assert_eq!(fx.read("primary.txt"), "fixed");
+    assert_eq!(fx.git(&["show", ":local.txt"]), "staged");
+    assert_eq!(fx.read("local.txt"), "working");
+    assert_eq!(fx.git(&["stash", "list"]), "");
+}
+
+#[test]
+fn interactive_rebase_resumes_with_git_message_editors_after_conflicts() {
+    let (fx, _) = Fixture::with_origin();
+    fx.git(&["switch", "-c", "topic"]);
+    fx.write("a.txt", "topic\n");
+    let original = fx.commit_all("Topic conflict\n\n# Markdown heading\n; Literal semicolon");
+    fx.write("later.txt", "later\n");
+    let later = fx.commit_all("Topic follow-up");
+    fx.git(&["switch", "main"]);
+    fx.write("a.txt", "upstream\n");
+    fx.write("other.txt", "upstream\n");
+    let upstream = fx.commit_all("Upstream conflict");
+    fx.git(&["switch", "topic"]);
+    fx.git(&["config", "rebase.abbreviateCommands", "true"]);
+    fx.git(&["config", "core.commentChar", ";"]);
+    fx.git(&["config", "commit.verbose", "true"]);
+
+    let repo = fx.repo();
+    let (cancel, out) = quiet();
+    let start = || RebaseEditorOperation::Start { upstream: Some("main".into()), options: RebaseOptions::default() };
+    let edit_plan = |prompt: RebaseEdit| {
+        let plan = prompt.plan.unwrap();
+        let [
+            RebaseTodoRow::Commit { id: first_id, author, summary, .. },
+            RebaseTodoRow::Commit { id: second_id, revision, message, action: RebaseAction::Pick, .. },
+        ] = plan.as_slice()
+        else {
+            panic!("expected two commit rows");
+        };
+        assert_eq!(first_id, &original);
+        assert_eq!(author, "Test User");
+        assert_eq!(summary, "Topic conflict");
+        assert_eq!(second_id, &later);
+        assert_eq!(message, "Topic follow-up");
+        assert!(prompt.text.lines().any(|line| line.starts_with(';')));
+        assert!(!prompt.text.contains('\u{1}'));
+        let entry = format!("p {revision}");
+        assert!(prompt.text.contains(&entry));
+        Some(prompt.text.replacen(&entry, &format!("r {revision}"), 1).into())
+    };
+    let stopped = repo.rebase_editor_operation(start(), &cancel, &out, &edit_plan);
+    assert!(stopped.is_err());
+    assert_eq!(repo.operation().unwrap().as_deref(), Some("rebase"));
+    assert!(!fx.read(".git/rebase-merge/git-rebase-todo").contains('\u{1}'));
+    fx.write("a.txt", "resolved\n");
+    fx.git(&["add", "a.txt"]);
+    let resume = RebaseEditorOperation::Continue { stage: false };
+    let declined = repo.rebase_editor_operation(resume, &cancel, &out, &|prompt| {
+        assert!(matches!(prompt.kind, RebaseEditKind::Message));
+        assert!(prompt.text.starts_with("Topic conflict"));
+        None
+    });
+    assert!(matches!(declined, Err(e) if e.kind == ide_core::error::ErrorKind::Cancelled));
+    assert_eq!(repo.operation().unwrap().as_deref(), Some("rebase"));
+    assert_eq!(fx.git(&["show", ":a.txt"]), "resolved");
+
+    fx.write("other.txt", "stage and retry\n");
+    let resume = RebaseEditorOperation::Continue { stage: false };
+    let refused = repo.rebase_editor_operation(resume, &cancel, &out, &|_| panic!("unexpected editor prompt"));
+    assert!(matches!(refused, Err(e) if e.message == UNSTAGED_CHANGES_PREVENT_REBASE));
+
+    let follow_up = std::cell::Cell::new(false);
+    let resume = RebaseEditorOperation::Continue { stage: true };
+    repo.rebase_editor_operation(resume, &cancel, &out, &|prompt| {
+        assert!(matches!(prompt.kind, RebaseEditKind::Message));
+        assert!(!prompt.text.contains('\u{1}') && !prompt.text.contains("diff --git"));
+        assert!(!prompt.text.contains("Please enter the commit message"));
+        if prompt.text.starts_with("Topic conflict") {
+            assert!(prompt.text.contains("# Markdown heading\n; Literal semicolon"));
+            Some(prompt.text.into())
+        } else {
+            assert!(prompt.text.starts_with("Topic follow-up"));
+            follow_up.set(true);
+            Some("Reworded follow-up\n".to_owned().into())
+        }
+    })
+    .unwrap();
+    assert!(follow_up.get());
+    assert_eq!(repo.operation().unwrap(), None);
+    assert_eq!(fx.git(&["rev-parse", "HEAD^^"]), upstream);
+    assert_eq!(fx.git(&["log", "--format=%s", "main..HEAD"]), "Reworded follow-up\nTopic conflict");
+    assert_eq!(fx.git(&["show", "-s", "--format=%b", "HEAD^"]), "# Markdown heading\n; Literal semicolon");
+    assert_eq!(fx.read("a.txt"), "resolved\n");
+    assert_eq!(fx.git(&["show", "HEAD^:other.txt"]), "stage and retry");
+
+    fx.git(&["switch", "-c", "skip-conflict", &later]);
+    assert!(repo.rebase_editor_operation(start(), &cancel, &out, &edit_plan).is_err());
+    assert_eq!(repo.operation().unwrap().as_deref(), Some("rebase"));
+    // An older stopped session already has todo comments written using the repository configuration.
+    let pending = ".git/rebase-merge/git-rebase-todo";
+    fx.write(pending, &format!("; Saved before the editor upgrade\n{}", fx.read(pending)));
+    fx.write(".git/rebase-merge/openidea-editor", "{}");
+    repo.rebase_editor_operation(RebaseEditorOperation::Skip, &cancel, &out, &|prompt| {
+        assert!(matches!(prompt.kind, RebaseEditKind::Message));
+        assert!(prompt.text.starts_with("Topic follow-up"));
+        Some("Reworded after skip\n".to_owned().into())
+    })
+    .unwrap();
+    assert_eq!(repo.operation().unwrap(), None);
+    assert_eq!(fx.git(&["rev-parse", "HEAD^"]), upstream);
+    assert_eq!(fx.git(&["log", "--format=%s", "main..HEAD"]), "Reworded after skip");
+    assert_eq!(fx.read("a.txt"), "upstream\n");
+    assert_eq!(fx.git(&["config", "--get", "core.commentChar"]), ";");
+}
+
+#[test]
+fn interactive_rebase_remembers_inline_rewords_by_original_commit_across_conflicts() {
+    let (fx, _) = Fixture::with_origin();
+    fx.git(&["switch", "-c", "topic"]);
+    fx.write("a.txt", "topic\n");
+    fx.commit_all("Identical original message");
+    fx.write("second.txt", "second\n");
+    let second = fx.commit_all("Identical original message");
+    fx.write("third.txt", "third\n");
+    let third = fx.commit_all("Identical original message");
+    fx.git(&["switch", "main"]);
+    fx.write("a.txt", "upstream\n");
+    fx.commit_all("Upstream conflict");
+    fx.git(&["switch", "topic"]);
+    fx.git(&["config", "core.commentString", "//"]);
+
+    let (cancel, out) = quiet();
+    let start = RebaseEditorOperation::Start { upstream: Some("main".into()), options: RebaseOptions::default() };
+    let stopped = fx.repo().rebase_editor_operation(start, &cancel, &out, &|prompt| {
+        let rows = prompt.plan.unwrap();
+        let revisions: Vec<_> = rows
+            .iter()
+            .map(|row| match row {
+                RebaseTodoRow::Commit { message, revision, .. } => {
+                    assert_eq!(message, "Identical original message");
+                    revision
+                }
+                _ => panic!("expected a commit row"),
+            })
+            .collect();
+        assert_eq!(revisions.len(), 3);
+        Some(RebaseEditorReply {
+            text: format!("pick {}\nr {}\nreword {}\n", revisions[0], revisions[1], revisions[2]),
+            rewords: [
+                (second.clone(), "Second subject\n\n# Second body\n// Second literal prefix\n".into()),
+                (third.clone(), "Third subject\n\n# Third body\n// Third literal prefix\n".into()),
+            ]
+            .into(),
+        })
+    });
+    assert!(stopped.is_err());
+    let repo = fx.repo();
+    assert_eq!(repo.operation().unwrap().as_deref(), Some("rebase"));
+    fx.write("a.txt", "resolved\n");
+    fx.git(&["add", "a.txt"]);
+
+    let prompts = std::cell::Cell::new(0);
+    repo.rebase_editor_operation(RebaseEditorOperation::Continue { stage: false }, &cancel, &out, &|prompt| {
+        prompts.set(prompts.get() + 1);
+        assert_eq!(prompts.get(), 1);
+        assert!(matches!(prompt.kind, RebaseEditKind::Message));
+        assert!(prompt.text.starts_with("Identical original message"));
+        Some("Manual conflict message\n".to_owned().into())
+    })
+    .unwrap();
+    assert_eq!(prompts.get(), 1);
+    assert_eq!(repo.operation().unwrap(), None);
+    assert_eq!(fx.subjects()[..3], ["Third subject", "Second subject", "Manual conflict message"]);
+    assert_eq!(
+        fx.git(&["show", "-s", "--format=%B", "HEAD"]),
+        "Third subject\n\n# Third body\n// Third literal prefix"
+    );
+    assert_eq!(
+        fx.git(&["show", "-s", "--format=%B", "HEAD^"]),
+        "Second subject\n\n# Second body\n// Second literal prefix"
+    );
+    assert!(!fx.exists(".git/rebase-merge/openidea-editor"));
+}
+
+#[test]
+fn interactive_rebase_preserves_and_edits_autosquash_message_replacements() {
+    let fx = Fixture::new();
+    fx.git(&["config", "rebase.abbreviateCommands", "true"]);
+    fx.write("base.txt", "base\n");
+    let base = fx.commit_all("Base");
+    fx.write("target.txt", "original\n");
+    let target = fx.commit_all("Prepare review");
+    fx.write("follow-up.txt", "follow-up\n");
+    let follow_up = fx.commit_all("Add follow-up");
+    fx.write("target.txt", "amended\n");
+    let replacement = "Review ready\n\n# Replacement details";
+    let amend = fx.commit_all(&format!("amend! Prepare review\n\n{replacement}"));
+    fx.git(&["branch", "edit-message"]);
+    let (cancel, out) = quiet();
+    for edit_message in [false, true] {
+        if edit_message {
+            fx.git(&["switch", "edit-message"]);
+        }
+        let edited = "Review ready for submission\n\n# Updated details";
+        let edited_message = std::cell::Cell::new(false);
+        fx.repo()
+            .rebase_with_editor(Some(&base), &RebaseOptions::default(), &cancel, &out, &|prompt| match prompt.kind {
+                RebaseEditKind::Plan => {
+                    let plan = prompt.plan.unwrap();
+                    let [
+                        RebaseTodoRow::Commit { id: first, .. },
+                        RebaseTodoRow::Commit {
+                            id: second,
+                            action: RebaseAction::Fixup,
+                            fixup_message: Some(RebaseFixupMessage::Replace),
+                            ..
+                        },
+                        RebaseTodoRow::Commit { id: third, .. },
+                    ] = plan.as_slice()
+                    else {
+                        panic!("expected Git's autosquashed plan");
+                    };
+                    assert_eq!([first, second, third], [&target, &amend, &follow_up]);
+                    assert!(prompt.text.contains("\nf -C "));
+                    let text = if edit_message { prompt.text.replace("\nf -C ", "\nf -c ") } else { prompt.text };
+                    Some(text.into())
+                }
+                RebaseEditKind::Message => {
+                    assert!(edit_message);
+                    assert_eq!(prompt.text.trim(), replacement);
+                    assert!(!edited_message.replace(true));
+                    Some(format!("{edited}\n").into())
+                }
+            })
+            .unwrap();
+        assert_eq!(edited_message.get(), edit_message);
+        assert_eq!(fx.git(&["show", "-s", "--format=%s", "HEAD"]), "Add follow-up");
+        assert_eq!(fx.git(&["show", "-s", "--format=%B", "HEAD^"]), if edit_message { edited } else { replacement });
+        assert_eq!(fx.git(&["show", "HEAD^:target.txt"]), "amended");
+        assert_eq!(fx.repo().operation().unwrap(), None);
+    }
+}
+
+#[test]
+fn interactive_rebase_can_move_a_branch_update_in_the_structured_plan() {
+    let (fx, _) = Fixture::with_origin();
+    fx.git(&["config", "rebase.abbreviateCommands", "true"]);
+    fx.git(&["switch", "-c", "topic"]);
+    fx.write("first.txt", "first\n");
+    let original = fx.commit_all("First change");
+    fx.git(&["branch", "review"]);
+    fx.write("second.txt", "second\n");
+    fx.commit_all("Second change");
+    fx.git(&["switch", "main"]);
+    fx.write("upstream.txt", "upstream\n");
+    let upstream = fx.commit_all("Advance base");
+    fx.git(&["switch", "topic"]);
+    let start = RebaseEditorOperation::Start {
+        upstream: Some("main".into()),
+        options: RebaseOptions { update_refs: true, ..RebaseOptions::default() },
+    };
+    let (cancel, out) = quiet();
+    fx.repo()
+        .rebase_editor_operation(start, &cancel, &out, &|prompt| {
+            let plan = prompt.plan.unwrap();
+            let [
+                RebaseTodoRow::Commit { line: first, id, .. },
+                RebaseTodoRow::UpdateRef { line: update, reference },
+                RebaseTodoRow::Commit { line: second, .. },
+            ] = plan.as_slice()
+            else {
+                panic!("expected two commits and one ref update");
+            };
+            assert_eq!(id, &original);
+            assert_eq!(reference, "refs/heads/review");
+            let lines: Vec<_> = prompt.text.lines().collect();
+            assert_eq!(lines[*update], "u refs/heads/review");
+            Some(format!("{}\n{}\n{}\n", lines[*first], lines[*second], lines[*update]).into())
+        })
+        .unwrap();
+    assert_eq!(fx.git(&["rev-parse", "review"]), fx.git(&["rev-parse", "topic"]));
+    assert_ne!(fx.git(&["rev-parse", "review"]), original);
+    assert_eq!(fx.git(&["rev-parse", "topic~2"]), upstream);
+    assert_eq!(fx.git(&["log", "--format=%s", "main..review"]), "Second change\nFirst change");
+}
+
+#[test]
+fn merge_unrelated_histories_requires_the_explicit_option() {
+    let (fx, _) = Fixture::with_origin();
+    let head = fx.head();
+    let tree = fx.git(&["rev-parse", "HEAD^{tree}"]);
+    let unrelated = fx.git(&["commit-tree", &tree, "-m", "Independent history"]);
+    fx.git(&["branch", "external", &unrelated]);
+    let repo = fx.repo();
+    let branches = ["refs/heads/external".into()];
+    assert!(repo.merge_with(&branches, &MergeOptions::default()).is_err());
+    assert_eq!(fx.head(), head);
+    let options = MergeOptions {
+        allow_unrelated_histories: true,
+        message: Some("Join the histories".into()),
+        ..Default::default()
+    };
+    repo.merge_with(&branches, &options).unwrap();
+    assert_eq!(fx.git(&["show", "-s", "--format=%P", "HEAD"]), format!("{head} {unrelated}"));
+    assert_eq!(fx.subjects()[0], "Join the histories");
+}
+
 #[cfg(unix)]
 #[test]
 fn push_can_skip_a_failing_pre_push_hook() {
@@ -830,8 +1502,553 @@ fn force_push_without_lease_overwrites_a_remote_that_moved() {
     let lease = PushOptions { force_with_lease: true, ..Default::default() };
     let err = repo.push_with(lease, &cancel, &out).unwrap_err();
     assert!(err.message.contains("stale info"), "{}", err.message);
-    repo.push_with(PushOptions { force: true, ..Default::default() }, &cancel, &out).unwrap();
+    let report = repo.push_with(PushOptions { force: true, ..Default::default() }, &cancel, &out).unwrap();
+    assert_eq!(report.refs[0].status, PushRefStatus::Forced);
     assert_eq!(git_in(&bare, &["rev-parse", "main"]), fx.head());
+}
+
+#[test]
+fn push_reports_a_custom_destination_and_the_actual_commit_and_tag_updates() {
+    let (fx, bare) = Fixture::with_origin();
+    let repo = fx.repo();
+    let cancel = CancellationToken::new();
+    let output = Mutex::new(Vec::new());
+    let out = |line: String| output.lock().unwrap().push(line);
+    let selection = PushSelection {
+        branch: Some("main".into()),
+        revision: None,
+        remote: "origin".into(),
+        target: "review/saved".into(),
+        special_ref: false,
+    };
+    let push =
+        |tags| repo.push_selected(&selection, None, PushOptions { tags, ..Default::default() }, &cancel, &out).unwrap();
+    let created = push(None);
+    assert_eq!(created.remote.as_deref(), Some("origin"));
+    assert_eq!(
+        created.refs,
+        [PushRefResult { reference: "refs/heads/review/saved".into(), status: PushRefStatus::Created, commits: None }]
+    );
+    assert_eq!(push(None).refs[0].status, PushRefStatus::UpToDate);
+
+    fx.write("a.txt", "two\n");
+    fx.commit_all("Second");
+    fx.write("a.txt", "three\n");
+    fx.commit_all("Third");
+    fx.git(&["tag", "reviewed"]);
+    output.lock().unwrap().clear();
+    let report = push(Some(PushTags::All));
+    assert_eq!(output.lock().unwrap().iter().filter(|line| line.starts_with("To ")).count(), 1);
+    assert_eq!(
+        report.refs,
+        [
+            PushRefResult {
+                reference: "refs/heads/review/saved".into(),
+                status: PushRefStatus::FastForward,
+                commits: Some(2),
+            },
+            PushRefResult { reference: "refs/tags/reviewed".into(), status: PushRefStatus::Created, commits: None },
+        ]
+    );
+    assert_eq!(git_in(&bare, &["rev-parse", "review/saved"]), fx.head());
+    assert_eq!(push(Some(PushTags::All)).refs[1].status, PushRefStatus::UpToDate);
+}
+
+#[test]
+fn push_keeps_the_applied_branch_in_the_report_when_a_tag_fails() {
+    use ide_core::error::ErrorData;
+
+    let (fx, bare) = Fixture::with_origin();
+    let original = fx.head();
+    git_in(&bare, &["tag", "release"]);
+    fx.write("a.txt", "new work\n");
+    fx.commit_all("Local work");
+    fx.git(&["tag", "release"]);
+    let (cancel, out) = quiet();
+    let opts = PushOptions { tags: Some(PushTags::All), ..Default::default() };
+    let repo = fx.repo();
+    let selection = repo.default_push_target(Some("main")).unwrap().unwrap().selection;
+    let error = repo.push_selected(&selection, None, opts, &cancel, &out).unwrap_err();
+    assert!(error.message.contains("already exists"), "{}", error.message);
+    let Some(ErrorData::PushPartiallyApplied { report }) = error.data else {
+        panic!("missing partial push report");
+    };
+    assert_eq!(
+        report.refs,
+        [PushRefResult { reference: "refs/heads/main".into(), status: PushRefStatus::FastForward, commits: Some(1) }]
+    );
+    assert_eq!(git_in(&bare, &["rev-parse", "main"]), fx.head());
+    assert_eq!(git_in(&bare, &["rev-parse", "release"]), original);
+}
+
+#[test]
+fn push_keeps_tracked_branch_recovery_when_tags_were_published() {
+    use ide_core::error::ErrorData;
+
+    let (fx, bare) = Fixture::with_origin();
+    fx.write("local.txt", "Local work\n");
+    fx.commit_all("Local work");
+    fx.git(&["tag", "ready"]);
+    fx.push_from_other(&bare, "remote.txt", "Remote work\n");
+    fx.git(&["fetch"]);
+    let repo = fx.repo();
+    let (cancel, out) = quiet();
+    let selection = repo.default_push_target(Some("main")).unwrap().unwrap().selection;
+    let opts = PushOptions { tags: Some(PushTags::All), ..Default::default() };
+    let error = repo.push_selected(&selection, None, opts, &cancel, &out).unwrap_err();
+    let Some(ErrorData::PushRejected { source, upstream, divergence: Some(_), report: Some(report) }) = error.data
+    else {
+        panic!("expected tracked branch rejection and published refs: {error:?}");
+    };
+    assert_eq!((source.as_str(), upstream.as_str()), ("main", "origin/main"));
+    assert_eq!(
+        report.refs,
+        [PushRefResult { reference: "refs/tags/ready".into(), status: PushRefStatus::Created, commits: None }]
+    );
+    assert_eq!(git_in(&bare, &["rev-parse", "refs/tags/ready"]), fx.head());
+    fx.git(&["merge", "--no-edit", "@{upstream}"]);
+    let retry = repo.push_selected(&selection, None, opts, &cancel, &out).unwrap();
+    assert!(retry.refs.iter().any(|r| r.reference == "refs/heads/main" && r.status == PushRefStatus::FastForward));
+    assert_eq!(git_in(&bare, &["rev-parse", "main"]), fx.head());
+}
+
+#[test]
+fn push_current_branch_tags_are_limited_to_the_selected_commit() {
+    let (fx, bare) = Fixture::with_origin();
+    let initial = fx.head();
+    fx.git(&["tag", "-a", "base", "-m", "Annotated base"]);
+    fx.git(&["tag", "lightweight"]);
+    fx.write("a.txt", "new work\n");
+    fx.commit_all("New work");
+    fx.git(&["tag", "-a", "later", "-m", "Annotated later"]);
+    let (cancel, out) = quiet();
+    let selection = PushSelection {
+        branch: Some("main".into()),
+        revision: Some(initial.clone()),
+        remote: "origin".into(),
+        target: "review/partial".into(),
+        special_ref: false,
+    };
+    let opts = PushOptions { tags: Some(PushTags::CurrentBranch), ..Default::default() };
+    fx.repo().push_selected(&selection, None, opts, &cancel, &out).unwrap();
+    assert_eq!(git_in(&bare, &["rev-parse", "review/partial"]), initial);
+    assert_eq!(git_in(&bare, &["tag", "--list"]), "base");
+}
+
+#[test]
+fn force_push_of_the_selected_branch_does_not_overwrite_a_colliding_tag() {
+    use ide_core::error::ErrorData;
+
+    let (fx, bare) = Fixture::with_origin();
+    let original = fx.head();
+    git_in(&bare, &["tag", "release"]);
+    fx.push_from_other(&bare, "remote.txt", "Remote work\n");
+    fx.write("local.txt", "Local work\n");
+    fx.commit_all("Local work");
+    fx.git(&["tag", "release"]);
+    let (cancel, out) = quiet();
+    let repo = fx.repo();
+    let selection = repo.default_push_target(Some("main")).unwrap().unwrap().selection;
+    let opts = PushOptions { force: true, tags: Some(PushTags::All), ..Default::default() };
+    let error = repo.push_selected(&selection, None, opts, &cancel, &out).unwrap_err();
+    let Some(ErrorData::PushPartiallyApplied { report }) = error.data else {
+        panic!("expected a branch update and tag rejection: {error:?}");
+    };
+    assert_eq!(report.refs[0].status, PushRefStatus::Forced);
+    assert_eq!(git_in(&bare, &["rev-parse", "main"]), fx.head());
+    assert_eq!(git_in(&bare, &["rev-parse", "release"]), original);
+}
+
+#[test]
+fn rejected_push_lease_keeps_the_tip_reviewed_before_a_fetch() {
+    use ide_core::error::ErrorData;
+
+    let (fx, bare) = Fixture::with_origin();
+    fx.git(&["branch", "-m", "release"]);
+    fx.write("local.txt", "local work");
+    fx.commit_all("local work");
+    let local_tip = fx.head();
+    fx.push_from_other(&bare, "remote.txt", "remote work");
+    let repo = fx.repo();
+    let (cancel, out) = quiet();
+    let rejection = || repo.push(false, false, &cancel, &out).unwrap_err();
+
+    let error = rejection();
+    assert!(error.message.contains("(fetch first)"), "{}", error.message);
+    assert!(matches!(
+        error.data,
+        Some(ErrorData::PushRejected { source, upstream, divergence: None, .. })
+            if source == "release" && upstream == "origin/main"
+    ));
+
+    fx.git(&["fetch", "-q"]);
+    let Some(ErrorData::PushRejected { divergence: Some(divergence), .. }) = rejection().data else {
+        panic!("missing known divergence for a tracked branch with a different name");
+    };
+    assert_eq!(divergence.source, "release");
+    assert_eq!(divergence.remote, "origin");
+    assert_eq!(divergence.target, "main");
+    assert_eq!(divergence.local_tip, local_tip);
+    assert_eq!(divergence.remote_tip, fx.git(&["rev-parse", "origin/main"]));
+    assert_eq!(divergence.remote_commits, 1);
+
+    fx.push_from_other(&bare, "other.txt", "new remote work");
+    fx.git(&["fetch", "-q"]);
+    let new_tip = fx.git(&["rev-parse", "origin/main"]);
+    let error = repo.force_push_rejected(&divergence, None, false, &cancel, &out).unwrap_err();
+    assert!(error.message.contains("(stale info)"), "{}", error.message);
+    assert_eq!(git_in(&bare, &["rev-parse", "main"]), new_tip);
+
+    let Some(ErrorData::PushRejected { divergence: Some(divergence), .. }) = rejection().data else {
+        panic!("missing reviewed divergence after the fetch");
+    };
+    assert_eq!(divergence.remote_tip, new_tip);
+    assert_eq!(divergence.remote_commits, 2);
+    repo.force_push_rejected(&divergence, None, false, &cancel, &out).unwrap();
+    assert_eq!(git_in(&bare, &["rev-parse", "main"]), local_tip);
+}
+
+#[test]
+fn rejected_push_only_offers_force_for_the_diverged_tracked_destination() {
+    use ide_core::error::ErrorData;
+
+    let (fx, bare) = Fixture::with_origin();
+    let repo = fx.repo();
+    let (cancel, out) = quiet();
+    fx.push_from_other(&bare, "remote.txt", "remote work");
+    fx.git(&["fetch", "-q"]);
+    let error = repo.push(false, false, &cancel, &out).unwrap_err();
+    assert!(error.message.contains("(non-fast-forward)"), "{}", error.message);
+    assert!(matches!(error.data, Some(ErrorData::PushRejected { divergence: None, .. })));
+
+    fx.git(&["branch", "other", "origin/main"]);
+    fx.git(&["push", "-q", "origin", "other"]);
+    fx.write("local.txt", "local work");
+    fx.commit_all("local work");
+    fx.git(&["config", "remote.origin.push", "refs/heads/main:refs/heads/other"]);
+    let error = repo.push(false, false, &cancel, &out).unwrap_err();
+    assert!(error.message.contains("(non-fast-forward)"), "{}", error.message);
+    assert_eq!(error.data, None, "the rejected ref was not the upstream");
+}
+
+#[test]
+fn default_push_target_preserves_tracking_and_configured_destinations() {
+    let (fx, bare) = Fixture::with_origin();
+    fx.git(&["branch", "-m", "release"]);
+    let repo = fx.repo();
+    let default = repo.default_push_target(None).unwrap().unwrap();
+    assert_eq!(
+        (default.selection.branch.as_deref(), default.selection.remote.as_str(), default.selection.target.as_str()),
+        (Some("release"), "origin", "main")
+    );
+    assert!(!default.set_upstream);
+
+    fx.git(&["config", "--add", "remote.origin.push", "refs/heads/*:refs/heads/publish/*"]);
+    assert_eq!(repo.default_push_target(None).unwrap().unwrap().selection.target, "publish/release");
+    fx.git(&["config", "--add", "remote.origin.push", "+release:refs/for/main"]);
+    let review = repo.default_push_target(Some("release")).unwrap().unwrap();
+    assert_eq!(review.selection.target, "refs/for/main");
+    assert!(review.selection.special_ref);
+    assert!(!review.set_upstream);
+    let (cancel, out) = quiet();
+    let inspection = repo.inspect_push(&review.selection, true, &cancel).unwrap();
+    assert!(inspection.remote_checked);
+    repo.push_selected(&review.selection, Some(&inspection), PushOptions::default(), &cancel, &out).unwrap();
+    assert_eq!(git_in(&bare, &["rev-parse", "refs/for/main"]), fx.head());
+
+    fx.git(&["remote", "add", "mirror/team", bare.to_str().unwrap()]);
+    fx.git(&["config", "branch.release.pushRemote", "mirror/team"]);
+    fx.git(&["config", "remote.mirror/team.push", "HEAD:refs/heads/approved"]);
+    let overridden = repo.default_push_target(None).unwrap().unwrap();
+    assert_eq!(overridden.selection.remote, "mirror/team");
+    assert_eq!(overridden.selection.target, "approved");
+    assert!(!overridden.set_upstream);
+}
+
+#[test]
+fn outgoing_commits_follow_the_push_target_and_its_fetch_refspec() {
+    let (fx, _) = Fixture::with_origin();
+    let fork = fx.tmp.path().join("fork.git");
+    git_in(fx.tmp.path(), &["init", "-q", "--bare", fork.to_str().unwrap()]);
+    fx.git(&["remote", "add", "fork", fork.to_str().unwrap()]);
+    let fetch = "+refs/heads/*:refs/remotes/published/*";
+    fx.git(&["config", "remote.fork.fetch", fetch]);
+    fx.git(&["push", "-q", "fork", "main:refs/heads/review/main"]);
+    let published = fx.head();
+    fx.write("b.txt", "upstream only\n");
+    fx.commit_all("Pushed only to the upstream");
+    fx.git(&["push", "-q", "origin", "main"]);
+    fx.write("c.txt", "local only\n");
+    fx.commit_all("Still local");
+    fx.git(&["config", "branch.main.pushRemote", "fork"]);
+    fx.git(&["config", "remote.fork.push", "refs/heads/main:refs/heads/review/main"]);
+    let repo = fx.repo();
+
+    let info = repo.branch_info().unwrap();
+    assert_eq!(info.upstream.as_deref(), Some("origin/main"));
+    assert_eq!(info.ahead, 1);
+    let outgoing = info.outgoing.unwrap();
+    assert_eq!((&*outgoing.remote, &*outgoing.branch), ("fork", "review/main"));
+    assert_eq!(outgoing.reference, "refs/remotes/published/review/main");
+    assert_eq!(outgoing.count, 2);
+    let branches = repo.branches().unwrap();
+    assert_eq!(branches.iter().find(|b| b.current).unwrap().outgoing.as_ref(), Some(&outgoing));
+    let selection = repo.default_push_target(Some("main")).unwrap().unwrap().selection;
+    assert_eq!((&*selection.remote, &*selection.target), ("fork", "review/main"));
+    let cancel = CancellationToken::new();
+    assert_eq!(repo.inspect_push(&selection, false, &cancel).unwrap().remote_tip.as_deref(), Some(&*published));
+
+    // A stale ref excluded by the fetch refspec is no longer a basis for the push count.
+    fx.git(&["config", "--add", "remote.fork.fetch", "^refs/heads/review/main"]);
+    assert!(repo.branch_info().unwrap().outgoing.is_none());
+    fx.git(&["config", "--replace-all", "remote.fork.fetch", fetch]);
+    let alternate = fx.tmp.path().join("different-push-endpoint.git");
+    fx.git(&["remote", "set-url", "--push", "fork", alternate.to_str().unwrap()]);
+    assert!(repo.branch_info().unwrap().outgoing.is_none());
+    assert!(repo.inspect_push(&selection, false, &cancel).unwrap().remote_tip.is_none());
+}
+
+#[test]
+fn push_up_to_commit_prefers_a_containing_local_branch_and_only_publishes_the_selection() {
+    let (fx, bare) = Fixture::with_origin();
+    let base = fx.head();
+    fx.git(&["push", "origin", "main:refs/heads/review/partial", "main:refs/heads/detached"]);
+    fx.git(&["switch", "-c", "topic2"]);
+    fx.git(&["branch", "--set-upstream-to=origin/review/partial"]);
+    fx.write("selected.txt", "publish this");
+    fx.commit_all("Selected commit");
+    let selected = fx.head();
+    fx.git(&["branch", "topic10"]);
+    fx.write("later.txt", "keep this local");
+    fx.commit_all("Later commit");
+    let later = fx.head();
+    fx.git(&["switch", "topic10"]);
+    let repo = fx.repo();
+    let (cancel, out) = quiet();
+    assert_eq!(repo.commit_push_target(&selected, &cancel).unwrap().branch.as_deref(), Some("topic10"));
+
+    fx.git(&["switch", "main"]);
+    assert_eq!(repo.commit_push_target(&base, &cancel).unwrap().branch.as_deref(), Some("main"));
+    let target = repo.commit_push_target(&selected, &cancel).unwrap();
+    assert_eq!(target.branch.as_deref(), Some("topic2"));
+    let target = target.destination.unwrap();
+    assert_eq!(target.selection.target, "review/partial");
+    assert_eq!(target.selection.revision.as_deref(), Some(selected.as_str()));
+    assert!(!target.set_upstream);
+    repo.push_selected(&target.selection, None, PushOptions::default(), &cancel, &out).unwrap();
+    assert_eq!(git_in(&bare, &["rev-parse", "refs/heads/review/partial"]), selected);
+    assert_eq!(fx.git(&["rev-parse", "topic2"]), later);
+    assert_eq!(fx.head(), base);
+
+    fx.git(&["tag", "selected", &selected]);
+    fx.git(&["branch", "-D", "topic2", "topic10"]);
+    let detached = repo.commit_push_target(&selected, &cancel).unwrap();
+    assert!(detached.branch.is_none());
+    let target = detached.destination.unwrap();
+    assert_eq!(target.selection.target, "main");
+    assert_eq!(target.selection.revision.as_deref(), Some(selected.as_str()));
+    assert_eq!(fx.git(&["symbolic-ref", "--short", "HEAD"]), "main");
+    fx.git(&["switch", "--detach"]);
+    let detached = repo.commit_push_target(&selected, &cancel).unwrap().destination.unwrap();
+    assert_eq!(detached.selection.target, "detached2");
+}
+
+#[test]
+fn push_target_choices_use_the_selected_source_and_each_remotes_refspec() {
+    let (fx, origin) = Fixture::with_origin();
+    let fork = tempfile::tempdir().unwrap();
+    git_in(fork.path(), &["init", "--bare"]);
+    fx.git(&["remote", "add", "fork", fork.path().to_str().unwrap()]);
+    fx.git(&["config", "remote.origin.push", "refs/heads/topic:refs/heads/publish/topic"]);
+    fx.git(&["config", "remote.fork.push", "+refs/heads/topic:refs/for/topic"]);
+    fx.git(&["switch", "-qc", "topic"]);
+    fx.write("selected.txt", "publish only this");
+    let selected = fx.commit_all("Selected commit");
+    fx.write("later.txt", "keep local");
+    let later = fx.commit_all("Later commit");
+    fx.git(&["switch", "main"]);
+    let repo = fx.repo();
+    let (cancel, out) = quiet();
+
+    let named = repo.push_target_choices(Some("topic"), None, &cancel).unwrap();
+    assert_eq!(named.branch.as_deref(), Some("topic"));
+    assert_eq!(named.destination.unwrap().selection.target, "publish/topic");
+    let choices = repo.push_target_choices(None, Some(&selected), &cancel).unwrap();
+    assert_eq!(choices.branch.as_deref(), Some("topic"));
+    let chosen = choices.destinations.iter().find(|target| target.selection.remote == "fork").unwrap();
+    assert_eq!(chosen.selection.target, "refs/for/topic");
+    assert!(chosen.selection.special_ref);
+    assert!(!chosen.set_upstream);
+    assert_eq!(chosen.selection.revision.as_deref(), Some(selected.as_str()));
+    repo.push_selected(&chosen.selection, None, PushOptions::default(), &cancel, &out).unwrap();
+    assert_eq!(git_in(fork.path(), &["rev-parse", "refs/for/topic"]), selected);
+    assert!(git_in(fork.path(), &["for-each-ref", "refs/heads"]).is_empty());
+    assert!(git_in(&origin, &["for-each-ref", "refs/heads/publish"]).is_empty());
+    assert_eq!(fx.git(&["rev-parse", "refs/heads/topic"]), later);
+}
+
+#[test]
+fn detached_push_suggests_a_new_branch_and_pins_the_selected_commit() {
+    let (fx, bare) = Fixture::with_origin();
+    let main = fx.head();
+    fx.git(&["push", "origin", "main:refs/heads/detached", "main:refs/heads/detached2"]);
+    fx.git(&["fetch", "origin"]);
+    fx.git(&["switch", "--detach"]);
+    fx.write("detached.txt", "detached change");
+    fx.commit_all("detached change");
+    let reviewed = fx.head();
+    let repo = fx.repo();
+    let target = repo.default_push_target(None).unwrap().unwrap();
+    let selection = target.selection;
+    assert!(selection.branch.is_none());
+    assert_eq!(selection.revision.as_deref(), Some(reviewed.as_str()));
+    assert_eq!(selection.target, "detached3");
+    assert_eq!(selection.remote, "origin");
+    assert!(!target.set_upstream);
+    let (cancel, out) = quiet();
+    let inspection = repo.inspect_push(&selection, true, &cancel).unwrap();
+    assert!(inspection.remote_checked);
+    assert_eq!(inspection.remote_tip.as_deref(), Some(""));
+    fx.write("another.txt", "HEAD moved after review");
+    fx.commit_all("another detached commit");
+
+    let ambiguous = PushSelection { revision: Some("HEAD".into()), ..selection.clone() };
+    assert!(repo.inspect_push(&ambiguous, false, &cancel).is_err());
+    let opts = PushOptions { set_upstream: true, ..Default::default() };
+    fx.git(&["push", "origin", "main:refs/heads/detached3"]);
+    let stale = repo.push_selected(&selection, Some(&inspection), opts, &cancel, &out).unwrap_err();
+    assert!(stale.message.contains("stale info"), "{}", stale.message);
+    assert_eq!(git_in(&bare, &["rev-parse", "refs/heads/detached3"]), main);
+    git_in(&bare, &["update-ref", "-d", "refs/heads/detached3"]);
+    repo.push_selected(&selection, Some(&inspection), opts, &cancel, &out).unwrap();
+    assert_eq!(git_in(&bare, &["rev-parse", "refs/heads/detached3"]), reviewed);
+    assert_eq!(git_in(&bare, &["rev-parse", "refs/heads/main"]), main);
+    assert_ne!(fx.head(), reviewed);
+    assert!(repo.head().unwrap().0.is_none());
+    assert_eq!(fx.git(&["for-each-ref", "--format=%(refname:short)", "refs/heads"]), "main");
+}
+
+#[test]
+fn inspect_push_fetches_missing_history_and_preserves_the_reviewed_lease() {
+    let (fx, bare) = Fixture::with_origin();
+    fx.write("local.txt", "local work");
+    fx.commit_all("local work");
+    fx.push_from_other(&bare, "remote.txt", "remote work");
+    let repo = fx.repo();
+    let (cancel, out) = quiet();
+    let selection = PushSelection {
+        branch: Some("main".into()),
+        revision: None,
+        remote: "origin".into(),
+        target: "main".into(),
+        special_ref: false,
+    };
+
+    assert_eq!(repo.inspect_push(&selection, false, &cancel).unwrap().state, PushTargetState::Ready);
+    assert_eq!(repo.inspect_push(&selection, true, &cancel).unwrap().state, PushTargetState::FetchRequired);
+    repo.fetch_push_target(&selection, &cancel, &out).unwrap();
+    let reviewed = repo.inspect_push(&selection, true, &cancel).unwrap();
+    assert_eq!(reviewed.state, PushTargetState::Diverged);
+    assert_eq!(reviewed.remote_commits, 1);
+    assert_eq!(reviewed.remote_tip, Some(fx.git(&["rev-parse", "origin/main"])));
+    assert_eq!(reviewed.local_tip, fx.head());
+
+    fx.push_from_other(&bare, "another.txt", "new remote work");
+    fx.git(&["fetch"]);
+    let lease = PushOptions { force_with_lease: true, ..Default::default() };
+    let error = repo.push_selected(&selection, Some(&reviewed), lease, &cancel, &out).unwrap_err();
+    assert!(error.message.contains("stale info"), "{}", error.message);
+    assert_eq!(git_in(&bare, &["rev-parse", "main"]), fx.git(&["rev-parse", "origin/main"]));
+    let updated = repo.inspect_push(&selection, true, &cancel).unwrap();
+    repo.push_selected(&selection, Some(&updated), lease, &cancel, &out).unwrap();
+    assert_eq!(git_in(&bare, &["rev-parse", "main"]), reviewed.local_tip);
+}
+
+#[test]
+fn inspect_push_reuses_incoming_observations_when_the_remote_is_unavailable() {
+    let (fx, bare) = Fixture::with_origin();
+    fx.write("local.txt", "local work");
+    fx.commit_all("local work");
+    fx.push_from_other(&bare, "remote.txt", "remote work");
+    let tracked = fx.git(&["rev-parse", "origin/main"]);
+    let advertised = git_in(&bare, &["rev-parse", "main"]);
+    let repo = fx.repo();
+    let (cancel, out) = quiet();
+    let selection = repo.default_push_target(None).unwrap().unwrap().selection;
+
+    assert_eq!(repo.inspect_push(&selection, false, &cancel).unwrap().state, PushTargetState::Ready);
+    let report = repo.check_incoming_refs(&cancel).unwrap();
+    assert!(report.errors.is_empty());
+    assert_eq!(report.branches[0].advertised_commit, advertised);
+    let unavailable = fx.tmp.path().join("unavailable.git");
+    std::fs::rename(&bare, &unavailable).unwrap();
+    for live in [false, true] {
+        let result = repo.inspect_push(&selection, live, &cancel).unwrap();
+        assert_eq!(result.state, PushTargetState::FetchRequired);
+        assert_eq!(result.remote_tip.as_deref(), Some(advertised.as_str()));
+        assert!(!result.remote_checked);
+    }
+    assert_eq!(fx.git(&["rev-parse", "origin/main"]), tracked);
+
+    fx.git(&["config", "branch.main.merge", "refs/heads/release"]);
+    let changed_tracking = repo.inspect_push(&selection, false, &cancel).unwrap();
+    assert_eq!(changed_tracking.remote_tip.as_deref(), Some(tracked.as_str()));
+    fx.git(&["config", "branch.main.merge", "refs/heads/main"]);
+    let different_endpoint = fx.tmp.path().join("different.git");
+    fx.git(&["remote", "set-url", "origin", different_endpoint.to_str().unwrap()]);
+    let changed_endpoint = repo.inspect_push(&selection, true, &cancel).unwrap();
+    assert_eq!(changed_endpoint.remote_tip.as_deref(), Some(tracked.as_str()));
+    fx.git(&["remote", "set-url", "origin", bare.to_str().unwrap()]);
+    fx.git(&["remote", "set-url", "--push", "origin", different_endpoint.to_str().unwrap()]);
+    assert!(repo.inspect_push(&selection, false, &cancel).unwrap().remote_tip.is_none());
+    fx.git(&["config", "--unset", "remote.origin.pushurl"]);
+    std::fs::rename(&unavailable, &bare).unwrap();
+
+    git_in(&bare, &["update-ref", "-d", "refs/heads/main", &advertised]);
+    let deleted = repo.inspect_push(&selection, true, &cancel).unwrap();
+    assert_eq!(deleted.state, PushTargetState::Ready);
+    assert!(deleted.remote_checked);
+    assert_eq!(deleted.remote_tip.as_deref(), Some(""));
+    git_in(&bare, &["update-ref", "refs/heads/main", &advertised]);
+
+    fx.push_from_other(&bare, "next.txt", "another remote commit");
+    let fresh = repo.inspect_push(&selection, true, &cancel).unwrap();
+    let new_tip = git_in(&bare, &["rev-parse", "main"]);
+    assert!(fresh.remote_checked);
+    assert_eq!(fresh.remote_tip.as_deref(), Some(new_tip.as_str()));
+    repo.fetch_push_target(&selection, &cancel, &out).unwrap();
+    let fetched = repo.inspect_push(&selection, false, &cancel).unwrap();
+    assert_eq!(fetched.remote_tip, fresh.remote_tip);
+    assert_eq!(fetched.state, PushTargetState::Diverged);
+    assert_eq!(fetched.remote_commits, 2);
+}
+
+#[test]
+fn inspect_push_uses_the_push_url_and_keeps_the_fetch_url_tracking_ref() {
+    let (fx, bare) = Fixture::with_origin();
+    let other = fx.tmp.path().join("push.git");
+    git_in(fx.tmp.path(), &["clone", "--bare", bare.to_str().unwrap(), other.to_str().unwrap()]);
+    fx.git(&["remote", "set-url", "--push", "origin", other.to_str().unwrap()]);
+    let tracking_tip = fx.git(&["rev-parse", "origin/main"]);
+    fx.push_from_other(&other, "at-push-url.txt", "there is other work at the push endpoint");
+    fx.write("local.txt", "local work");
+    fx.commit_all("local work");
+    let repo = fx.repo();
+    let (cancel, out) = quiet();
+    let selection = PushSelection {
+        branch: Some("main".into()),
+        revision: None,
+        remote: "origin".into(),
+        target: "main".into(),
+        special_ref: false,
+    };
+
+    assert_eq!(repo.inspect_push(&selection, true, &cancel).unwrap().state, PushTargetState::FetchRequired);
+    repo.fetch_push_target(&selection, &cancel, &out).unwrap();
+    let reviewed = repo.inspect_push(&selection, true, &cancel).unwrap();
+    assert_eq!(reviewed.state, PushTargetState::Diverged);
+    assert_eq!(reviewed.remote_tip, Some(git_in(&other, &["rev-parse", "main"])));
+    assert_eq!(fx.git(&["rev-parse", "origin/main"]), tracking_tip);
 }
 
 #[test]
@@ -872,6 +2089,50 @@ fn tags_are_pushed_one_at_a_time_deleted_restored_and_deleted_on_the_remote() {
 }
 
 #[test]
+fn deleting_tags_from_configured_remotes_skips_missing_tags_and_keeps_moved_tips() {
+    let fx = Fixture::new();
+    fx.write("base.txt", "base\n");
+    fx.commit_all("initial");
+    fx.git(&["tag", "-a", "release", "-m", "annotated release"]);
+    let original = fx.git(&["rev-parse", "refs/tags/release"]);
+    let base = fx.head();
+    let stale = fx.tmp.path().join("tag moved.git");
+    let empty = fx.tmp.path().join("tag absent.git");
+    let matching = fx.tmp.path().join("tag matching.git");
+    for path in [&stale, &empty, &matching] {
+        git_in(fx.tmp.path(), &["init", "-q", "--bare", path.to_str().unwrap()]);
+    }
+    fx.git(&["remote", "add", "a-stale", stale.to_str().unwrap()]);
+    fx.git(&["remote", "add", "b-empty", empty.to_str().unwrap()]);
+    fx.git(&["remote", "add", "publish/release", empty.to_str().unwrap()]);
+    fx.git(&["remote", "set-url", "--push", "publish/release", matching.to_str().unwrap()]);
+    fx.git(&["push", "-q", "a-stale", "HEAD:refs/tags/release"]);
+
+    let repo = fx.repo();
+    let (cancel, out) = quiet();
+    assert!(repo.push_tag("release", matching.to_str().unwrap(), &cancel, &out).is_err());
+    assert!(git_in(&matching, &["tag"]).is_empty());
+    repo.push_tag("release", "publish/release", &cancel, &out).unwrap();
+    assert_eq!(git_in(&matching, &["rev-parse", "refs/tags/release"]), original);
+    assert!(fx.git(&["branch", "-r"]).is_empty());
+
+    fx.git(&["remote", "set-url", "--add", "--push", "publish/release", empty.to_str().unwrap()]);
+    let deleted = repo.delete_tag("release").unwrap();
+    let err = repo.delete_tag_on_remotes(&deleted, &cancel, &out).unwrap_err();
+    assert!(err.message.contains("a-stale"));
+    assert!(!err.message.contains("b-empty"));
+    assert!(!err.message.contains("publish/release"));
+    assert_eq!(git_in(&stale, &["rev-parse", "refs/tags/release"]), base);
+    assert!(git_in(&matching, &["tag"]).is_empty());
+    assert!(git_in(&empty, &["tag"]).is_empty());
+
+    fx.git(&["remote", "remove", "a-stale"]);
+    repo.delete_tag_on_remotes(&deleted, &cancel, &out).unwrap();
+    repo.restore_tag(&deleted).unwrap();
+    assert_eq!(fx.git(&["rev-parse", "refs/tags/release"]), original);
+}
+
+#[test]
 fn fetch_prunes_deleted_remote_branches() {
     let (fx, bare) = Fixture::with_origin();
     fx.git(&["push", "-q", "origin", "main:gone"]);
@@ -888,6 +2149,404 @@ fn fetch_prunes_deleted_remote_branches() {
     // The branch that tracked it no longer counts as tracking, as in IDEA.
     assert_eq!(upstream(), None);
     assert_eq!(repo.branch_info().unwrap().upstream, None);
+}
+
+#[test]
+fn check_incoming_refs_reads_the_remote_without_fetching_objects_or_tracking_refs() {
+    let (fx, bare) = Fixture::with_origin();
+    let old = fx.head();
+    fx.git(&["push", "-q", "origin", "main:refs/heads/review/next"]);
+    fx.git(&["config", "--replace-all", "remote.origin.fetch", "+refs/heads/*:refs/remotes/tracking/*"]);
+    fx.git(&["fetch", "-q", "origin"]);
+    fx.git(&["branch", "--track", "review", "tracking/review/next"]);
+
+    fx.git(&["remote", "add", "offline", fx.tmp.path().join("missing.git").to_str().unwrap()]);
+    fx.git(&["update-ref", "refs/remotes/offline/main", &old]);
+    fx.git(&["branch", "--track", "broken", "offline/main"]);
+    let fetch_head = fx.read(".git/FETCH_HEAD");
+    fx.push_from_other(&bare, "incoming.txt", "new changes\n");
+    let new = git_in(&bare, &["rev-parse", "refs/heads/main"]);
+    git_in(&bare, &["update-ref", "refs/heads/review/next", &new]);
+    let repo = fx.repo();
+    let (cancel, out) = quiet();
+
+    let report = repo.check_incoming_refs(&cancel).unwrap();
+    assert_eq!(report.errors.len(), 1);
+    assert_eq!(report.errors[0].remote, "offline");
+    assert_eq!(report.branches.len(), 2);
+    for (name, remote_branch) in [("main", "main"), ("review", "review/next")] {
+        let found = report.branches.iter().find(|branch| branch.branch == name).unwrap();
+        assert_eq!(found.tracked_tip.tracking.remote, "origin");
+        assert_eq!(found.tracked_tip.tracking.branch, remote_branch);
+        assert_eq!(found.tracked_tip.commit, old);
+        assert_eq!(found.advertised_commit, new);
+    }
+    assert!(!repo.has_commit(&new));
+    assert_eq!(fx.read(".git/FETCH_HEAD"), fetch_head);
+    assert_eq!(repo.branch_info().unwrap().behind, 0);
+
+    repo.fetch_remote("origin", &cancel, &out).unwrap();
+    assert!(repo.check_incoming_refs(&cancel).unwrap().branches.is_empty());
+    assert_eq!(repo.branch_info().unwrap().behind, 1);
+}
+
+#[test]
+fn fetch_report_keeps_prunes_from_the_remotes_that_succeeded() {
+    use ide_core::workflow_settings::FetchTagsMode::{Auto, Sync};
+
+    let (fx, bare) = Fixture::with_origin();
+    let missing = fx.tmp.path().join("missing.git");
+    fx.git(&["remote", "add", "a-offline", missing.to_str().unwrap()]);
+    fx.git(&["remote", "add", "z-skipped", missing.to_str().unwrap()]);
+    fx.git(&["config", "remote.z-skipped.skipDefaultUpdate", "true"]);
+    fx.git(&["config", "remote.origin.skipDefaultUpdate", "true"]);
+    fx.git(&["config", "remote.origin.skipFetchAll", "false"]);
+    fx.git(&["remote", "add", "release/mirror", bare.to_str().unwrap()]);
+    fx.git(&["push", "-q", "origin", "main:gone/review"]);
+    fx.git(&["tag", "release/retired"]);
+    git_in(&bare, &["branch", "-D", "gone/review"]);
+    let repo = fx.repo();
+    let (cancel, out) = quiet();
+
+    let report = repo.fetch_report(None, Sync, &cancel, &out).unwrap();
+    let [origin, offline, mirror] = report.remotes.as_slice() else { panic!("{report:?}") };
+    assert_eq!(offline.remote, "a-offline");
+    assert!(offline.error.as_ref().unwrap().message.contains("missing.git"));
+    assert_eq!(origin.remote, "origin");
+    assert!(origin.error.is_none());
+    assert_eq!(origin.pruned.len(), 2);
+    assert!(origin.pruned.contains(&"release/retired".into()));
+    assert!(origin.pruned.contains(&"origin/gone/review".into()));
+    assert_eq!(mirror.remote, "release/mirror");
+    assert!(mirror.error.is_none());
+    assert!(mirror.pruned.is_empty());
+    assert!(!fx.git(&["branch", "-r"]).contains("gone/review"));
+    assert!(fx.git(&["tag", "--list", "release/retired"]).is_empty());
+    assert_eq!(fx.read(".git/FETCH_HEAD").lines().count(), 2);
+
+    let background = repo.fetch_in_background(&["a-offline".into()], &cancel, &out).unwrap();
+    assert_eq!(
+        background.remotes.iter().map(|result| result.remote.as_str()).collect::<Vec<_>>(),
+        ["origin", "release/mirror"]
+    );
+    assert!(background.remotes.iter().all(|result| result.error.is_none()));
+
+    // Fetching a named remote intentionally bypasses the exclusion for Fetch All.
+    let selected = repo.fetch_report(Some("z-skipped"), Auto, &cancel, &out).unwrap();
+    assert_eq!(selected.remotes.len(), 1);
+    assert_eq!(selected.remotes[0].remote, "z-skipped");
+    assert!(selected.remotes[0].error.is_some());
+}
+
+#[test]
+fn fetch_report_does_not_claim_a_locked_ref_was_pruned() {
+    let (fx, bare) = Fixture::with_origin();
+    fx.git(&["push", "-q", "origin", "main:gone"]);
+    git_in(&bare, &["branch", "-D", "gone"]);
+    fx.write(".git/refs/remotes/origin/gone.lock", "");
+    let (cancel, out) = quiet();
+    let report = fx
+        .repo()
+        .fetch_report(Some("origin"), ide_core::workflow_settings::FetchTagsMode::Auto, &cancel, &out)
+        .unwrap();
+    let remote = &report.remotes[0];
+    assert!(remote.error.as_ref().unwrap().message.contains("gone.lock"));
+    assert!(remote.pruned.is_empty());
+    assert!(fx.git(&["branch", "-r"]).contains("origin/gone"));
+}
+
+#[test]
+fn fetch_tag_modes_override_git_config_only_when_selected() {
+    use ide_core::workflow_settings::FetchTagsMode::*;
+
+    let (fx, bare) = Fixture::with_origin();
+    let tree = fx.git(&["rev-parse", "HEAD^{tree}"]);
+    let orphan = fx.git(&["commit-tree", &tree, "-m", "Unrelated archive"]);
+    fx.git(&["tag", "archived", &orphan]);
+    fx.git(&["tag", "on-main"]);
+    fx.git(&["push", "origin", "--tags"]);
+    fx.git(&["tag", "-d", "archived", "on-main"]);
+    fx.git(&["tag", "local-only"]);
+    fx.git(&["config", "remote.origin.tagOpt", "--no-tags"]);
+    let repo = fx.repo();
+    let (cancel, out) = quiet();
+    let tags = || fx.git(&["tag", "--list"]);
+
+    repo.fetch_with_tags(None, Auto, &cancel, &out).unwrap();
+    assert_eq!(tags(), "local-only");
+    fx.git(&["config", "remote.origin.pruneTags", "true"]);
+    repo.fetch_with_tags(None, Never, &cancel, &out).unwrap();
+    assert_eq!(tags(), "local-only");
+    repo.fetch_with_tags(Some("origin"), Always, &cancel, &out).unwrap();
+    assert_eq!(tags(), "archived\nlocal-only\non-main");
+
+    git_in(&bare, &["tag", "-d", "archived"]);
+    fx.git(&["config", "remote.origin.pruneTags", "false"]);
+    repo.fetch_with_tags(Some("origin"), Sync, &cancel, &out).unwrap();
+    assert_eq!(tags(), "on-main");
+
+    fx.git(&["tag", "-f", "on-main", &orphan]);
+    let error = repo.fetch_with_tags(Some("origin"), Sync, &cancel, &out).unwrap_err();
+    assert!(error.message.contains("would clobber existing tag"), "{}", error.message);
+    assert_eq!(fx.git(&["rev-parse", "refs/tags/on-main"]), orphan);
+}
+
+#[test]
+fn update_project_syncs_tags_with_the_tracked_remote() {
+    use ide_core::workflow_settings::FetchTagsMode::*;
+
+    let (fx, bare) = Fixture::with_origin();
+    fx.git(&["tag", "local-only"]);
+    fx.push_from_other(&bare, "new.txt", "updated");
+    git_in(&bare, &["tag", "received", "main"]);
+    fx.git(&["config", "remote.origin.pruneTags", "false"]);
+    let (cancel, out) = quiet();
+    fx.repo().pull_checked_branch_with_tags(false, Some("main"), Sync, &cancel, &out).unwrap();
+    assert_eq!(fx.git(&["tag", "--list"]), "received");
+    assert_eq!(fx.head(), git_in(&bare, &["rev-parse", "main"]));
+    assert_eq!(fx.git(&["config", "--get", "remote.origin.pruneTags"]), "false");
+}
+
+#[test]
+fn fetch_tag_mode_also_applies_when_updating_selected_branches() {
+    use ide_core::workflow_settings::FetchTagsMode::*;
+
+    let (fx, bare) = Fixture::with_origin();
+    fx.git(&["tag", "local-only"]);
+    fx.push_from_other(&bare, "new.txt", "updated");
+    git_in(&bare, &["tag", "received", "main"]);
+    let (cancel, out) = quiet();
+    let updates = fx.repo().update_branches_with_tags(&["main".into()], Never, &cancel, &out).unwrap();
+    assert_eq!(updates[0].status, BranchUpdateStatus::Updated);
+    assert_eq!(fx.git(&["tag", "--list"]), "local-only");
+    assert_eq!(fx.head(), git_in(&bare, &["rev-parse", "main"]));
+}
+
+#[test]
+fn fetch_full_history_keeps_head_and_uses_the_clone_remote() {
+    use ide_core::workflow_settings::FetchTagsMode;
+    let (fx, bare) = Fixture::with_origin();
+    fx.push_from_other(&bare, "new.txt", "remote content");
+    let clone = fx.tmp.path().join("shallow");
+    git_in(
+        fx.tmp.path(),
+        &[
+            "clone",
+            "-q",
+            "--no-local",
+            "--depth",
+            "1",
+            "--origin",
+            "upstream",
+            bare.to_str().unwrap(),
+            clone.to_str().unwrap(),
+        ],
+    );
+    let repo = Repo::discover(&clone).unwrap().unwrap();
+    let head = git_in(&clone, &["rev-parse", "HEAD"]);
+    assert!(repo.is_shallow().unwrap());
+    assert_eq!(git_in(&clone, &["rev-list", "--count", "HEAD"]), "1");
+
+    git_in(&bare, &["tag", "old", "main~1"]);
+    repo.unshallow_with_tags(FetchTagsMode::Always, &CancellationToken::new(), &|_| {}).unwrap();
+    assert!(!repo.is_shallow().unwrap());
+    assert_eq!(git_in(&clone, &["rev-list", "--count", "HEAD"]), "2");
+    assert_eq!(git_in(&clone, &["rev-parse", "HEAD"]), head);
+    assert_eq!(git_in(&clone, &["tag", "--list"]), "old");
+}
+
+#[test]
+fn clear_stashes_keeps_working_tree_and_index() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "base\n");
+    fx.commit_all("initial");
+    for message in ["first stash", "second stash"] {
+        fx.write("a.txt", message);
+        fx.git(&["stash", "push", "-m", message]);
+    }
+    fx.write("a.txt", "staged\n");
+    fx.git(&["add", "a.txt"]);
+    fx.write("a.txt", "unstaged\n");
+    let repo = fx.repo();
+    assert_eq!(repo.stashes().unwrap().len(), 2);
+
+    repo.stash_clear().unwrap();
+    assert!(repo.stashes().unwrap().is_empty());
+    assert_eq!(fx.read("a.txt"), "unstaged\n");
+    assert_eq!(fx.git(&["show", ":a.txt"]), "staged");
+}
+
+#[test]
+fn revision_patch_applies_only_the_selected_paths() {
+    let fx = Fixture::new();
+    let literal = "note [1].txt";
+    let sibling = "note 1.txt";
+    fx.write(literal, "first version\r\n");
+    fx.write(sibling, "other file\r\n");
+    let before = fx.commit_all("initial");
+    fx.write(literal, "selected revision\r\n");
+    fx.write(sibling, "unselected revision\r\n");
+    let after = fx.commit_all("both files changed");
+    fx.git(&["checkout", "--detach", &before]);
+
+    let repo = fx.repo();
+    let patch = repo.create_revisions_patch(&before, &after, &[PathBuf::from(literal)]).unwrap();
+    let outcome = repo.apply_patch(&patch).unwrap();
+    assert_eq!(outcome.applied, [literal]);
+    assert_eq!(fx.read(literal), "selected revision\r\n");
+    assert_eq!(fx.read(sibling), "other file\r\n");
+    assert!(fx.git(&["diff", "--cached", "--name-only"]).is_empty());
+}
+
+#[test]
+fn selected_patch_keeps_its_conflict_sides_as_files_are_resolved() {
+    let fx = Fixture::new();
+    let files = ["one.txt", "two.txt"];
+    for file in files {
+        fx.write(file, "base\n");
+    }
+    let before = fx.commit_all("Base");
+    for file in files {
+        fx.write(file, "patched\n");
+    }
+    let after = fx.commit_all("Patch");
+    let repo = fx.repo();
+    let patch = repo.create_commits_patch(&[after], false).unwrap();
+    fx.git(&["checkout", "--detach", &before]);
+    for file in files {
+        fx.write(file, "local\n");
+    }
+    fx.commit_all("Local changes");
+    let outcome = repo.apply_selected_patch(&patch, &files.map(str::to_owned)).unwrap();
+    assert_eq!(outcome.conflicts, files);
+    repo.accept_conflict_side(&[fx.dir.join("one.txt")], ConflictSide::Ours).unwrap();
+    assert_eq!(fx.read("one.txt"), "local\n");
+    let remaining = fx.dir.join("two.txt");
+    let versions = repo.merge_versions(&remaining, encoding_rs::UTF_8).unwrap();
+    assert_eq!(versions.sides.operation.as_deref(), Some("apply-patch"));
+    assert_eq!(versions.ours.as_deref(), Some("local\n"));
+    assert_eq!(versions.theirs.as_deref(), Some("patched\n"));
+    repo.accept_conflict_side(&[remaining], ConflictSide::Theirs).unwrap();
+    assert_eq!(fx.read("two.txt"), "patched\n");
+    assert_eq!(repo.merge_sides().unwrap().operation, None);
+}
+
+#[test]
+fn patch_diff_reads_the_local_and_patched_versions_without_writing_the_repository() {
+    use PatchDiffContent::{Binary, Conflict, Raw, Text};
+    let fx = Fixture::new();
+    fx.write("clean.txt", "original\n");
+    fx.write("conflict.txt", "base\n");
+    fx.write("old-name.txt", "moved\n");
+    fx.write("delete.txt", "removed\n");
+    std::fs::write(fx.dir.join("data.bin"), [0, 1, 255]).unwrap();
+    let before = fx.commit_all("before patch");
+    fx.write("clean.txt", "patched\n");
+    fx.write("conflict.txt", "theirs\n");
+    fx.write("add.txt", "added\n");
+    fx.git(&["rm", "delete.txt"]);
+    fx.git(&["mv", "old-name.txt", "new-name.txt"]);
+    std::fs::write(fx.dir.join("data.bin"), [0, 2, 255]).unwrap();
+    let after = fx.commit_all("patch");
+    let repo = fx.repo();
+    let patch = repo.create_commits_patch(&[after], false).unwrap();
+    fx.git(&["checkout", "--detach", &before]);
+    fx.write("conflict.txt", "ours\n");
+    fx.git(&["add", "conflict.txt"]);
+    let original_index = std::fs::read(fx.dir.join(".git/index")).unwrap();
+    let encoding = |_: &Path, _: &[u8]| TextEncoding::from(encoding_rs::UTF_8);
+    let diff = |file| repo.patch_file_diff(&patch, file, &encoding).unwrap();
+
+    assert!(matches!(
+        diff("clean.txt").content,
+        Text { before: Some(before), after: Some(after) } if before == "original\n" && after == "patched\n"
+    ));
+    assert!(matches!(
+        diff("conflict.txt").content,
+        Conflict { local: Some(local), base: Some(base), patched: Some(patched) }
+            if local == "ours\n" && base == "base\n" && patched == "theirs\n"
+    ));
+    assert!(matches!(diff("add.txt").content, Text { before: None, after: Some(text) } if text == "added\n"));
+    assert!(matches!(diff("delete.txt").content, Text { before: Some(text), after: None } if text == "removed\n"));
+    let rename = diff("new-name.txt");
+    assert!(rename.old_path.unwrap().ends_with("old-name.txt"));
+    assert!(matches!(rename.content, Text { before: Some(before), after: Some(after) } if before == after));
+    assert!(matches!(diff("data.bin").content, Binary));
+
+    let raw = "--- a/conflict.txt\n+++ b/conflict.txt\n@@ -1 +1 @@\n-missing preimage\n+result\n";
+    assert!(matches!(
+        repo.patch_file_diff(raw, "conflict.txt", &encoding).unwrap().content,
+        Raw { local: Some(local), patch, applies: false } if local == "ours\n" && patch == raw
+    ));
+    let outside = "--- a/../external.txt\n+++ b/../external.txt\n@@ -1 +1 @@\n-before\n+after\n";
+    assert!(repo.patch_file_diff(outside, "../external.txt", &encoding).is_err());
+    assert_eq!(std::fs::read(fx.dir.join(".git/index")).unwrap(), original_index);
+    assert_eq!(fx.read("clean.txt"), "original\n");
+    assert_eq!(fx.read("conflict.txt"), "ours\n");
+    assert_eq!(fx.read("delete.txt"), "removed\n");
+    assert!(fx.exists("old-name.txt"));
+    assert!(!fx.exists("new-name.txt"));
+    assert!(!fx.exists("add.txt"));
+}
+
+#[test]
+fn applying_selected_patch_files_keeps_renames_and_binary_data() {
+    let fx = Fixture::new();
+    let from = "before [1].txt";
+    let to = "after [1].txt";
+    fx.write(from, "rename this file\n");
+    fx.write("keep.txt", "original\n");
+    std::fs::write(fx.dir.join("data.bin"), [0, 1, 255]).unwrap();
+    let before = fx.commit_all("initial");
+    fx.git(&["mv", from, to]);
+    fx.write("keep.txt", "from patch\n");
+    std::fs::write(fx.dir.join("data.bin"), [0, 2, 255]).unwrap();
+    let after = fx.commit_all("rename, binary and text");
+    let repo = fx.repo();
+    let patch = repo.create_commits_patch(&[after], false).unwrap();
+    fx.git(&["checkout", "--detach", &before]);
+    fx.write("keep.txt", "already staged\n");
+    fx.git(&["add", "keep.txt"]);
+    assert!(repo.apply_selected_patch(&patch, &[]).is_err());
+    assert!(repo.apply_selected_patch(&patch, &[to.to_owned(), "unknown.txt".into()]).is_err());
+    assert!(fx.exists(from));
+    assert!(!fx.exists(to));
+
+    let outcome = repo.apply_selected_patch(&patch, &[to.to_owned(), "data.bin".into()]).unwrap();
+    assert_eq!(outcome.applied, [to, "data.bin"]);
+    assert!(outcome.conflicts.is_empty());
+    assert!(!fx.exists(from));
+    assert_eq!(fx.read(to), "rename this file\n");
+    assert_eq!(std::fs::read(fx.dir.join("data.bin")).unwrap(), [0, 2, 255]);
+    assert_eq!(fx.read("keep.txt"), "already staged\n");
+    assert_eq!(fx.git(&["diff", "--cached", "--name-only"]), "keep.txt");
+    assert_eq!(fx.git(&["show", ":keep.txt"]), "already staged");
+}
+
+#[test]
+fn stashed_untracked_files_have_their_own_revision() {
+    let fx = Fixture::new();
+    fx.write("tracked.txt", "initial\n");
+    fx.commit_all("initial");
+    fx.write("tracked.txt", "stash tracked change\n");
+    fx.write("untracked.txt", "stash untracked content\n");
+    fx.git(&["stash", "push", "--include-untracked"]);
+
+    let repo = fx.repo();
+    let stashes = repo.stashes().unwrap();
+    let untracked = stashes[0].untracked.as_deref().unwrap();
+    let files = repo.commit_files(untracked).unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].path, "untracked.txt");
+    assert_eq!(files[0].kind, ChangeKind::Added);
+    assert!(!fx.exists("untracked.txt"));
+
+    let empty = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+    let patch = repo.create_revisions_patch(empty, untracked, &[PathBuf::from("untracked.txt")]).unwrap();
+    repo.apply_patch(&patch).unwrap();
+    assert_eq!(fx.read("untracked.txt"), "stash untracked content\n");
+    assert_eq!(fx.read("tracked.txt"), "initial\n");
+    assert_eq!(repo.stashes().unwrap().len(), 1);
 }
 
 #[test]
@@ -916,6 +2575,52 @@ fn branch_tips_are_reported() {
 
 // ---------------------------------------------------------------------------
 // Rollback
+
+#[test]
+fn stage_without_content_marks_an_untracked_file_without_adding_its_contents() {
+    let fx = Fixture::new();
+    fx.write("base.txt", "base\n");
+    fx.commit_all("base");
+    fx.write("new [1].txt", "keep this text\n");
+    let repo = fx.repo();
+    repo.stage_without_content(&[fx.path("new [1].txt")]).unwrap();
+    assert!(fx.git(&["diff", "--cached", "--name-only"]).trim().is_empty());
+    let status = repo.status().unwrap();
+    let file = status_of(&status, "new [1].txt").unwrap();
+    assert_eq!(file.staged, None);
+    assert_eq!(file.unstaged, Some(ChangeKind::Added));
+    assert_eq!(fx.read("new [1].txt"), "keep this text\n");
+    assert!(repo.restore_unstaged(&[fx.path("new [1].txt")]).is_err());
+    assert_eq!(fx.read("new [1].txt"), "keep this text\n");
+    repo.stage(&[fx.path("new [1].txt")]).unwrap();
+    assert_eq!(fx.git(&["diff", "--cached", "--name-only"]).trim(), "new [1].txt");
+}
+
+#[test]
+fn restore_unstaged_keeps_the_index_and_other_worktree_changes() {
+    let fx = Fixture::new();
+    fx.write("selected.txt", "base\n");
+    fx.write("removed.txt", "initial\n");
+    fx.write("other.txt", "before\n");
+    fx.commit_all("base");
+    fx.write("selected.txt", "staged\n");
+    fx.write("removed.txt", "staged before local deletion\n");
+    fx.git(&["add", "selected.txt", "removed.txt"]);
+    fx.write("selected.txt", "left in the worktree\n");
+    fx.write("other.txt", "unrelated\n");
+    std::fs::remove_file(fx.path("removed.txt")).unwrap();
+    fx.write("untracked.txt", "keep me\n");
+    let repo = fx.repo();
+    let before = fx.git(&["diff", "--cached", "--binary"]);
+    assert!(repo.restore_unstaged(&[fx.path("selected.txt"), fx.path("untracked.txt")]).is_err());
+    assert_eq!(fx.read("selected.txt"), "left in the worktree\n");
+    repo.restore_unstaged(&[fx.path("selected.txt"), fx.path("removed.txt")]).unwrap();
+    assert_eq!(fx.read("selected.txt"), "staged\n");
+    assert_eq!(fx.read("removed.txt"), "staged before local deletion\n");
+    assert_eq!(fx.read("other.txt"), "unrelated\n");
+    assert_eq!(fx.read("untracked.txt"), "keep me\n");
+    assert_eq!(before, fx.git(&["diff", "--cached", "--binary"]));
+}
 
 #[test]
 fn rollback_newly_added_file() {
@@ -989,6 +2694,225 @@ fn rollback_conflicted_file_restores_head() {
     assert!(status_of(&st, "f.txt").is_none(), "{st:?}");
     // Still merging (theirs-only.txt staged); the merge can be aborted.
     assert_eq!(repo.branch_info().unwrap().operation.as_deref(), Some("merge"));
+}
+
+#[test]
+fn commit_crlf_checks_only_selected_content_without_a_git_policy() {
+    let fx = Fixture::new();
+    fx.write(".gitattributes", "normalized.txt eol=lf\nintentional.txt -text\n");
+    let original: String = (1..=30).map(|i| format!("line {i}\n")).collect();
+    fx.write("partial.txt", &original);
+    fx.write("retained.txt", &original.replace('\n', "\r\n"));
+    fx.write("staged.txt", "base\n");
+    fx.write("unstaged.txt", "base\n");
+    fx.commit_all("base");
+
+    fx.write("staged.txt", "selected\r\n");
+    fx.write("unstaged.txt", "staged LF\n");
+    fx.git(&["add", "staged.txt", "unstaged.txt"]);
+    std::fs::remove_file(fx.path("staged.txt")).unwrap();
+    fx.write("unstaged.txt", "unselected CRLF\r\n");
+    fx.write("normalized.txt", "normalized\r\n");
+    fx.write("intentional.txt", "intentional\r\n");
+    fx.write("new file.txt", "new\r\n");
+    fx.write("binary.dat", "binary\0\r\n");
+    let edited = original.replace("line 2\n", "selected LF\n").replace("line 28\n", "CRLF\r\n");
+    fx.write("partial.txt", &edited);
+    fx.write("retained.txt", &edited);
+
+    let repo = fx.repo();
+    let paths: Vec<_> = [
+        "staged.txt",
+        "unstaged.txt",
+        "normalized.txt",
+        "intentional.txt",
+        "new file.txt",
+        "binary.dat",
+        "partial.txt",
+        "retained.txt",
+    ]
+    .map(|p| fx.path(p))
+    .into();
+    let hunks = diff_hunks(&original, &edited);
+    assert_eq!(hunks.len(), 2);
+    let options = |h: &LineHunk| CommitOptions {
+        partial: ["partial.txt", "retained.txt"]
+            .map(|path| PartialCommitFile {
+                prepared: None,
+                path: fx.path(path).into(),
+                line_hunks: vec![],
+                hunks: vec![HunkRange {
+                    start: h.start,
+                    lines: h.lines,
+                    old_start: h.old_start,
+                    old_lines: h.old_lines,
+                }],
+            })
+            .into(),
+        stage: ["normalized.txt", "intentional.txt", "new file.txt", "binary.dat"].map(|p| fx.path(p).into()).into(),
+        ..Default::default()
+    };
+    let check = |options: CommitOptions| {
+        repo.commit_crlf_paths(&paths, &options, &|_| Ok(encoding_rs::UTF_8), &CancellationToken::new())
+            .unwrap()
+            .into_iter()
+            .map(|p| p.0.file_name().unwrap().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+    };
+    let before = fx.git(&["diff", "--cached"]);
+    assert_eq!(check(options(&hunks[0])), ["new file.txt", "retained.txt", "staged.txt"]);
+    assert_eq!(check(options(&hunks[1])), ["new file.txt", "retained.txt", "staged.txt"]);
+    assert_eq!(fx.git(&["diff", "--cached"]), before);
+    for value in ["input", "yes", "1"] {
+        fx.git(&["config", "core.autocrlf", value]);
+        assert!(check(options(&hunks[1])).is_empty(), "core.autocrlf={value}");
+    }
+}
+
+#[test]
+fn commit_large_files_checks_selected_sources_and_repository_lfs_config() {
+    let fx = Fixture::new();
+    let original: String = (1..=30).map(|i| format!("l{i:02}\n")).collect();
+    fx.write("partial.txt", &original);
+    fx.write("staged.bin", "base\n");
+    fx.write("worktree.txt", "base\n");
+    fx.write("disk-only.txt", "base\n");
+    fx.commit_all("base");
+
+    std::fs::write(fx.path("staged.bin"), [0_u8; 219]).unwrap();
+    fx.write("disk-only.txt", "small index\n");
+    fx.git(&["add", "staged.bin", "disk-only.txt"]);
+    std::fs::remove_file(fx.path("staged.bin")).unwrap();
+    fx.write("worktree.txt", &"a".repeat(198));
+    fx.write("disk-only.txt", &"b".repeat(250));
+    fx.write("outside-selection.txt", &"c".repeat(300));
+    let long_line = format!("{}\n", "字".repeat(70));
+    let edited = original.replace("l02\n", &long_line).replace("l29\n", "small change\n");
+    fx.write("partial.txt", &edited);
+
+    let repo = fx.repo();
+    let paths = ["staged.bin", "worktree.txt", "disk-only.txt", "partial.txt"].map(|p| fx.path(p));
+    let hunks = diff_hunks(&original, &edited);
+    assert_eq!(hunks.len(), 2);
+    let options = |h: &LineHunk| CommitOptions {
+        partial: vec![PartialCommitFile {
+            prepared: None,
+            path: fx.path("partial.txt").into(),
+            line_hunks: vec![],
+            hunks: vec![HunkRange { start: h.start, lines: h.lines, old_start: h.old_start, old_lines: h.old_lines }],
+        }],
+        stage: vec![fx.path("worktree.txt").into()],
+        ..Default::default()
+    };
+    let check = |options: CommitOptions, limit| {
+        repo.commit_large_files(&paths, &options, limit, &|_| Ok(encoding_rs::UTF_8), &CancellationToken::new())
+            .unwrap()
+            .into_iter()
+            .map(|file| (file.path.0.file_name().unwrap().to_string_lossy().into_owned(), file.size))
+            .collect::<Vec<_>>()
+    };
+    let before = fx.git(&["diff", "--cached", "--raw"]);
+    assert_eq!(check(options(&hunks[1]), 160), [(String::from("staged.bin"), 219), ("worktree.txt".into(), 198)]);
+    assert_eq!(
+        check(options(&hunks[0]), 198),
+        [("staged.bin".into(), 219), ("partial.txt".into(), (original.len() - 4 + long_line.len()) as u64)]
+    );
+    assert_eq!(fx.git(&["diff", "--cached", "--raw"]), before);
+    fx.git(&["config", "lfs.repositoryformatversion", "0"]);
+    assert!(check(options(&hunks[0]), 160).is_empty());
+}
+
+#[test]
+fn staging_formatter_edits_uses_the_selected_index_text() {
+    let fx = Fixture::new();
+    fx.write("format.ts", "const value = 1;\r\n");
+    fx.commit_all("base");
+    fx.write("format.ts", "const value=2;\r\n");
+    fx.git(&["add", "format.ts"]);
+    fx.write("format.ts", "const other = 3;\r\n");
+    let repo = fx.repo();
+    let path = fx.path("format.ts");
+    let before = "const value=2;\n";
+    let formatted = "const value = 2;\n";
+    repo.stage_formatted_text(&path, before, formatted, encoding_rs::UTF_8).unwrap();
+    assert_eq!(repo.file_bytes_at(&path, Some(":0")).unwrap().unwrap(), b"const value = 2;\r\n");
+    assert_eq!(fx.read("format.ts"), "const other = 3;\r\n");
+    assert!(repo.stage_formatted_text(&path, before, formatted, encoding_rs::UTF_8).is_err());
+}
+
+#[test]
+fn staging_line_hunks_read_the_renamed_index_and_unsaved_working_text() {
+    let fx = Fixture::new();
+    fx.write("before.txt", "one\nhead\nkeep\n");
+    fx.commit_all("base");
+    fx.git(&["mv", "before.txt", "after.txt"]);
+    fx.write("after.txt", "one\nindex\nkeep\n");
+    fx.git(&["add", "after.txt"]);
+    let repo = fx.repo();
+    let path = fx.path("after.txt");
+    let snapshot = repo
+        .staging_line_hunks(&path, Some(&fx.path("before.txt")), "one\nunsaved\nkeep\n", 1024, |_, _| {
+            encoding_rs::UTF_8.into()
+        })
+        .unwrap()
+        .unwrap();
+    assert_eq!(snapshot.hunks.len(), 1);
+    let change = &snapshot.hunks[0];
+    assert!(change.staged && change.unstaged);
+    assert_eq!(change.head_text, "head\n");
+    assert_eq!(change.index_text, "index\n");
+    assert_eq!(
+        snapshot.index_version,
+        repo.staged_text(&path, 1024, |_| encoding_rs::UTF_8.into()).unwrap().unwrap().version
+    );
+    assert_eq!(fx.read("after.txt"), "one\nindex\nkeep\n");
+}
+
+#[test]
+fn editing_staged_text_keeps_worktree_encoding_mode_and_other_entries() {
+    let fx = Fixture::new();
+    let path = fx.path("run.txt");
+    let utf16 =
+        |text: &str| [0xff, 0xfe].into_iter().chain(text.encode_utf16().flat_map(u16::to_le_bytes)).collect::<Vec<_>>();
+    std::fs::write(&path, utf16("staged\r\nkeep\n")).unwrap();
+    fx.write("other.txt", "original\n");
+    fx.commit_all("base");
+    fx.git(&["update-index", "--chmod=+x", "run.txt"]);
+    fx.write("run.txt", "working copy\n");
+    let repo = fx.repo();
+    let encoding = |_: &[u8]| encoding_rs::UTF_16LE.into();
+    assert!(repo.staged_text(&path, 3, |_| panic!("large blobs are skipped before decoding")).unwrap().is_none());
+    let opened = repo.staged_text(&path, 1024, encoding).unwrap().unwrap();
+    assert_eq!(opened.text, "staged\nkeep\n");
+
+    fx.write("other.txt", "staged separately\n");
+    fx.git(&["add", "other.txt"]);
+    let next = repo.save_staged_text(&path, &opened.version, "edited\nkeep\n", encoding).unwrap();
+    assert_ne!(opened.version, next);
+    assert_eq!(repo.file_mode_at(&path, Some(":0")).unwrap().as_deref(), Some("100755"));
+    assert_eq!(repo.file_bytes_at(&path, Some(":0")).unwrap().unwrap(), utf16("edited\r\nkeep\n"));
+    assert_eq!(fx.read("run.txt"), "working copy\n");
+    assert_eq!(fx.git(&["show", ":other.txt"]), "staged separately");
+
+    let error = repo.save_staged_text(&path, &opened.version, "obsolete\n", encoding).unwrap_err();
+    assert_eq!(error.kind, ide_core::error::ErrorKind::OutOfSync);
+    assert_eq!(repo.staged_text(&path, 1024, encoding).unwrap().unwrap().version, next);
+}
+
+#[test]
+fn editing_staged_text_rejects_an_index_that_git_is_updating() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\n");
+    fx.commit_all("base");
+    let path = fx.path("a.txt");
+    let repo = fx.repo();
+    let encoding = |_: &[u8]| encoding_rs::UTF_8.into();
+    let opened = repo.staged_text(&path, 1024, encoding).unwrap().unwrap();
+    let lock = fx.path(".git/index.lock");
+    std::fs::write(&lock, "another writer").unwrap();
+    assert!(repo.save_staged_text(&path, &opened.version, "two\n", encoding).is_err());
+    assert_eq!(std::fs::read_to_string(lock).unwrap(), "another writer");
+    assert_eq!(fx.git(&["show", ":a.txt"]), "one");
 }
 
 #[test]
@@ -1086,6 +3010,119 @@ fn branch_overwrite_preserves_the_ref_if_checkout_fails() {
 
     repo.create_branch_with_overwrite("topic", Some(&tip), true, true).unwrap();
     assert_eq!(fx.git(&["rev-parse", "HEAD"]), tip);
+}
+
+#[test]
+fn scoped_rebase_checks_the_target_and_the_branch_for_rollback() {
+    let fx = Fixture::new();
+    fx.write("base.txt", "base\n");
+    let base = fx.commit_all("base");
+    fx.git(&["switch", "-qc", "integration"]);
+    fx.write("target.txt", "integration\n");
+    let onto = fx.commit_all("integration");
+    fx.git(&["tag", "integration", &base]);
+    fx.git(&["switch", "-q", "main"]);
+    fx.write("local.txt", "local\n");
+    let original = fx.commit_all("local");
+    let repo = fx.repo();
+    let cancel = CancellationToken::new();
+    let out = |_| {};
+    let plan = BranchRebasePlan {
+        head: HistoryTip { branch: Some("main".into()), commit: original.clone() },
+        target: "refs/heads/integration".into(),
+        onto: onto.clone(),
+    };
+
+    let stale = BranchRebasePlan { onto: base, ..plan.clone() };
+    assert!(repo.rebase_branch(&stale, &cancel, &out).is_err());
+    assert_eq!(fx.git(&["rev-parse", "HEAD"]), original);
+
+    let rebased = repo.rebase_branch(&plan, &cancel, &out).unwrap();
+    assert_eq!(rebased.branch.as_deref(), Some("main"));
+    assert_eq!(fx.git(&["rev-parse", "HEAD^"]), onto);
+    assert!(repo.branch_info().unwrap().rebase.is_none());
+    fx.git(&["switch", "-qc", "same-tip"]);
+    assert!(repo.restore_head_on_branch(&original, &rebased.commit, Some("main")).is_err());
+    assert_eq!(fx.git(&["rev-parse", "HEAD"]), rebased.commit);
+    fx.git(&["switch", "-q", "main"]);
+    repo.restore_head_on_branch(&original, &rebased.commit, Some("main")).unwrap();
+    assert_eq!(fx.git(&["rev-parse", "HEAD"]), original);
+}
+
+#[test]
+fn rollback_branch_creation_restores_the_checkout_and_overwritten_branch() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "base\n");
+    let base = fx.commit_all("base");
+    let repo = fx.repo();
+    repo.create_branch("topic", None, false).unwrap();
+    fx.git(&["branch", "--set-upstream-to=main", "topic"]);
+    fx.write("a.txt", "main\n");
+    let tip = fx.commit_all("main");
+    let before = ide_vcs::HistoryTip { branch: Some("main".into()), commit: tip.clone() };
+
+    assert!(repo.create_branch_recorded("topic", None, true, true, Some(&tip)).is_err());
+    assert_eq!(fx.git(&["rev-parse", "topic"]), base);
+    let created = repo.create_branch_recorded("topic", None, true, true, Some(&base)).unwrap();
+    assert_eq!(created.tip, tip);
+    repo.undo_branch_creation("topic", &created, Some(&before)).unwrap();
+    assert_eq!(repo.branch_info().unwrap().head.as_deref(), Some("main"));
+    assert_eq!(fx.git(&["rev-parse", "topic"]), base);
+    assert_eq!(fx.git(&["rev-parse", "topic@{upstream}"]), tip);
+
+    let created = repo.create_branch_recorded("new", Some(&base), true, false, None).unwrap();
+    repo.undo_branch_creation("new", &created, Some(&before)).unwrap();
+    assert!(!repo.branches().unwrap().iter().any(|branch| branch.name == "new"));
+    assert_eq!(fx.read("a.txt"), "main\n");
+
+    let created = repo.create_branch_recorded("advanced", Some(&base), false, false, None).unwrap();
+    fx.git(&["branch", "--force", "advanced", &tip]);
+    assert!(repo.undo_branch_creation("advanced", &created, None).is_err());
+    assert_eq!(fx.git(&["rev-parse", "advanced"]), tip);
+}
+
+#[test]
+fn new_branch_smart_checkout_preserves_local_edits_in_both_directions() {
+    let fx = Fixture::new();
+    fx.write("f.txt", "1\n2\n3\n4\n5\n");
+    let base = fx.commit_all("base");
+    fx.git(&["switch", "-q", "-c", "source"]);
+    fx.write("f.txt", "1\nsource\n3\n4\n5\n");
+    let source = fx.commit_all("source");
+    fx.git(&["switch", "-q", "main"]);
+    fx.write("f.txt", "1\n2\n3\n4\nlocal\n");
+    fx.git(&["add", "--", "f.txt"]);
+    fx.write("f.txt", "1\n2\n3\n4\nlocal\nunstaged\n");
+    let repo = fx.repo();
+    let normal = CheckoutOptions::default();
+    let blocked = repo.create_branch_with("new", Some("refs/heads/source"), Some(&normal), false, None).unwrap();
+    assert_eq!(blocked.checkout, CheckoutOutcome::LocalChanges { files: vec!["f.txt".into()] });
+    assert!(blocked.created.is_none());
+    assert!(!repo.branches().unwrap().iter().any(|branch| branch.name == "new"));
+
+    let smart = CheckoutOptions { mode: CheckoutMode::Smart, ..Default::default() };
+    let outcome = repo.create_branch_with("new", Some("refs/heads/source"), Some(&smart), false, None).unwrap();
+    assert_eq!(outcome.checkout, CheckoutOutcome::Done);
+    let receipt = outcome.created.unwrap();
+    assert_eq!(receipt.tip, source);
+    assert_eq!(fx.read("f.txt"), "1\nsource\n3\n4\nlocal\nunstaged\n");
+    assert_eq!(fx.git(&["show", ":f.txt"]), "1\nsource\n3\n4\nlocal");
+    assert!(repo.stashes().unwrap().is_empty());
+
+    repo.undo_branch_creation("new", &receipt, Some(&HistoryTip { branch: Some("main".into()), commit: base }))
+        .unwrap();
+    assert_eq!(repo.branch_info().unwrap().head.as_deref(), Some("main"));
+    assert_eq!(fx.read("f.txt"), "1\n2\n3\n4\nlocal\nunstaged\n");
+    assert_eq!(fx.git(&["show", ":f.txt"]), "1\n2\n3\n4\nlocal");
+    assert!(!repo.branches().unwrap().iter().any(|branch| branch.name == "new"));
+    assert!(repo.stashes().unwrap().is_empty());
+
+    fx.git(&["reset", "-q", "HEAD", "--", "f.txt"]);
+    fx.write("f.txt", "1\nlocal\n3\n4\n5\n");
+    let conflicted = repo.create_branch_with("conflict", Some(&source), Some(&smart), false, None).unwrap();
+    assert_eq!(conflicted.checkout, CheckoutOutcome::Conflicts { files: vec!["f.txt".into()] });
+    assert_eq!(conflicted.created.unwrap().tip, source);
+    assert_eq!(repo.stashes().unwrap().len(), 1);
 }
 
 #[test]
@@ -1304,6 +3341,8 @@ fn local_changes_come_back_once_a_stopped_rebase_is_continued() {
     fx.write("f3.txt", "3\nmore\n");
     fx.commit_all("c5");
     let c5 = fx.git(&["rev-parse", "HEAD"]);
+    fx.write("f1.txt", "external copy\n");
+    let external = fx.git(&["stash", "create"]);
     fx.write("f1.txt", "staged\n");
     fx.git(&["add", "f1.txt"]);
     let result = repo.interactive_rebase(
@@ -1319,13 +3358,144 @@ fn local_changes_come_back_once_a_stopped_rebase_is_continued() {
     assert!(result.is_err());
     assert_eq!(repo.branch_info().unwrap().operation.as_deref(), Some("rebase"));
     assert_eq!(fx.read("f1.txt"), "1\n", "put aside while the rebase is stopped");
+    let stash = repo.stashes().unwrap().remove(0);
+    fx.git(&["stash", "store", "-m", "external", &external]);
+    fx.git(&["stash", "store", "-m", "keep a copy", &stash.id]);
+    assert_eq!(repo.stashes().unwrap().len(), 3);
     fx.write("f3.txt", "3\nmore\n");
     repo.stage(&[fx.path("f3.txt")]).unwrap();
     repo.continue_operation(&cancel, &out).unwrap();
     assert_eq!(repo.branch_info().unwrap().operation, None);
     assert_eq!(fx.read("f1.txt"), "staged\n");
     assert_eq!(fx.git(&["diff", "--cached", "--name-only"]), "f1.txt");
-    assert!(fx.git(&["stash", "list"]).is_empty());
+    assert!(matches!(
+        repo.stashes().unwrap().as_slice(),
+        [entry, other] if entry.id == stash.id && entry.message == "keep a copy" && other.id == external
+    ));
+}
+
+#[test]
+fn rebase_restores_its_shelf_after_garbage_collection_and_a_settings_change() {
+    let fx = Fixture::new();
+    fx.write("shared.txt", "base\n");
+    fx.write("local.txt", "base\n");
+    fx.commit_all("base");
+    fx.git(&["switch", "-qc", "other"]);
+    fx.write("shared.txt", "other\n");
+    fx.commit_all("other edit");
+    fx.git(&["switch", "-q", "main"]);
+    fx.write("shared.txt", "main\n");
+    fx.commit_all("main edit");
+    fx.write("local.txt", "staged\n");
+    fx.git(&["add", "local.txt"]);
+    let repo = fx.repo();
+    let shelf_dir = fx.path(".openidea/shelf");
+    repo.set_automatic_shelf(Some(shelf_dir.clone()), None);
+    let (cancel, out) = quiet();
+    assert!(repo.rebase("other").is_err());
+    assert_eq!(repo.branch_info().unwrap().operation.as_deref(), Some("rebase"));
+    assert_eq!(fx.read("local.txt"), "base\n");
+    assert!(repo.stashes().unwrap().is_empty());
+    let entries = shelf::list(&shelf_dir).unwrap();
+    assert_eq!(entries.len(), 1);
+    let marker: serde_json::Value = serde_json::from_str(&fx.read(".git/openidea-saved-changes")).unwrap();
+    let snapshot = marker["snapshot"].as_str().unwrap();
+    fx.git(&["gc", "--prune=now"]);
+    assert!(!fx.git(&["rev-list", "--all"]).lines().any(|id| id == snapshot));
+    assert!(!Command::new("git").current_dir(&fx.dir).args(["cat-file", "-e", snapshot]).status().unwrap().success());
+
+    let reopened = fx.repo(); // The settings now select Stash.
+    reopened.skip_operation(&cancel, &out).unwrap();
+    assert_eq!(reopened.branch_info().unwrap().operation, None);
+    assert_eq!(fx.git(&["show", ":local.txt"]), "staged");
+    assert!(shelf::list(&shelf_dir).unwrap().is_empty());
+    assert!(!fx.exists(".git/openidea-saved-changes"));
+}
+
+fn pause_rebase_with_grouped_shelves() -> (Fixture, PathBuf) {
+    let fx = Fixture::new();
+    for file in ["shared.txt", "keep.txt", "discard-file.txt", "discard-list.txt", "rename-old.txt"] {
+        fx.write(file, "base\n");
+    }
+    fx.commit_all("base");
+    fx.git(&["switch", "-qc", "other"]);
+    fx.write("shared.txt", "other\n");
+    fx.commit_all("other");
+    fx.git(&["switch", "-q", "main"]);
+    fx.write("shared.txt", "main\n");
+    fx.commit_all("main");
+    fx.write("keep.txt", "staged\n");
+    fx.git(&["add", "keep.txt"]);
+    fx.write("keep.txt", "base\n");
+    fx.write("discard-file.txt", "discard one file\n");
+    fx.write("discard-list.txt", "discard the list\n");
+    fx.git(&["mv", "rename-old.txt", "rename-new.txt"]);
+
+    let project = fx.tmp.path();
+    let shelf_dir = ide_core::project_dir::path(project, "shelf");
+    let mut lists = ChangelistState::initial();
+    lists.lists.push(Changelist {
+        id: "discard".into(),
+        name: "Discard".into(),
+        comment: String::new(),
+        applied_commit: None,
+    });
+    lists.files.insert("work/discard-list.txt".into(), "discard".into());
+    lists.files.insert("work/rename-new.txt".into(), "discard".into());
+    changelists::save(&ide_core::project_dir::path(project, "changelists.json"), &lists).unwrap();
+    let repo = fx.repo();
+    repo.set_automatic_shelf(Some(shelf_dir.clone()), Some(project.to_path_buf()));
+    assert!(repo.rebase("other").is_err());
+    assert_eq!(repo.branch_info().unwrap().operation.as_deref(), Some("rebase"));
+    (fx, shelf_dir)
+}
+
+#[test]
+fn rebase_shelves_changelists_separately_and_restores_only_retained_files() {
+    let (fx, shelf_dir) = pause_rebase_with_grouped_shelves();
+    let entries = shelf::list(&shelf_dir).unwrap();
+    assert_eq!(entries.len(), 2);
+    let discard = entries.iter().find(|entry| entry.name.starts_with("[Discard] ")).unwrap();
+    assert_eq!(
+        discard.files.iter().map(|file| file.path.as_str()).collect::<Vec<_>>(),
+        ["discard-list.txt", "rename-new.txt", "rename-old.txt"]
+    );
+    let changes = entries.iter().find(|entry| entry.name.starts_with("[Changes] ")).unwrap();
+    assert_eq!(changes.files.len(), 2);
+    shelf::delete(&shelf_dir, &discard.id).unwrap();
+    shelf::delete_path(&shelf_dir, &changes.id, Some("discard-file.txt")).unwrap();
+    fx.git(&["gc", "--prune=now"]);
+
+    let (cancel, out) = quiet();
+    fx.repo().skip_operation(&cancel, &out).unwrap();
+    assert_eq!(fx.git(&["show", ":keep.txt"]), "staged");
+    for file in ["keep.txt", "discard-file.txt", "discard-list.txt", "rename-old.txt"] {
+        assert_eq!(fx.read(file), "base\n");
+    }
+    assert!(!fx.exists("rename-new.txt"));
+    assert!(shelf::list(&shelf_dir).unwrap().is_empty());
+    assert!(std::fs::read_dir(&shelf_dir).unwrap().all(|entry| entry.unwrap().file_name() == ".gitignore"));
+}
+
+#[test]
+fn rebase_keeps_shelves_and_archive_if_a_group_cannot_be_read_as_a_patch() {
+    let (fx, shelf_dir) = pause_rebase_with_grouped_shelves();
+    let entries = shelf::list(&shelf_dir).unwrap();
+    let patch = shelf_dir.join(&entries[0].id).join("shelved.patch");
+    std::fs::write(&patch, "incomplete patch").unwrap();
+
+    let (cancel, out) = quiet();
+    let error = fx.repo().skip_operation(&cancel, &out).unwrap_err();
+    assert!(error.message.contains("no file changes found"));
+    assert_eq!(std::fs::read_to_string(patch).unwrap(), "incomplete patch");
+    assert_eq!(shelf::list(&shelf_dir).unwrap().len(), 2);
+    assert!(
+        std::fs::read_dir(&shelf_dir).unwrap().any(|entry| entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".snapshot-"))
+    );
 }
 
 #[test]

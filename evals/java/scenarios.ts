@@ -71,6 +71,7 @@ interface Insertion {
 async function reach(s: Session, at: Place) {
   await s.openFile(at.file);
   if (at.edit) await s.edit(at.edit.after, at.edit.text);
+  // oxlint-disable-next-line no-await-in-loop -- each declaration is resolved from the file the previous hop opened
   for (const [line, word] of at.via ?? []) await s.declarationOf(line, word);
   if (!at.typed) await s.caretAt(at.line, at.word);
 }
@@ -142,6 +143,7 @@ async function usageRows(s: Session): Promise<string[]> {
     if (scroller) {
       for (let top = 0; top < scroller.scrollHeight; top += scroller.clientHeight / 2) {
         scroller.scrollTop = top;
+        // oxlint-disable-next-line no-await-in-loop -- wait for the virtual list to render this scroll position before collecting its rows
         await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
         collect();
       }
@@ -237,6 +239,7 @@ async function chooserRows(s: Session): Promise<string[]> {
     if (scroller) {
       for (let top = 0; top < scroller.scrollHeight; top += scroller.clientHeight / 2) {
         scroller.scrollTop = top;
+        // oxlint-disable-next-line no-await-in-loop -- wait for the virtual list to render this scroll position before collecting its rows
         await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
         collect();
       }
@@ -312,6 +315,7 @@ function onOpen(
     async setup(s) {
       if (!last) return;
       await s.openFile(file);
+      // oxlint-disable-next-line no-await-in-loop -- each declaration is resolved from the file the previous hop opened
       for (const [line, word] of via.slice(0, -1)) await s.declarationOf(line, word);
       await s.caretAt(last[0], last[1]);
     },

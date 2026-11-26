@@ -24,7 +24,7 @@ mod protocol;
 mod server;
 pub mod stdio;
 
-pub use discovery::{DISCOVERY_FILE, Discovery, TOKEN_FILE, discovery_path, kept_token, token_path};
+pub use discovery::{Discovery, discovery_path, kept_token, token_path};
 pub use server::{McpServer, ServerOptions, local_address};
 pub use tokio_util::sync::CancellationToken;
 
@@ -93,11 +93,6 @@ pub trait ToolRegistry: Send + Sync + 'static {
     ) -> Result<String, ToolCallError>;
 }
 
-/// The URL of the server at `127.0.0.1:<port>` for `project`.
-pub fn endpoint_url(port: u16, project: &Path) -> String {
-    endpoint_url_at(std::net::Ipv4Addr::LOCALHOST.into(), port, project)
-}
-
 /// The URL of the server at `<address>:<port>` for `project`.
 pub fn endpoint_url_at(address: std::net::IpAddr, port: u16, project: &Path) -> String {
     let at = std::net::SocketAddr::new(address, port);
@@ -145,7 +140,7 @@ mod tests {
 
     #[test]
     fn urls_and_commands_name_the_project() {
-        let url = endpoint_url(4321, Path::new("/home/me/my app/项目"));
+        let url = endpoint_url_at(std::net::Ipv4Addr::LOCALHOST.into(), 4321, Path::new("/home/me/my app/项目"));
         assert_eq!(url, "http://127.0.0.1:4321/mcp?project=/home/me/my%20app/%E9%A1%B9%E7%9B%AE");
         let ip = |s: &str| s.parse::<std::net::IpAddr>().unwrap();
         assert_eq!(endpoint_url_at(ip("100.92.72.95"), 80, Path::new("/p")), "http://100.92.72.95:80/mcp?project=/p");

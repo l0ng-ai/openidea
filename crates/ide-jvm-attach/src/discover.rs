@@ -112,6 +112,7 @@ mod tests {
 
     #[test]
     fn scan_matches_port_not_first_listener() {
+        let _serial = crate::test_serial::hold();
         let dir = tempfile::tempdir().unwrap();
         let _a = fake_jvm(dir.path(), ".java_pid111", Some(5005));
         let _b = fake_jvm(dir.path(), ".java_pid222", Some(6006));
@@ -120,6 +121,7 @@ mod tests {
 
     #[test]
     fn scan_returns_none_when_no_port_matches() {
+        let _serial = crate::test_serial::hold();
         let dir = tempfile::tempdir().unwrap();
         let _a = fake_jvm(dir.path(), ".java_pid111", Some(5005));
         assert_eq!(find_in(dir.path(), 6006, SECOND, 2 * SECOND, ALL), None);
@@ -127,6 +129,7 @@ mod tests {
 
     #[test]
     fn scan_skips_silent_listener_within_budget() {
+        let _serial = crate::test_serial::hold();
         let dir = tempfile::tempdir().unwrap();
         let _silent = fake_jvm(dir.path(), ".java_pid111", None);
         let _b = fake_jvm(dir.path(), ".java_pid222", Some(6006));
@@ -137,6 +140,7 @@ mod tests {
 
     #[test]
     fn scan_gives_up_at_the_budget_even_if_a_query_could_run_longer() {
+        let _serial = crate::test_serial::hold();
         let dir = tempfile::tempdir().unwrap();
         let _silent = fake_jvm(dir.path(), ".java_pid111", None);
         let started = Instant::now();
@@ -146,6 +150,7 @@ mod tests {
 
     #[test]
     fn scan_ignores_non_matching_names() {
+        let _serial = crate::test_serial::hold();
         let dir = tempfile::tempdir().unwrap();
         let _a = fake_jvm(dir.path(), ".java_pidabc", Some(6006));
         let _b = fake_jvm(dir.path(), ".java_pid", Some(6006));
@@ -156,6 +161,7 @@ mod tests {
 
     #[test]
     fn scan_applies_the_socket_trust_checks() {
+        let _serial = crate::test_serial::hold();
         let dir = tempfile::tempdir().unwrap();
         let _a = fake_jvm(dir.path(), ".java_pid111", Some(6006));
         fs::set_permissions(dir.path().join(".java_pid111"), fs::Permissions::from_mode(0o666)).unwrap();
@@ -170,6 +176,7 @@ mod tests {
 
     #[test]
     fn scan_never_asks_a_jvm_the_caller_rejects() {
+        let _serial = crate::test_serial::hold();
         let dir = tempfile::tempdir().unwrap();
         let _a = fake_jvm(dir.path(), ".java_pid111", Some(6006));
         let offered = std::sync::Mutex::new(Vec::new());

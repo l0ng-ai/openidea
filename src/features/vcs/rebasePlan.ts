@@ -1,11 +1,35 @@
 /** Interactive rebase / Undo Commit model: ranges, plans and validation (pure). */
-import type { BranchInfo, Commit, RebaseAction, RebaseEntry } from "@/bindings";
+import type {
+  BranchInfo,
+  Commit,
+  RebaseAction,
+  RebaseEditorReply,
+  RebaseEntry,
+  RebaseFixupMessage,
+  RebaseTodoRow,
+} from "@/bindings";
 
 export interface RebaseRow {
-  commit: Commit;
+  commit: Pick<Commit, "id" | "shortId" | "author" | "summary" | "message">;
   action: RebaseAction;
+  fixupMessage?: RebaseFixupMessage;
   /** New message (reword only). */
   message: string;
+}
+
+interface UpdateRefRow {
+  action: "updateRef";
+  reference: string;
+}
+
+export type RebasePlanRow = RebaseRow | UpdateRefRow;
+
+function refRowKey(reference: string): string {
+  return `update-ref:${reference}`;
+}
+
+export function rebaseRowKey(row: RebasePlanRow): string {
+  return row.action === "updateRef" ? refRowKey(row.reference) : row.commit.id;
 }
 
 export interface RebaseRange {
@@ -29,7 +53,10 @@ export function rebaseRange(target: Commit, history: readonly Commit[]): RebaseR
 }
 
 /** Why `commit` cannot be undone, or null. */
-export function undoCommitProblem(commit: Commit, branch: BranchInfo | null): string | null {
+export function undoCommitProblem(
+  commit: Commit,
+  branch: (Pick<BranchInfo, "head" | "headCommit"> & { operation?: string | null }) | null,
+): string | null {
   if (branch?.operation) return `Cannot undo a commit while a ${branch.operation} is in progress`;
   if (!branch?.headCommit || commit.id !== branch.headCommit)
     return "Undo Commit is available only for the latest commit of the current branch";
@@ -43,19 +70,20 @@ export function headPushed(branch: BranchInfo | null): boolean {
   return !!branch?.upstream && branch.ahead === 0;
 }
 
-/** Pushed history of a protected branch cannot be rewritten (force push is not allowed there). */
-export function protectedBranchProblem(
-  branch: { head: string | null; upstream: string | null },
-  protectedBranch: (name: string) => boolean,
-): string | null {
-  const name = branch.head;
-  // With no upstream there is no force push to prohibit, so the branch is not protected.
-  if (!name || !branch.upstream || !protectedBranch(name)) return null;
-  return `Pushed commits of the protected branch '${name}' cannot be rewritten`;
-}
-
 export function initialRows(commits: readonly Commit[]): RebaseRow[] {
   return autosquash(commits.map((commit) => ({ commit, action: "pick", message: commit.message })));
+}
+
+const autosquashSubject = /^(?:fixup|squash|amend)! (.+)$/;
+
+export function isAutosquashSubject(subject: string): boolean {
+  return autosquashSubject.test(subject);
+}
+
+export function fixupReplacementMessage(message: string): string {
+  if (!message.startsWith("amend! ")) return message.trimEnd();
+  const end = message.indexOf("\n");
+  return end < 0 ? "" : message.slice(end + 1).trim();
 }
 
 /**
@@ -109,42 +137,312 @@ export function squashPlan(range: RebaseRange, ids: ReadonlySet<string>, message
   ];
 }
 
-export function moveRow(rows: readonly RebaseRow[], index: number, delta: -1 | 1): RebaseRow[] {
-  const to = index + delta;
-  if (index < 0 || index >= rows.length || to < 0 || to >= rows.length) return [...rows];
+function moveAdjacent<T>(rows: T[], selected: (row: T) => boolean, delta: -1 | 1): T[] {
+  const boundary = delta < 0 ? 0 : rows.length - 1;
   const out = [...rows];
-  [out[index], out[to]] = [out[to]!, out[index]!];
+  for (let i = boundary - delta; i >= 0 && i < out.length; i -= delta) {
+    const row = out[i]!;
+    const next = out[i + delta]!;
+    if (selected(row) && !selected(next)) {
+      out[i] = next;
+      out[i + delta] = row;
+    }
+  }
   return out;
 }
 
-export function planProblem(rows: readonly RebaseRow[]): string | null {
-  const kept = rows.filter((r) => r.action !== "drop");
-  if (!kept.length) return "At least one commit must be kept";
-  const first = kept[0]!;
-  if (first.action === "squash" || first.action === "fixup")
-    return `The first commit cannot be ${first.action === "squash" ? "squashed" : "fixed up"} into a previous one`;
+export function moveRebaseRows(rows: RebasePlanRow[], selected: ReadonlySet<string>, delta: -1 | 1): RebasePlanRow[] {
+  const isSelected = (row: RebasePlanRow) => selected.has(rebaseRowKey(row));
+  if (!rows.length || !selected.size || isSelected(rows[delta < 0 ? 0 : rows.length - 1]!)) return rows;
+  const roots = rebaseRoots(rows);
+  const end = new Map(rows.map((row, i) => [roots.get(rebaseRowKey(row))!, i]));
+  const blocks: { rows: RebasePlanRow[]; move: boolean }[] = [];
+  for (let i = 0; i < rows.length;) {
+    const row = rows[i]!;
+    const last = end.get(rebaseRowKey(row)) ?? i;
+    const group = rows.slice(i, last + 1);
+    i = last + 1;
+    if (isSelected(row) || group.length === 1) {
+      blocks.push({ rows: group, move: isSelected(row) });
+      continue;
+    }
+
+    // A child may swap with a sibling or leave the group as a standalone commit.
+    const children = group.slice(1);
+    const boundary =
+      delta < 0
+        ? children.findIndex((child) => !isSelected(child))
+        : children.findLastIndex((child) => !isSelected(child));
+    const split = delta < 0 ? (boundary < 0 ? children.length : boundary) : boundary + 1;
+    const moving = delta < 0 ? children.slice(0, split) : children.slice(split);
+    const staying = delta < 0 ? children.slice(split) : children.slice(0, split);
+    blocks.push({ rows: [row, ...moveAdjacent(staying, isSelected, delta)], move: false });
+    if (moving.length) {
+      blocks.push({
+        rows: moving.map((child) =>
+          child.action !== "updateRef" && roots.get(child.commit.id) === rebaseRowKey(row)
+            ? { ...child, action: "pick", fixupMessage: undefined }
+            : child,
+        ),
+        move: true,
+      });
+    }
+  }
+  const edge = blocks[delta < 0 ? 0 : blocks.length - 1];
+  if (edge?.move) return rows;
+  const result = moveAdjacent(blocks, (block) => block.move, delta).flatMap((block) => block.rows);
+  return rebaseRowsMatch(rows, result) ? rows : result;
+}
+
+export function rebaseRowsMatch(a: readonly RebasePlanRow[], b: readonly RebasePlanRow[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every((row, i) => {
+      const other = b[i]!;
+      return (
+        rebaseRowKey(row) === rebaseRowKey(other) &&
+        row.action === other.action &&
+        (row.action !== "reword" || (other.action === "reword" && row.message === other.message)) &&
+        (row.action !== "fixup" || (other.action === "fixup" && row.fixupMessage === other.fixupMessage))
+      );
+    })
+  );
+}
+
+export function rebaseRoots(rows: readonly RebasePlanRow[]): ReadonlyMap<string, string> {
+  const rootOf = new Map<string, string>();
+  let lastKept: string | undefined;
+  for (const row of rows) {
+    const id = rebaseRowKey(row);
+    if (row.action === "drop" || row.action === "updateRef") {
+      rootOf.set(id, id);
+    } else {
+      if (row.action !== "squash" && row.action !== "fixup") lastKept = id;
+      rootOf.set(id, lastKept ?? id);
+    }
+  }
+  return rootOf;
+}
+
+/** Change the action without attaching unrelated fixups to a different commit. */
+export function setRebaseRowAction(
+  rows: readonly RebasePlanRow[],
+  selected: ReadonlySet<string>,
+  action: RebaseAction,
+  fixupMessage?: RebaseFixupMessage,
+): RebasePlanRow[] {
+  const updated = (row: RebaseRow): RebaseRow => ({
+    ...row,
+    action,
+    fixupMessage: action === "fixup" ? fixupMessage : undefined,
+  });
+  if (action === "squash" || action === "fixup") {
+    return rows.map((row) => (row.action !== "updateRef" && selected.has(row.commit.id) ? updated(row) : row));
+  }
+  const rootOf = rebaseRoots(rows);
+  const rewordGroups = new Map<string, RebaseRow[]>();
+  if (action === "reword") {
+    for (const row of rows) {
+      if (row.action !== "squash" && row.action !== "fixup") continue;
+      const root = rootOf.get(row.commit.id)!;
+      if (root !== row.commit.id && selected.has(root)) {
+        const children = rewordGroups.get(root) ?? [];
+        children.push(row);
+        rewordGroups.set(root, children);
+      }
+    }
+    for (const [root, children] of rewordGroups) {
+      if (!children.some((row) => row.fixupMessage)) rewordGroups.delete(root);
+    }
+  }
+  const detached = new Map<string, RebaseRow[]>();
+  const remaining = rows.flatMap((row): RebasePlanRow[] => {
+    if (row.action === "updateRef") return [row];
+    const id = row.commit.id;
+    const root = rootOf.get(id)!;
+    if (action === "drop" && selected.has(root)) return [updated(row)];
+    const group = rewordGroups.get(root);
+    if (group) {
+      if (root === id) return [{ ...updated(row), message: groupMessages(row, group).join("\n\n\n") }];
+      return [{ ...row, action: "fixup", fixupMessage: undefined }];
+    }
+    if (!selected.has(id)) return [row];
+    if (root === id) return [updated(row)];
+    detached.set(root, [...(detached.get(root) ?? []), updated(row)]);
+    return [];
+  });
+  const last = new Map(remaining.map((row, index) => [rootOf.get(rebaseRowKey(row))!, index]));
+  return remaining.flatMap((row, index) => {
+    const root = rootOf.get(rebaseRowKey(row))!;
+    return index === last.get(root) ? [row, ...(detached.get(root) ?? [])] : [row];
+  });
+}
+
+function groupMessages(root: RebaseRow, children: readonly RebasePlanRow[]): string[] {
+  let messages = [root.action === "reword" ? root.message : root.commit.message];
+  for (const row of children) {
+    if (row.action === "fixup" && row.fixupMessage) {
+      messages = [fixupReplacementMessage(row.commit.message)];
+    } else if (row.action === "squash") {
+      messages.push(row.commit.message);
+    }
+  }
+  return messages;
+}
+
+/** Combine selected commits at the oldest selected commit or its existing group. */
+export function combineRebaseRows(
+  rows: RebasePlanRow[],
+  selected: ReadonlySet<string>,
+  action: "squash" | "fixup",
+): { rows: RebasePlanRow[]; messageCommit?: string } {
+  if (rows.some((row) => row.action === "updateRef" && selected.has(rebaseRowKey(row)))) return { rows };
+  const first = rows.find((row) => selected.has(rebaseRowKey(row)));
+  if (!first || first.action === "updateRef" || selected.size < 2) return { rows };
+  const rootOf = rebaseRoots(rows);
+  const root = rootOf.get(first.commit.id)!;
+  const joins = rows.filter((row): row is RebaseRow => {
+    if (row.action === "updateRef") return false;
+    const id = row.commit.id;
+    const parent = rootOf.get(id)!;
+    return parent !== root && (selected.has(id) || selected.has(parent));
+  });
+  if (!joins.length) return { rows };
+  const joined = new Set(joins.map((row) => row.commit.id));
+  const result = rows.filter((row) => !joined.has(rebaseRowKey(row)));
+  const target = result.findIndex((row) => rebaseRowKey(row) === root);
+  const targetRow = result[target]!;
+  if (targetRow.action === "updateRef") return { rows };
+  if (targetRow.action === "drop" || targetRow.action === "squash" || targetRow.action === "fixup") {
+    result[target] = { ...targetRow, action: "pick", fixupMessage: undefined };
+  }
+  const last = result.findLastIndex((row) => rootOf.get(rebaseRowKey(row)) === root);
+  result.splice(last + 1, 0, ...joins.map((row) => ({ ...row, action: "fixup" as const, fixupMessage: undefined })));
+  if (action === "fixup") return { rows: result };
+
+  const messages = [
+    ...groupMessages(targetRow, result.slice(target + 1, last + 1)),
+    ...joins.map((row) => (row.action === "reword" ? row.message : row.commit.message)),
+  ];
+  for (let i = target + 1; i <= last; i++) {
+    const row = result[i]!;
+    if (row.action === "squash" || (row.action === "fixup" && row.fixupMessage)) {
+      result[i] = { ...row, action: "fixup", fixupMessage: undefined };
+    }
+  }
+  result[target] = {
+    ...targetRow,
+    action: "reword",
+    fixupMessage: undefined,
+    message: combinedCommitMessage(messages),
+  };
+  return { rows: result, messageCommit: root };
+}
+
+export function combinedCommitMessage(messages: readonly string[]): string {
+  const subjects = messages.map((message) => message.split(/\r?\n/, 1)[0]!);
+  const targets = new Set(subjects.filter((subject) => !isAutosquashSubject(subject)));
+  return [
+    ...new Set(
+      messages.map((message, i) => {
+        const target = autosquashSubject.exec(subjects[i]!)?.[1];
+        const start = message.indexOf("\n") + 1;
+        return (target && targets.has(target) ? (start ? message.slice(start) : "") : message).trim();
+      }),
+    ),
+  ]
+    .filter(Boolean)
+    .join("\n\n\n");
+}
+
+export function planProblem(rows: readonly RebasePlanRow[]): string | null {
+  return rows.some((r) => r.action !== "drop" && r.action !== "updateRef")
+    ? nativePlanProblem(rows)
+    : "At least one commit must be kept";
+}
+
+export function nativePlanProblem(rows: readonly RebasePlanRow[]): string | null {
+  const first = rows.find((r) => r.action !== "drop" && r.action !== "updateRef");
+  const action = first?.action;
+  if (action === "squash" || action === "fixup")
+    return `The first commit cannot be ${action === "squash" ? "squashed" : "fixed up"} into a previous one`;
   if (rows.some((r) => r.action === "reword" && !r.message.trim())) return "A reworded commit needs a message";
   return null;
 }
 
+export function nativePlanRows(plan: readonly RebaseTodoRow[]): RebasePlanRow[] {
+  return plan.map((row) => {
+    if (row.kind === "updateRef") return { action: "updateRef", reference: row.reference };
+    const { action, id, revision, author, summary, message, fixupMessage } = row;
+    return {
+      action,
+      commit: { id, shortId: revision, author, summary, message },
+      message,
+      fixupMessage: fixupMessage ?? undefined,
+    };
+  });
+}
+
+/** Rewrite only the command slots. Git's comments and original abbreviations survive. */
+export function nativePlanReply(
+  text: string,
+  plan: readonly RebaseTodoRow[],
+  rows: readonly RebasePlanRow[],
+): RebaseEditorReply {
+  const lines = text.split(/(\r?\n)/);
+  const source = new Map(plan.map((row) => [row.kind === "updateRef" ? refRowKey(row.reference) : row.id, row]));
+  const commands = rows.map((row) => {
+    const original = source.get(rebaseRowKey(row))!;
+    const line = lines[original.line * 2]!;
+    if (original.kind === "updateRef" || row.action === "updateRef") return line;
+    const sameAction = row.action === original.action;
+    if (sameAction && row.fixupMessage === (original.fixupMessage ?? undefined)) return line;
+    const flag = row.fixupMessage === "replace" ? " -C" : row.fixupMessage === "edit" ? " -c" : "";
+    return line.replace(
+      /^([ \t]*)(\S+)(?:[ \t]+-[Cc](?=[ \t]))?/,
+      (_, indent: string, verb: string) => indent + (sameAction ? verb : row.action) + flag,
+    );
+  });
+  plan.forEach((row, i) => {
+    lines[row.line * 2] = commands[i]!;
+  });
+  const rewords = Object.fromEntries(
+    rows.flatMap((row) => (row.action === "reword" ? [[row.commit.id, row.message]] : [])),
+  );
+  return { text: lines.join(""), rewords };
+}
+
 /** Nothing would change (same order, every commit picked). */
-export function planIsNoop(rows: readonly RebaseRow[], original: readonly Commit[]): boolean {
+export function planIsNoop(rows: readonly RebasePlanRow[], original: readonly Commit[]): boolean {
   return (
     rows.length === original.length &&
     rows.every(
       (r, i) =>
-        r.commit.id === original[i]!.id &&
+        rebaseRowKey(r) === original[i]!.id &&
         (r.action === "pick" || (r.action === "reword" && r.message.trim() === r.commit.message.trim())),
     )
   );
 }
 
-export function toEntries(rows: readonly RebaseRow[]): RebaseEntry[] {
-  return rows.map((r) => ({
-    commit: r.commit.id,
-    action: r.action,
-    message: r.action === "reword" ? r.message.trim() : null,
-  }));
+export function toEntries(rows: readonly RebasePlanRow[]): RebaseEntry[] {
+  const entries = rows
+    .filter((row) => row.action !== "updateRef")
+    .map((r) => ({
+      commit: r.commit.id,
+      action: r.action,
+      message: r.action === "reword" ? r.message.trim() : null,
+    }));
+  let head: RebaseEntry | undefined;
+  for (const entry of entries) {
+    if (entry.action === "drop") continue;
+    if ((entry.action === "squash" || entry.action === "fixup") && head?.message) {
+      entry.message = head.message;
+      head.message = null;
+      if (head.action === "reword") head.action = "pick";
+    }
+    head = entry;
+  }
+  return entries;
 }
 
 /** Plan for a single-commit action from the log (Edit Commit Message, Drop Commit). */

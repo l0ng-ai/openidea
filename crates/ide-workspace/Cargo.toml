@@ -23,7 +23,7 @@ tempfile.workspace = true
 globset.workspace = true
 uuid.workspace = true
 zip.workspace = true
+encoding_rs.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-encoding_rs.workspace = true

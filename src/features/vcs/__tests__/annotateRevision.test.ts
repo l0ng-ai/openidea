@@ -4,13 +4,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Commit } from "@/bindings";
 import {
   annotateAtRevision,
+  annotateLineRevision,
   annotatePreviousRevision,
   previousRevisionDiffData,
   revisionDiffData,
   showRevisionDiff,
 } from "../annotateRevision";
 import { activateRevisionAnnotations } from "../annotateRevisionProvider";
-import type { DiffData } from "../diffInput";
 import { createDiffViewerContributions, type DiffViewerHost } from "../diffViewerProviders";
 import { useVcs } from "../store";
 
@@ -95,9 +95,11 @@ describe("annotate previous revision", () => {
     );
   });
 
-  it("annotates the left pane of a diff that asks for it, once", async () => {
+  it.each([undefined, "old/a.py"])("annotates the historical left pane once (%s)", async (historyPath) => {
     activateRevisionAnnotations();
-    const data = previousRevisionDiffData("/repo/a.py", commit([parent])) as DiffData;
+    const data = historyPath
+      ? revisionDiffData("/repo/a.py", "/repo", { id: parent, shortId: parent.slice(0, 8), historyPath })
+      : previousRevisionDiffData("/repo/a.py", commit([parent]))!;
     const view = new EditorView({ parent: document.body, state: EditorState.create({ doc: "old one\nold two" }) });
     const host = {
       panes: () => [{ side: "left" as const, view }],
@@ -107,7 +109,7 @@ describe("annotate previous revision", () => {
     expect(contribution).toBeDefined();
     contribution!.attach?.(host);
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(mocks.blame).toHaveBeenCalledWith("/repo/a.py", "old one\nold two", parent);
+    expect(mocks.blame).toHaveBeenCalledWith(historyPath ? "/repo/old/a.py" : "/repo/a.py", "old one\nold two", parent);
     // A second attach (panes rebuilt) must not reopen annotations the user closed.
     contribution!.attach?.(host);
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -131,6 +133,35 @@ describe("annotate at a chosen revision", () => {
     expect(mocks.openDiff).toHaveBeenCalledWith(
       expect.objectContaining({ path: "/repo/a.py", right: { type: "worktree" }, annotateLeft: true }),
       { preview: false },
+    );
+  });
+});
+
+describe("annotate the line's revision from the annotate gutter", () => {
+  const left = (path: string) => ({ type: "rev", rev: sha, label: "f122f5af", path });
+
+  it("shows the file at the line's commit against the working file", async () => {
+    await annotateLineRevision("/repo/a.py", sha);
+    expect(mocks.log).not.toHaveBeenCalled();
+    expect(mocks.openDiff).toHaveBeenCalledWith(
+      { path: "/repo/a.py", left: left("/repo/a.py"), right: { type: "worktree" }, annotateLeft: true },
+      { preview: false },
+    );
+  });
+
+  it("reads the file under the name it had at that commit", async () => {
+    await annotateLineRevision("/repo/a.py", sha, "/repo/old/a.py");
+    expect(mocks.openDiff).toHaveBeenCalledWith(
+      expect.objectContaining({ path: "/repo/a.py", left: left("/repo/old/a.py") }),
+      { preview: false },
+    );
+  });
+
+  it("tells when the revision cannot be read", async () => {
+    mocks.openDiff.mockRejectedValue(new Error("bad revision"));
+    await annotateLineRevision("/repo/a.py", sha, "/repo/a.py");
+    expect(mocks.notify).toHaveBeenCalledWith(
+      expect.objectContaining({ level: "error", title: "Cannot annotate", body: "bad revision" }),
     );
   });
 });

@@ -46,6 +46,8 @@ const shared = [
   ["navigate.fileStructure", "db.goToColumn"],
   ["find.replaceInFile", "agents.findInConversation", "vcs.log.goToRef"],
   ["find.next", "find.popup.nextResult"],
+  ["navigate.toggleBookmark", "vcs.log.toggleBookmark"],
+  ["navigate.toggleBookmarkWithMnemonic", "vcs.log.toggleBookmarkWithMnemonic"],
   ["find.previous", "find.popup.previousResult"],
   ["find.usages", "project.findUsages"],
   ["code.quickDocumentation", "db.quickDoc", "debug.setValue", "vcs.changelist.edit"],
@@ -121,6 +123,7 @@ describe.each(presets)("%s", (preset, title, km, parent, mod) => {
     ["navigate.gotoFile", "Shift+R"],
     ["navigate.gotoClass", "Shift+T"],
     ["code.deleteLine", "D"],
+    ["code.deleteToLineEnd", "Shift+Delete"],
     ["code.showIntentions", "1"],
     ["code.optimizeImports", "Shift+O"],
     ["code.reformat", "Shift+F"],
@@ -287,4 +290,20 @@ it("renames in the project view although the preset shares Alt+Shift+R with the 
     disposers.forEach((dispose) => dispose());
     for (const key of ["projectOpen", "vcsAvailable", "projectViewFocus"]) clearContext(key);
   }
+});
+
+it("keeps Eclipse's Find Word at Caret binding and removals", () => {
+  expect(eclipseWindows["find.wordAtCaret"]).toEqual(["Ctrl+F12"]);
+  expect(eclipseWindows["find.previousWordAtCaret"]).toEqual([]);
+  expect(eclipseMacos["find.wordAtCaret"]).toEqual([]);
+  expect(eclipseMacos["find.previousWordAtCaret"]).toEqual([]);
+});
+
+it("keeps Ctrl+PageUp / Ctrl+PageDown for the editor tabs, as Eclipse removes Move Caret to Page Top / Bottom", () => {
+  for (const km of [eclipseWindows, eclipseMacos]) {
+    expect(km["editor.moveToPageTop"]).toEqual([]);
+    expect(km["editor.moveToPageBottom"]).toEqual([]);
+  }
+  expect(eclipseWindows["editor.prevTab"]).toContain("Ctrl+PageUp");
+  expect(eclipseWindows["editor.nextTab"]).toContain("Ctrl+PageDown");
 });

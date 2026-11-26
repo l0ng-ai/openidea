@@ -1,8 +1,8 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DEFAULT_TODO_SETTINGS } from "@/features/todo/model";
+import { DEFAULT_TODO_SETTINGS } from "@/platform/todo";
 import { activateSettingsPages as activateTodoSettings } from "@/features/todo/settingsPages";
-import { useTodoSettings } from "@/features/todo/store";
+import { useTodoSettings } from "@/platform/todo";
 import { DEFAULT_VIM_SETTINGS, useVimSettings, VIM_SETTINGS_KEY } from "@/features/vim/settings";
 import { activateSettingsPages as activateVimSettings } from "@/features/vim/settingsPages";
 import type { Settings } from "@/platform/ipc";

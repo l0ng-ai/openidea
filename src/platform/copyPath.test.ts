@@ -19,6 +19,19 @@ describe("shared copy path values", () => {
     expect(pathToCopy("relative", "C:/p/src/a.ts", "C:/p")).toBe("src/a.ts");
   });
 
+  it("writes absolute Windows paths with backslashes", () => {
+    expect(pathToCopy("absolute", "C:/work/shop/docs/api.md", "C:/work/shop")).toBe("C:\\work\\shop\\docs\\api.md");
+    expect(pathToCopy("absolute", "//server/share/a.ts", "//server/share")).toBe("\\\\server\\share\\a.ts");
+    expect(pathToCopy("absolute", "//?/UNC/server/share/a.ts", null)).toBe("\\\\server\\share\\a.ts");
+    expect(pathToCopy("absolute", "//?/C:/p/a.ts", null)).toBe("C:\\p\\a.ts");
+    // Outside the content root a relative copy falls back to the absolute path.
+    expect(pathToCopy("relative", "D:/other/a.ts", "C:/p")).toBe("D:\\other\\a.ts");
+    // Relative paths keep `/`, like IDEA's Path From Content Root.
+    expect(pathToCopy("relative", "C:/p/src/a.ts", "C:/p")).toBe("src/a.ts");
+    // Remote and POSIX paths stay as they are.
+    expect(pathToCopy("absolute", "/home/me/a.ts", "/home/me")).toBe("/home/me/a.ts");
+  });
+
   it("uses the containing workspace folder as the content root", () => {
     useProject.setState({ project: { root: "/workspace", workspace: { projects: ["/a", "/b"] } } as never });
     expect(pathToCopy("relative", "/b/src/a.ts")).toBe("src/a.ts");

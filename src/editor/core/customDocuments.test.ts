@@ -9,6 +9,7 @@ import type * as Messages from "@/workbench/messages";
 import * as virtualDocs from "@/platform/virtualDocs";
 import type { VirtualDocument } from "@/platform/ipc";
 import {
+  notifyEditorDocumentChanged,
   registerEditorKind,
   registerFileEditorProvider,
   type EditorDocumentLifecycle,
@@ -76,6 +77,7 @@ const input = (name = "a"): EditorInput => ({
 });
 let ctrl: EditorController;
 let documents: Map<string, TestDocument>;
+let lifecycle: EditorDocumentLifecycle;
 let unregister: () => void;
 
 beforeEach(() => {
@@ -84,7 +86,7 @@ beforeEach(() => {
   localStorage.clear();
   documents = new Map();
   const sessions = documents;
-  const lifecycle: EditorDocumentLifecycle = {
+  lifecycle = {
     isDirty: (i) => sessions.get(i.key)!.isDirty(),
     flush: (i) => sessions.get(i.key)!.flush(),
     save: (i) => sessions.get(i.key)!.save(),
@@ -130,6 +132,32 @@ function deferred<T>() {
 }
 
 describe("custom editor document lifetime", () => {
+  it("replaces clean document previews and keeps a preview after its first edit", async () => {
+    lifecycle.allowPreview = true;
+    const openClean = async (name: string) => {
+      const current = input(name);
+      const doc = new TestDocument();
+      doc.text = doc.saved;
+      documents.set(current.key, doc);
+      await ctrl.openInput(current, { preview: true, focus: false });
+      expect(findTab(useTabs.getState(), current.key)?.tab.preview).toBe(true);
+      return doc;
+    };
+
+    const clean = await openClean("clean");
+    const draft = await openClean("draft");
+    expect(findTab(useTabs.getState(), input("clean").key)).toBeNull();
+    expect(clean.releases).toBe(1);
+
+    draft.text = "new draft";
+    notifyEditorDocumentChanged();
+    expect(findTab(useTabs.getState(), input("draft").key)?.tab.preview).toBe(false);
+    await openClean("next");
+    expect(findTab(useTabs.getState(), input("draft").key)).not.toBeNull();
+    expect(draft.releases).toBe(0);
+    expect(draft.isDirty()).toBe(true);
+  });
+
   it("rejects a delayed virtual document from the previous project", async () => {
     const started = deferred<void>();
     const response = deferred<VirtualDocument>();

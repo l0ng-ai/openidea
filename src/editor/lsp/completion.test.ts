@@ -237,6 +237,13 @@ describe("completion helpers", () => {
     expect(triggerCharacter("a>")).toBeNull();
     expect(triggerCharacter(" @")).toBe("@");
     expect(triggerCharacter("ab")).toBeNull();
+    // `(` asks for annotation attributes in Java documents only.
+    expect(triggerCharacter("@Test(", "java")).toBe("(");
+    expect(triggerCharacter("  @org.junit.Test (", "java")).toBe("(");
+    expect(triggerCharacter("foo(", "java")).toBeNull();
+    expect(triggerCharacter("if (", "java")).toBeNull();
+    expect(triggerCharacter("foo(", "kotlin")).toBeNull();
+    expect(triggerCharacter("foo(")).toBeNull();
   });
 
   it("finds identifier ends", () => {
@@ -295,6 +302,23 @@ describe("applying completions", () => {
     expect(view.state.selection.main.head).toBe(17);
     // The parameter-info fallback also moves past `)`; let it settle before teardown.
     await vi.waitFor(() => expect(view.state.selection.main.head).toBe(17));
+  });
+
+  it("edits repeated LSP placeholders from one selection", () => {
+    const { view, req } = setup("lo|", "", [EditorState.allowMultipleSelections.of(true)]);
+    const completion = makeCompletion(
+      item({ kind: "snippet", insertText: "log(${1:value}, $1, ${2:label})$0", isSnippet: true }),
+      req,
+    );
+    apply(view, completion, 0);
+    expect(view.state.selection.ranges).toHaveLength(1);
+    expect(view.state.doc.toString()).toBe("log(value, value, label)");
+    view.dispatch(view.state.replaceSelection("name"));
+    expect(view.state.doc.toString()).toBe("log(name, name, label)");
+    expect(runScopeHandlers(view, new KeyboardEvent("keydown", { key: "Enter" }), "editor")).toBe(false);
+    expect(runScopeHandlers(view, new KeyboardEvent("keydown", { key: "Tab" }), "editor")).toBe(true);
+    const { from, to } = view.state.selection.main;
+    expect(view.state.sliceDoc(from, to)).toBe("label");
   });
 
   it("leaves an item its server inserts to the server, and puts the caret after what it inserted", async () => {
@@ -1047,5 +1071,55 @@ describe("completionBackoff", () => {
     await vi.waitFor(() => expect(completionCalls).toBeGreaterThanOrEqual(3), { timeout: 2000 });
 
     view.destroy();
+  });
+});
+
+describe("`(` completion trigger", () => {
+  afterEach(() => {
+    setInvokeRoute(null);
+    clearBackoffs();
+  });
+
+  /** Types `(` into a document of `language` and counts the `lsp_completion` requests. */
+  async function parensTypedInto(language: string, uiMode: string, doc: number): Promise<number> {
+    let completionCalls = 0;
+    setInvokeRoute((cmd) => {
+      if (cmd === "cancel_request") return Promise.resolve(null);
+      if (cmd === "lsp_completion") {
+        completionCalls++;
+        return Promise.resolve({ isIncomplete: false, items: [item({ label: "value" })] });
+      }
+      return Promise.resolve(null);
+    });
+    const ctx: EditorDocContext = {
+      doc,
+      path: `/p/Example.${language}`,
+      language,
+      uiMode,
+      readOnly: false,
+    };
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: "@Test",
+        selection: { anchor: 5 },
+        extensions: [lspDoc.of(ctx), completionExtension()],
+      }),
+      parent: document.body,
+    });
+    try {
+      view.dispatch({ changes: { from: 5, insert: "(" }, selection: { anchor: 6 }, userEvent: "input.type" });
+      await new Promise((r) => setTimeout(r, 150));
+      return completionCalls;
+    } finally {
+      view.destroy();
+    }
+  }
+
+  it("asks the server when ( is typed after a Java annotation", async () => {
+    expect(await parensTypedInto("java", "Java", 903)).toBe(1);
+  });
+
+  it("does not ask the server when ( is typed in other languages", async () => {
+    expect(await parensTypedInto("kotlin", "Kotlin", 904)).toBe(0);
   });
 });

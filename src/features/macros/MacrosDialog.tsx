@@ -3,7 +3,7 @@ import { useState } from "react";
 import { create } from "zustand";
 import { executeAction, getAction } from "@/platform/actions";
 import { t, tx } from "@/platform/i18n";
-import { BarButton, Button, Dialog, Icon, List, T } from "@/ui";
+import { BarButton, Dialog, Icon, IconButton, List, SplitGroup, SplitHandle, SplitPanel, T } from "@/ui";
 import { confirm } from "@/workbench/messages";
 import { promptInput } from "@/workbench/inputDialogs";
 import { deleteMacro, describeStep, renameMacro, useMacros } from "./model";
@@ -80,37 +80,59 @@ function EditMacrosDialog({ onClose }: { onClose: () => void }) {
       buttons={[{ label: t("common.close"), role: "cancel" }]}
     >
       <div className={styles.edit}>
-        <div className={styles.column}>
-          <List
-            items={saved}
-            getKey={(m) => m.name}
-            activeIndex={Math.min(active, saved.length - 1)}
-            onActiveChange={setActive}
-            className={styles.list}
-            aria-label="Macros"
-            empty={
-              <div className={styles.empty}>
-                <T>No saved macros</T>
-              </div>
-            }
-            renderItem={(m) => <div className={styles.row}>{m.name}</div>}
-          />
-          <div className={styles.buttons}>
-            <Button disabled={!macro} onClick={() => void rename()}>
-              <T>Rename…</T>
-            </Button>
-            <Button disabled={!macro} onClick={() => void remove()}>
-              <T>Delete</T>
-            </Button>
-          </div>
-        </div>
-        <ol className={styles.steps} aria-label={tx("Recorded steps")}>
-          {macro?.steps.map((step, i) => (
-            <li key={i} className={styles.step}>
-              {describeStep(step, actionTitle)}
-            </li>
-          ))}
-        </ol>
+        <SplitGroup orientation="horizontal" storageKey="openidea.macros.split" className={styles.panes}>
+          <SplitPanel id="macro-list" defaultSize="50%" minSize="25%">
+            <div className={styles.toolbar} role="toolbar" aria-label={tx("Macros")}>
+              <IconButton
+                icon="minus"
+                title="Delete Macro"
+                size="small"
+                disabled={!macro}
+                onClick={() => void remove()}
+              />
+              <IconButton
+                icon="edit"
+                title="Rename Macro"
+                size="small"
+                disabled={!macro}
+                onClick={() => void rename()}
+              />
+            </div>
+            <List
+              items={saved}
+              getKey={(m) => m.name}
+              activeIndex={Math.min(active, saved.length - 1)}
+              onActiveChange={setActive}
+              autoFocus
+              className={styles.list}
+              aria-label="Macros"
+              empty={
+                <div className={styles.empty}>
+                  <T>No saved macros</T>
+                </div>
+              }
+              renderItem={(m) => (
+                <div className={styles.row} title={m.name}>
+                  {m.name}
+                </div>
+              )}
+            />
+          </SplitPanel>
+          <SplitHandle aria-label={tx("Macros")} />
+          <SplitPanel id="macro-steps" defaultSize="50%" minSize="25%">
+            <ol className={styles.steps} aria-label={tx("Recorded steps")}>
+              {macro?.steps.map((step, i) => (
+                <li
+                  // oxlint-disable-next-line react/no-array-index-key -- recorded steps repeat; position is the identity
+                  key={i}
+                  className={styles.step}
+                >
+                  {describeStep(step, actionTitle)}
+                </li>
+              ))}
+            </ol>
+          </SplitPanel>
+        </SplitGroup>
       </div>
     </Dialog>
   );

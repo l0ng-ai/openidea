@@ -71,6 +71,7 @@ export function RunWidget() {
         aria-haspopup="listbox"
         aria-expanded={chooserOpen}
         data-run-chooser=""
+        data-toolbar-icon-dropdown={selected ? "" : undefined}
         onClick={() => void executeAction("run.chooseConfig", "select")}
       >
         {selected && (
@@ -82,7 +83,7 @@ export function RunWidget() {
             )}
           </span>
         )}
-        <span className={styles.widgetName}>
+        <span className={styles.widgetName} data-toolbar-label="">
           {selected ? label(selected) : tx(currentFile ? "Current File" : "Select Configuration")}
         </span>
         <Icon name="chevron-down" size={14} className={styles.widgetChevron} />

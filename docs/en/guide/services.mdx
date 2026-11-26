@@ -69,9 +69,10 @@ Long operations (pull, prune, Compose) show progress at the top with a **Cancel*
 
 Selecting an item shows tabs in the detail pane:
 
-- **Container**: **Dashboard** (overview, live resource usage, port bindings that open in the browser, mounts, networks, environment variables, labels), **Log** (last 1,000 lines, following while the container runs, with **Timestamps**), **Processes** (`docker top`) and **Inspect** (the raw JSON).
+- **Compose project**: **Dashboard** (project overview, services with live resource usage, named volumes created by the project with live disk usage).
+- **Container**: **Dashboard** (overview, live resource usage, port bindings that open in the browser, mounts with live volume disk usage, networks, environment variables, labels), **Log** (last 1,000 lines, following while the container runs, with **Timestamps**), **Processes** (`docker top`) and **Inspect** (the raw JSON).
 - **Image**: **Dashboard** (tags, containers using it, environment, labels), **Layers** and **Inspect**.
-- **Volume** and **network**: **Dashboard** and **Inspect**.
+- **Volume** and **network**: **Dashboard** (including live volume disk usage) and **Inspect**.
 
 **Open Log in Editor** opens the log in an editor tab with **Timestamps**, **Soft-wrap**, **Find in Logs** and **Clear**.
 
@@ -154,6 +155,8 @@ The actions work on the selection in the Project view, or on the file in the act
 - **Automatic Upload**: turns automatic upload on (Always) or off.
 - **Open in Browser (Deployed)**: opens the file's URL on the web server.
 - **Browse Remote Host**: opens the **Remote Host** tool window, a tree of the server's files with **Open** (edit a copy; saving uploads it back), **Download to Project**, **New Folder…**, **Rename…**, **Delete…**, **Refresh** and **Copy Path**.
+
+Drag files or folders from **Project** or your desktop file manager into **Remote Host** to upload them without configuring mappings. Drop onto a folder to upload inside it, onto a file to use its parent folder, or onto the root path or empty tree space to use the displayed root. **Upload Files…** in the context menu opens a file picker (multiple files), and **Upload Folder…** opens a folder picker. The selected folder is uploaded under its own name, including its contents. Existing names ask for confirmation before replacing files and merging folders; cancelling leaves them unchanged. The transfer appears in background tasks and can be cancelled. These direct uploads do not apply deployment exclusions; source symbolic links are skipped. Desktop file-manager drops are not available in Remote Development windows; dragging paths from that window's **Project** tree is supported.
 
 Unknown host keys are confirmed before connecting, and OpenIDEA asks for a password or passphrase when the SSH configuration doesn't save one.
 

@@ -111,6 +111,7 @@ export async function rootMarkers(
   let dir = file && file.startsWith(root + "/") ? dirOf(file) : root;
   while (dir === root || dir.startsWith(root + "/")) {
     try {
+      // oxlint-disable-next-line no-await-in-loop -- markers are found in nearest-ancestor order; stop at the first directory that has them
       const entries = await call(commands.fsReadDir(dir));
       const names = new Set(entries.map((e) => e.name));
       const deno = names.has("deno.json") || names.has("deno.jsonc");
