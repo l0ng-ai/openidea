@@ -59,13 +59,20 @@ function SidePicker({ label, side, onChange }: { label: string; side: Side; onCh
     .map((s) => ({
       value: s.id ?? "",
       label: s.name ?? "",
+      verbatim: true,
       icon: "database",
     }));
   if (side.id && !sourceOptions.some((o) => o.value === side.id))
     sourceOptions.push({ value: side.id, label: targetLabel(side.id), icon: "database" });
   const names = schemas?.status === "ok" ? schemas.value : [];
-  const schemaOptions: SelectOption[] = names.map((n) => ({ value: n, label: n, icon: "db-schema" }));
-  if (side.schema && !names.includes(side.schema)) schemaOptions.unshift({ value: side.schema, label: side.schema });
+  const schemaOptions: SelectOption[] = names.map((n) => ({
+    value: n,
+    label: n,
+    verbatim: true,
+    icon: "db-schema",
+  }));
+  if (side.schema && !names.includes(side.schema))
+    schemaOptions.unshift({ value: side.schema, label: side.schema, verbatim: true });
   return (
     <div className={styles.side}>
       <span className={styles.sideLabel}>

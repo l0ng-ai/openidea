@@ -1157,6 +1157,7 @@ function AgentDefaults({ agent, backend }: { agent: AgentProvider; backend: Comm
                     label: v.name,
                     verbatim: true,
                     detail: v.description ?? undefined,
+                    verbatimDetail: true,
                   })),
                 ]}
                 onChange={(value) => choose(o.id, value)}
