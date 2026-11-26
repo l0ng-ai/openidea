@@ -57,4 +57,23 @@ describe("viewer caret", () => {
     expect(glides()).toBe(false);
     release();
   });
+
+  it("uses the text cursor on read-only viewer content while keeping default on scroller and gutters", () => {
+    const prevCursor = document.body.style.cursor;
+    document.body.style.cursor = "default";
+    try {
+      const view = new EditorView({
+        state: EditorState.create({ doc: "a\nb\n", extensions: viewerBase({ readOnly: true }) }),
+        parent: document.body,
+      });
+      views.push(view);
+      expect(getComputedStyle(view.contentDOM).cursor).toBe("text");
+      expect(getComputedStyle(view.scrollDOM).cursor).toBe("default");
+      const gutters = view.dom.querySelector(".cm-gutters");
+      expect(gutters).not.toBeNull();
+      expect(getComputedStyle(gutters!).cursor).toBe("default");
+    } finally {
+      document.body.style.cursor = prevCursor;
+    }
+  });
 });

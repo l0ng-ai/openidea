@@ -417,6 +417,7 @@ export const viewerTheme = EditorView.theme(
     ".cm-content": {
       padding: "0 0 4px",
       caretColor: "var(--caret, var(--fg-strong))",
+      cursor: "text",
       WebkitUserSelect: "text",
       userSelect: "text",
     },
@@ -522,7 +523,6 @@ export const viewerTheme = EditorView.theme(
       fontSize: "var(--fs-ui)",
       lineHeight: "1.4",
       textAlign: "start",
-      cursor: "pointer",
     },
     ".cm-collapsedLines > button:hover, .cm-collapsedLines > button:focus-visible": {
       backgroundColor: "var(--bg-hover)",

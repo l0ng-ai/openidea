@@ -33,6 +33,7 @@ import "./php";
 import "./go";
 import "./java";
 import "./javascript";
+import "./cpp";
 
 const semanticBackoff = featureBackoff();
 

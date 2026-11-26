@@ -839,6 +839,8 @@
   "Cannot start PTY: process:{program} capability not granted.": "无法启动 PTY：未授予 process:{program} 权限。",
   "Marker Icons": "行标记图标",
   "Editor Panels": "编辑器面板",
+  "Overlays": "浮层",
+  "Dialogs": "对话框",
   "this data source does not list databases": "此数据源不支持列出数据库",
   "commit or roll back before clearing the selected database": "清除所选数据库前，请先提交或回滚事务",
   "connect_timeout must be greater than zero": "connect_timeout 必须大于零",
@@ -3016,6 +3018,9 @@
   "Generate Sources and Update Folders": "生成源代码并更新文件夹",
   "Runs generate-sources, then reloads the Maven projects so generated folders become source folders": "执行 generate-sources，然后重新加载 Maven 项目，使生成的文件夹成为源代码文件夹",
   "Reload Changed Classes": "重新加载已更改的类",
+  "Enhanced class redefinition": "增强类重定义",
+  "When debugging on JetBrains Runtime, Reload Changed Classes can also add or remove methods and fields": "在 JetBrains Runtime 上调试时，“重新加载已更改的类”还可以添加或删除方法和字段",
+  "To add or remove methods and fields, turn on Enhanced class redefinition in the run configuration and debug on JetBrains Runtime.": "如需添加或删除方法和字段，请在运行配置中开启“增强类重定义”，并使用 JetBrains Runtime 调试。",
   "Reload Environments": "重新加载环境",
   "Reload History": "重新加载历史记录",
   "Reload List of Packages": "重新加载软件包列表",
@@ -10402,5 +10407,9 @@
   "No privileges are granted on this table.": "此表未授予任何权限。",
   "* With grant option: the grantee may grant the privilege to others.": "* WITH GRANT OPTION：被授权者可以将该权限再授予他人。",
   "Separate several prefixes with commas: they are tried in order, then the official source.": "多个前缀用逗号分隔：按顺序尝试，最后回退到官方源。",
-  "Recent Find Usages": "最近的查找用法"
+  "Recent Find Usages": "最近的查找用法",
+  "The backend of another OpenIDEA build, for example the one from before an upgrade, still has this project open, so this build can't open it. Stop that backend and open the project? Its terminals, runs and agent sessions end, and changes it hasn't saved are lost.": "另一个 OpenIDEA 版本（例如升级前的版本）的后端仍打开着这个项目，当前版本无法打开它。要停止那个后端并打开项目吗？它的终端、运行和智能体会话会结束，未保存的修改会丢失。",
+  "Stop Backend and Open": "停止后端并打开",
+  "Could not load the frames: {0}": "无法加载栈帧：{0}",
+  "Allow all optional permissions": "允许全部可选权限"
 }

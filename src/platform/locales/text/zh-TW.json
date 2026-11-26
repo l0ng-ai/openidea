@@ -2523,6 +2523,9 @@
   "Generate Sources and Update Folders": "產生原始碼並更新資料夾",
   "Runs generate-sources, then reloads the Maven projects so generated folders become source folders": "執行 generate-sources，然後重新載入 Maven 專案，使產生的資料夾成為原始碼資料夾",
   "Reload Changed Classes": "重新載入已更改的類別",
+  "Enhanced class redefinition": "增強類別重新定義",
+  "When debugging on JetBrains Runtime, Reload Changed Classes can also add or remove methods and fields": "在 JetBrains Runtime 上偵錯時，「重新載入已更改的類別」也可以新增或刪除方法和欄位",
+  "To add or remove methods and fields, turn on Enhanced class redefinition in the run configuration and debug on JetBrains Runtime.": "如需新增或刪除方法和欄位，請在執行組態中開啟「增強類別重新定義」，並使用 JetBrains Runtime 偵錯。",
   "Reload Environments": "重新載入環境",
   "Reload History": "重新載入歷史記錄",
   "Reload List of Packages": "重新載入軟體包清單",
@@ -9345,5 +9348,6 @@
   "No privileges are granted on this table.": "此資料表未授予任何權限。",
   "* With grant option: the grantee may grant the privilege to others.": "* WITH GRANT OPTION：被授權者可以將該權限再授予他人。",
   "Separate several prefixes with commas: they are tried in order, then the official source.": "多個前綴以逗號分隔：依序嘗試，最後回退到官方來源。",
-  "Recent Find Usages": "最近的查詢用法"
+  "Recent Find Usages": "最近的查詢用法",
+  "Allow all optional permissions": "允許全部可選權限"
 }

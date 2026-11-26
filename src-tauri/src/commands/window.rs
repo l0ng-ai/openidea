@@ -463,7 +463,23 @@ pub fn menu_model(app: AppHandle, state: State<'_, AppState>, menu_state: State<
     }
     let home = dirs::home_dir();
     let config = menu_state.config.lock().clone();
-    menu::model(&spec, &menu::recent_items(&state.recent.list(), home.as_deref()), &config)
+    let remote = menu_state.remote_recent.lock().clone();
+    menu::model(&spec, &menu::recent_items(&state.recent.list(), &remote, home.as_deref()), &config)
+}
+
+/// The Remote Development projects of the frontend's recent list, for Open Recent.
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub fn menu_set_remote_recent(
+    app: AppHandle,
+    menu_state: State<'_, MenuState>,
+    state: State<'_, AppState>,
+    projects: Vec<menu::RemoteRecent>,
+) {
+    if menu::store_remote_recent(&menu_state, projects) {
+        menu::install(&app, &menu_state, &state.recent.list());
+    }
 }
 
 /// Action ids the focused window cannot run now: their native menu items are
@@ -996,6 +1012,7 @@ ide_command::desktop_domain!(
     menu_model,
     menu_refresh,
     menu_set_disabled,
+    menu_set_remote_recent,
     window_begin_prompt,
     window_close_context,
     window_complete_launch,

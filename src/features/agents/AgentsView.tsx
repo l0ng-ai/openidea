@@ -16,7 +16,6 @@ import {
   registerDropTarget,
   showContextMenu,
   startPointerDrag,
-  type IconName,
   type TreeHandle,
 } from "@/ui";
 import {
@@ -108,10 +107,9 @@ const sameIndicator = (a: DropIndicator | null, b: DropIndicator | null) =>
     (a.kind !== "row" || b.kind !== "row" || a.position === b.position));
 
 /** A group header row inside the task tree. */
-function GroupRow({ label, count, icon }: { label: ReactNode; count: number; icon?: IconName }) {
+function GroupRow({ label, count }: { label: ReactNode; count: number }) {
   return (
     <span className={styles.row}>
-      {icon && <Icon name={icon} size={12} />}
       <span className={styles.groupLabel}>{label}</span>
       <span className={styles.count}>{count}</span>
     </span>
@@ -570,7 +568,7 @@ export function AgentsView() {
         renderNode={(n) => {
           switch (n.kind) {
             case "pinned":
-              return <GroupRow icon="pin" label={<T>Pinned</T>} count={n.tasks.length} />;
+              return <GroupRow label={<T>Pinned</T>} count={n.tasks.length} />;
             case "custom":
               return <GroupRow label={n.group.name} count={n.tasks.length} />;
             case "group":
