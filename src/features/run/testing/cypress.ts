@@ -16,6 +16,8 @@ import { serviceMessage } from "./teamcity";
 import type { TestEvent, TestOutputParser } from "./types";
 
 const RUNNING_RE = /^\s*Running:\s+(.+?)\s+\(\d+ of \d+\)$/;
+/** Mocha's title of a failing hook: `"before each" hook for "test"`, `"after all" hook: name for "test"`. */
+const HOOK_RE = /^"(?:before|after) (each|all)" hook(?:: .*?)?(?: for "(.*)")?$/;
 /** A long spec path wraps onto lines of its own, under where it starts. */
 const WRAPPED_RE = /^ {12}(\S.*?)\s*$/;
 
@@ -90,12 +92,15 @@ export function cypressParser(specs: readonly string[] = []): TestOutputParser {
           events.push({ type: "result", path, status: "skipped" });
           break;
         case "testFailed": {
-          // A failing `before all` hook fails tests that never started.
-          const test = open.get(key) ?? { path, failed: false };
-          test.failed = true;
+          // A failing hook is reported under its own title (`"before each" hook for "adds"`): an `each` hook
+          // fails the test it ran for, an `all` hook its suite (whose remaining tests Cypress skips).
+          const hook = HOOK_RE.exec(name);
+          const failed = !hook ? path : hook[1] === "each" ? pathOf(hook[2] ?? name) : [file, ...suites];
+          const test = open.get(failed.join("\u0000"));
+          if (test) test.failed = true;
           const text = a.details || a.message || "";
-          for (const l of text.replace(/\n$/, "").split("\n")) events.push({ type: "output", path, line: l });
-          events.push({ type: "result", path, status: "failed" });
+          for (const l of text.replace(/\n$/, "").split("\n")) events.push({ type: "output", path: failed, line: l });
+          events.push({ type: "result", path: failed, status: "failed" });
           break;
         }
         case "testFinished": {

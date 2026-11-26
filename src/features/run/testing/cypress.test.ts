@@ -7,7 +7,15 @@ import { cypressType, prepareCypressLaunch } from "../cypressType";
 import { detectRunTargets, targetConfig } from "../targets";
 import { formParams } from "../types";
 import { cypressSpecs } from "./cypress";
-import { createTestParser, frameworkFor, nodeOutput, parseAll, TestResults, withTestReporting } from "./index";
+import {
+  createTestParser,
+  frameworkFor,
+  nodeOutput,
+  parseAll,
+  TestResults,
+  withTestReporting,
+  type TestNode,
+} from "./index";
 import { failedTestPaths, rerunFailedConfigs } from "./rerun";
 
 const installed = vi.hoisted(() => ({ files: {} as Record<string, string> }));
@@ -127,6 +135,69 @@ describe("Cypress teamcity reporter", () => {
   });
 });
 
+// Failing hooks (\`beforeEach\`, \`before\`, \`afterEach\`, \`after\`) with Cypress 16.4, as printed.
+const HOOKS = `
+  Running:  hooks.cy.js                                                                     (1 of 1)
+##teamcity[testSuiteStarted name='each' flowId='14448']
+##teamcity[testStarted name='outside' captureStandardOutput='true' flowId='14448']
+##teamcity[testFinished name='outside' duration='25' flowId='14448']
+##teamcity[testSuiteStarted name='inner' flowId='14448']
+##teamcity[testStarted name='first' captureStandardOutput='true' flowId='14448']
+##teamcity[testFailed name='"before each" hook for "first"' message='expected 1 to equal 2|n|nBecause this error occurred during a \`before each\` hook we are skipping the remaining tests in the current suite: \`inner\`' details='AssertionError: expected 1 to equal 2|n|nBecause this error occurred during a \`before each\` hook we are skipping the remaining tests in the current suite: \`inner\`|n    at Context.eval (webpack://hk/./cypress/e2e/hooks.cy.js:3:36)' captureStandardOutput='true' flowId='14448']
+##teamcity[testFinished name='first' duration='9' flowId='14448']
+##teamcity[testSuiteFinished name='inner' duration='50' flowId='14448']
+##teamcity[testSuiteFinished name='each' duration='79' flowId='14448']
+##teamcity[testSuiteStarted name='all' flowId='14448']
+##teamcity[testFailed name='"before all" hook for "one"' message='expected 1 to equal 3|n|nBecause this error occurred during a \`before all\` hook we are skipping the remaining tests in the current suite: \`all\`' details='AssertionError: expected 1 to equal 3|n|nBecause this error occurred during a \`before all\` hook we are skipping the remaining tests in the current suite: \`all\`|n    at Context.eval (webpack://hk/./cypress/e2e/hooks.cy.js:10:30)' captureStandardOutput='true' flowId='14448']
+##teamcity[testFinished name='one' duration='7' flowId='14448']
+##teamcity[testSuiteFinished name='all' duration='15' flowId='14448']
+##teamcity[testSuiteStarted name='after' flowId='14448']
+##teamcity[testStarted name='runs' captureStandardOutput='true' flowId='14448']
+##teamcity[testFailed name='"after each" hook for "runs"' message='expected 1 to equal 4|n|nBecause this error occurred during a \`after each\` hook we are skipping the remaining tests in the current suite: \`after\`' details='AssertionError: expected 1 to equal 4|n|nBecause this error occurred during a \`after each\` hook we are skipping the remaining tests in the current suite: \`after\`|n    at Context.eval (webpack://hk/./cypress/e2e/hooks.cy.js:15:33)' captureStandardOutput='true' flowId='14448']
+##teamcity[testFinished name='runs' duration='1' flowId='14448']
+##teamcity[testSuiteFinished name='after' duration='25' flowId='14448']
+##teamcity[testSuiteStarted name='afterAll' flowId='14448']
+##teamcity[testStarted name='only' captureStandardOutput='true' flowId='14448']
+##teamcity[testFailed name='"after all" hook for "only"' message='expected 1 to equal 5|n|nBecause this error occurred during a \`after all\` hook we are skipping the remaining tests in the current suite: \`afterAll\`' details='AssertionError: expected 1 to equal 5|n|nBecause this error occurred during a \`after all\` hook we are skipping the remaining tests in the current suite: \`afterAll\`|n    at Context.eval (webpack://hk/./cypress/e2e/hooks.cy.js:20:29)' captureStandardOutput='true' flowId='14448']
+##teamcity[testFinished name='only' duration='1' flowId='14448']
+##teamcity[testSuiteFinished name='afterAll' duration='7' flowId='14448']
+`;
+
+describe("Cypress hook failures", () => {
+  it("fail the test an each hook ran for, and the suite of an all hook", () => {
+    const r = results(HOOKS);
+    const own = (...path: string[]) => r.get(key("hooks.cy.js", ...path))?.own;
+    expect(own("each", "outside")).toBe("passed");
+    expect(own("each", "inner", "first")).toBe("failed");
+    expect(nodeOutput(r.get(key("hooks.cy.js", "each", "inner", "first"))!)[0]).toBe(
+      "AssertionError: expected 1 to equal 2",
+    );
+    expect(own("all")).toBe("failed");
+    expect(own("after", "runs")).toBe("failed");
+    expect(own("afterAll")).toBe("failed");
+    // No node carries a hook's title.
+    const names: string[] = [];
+    const visit = (n: TestNode) => {
+      names.push(n.name);
+      n.children.forEach(visit);
+    };
+    r.roots.forEach(visit);
+    expect(names.filter((n) => /" hook/.test(n))).toEqual([]);
+  });
+
+  it("rerun the test or the suite, whose titles @cypress/grep matches", async () => {
+    const paths = failedTestPaths(results(HOOKS));
+    expect(paths.map((p) => p.join(" › "))).toEqual([
+      "hooks.cy.js › each › inner › first",
+      "hooks.cy.js › all",
+      "hooks.cy.js › after › runs",
+      "hooks.cy.js › afterAll",
+    ]);
+    const [rerun] = await rerunFailedConfigs(npx, paths);
+    expect(rerun!.env.CYPRESS_grep).toBe("each inner first; all; after runs; afterAll");
+  });
+});
+
 describe("Cypress configurations", () => {
   it("are recognised by their type, the recorded runner or the command line", () => {
     expect(frameworkFor(npx)).toBe("cypress");
@@ -223,6 +294,23 @@ describe("Cypress gutter targets", () => {
       "--spec",
       "cypress/e2e/cart.cy.ts",
     ]);
+  });
+
+  it("never send other tests to Cypress, even when its configuration is the closest one", () => {
+    // Vitest at the workspace root; `apps/web` depends on Cypress and has no test script.
+    const vitest = cfg({ id: "npm:test", kind: "npm", command: "npm", args: ["run", "test"] });
+    const web = { ...npx, id: "cypress:apps/web", cwd: "apps/web", module: "apps/web" };
+    const ids = (relPath: string, content: string) => testBasesFor(relPath, [vitest, web], content).map((c) => c.id);
+    expect(ids("apps/web/src/util.test.ts", "test('adds', () => {});")).toEqual(["npm:test"]);
+    expect(
+      testConfigFor("apps/web/src/util.test.ts", [vitest, web], undefined, "test('adds', () => {});")?.args,
+    ).toEqual(["run", "test", "--", "apps/web/src/util.test.ts"]);
+    expect(ids("apps/web/cypress/e2e/cart.cy.ts", spec)).toEqual(["cypress:apps/web"]);
+    // And the other way round: a spec runs on Cypress at the root, not on a closer Vitest.
+    const app = { ...vitest, id: "npm:apps/web:test", cwd: "apps/web", module: "apps/web" };
+    expect(ids("apps/web/src/Button.cy.tsx", spec)).toEqual(["cypress:apps/web"]);
+    expect(testBasesFor("apps/web/src/Button.cy.tsx", [app, npx], spec).map((c) => c.id)).toEqual(["cypress"]);
+    expect(testBasesFor("apps/web/src/util.test.ts", [app, npx], spec).map((c) => c.id)).toEqual(["npm:apps/web:test"]);
   });
 
   it("send specs to Cypress and other tests to the project's other runner", () => {

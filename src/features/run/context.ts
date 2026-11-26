@@ -212,12 +212,14 @@ function byRunner(bases: RunConfig[], content: string): RunConfig[] {
   return isPlaywrightSpec(content) ? playwright : bases.filter((c) => !playwright.includes(c));
 }
 
-/** A project with Cypress and another JS runner: Cypress specs (`*.cy.*`, `cypress/`) run on Cypress's configurations. */
-function byCypress(bases: RunConfig[], relPath: string): RunConfig[] {
-  const cypress = bases.filter((c) => frameworkFor(c) === "cypress");
-  if (!cypress.length || cypress.length === bases.length) return bases;
+/**
+ * Cypress specs (`*.cy.*`, files in `cypress/`) run on the project's Cypress configurations, however far, when it
+ * has any; other files never do, so they keep their runner (Vitest at the workspace root…) as before.
+ */
+function byCypress(candidates: RunConfig[], relPath: string): RunConfig[] {
+  const cypress = candidates.filter((c) => frameworkFor(c) === "cypress");
   const spec = /\.cy\.[cm]?[jt]sx?$|(^|\/)cypress\//.test(relPath);
-  return spec ? cypress : bases.filter((c) => !cypress.includes(c));
+  return spec && cypress.length ? cypress : candidates.filter((c) => !cypress.includes(c));
 }
 
 /**
@@ -233,11 +235,8 @@ export function testBasesFor(relPath: string, configs: RunConfig[], content?: st
     // `node` configurations run a file of their own; only Playwright's (`npx playwright test`) take a test file.
     .filter((c) => c.kind !== "node" || frameworkFor(c) === "playwright")
     .sort((a, b) => kinds.indexOf(a.kind) - kinds.indexOf(b.kind));
-  const best = allClosest(candidates, relPath);
-  if (best.length) {
-    const runners = byCypress(best, relPath);
-    return content === undefined ? runners : byRunner(runners, content);
-  }
+  const best = allClosest(byCypress(candidates, relPath), relPath);
+  if (best.length) return content === undefined ? best : byRunner(best, content);
   const fallback = implicitPytest(relPath, configs);
   return fallback ? [fallback] : [];
 }
