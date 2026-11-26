@@ -4071,5 +4071,10 @@
   "Granted with grant option": "Granted with grant option",
   "No privileges are granted on this table.": "No privileges are granted on this table.",
   "* With grant option: the grantee may grant the privilege to others.": "* With grant option: the grantee may grant the privilege to others.",
-  "Separate several prefixes with commas: they are tried in order, then the official source.": "Separate several prefixes with commas: they are tried in order, then the official source."
+  "Separate several prefixes with commas: they are tried in order, then the official source.": "Separate several prefixes with commas: they are tried in order, then the official source.",
+  "Dependencies are not installed": "Dependencies are not installed",
+  "Dependencies changed since the last install": "Dependencies changed since the last install",
+  "Run '{command}' in '{rel}' to install them.": "Run '{command}' in '{rel}' to install them.",
+  "Run '{command}' to install them.": "Run '{command}' to install them.",
+  "Install Node.js Dependencies": "Install Node.js Dependencies"
 }

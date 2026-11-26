@@ -48,6 +48,7 @@ import { RunDialogsOverlay } from "./dialogs";
 import { registerExternalTools } from "./externalTools";
 import { openImport } from "./importConfigs";
 import { registerComposerInstall } from "./composerInstall";
+import { registerNpmInstall } from "./npmInstall";
 import { registerPubspecCommands } from "./pubspec";
 import { registerGoActions } from "./goActions";
 import { registerRunTabActions } from "./runTabs";
@@ -472,6 +473,7 @@ export function activate(): () => void {
     registerFlutterBuildActions(),
     registerRunTabActions(),
     registerComposerInstall(),
+    registerNpmInstall(),
     registerPubspecCommands(),
     registerOverlay({ id: "run.chooser", component: ConfigChooserOverlay }),
     registerOverlay({
