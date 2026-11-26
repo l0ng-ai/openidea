@@ -65,6 +65,12 @@ export interface PluginsBackend {
   pickProgram(): Promise<string | null>;
   setCapability(id: string, capability: string, granted: boolean): Promise<PluginInfo>;
   revokeNetHost(id: string, host: string): Promise<PluginInfo>;
+  /** The host a `net:setting:` grant derives from `value` (a bare host or a URL); an error refuses it. */
+  netSettingHost(id: string, setting: string, value: string): Promise<string>;
+  /** Approves `host` for a `net:setting:` grant; refused when the setting no longer holds it. */
+  approveNetSetting(id: string, setting: string, http: boolean, host: string): Promise<PluginInfo>;
+  /** Drops the approved host of a `net:setting:` grant (revoked, or the setting cleared). */
+  forgetNetSetting(id: string, setting: string, http: boolean): Promise<PluginInfo>;
   /** Validated assets (icon theme mapping and SVGs) whose id starts with `prefix`. */
   assets(pluginId: string, prefix: string): Promise<[string, string][]>;
   /** `language` / `file` / `view` activation events. */
@@ -232,6 +238,9 @@ export const tauriPluginsBackend: PluginsBackend = {
   pickProgram: () => choosePath({ directory: false, title: tx("Choose plugin executable") }),
   setCapability: (id, capability, granted) => call(commands.pluginSetCapability(id, capability, granted)),
   revokeNetHost: (id, host) => call(commands.pluginRevokeNetHost(id, host)),
+  netSettingHost: (id, setting, value) => call(commands.pluginNetSettingHost(id, setting, value)),
+  approveNetSetting: (id, setting, http, host) => call(commands.pluginApproveNetSetting(id, setting, http, host)),
+  forgetNetSetting: (id, setting, http) => call(commands.pluginForgetNetSetting(id, setting, http)),
   assets: (pluginId, prefix) => call(commands.pluginAssets(pluginId, prefix)),
   activationEvent: async (kind, value) => {
     await call(commands.pluginActivationEvent(kind, value));
@@ -481,6 +490,7 @@ function samplePlugins(): PluginInfo[] {
     error: null,
     capabilities: [],
     netHosts: [],
+    netSettings: [],
     contributions: [],
     activation: [],
     warnings: [],
@@ -660,6 +670,38 @@ export function createMemoryPluginsBackend(
     revokeNetHost: async (id, host) => {
       const p = find(id);
       p.netHosts = p.netHosts.filter((h) => h !== host);
+      emit({ type: "commandsChanged" });
+      return { ...p };
+    },
+    netSettingHost: async (_id, _setting, value) => {
+      let host = value.trim();
+      if (host.includes("://"))
+        host = host
+          .replace(/^[a-z][a-z0-9+.-]*:\/\//i, "")
+          .replace(/[/?#].*$/, "")
+          .replace(/.*@/, "");
+      host = host.replace(/:\d+$/, "").replace(/\.$/, "").toLowerCase();
+      if (
+        !host ||
+        host.includes("*") ||
+        !/^[a-z0-9.-]+$/.test(host) ||
+        host.split(".").some((l) => !l || /[^a-z0-9-]/.test(l))
+      )
+        throw new IpcError({ kind: "invalidInput", message: `${value}: not a host (example.com) or a URL` });
+      return host;
+    },
+    approveNetSetting: async (id, setting, http, host) => {
+      const p = find(id);
+      p.netSettings = [
+        ...p.netSettings.filter((n) => n.setting !== setting || n.http !== http),
+        { setting, http, host, pending: null },
+      ];
+      emit({ type: "commandsChanged" });
+      return { ...p };
+    },
+    forgetNetSetting: async (id, setting, http) => {
+      const p = find(id);
+      p.netSettings = p.netSettings.filter((n) => n.setting !== setting || n.http !== http);
       emit({ type: "commandsChanged" });
       return { ...p };
     },

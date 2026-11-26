@@ -64,6 +64,11 @@ export const commands = {
 	agentExternalSessions: () => typedError<ExternalSession[], IdeError>(__TAURI_INVOKE("agent_external_sessions")),
 	/**  Copies the task's conversation into a new task, up to its first `turns` turns (all when `None`). */
 	agentFork: (task: string, turns: number | null) => typedError<AgentTask_Serialize, IdeError>(__TAURI_INVOKE("agent_fork", { task, turns })),
+	/**
+	 *  Forks a recorded external session into a new task: its first turn continues the recording
+	 *  as the agent's own fork, under an id the host chooses. `cwd` must be where it was recorded.
+	 */
+	agentForkSession: (provider: string, sessionId: string, cwd: string) => typedError<AgentTask_Serialize, IdeError>(__TAURI_INVOKE("agent_fork_session", { provider, sessionId, cwd })),
 	/**  The task's uncommitted changes and the commits made since it started. */
 	agentGroupedChanges: (task: string) => typedError<AgentChanges, IdeError>(__TAURI_INVOKE("agent_grouped_changes", { task })),
 	/**  Hermes Agent profiles on this machine (`default` first); empty without Hermes. */
@@ -102,7 +107,7 @@ export const commands = {
 	 *  Reads the ACP registry's install state for every provider from disk, so it runs on the
 	 *  blocking pool.
 	 */
-	agentProviders: () => typedError<AgentProvider[], IdeError>(__TAURI_INVOKE("agent_providers")),
+	agentProviders: () => typedError<AgentProvider_Serialize[], IdeError>(__TAURI_INVOKE("agent_providers")),
 	/**  Refreshes the model catalog; force bypasses freshness, not the cooldown. */
 	agentRefreshModels: (provider: string, force: boolean, model: string | null) => typedError<AgentModelCatalog, IdeError>(__TAURI_INVOKE("agent_refresh_models", { provider, force, model })),
 	/**
@@ -139,6 +144,8 @@ export const commands = {
 "lastTurn" | null) => typedError<null, IdeError>(__TAURI_INVOKE("agent_rollback_changes", { task, paths, view })),
 	/**  Sends a queued message now, interrupting the current turn. */
 	agentSendQueuedNow: (task: string, queued: string) => typedError<null, IdeError>(__TAURI_INVOKE("agent_send_queued_now", { task, queued })),
+	/**  Sets additional launch arguments for a built-in ACP agent; an empty list resets them. */
+	agentSetAdditionalArgs: (id: string, args: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("agent_set_additional_args", { id, args })),
 	/**
 	 *  Overrides built-in agent `id`'s command with `command` (its agent file keeps the
 	 *  built-in's driver and arguments), or returns it to auto-detection with `None`.
@@ -854,7 +861,7 @@ export const commands = {
 	 *  The JVM of OpenIDEA's JUnit runner for the module at `module`, given its resolved test classpath:
 	 *  the classpath with the runner and `junit-platform-launcher` of the engine's version (unless the
 	 *  classpath has one, or has JUnit 4 alone; from the engine's repository, else downloaded once from
-	 *  Maven Central), and,
+	 *  Maven Central unless only the configured package registries are allowed), and,
 	 *  for a Maven module, what its Surefire configuration gives the forked test JVM.
 	 */
 	javaJunitRunner: (module: string, classPaths: string[]) => typedError<JunitLaunch, IdeError>(__TAURI_INVOKE("java_junit_runner", { module, classPaths })),
@@ -1219,6 +1226,11 @@ export const commands = {
 	 */
 	pluginAnswerPrompt: (promptId: string, answer: string[] | null) => __TAURI_INVOKE<boolean>("plugin_answer_prompt", { promptId, answer }),
 	pluginAnswerRunTarget: (id: string, useTarget: boolean) => typedError<Settings_Serialize, IdeError>(__TAURI_INVOKE("plugin_answer_run_target", { id, useTarget })),
+	/**
+	 *  Approves `host` for the plugin's `net:setting:<key>` grant (applied in
+	 *  Settings, or the pending row); refused when the setting no longer holds it.
+	 */
+	pluginApproveNetSetting: (id: string, setting: string, http: boolean, host: string) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_approve_net_setting", { id, setting, http, host })),
 	/**  Validated assets of a plugin whose id starts with `prefix` (icon theme mapping and SVGs). */
 	pluginAssets: (pluginId: string, prefix: string) => typedError<([string, string])[], IdeError>(__TAURI_INVOKE("plugin_assets", { pluginId, prefix })),
 	/**  Cancels a plugin task (`taskStarted` with `cancellable`). */
@@ -1251,6 +1263,11 @@ export const commands = {
 	pluginEventKinds: () => __TAURI_INVOKE<EventKind[]>("plugin_event_kinds"),
 	/**  Reports exactly one completion from the operation's launching window. */
 	pluginFinishOperation: (id: string, status: number | null, stopped: boolean) => typedError<boolean, IdeError>(__TAURI_INVOKE("plugin_finish_operation", { id, status, stopped })),
+	/**
+	 *  Drops the approved host of a `net:setting:<key>` grant (revoked, or the
+	 *  setting's value cleared).
+	 */
+	pluginForgetNetSetting: (id: string, setting: string, http: boolean) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_forget_net_setting", { id, setting, http })),
 	pluginFormatters: () => typedError<FormatterChoice[], IdeError>(__TAURI_INVOKE("plugin_formatters")),
 	/**  Confirms a plugin waiting for consent (project plugins, new capabilities). */
 	pluginGrant: (id: string, consent: Consent) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_grant", { id, consent })),
@@ -1290,6 +1307,11 @@ export const commands = {
 	pluginNavigationIndex: (paths: string[], request: RequestId) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_navigation_index", { paths, request })),
 	pluginNavigationInvalidate: (paths: string[] | null) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_navigation_invalidate", { paths })),
 	pluginNavigationMarkers: (paths: string[]) => typedError<FileMarkers[], IdeError>(__TAURI_INVOKE("plugin_navigation_markers", { paths })),
+	/**
+	 *  The host a `net:setting:` grant derives from `value` (a bare host or a
+	 *  URL), validated with the manifest host rules; an error refuses the value.
+	 */
+	pluginNetSettingHost: (id: string, setting: string, value: string) => typedError<string, IdeError>(__TAURI_INVOKE("plugin_net_setting_host", { id, setting, value })),
 	/**  Parses one batch of an owned test configuration's output. */
 	pluginParseTestResults: (config: string, chunk: string) => typedError<PluginTestEvent[] | null, IdeError>(__TAURI_INVOKE("plugin_parse_test_results", { config, chunk })),
 	/**  Workbench events from this window (only the kinds of `plugin_event_kinds`). */
@@ -1441,6 +1463,7 @@ export const commands = {
 	settings: Settings_Serialize,
 	workspace?: Workspace_Serialize | null,
 	unity?: UnityProjectInfo | null,
+	unreal?: UnrealProjectInfo | null,
 } | null>("project_current"),
 	/**
 	 *  File › Rename Project…: the project's display name (title bar, recent
@@ -2124,6 +2147,8 @@ export const commands = {
 	vcsHasHook: (repo: string | null, name: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("vcs_has_hook", { repo, name })),
 	vcsIgnoreBlameRevision: (path: string, commit: string) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_ignore_blame_revision", { path, commit })),
 	vcsIgnoredFiles: () => typedError<FileStatus[], IdeError>(__TAURI_INVOKE("vcs_ignored_files")),
+	/**  An image at the selected Git revision or index stage as a data URL, absent if the path is missing. */
+	vcsImageAt: (path: string, rev: string) => typedError<string | null, IdeError>(__TAURI_INVOKE("vcs_image_at", { path, rev })),
 	/**
 	 *  `git init` in `dir` (VCS › Create Git Repository…): with the git of the window's project when
 	 *  it is trusted, the default one in a window without a project.
@@ -2287,6 +2312,11 @@ export const commands = {
 	vcsWritePatch: (path: string, patch: string, encoding: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_write_patch", { path, patch, encoding })),
 	/**  The browsers installed on this machine. */
 	webBrowsers: () => typedError<Browser[], IdeError>(__TAURI_INVOKE("web_browsers")),
+	/**
+	 *  Custom properties declared in `doc` (from its current text, first) and in the project's
+	 *  other stylesheets (from the index, so kept up to date as files change).
+	 */
+	webCssVariables: (doc: DocId) => typedError<CssVariable[], IdeError>(__TAURI_INVOKE("web_css_variables", { doc })),
 	/**  The web reference at `pos` of `doc` and its targets; `None` when there is no reference. */
 	webGoto: (doc: DocId, pos: Pos) => typedError<{
 	reference: WebReference,
@@ -2963,7 +2993,9 @@ export type AgentPrompt = {
 	images: AgentImage[],
 };
 
-export type AgentProvider = {
+export type AgentProvider = AgentProvider_Serialize | AgentProvider_Deserialize;
+
+export type AgentProvider_Deserialize = {
 	id: string,
 	name: string,
 	/**  The command line that starts its ACP server. */
@@ -2971,6 +3003,8 @@ export type AgentProvider = {
 	/**  Executable and arguments actually launched, without flattening paths containing spaces. */
 	program: string,
 	args: string[],
+	/**  Settings-managed suffix of `args`; absent for launches that cannot be edited. */
+	additionalArgs?: string[] | null,
 	defaultProgram: string | null,
 	defaultArgs: string[],
 	loginHint: string | null,
@@ -2987,6 +3021,37 @@ export type AgentProvider = {
 	config: AgentConfigOption[],
 	/**  Thinking-level options by model value; absent models have not reported their levels. */
 	thoughtLevels?: { [key in string]: AgentConfigOption[] },
+	/**  Slash commands it offered last time. */
+	commands: AgentCommand[],
+	source: AgentSource,
+};
+
+export type AgentProvider_Serialize = {
+	id: string,
+	name: string,
+	/**  The command line that starts its ACP server. */
+	command: string,
+	/**  Executable and arguments actually launched, without flattening paths containing spaces. */
+	program: string,
+	args: string[],
+	/**  Settings-managed suffix of `args`; absent for launches that cannot be edited. */
+	additionalArgs?: string[] | null,
+	defaultProgram: string | null,
+	defaultArgs: string[],
+	loginHint: string | null,
+	commandOverridden: boolean,
+	commandEditable: boolean,
+	commandReadOnlyReason: AgentCommandReadOnlyReason | null,
+	/**  Whether the command was found (on `PATH`). */
+	installed: boolean,
+	/**  The built-in command can be owned by a global npm package. */
+	canCheckCliUpdate: boolean,
+	/**  Environment variables it starts with (from its agent file). */
+	env: { [key in string]: string },
+	/**  Settings (models, modes…) the agent offered last time it ran; empty before its first session. */
+	config: AgentConfigOption[],
+	/**  Thinking-level options by model value; absent models have not reported their levels. */
+	thoughtLevels: { [key in string]: AgentConfigOption[] },
 	/**  Slash commands it offered last time. */
 	commands: AgentCommand[],
 	source: AgentSource,
@@ -4971,6 +5036,14 @@ export type CreateRequest = {
 	values: { [key in string]: string },
 };
 
+/**  A custom property declaration (`--accent: #3b82f6`), for `var(--…)` completion and hover. */
+export type CssVariable = {
+	name: string,
+	/**  The declared value, whitespace collapsed. */
+	value: string | null,
+	location: Location,
+};
+
 /**
  *  Payload for creating a custom ACP agent (always the ACP driver); the id
  *  becomes the `<config>/agents/<id>.toml` file name.
@@ -5183,6 +5256,8 @@ export type DbColumnInfo = {
 	nullable: boolean,
 	default: string | null,
 	primaryKey: boolean,
+	/**  `None` when it has none, or the engine keeps no comments. */
+	comment?: string | null,
 };
 
 /**  The schema model SQL completion and resolution work from. */
@@ -5605,6 +5680,8 @@ export type DbStatementOutcome = {
 };
 
 export type DbTableDetails = {
+	/**  The table's comment; `None` when it has none, or the engine keeps no comments. */
+	comment?: string | null,
 	columns: DbColumnInfo[],
 	indexes: DbIndexInfo[],
 	foreignKeys: DbForeignKey[],
@@ -6994,11 +7071,11 @@ export type ExternalDiffSide = {
 };
 
 /**  A formatter that runs outside the language servers, with its own settings group. */
-export type ExternalFormatter = "prettier" | "oxfmt" | "biome" | "ruff" | "black";
+export type ExternalFormatter = "prettier" | "oxfmt" | "biome" | "dprint" | "ruff" | "black";
 
-/**  An external formatter (Prettier, oxfmt, Biome, Ruff, Black) and the languages it formats. */
+/**  An external formatter (Prettier, oxfmt, Biome, dprint, Ruff, Black) and the languages it formats. */
 export type ExternalFormatterSettings = {
-	/**  Empty path: project node_modules (Prettier/oxfmt/Biome), managed installation, then PATH. */
+	/**  Empty path: project node_modules (Prettier/oxfmt/Biome/dprint), managed installation, then PATH. */
 	path?: string,
 	/**  Ruff only: directory containing its configuration, or a configuration file. */
 	configurationDirectory?: string,
@@ -9085,6 +9162,24 @@ export type LanguageCodeStyle_Deserialize = {
 	keywordCase?: string | null,
 	/**  SQL › Case › Identifiers (unquoted names): `upper` | `lower` | `keep`. */
 	identifierCase?: string | null,
+	/**
+	 *  Java: organize imports switches to a wildcard import once this many
+	 *  classes of one package are used (jdtls `starThreshold`; IDEA's default
+	 *  5; unset keeps the language server's default).
+	 */
+	classCountToUseImportWithStar?: number | null,
+	/**
+	 *  Java: organize imports switches to a wildcard static import once this
+	 *  many statically imported names are used (jdtls `staticStarThreshold`;
+	 *  IDEA's default 3; unset keeps the language server's default).
+	 */
+	namesCountToUseStaticImportWithStar?: number | null,
+	/**  JavaScript / TypeScript › Punctuation › Semicolons: `ignore` | `insert` | `remove`. */
+	semicolons?: string | null,
+	/**  JavaScript / TypeScript › Punctuation › Quotes: `auto` | `single` | `double`. */
+	quotes?: string | null,
+	/**  JavaScript / TypeScript › Spaces, by tsserver format option (`insertSpaceAfterCommaDelimiter`). */
+	spaces?: { [key in string]: boolean },
 };
 
 /**  Editor › Code Style › <Language> › Tabs and Indents (unset fields inherit). */
@@ -9109,6 +9204,24 @@ export type LanguageCodeStyle_Serialize = {
 	keywordCase?: string | null,
 	/**  SQL › Case › Identifiers (unquoted names): `upper` | `lower` | `keep`. */
 	identifierCase?: string | null,
+	/**
+	 *  Java: organize imports switches to a wildcard import once this many
+	 *  classes of one package are used (jdtls `starThreshold`; IDEA's default
+	 *  5; unset keeps the language server's default).
+	 */
+	classCountToUseImportWithStar?: number | null,
+	/**
+	 *  Java: organize imports switches to a wildcard static import once this
+	 *  many statically imported names are used (jdtls `staticStarThreshold`;
+	 *  IDEA's default 3; unset keeps the language server's default).
+	 */
+	namesCountToUseStaticImportWithStar?: number | null,
+	/**  JavaScript / TypeScript › Punctuation › Semicolons: `ignore` | `insert` | `remove`. */
+	semicolons?: string | null,
+	/**  JavaScript / TypeScript › Punctuation › Quotes: `auto` | `single` | `double`. */
+	quotes?: string | null,
+	/**  JavaScript / TypeScript › Spaces, by tsserver format option (`insertSpaceAfterCommaDelimiter`). */
+	spaces?: { [key in string]: boolean },
 };
 
 /**  Language identifier, e.g. `rust`, `typescript`, `kotlin`. Matches LSP `languageId`. */
@@ -9253,6 +9366,8 @@ export type LanguagesSettings = {
 	prettier?: ExternalFormatterSettings,
 	oxfmt?: ExternalFormatterSettings,
 	biome?: ExternalFormatterSettings,
+	/**  dprint formats every file its configuration covers: `languages` is unused. */
+	dprint?: ExternalFormatterSettings,
 	ruff?: ExternalFormatterSettings,
 	black?: ExternalFormatterSettings,
 	java?: JavaSettings,
@@ -10328,6 +10443,11 @@ export type NewAgentTask = {
 	 *  `!` command runs in it first.
 	 */
 	idle?: boolean,
+	/**
+	 *  A throwaway task (Generate Commit Message): it isn't saved, so it doesn't outlive a
+	 *  restart, and the agent keeps no session history of its own for it.
+	 */
+	ephemeral?: boolean,
 };
 
 /**  The approvals new agent tasks start with. */
@@ -11009,6 +11129,8 @@ export type PluginInfo = {
 	 *  none of them declared by the manifest; each can be revoked.
 	 */
 	netHosts: string[],
+	/**  Setting-derived hosts (`net:setting:`), approved in Settings, listed next to the `net:ask` ones. */
+	netSettings: PluginNetSetting[],
 	/**  What it contributes while live (point + label). */
 	contributions: ContributionInfo[],
 	/**  `activation` events of the manifest. */
@@ -11041,6 +11163,11 @@ export type PluginJavaAgent = {
 	jdk: string | null,
 	/**  The jar still has the hash recorded when `java.agent` was granted. */
 	approved: boolean,
+	/**
+	 *  The title of the executor the agent is bound to (API 1.18): "Run with <title>" and
+	 *  "Debug with <title>" launch with it; other launches leave it out.
+	 */
+	executor?: string | null,
 };
 
 /**
@@ -11058,6 +11185,18 @@ export type PluginLanguageVisuals = {
 export type PluginLocation = {
 	path: string,
 	range: Range,
+};
+
+/**  A `net:setting:` grant's host for Settings › Plugins: the approved one while the setting holds it, else the pending one. */
+export type PluginNetSetting = {
+	/**  The setting key the host comes from (`server` of `net:setting:server`). */
+	setting: string,
+	/**  Plain HTTP (`net.http:setting:`) instead of HTTPS (and loopback HTTP). */
+	http: boolean,
+	/**  The approved host, while the setting still holds it. */
+	host: string | null,
+	/**  The host the setting holds now when it is not the approved one. */
+	pending: string | null,
 };
 
 /**  A line a view's `process` body printed. */
@@ -11472,6 +11611,8 @@ export type ProfileSpec =
  *  out when another one did.
  */
 { kind: "cpuProfiles"; dir: IpcPath; root: IpcPath } | 
+/**  One `.cpuprofile` the user opened (saved by `node --cpu-prof`, Chrome DevTools, CI). */
+{ kind: "cpuProfileFile"; path: IpcPath } | 
 /**
  *  Collapsed-stack files with extension `ext` in `dir`; relative frame files resolve
  *  against `base`. `jvm_root`: map JVM class frames to sources below it. For the
@@ -11514,6 +11655,7 @@ export type ProjectInfo_Deserialize = {
 	settings: Settings_Deserialize,
 	workspace?: Workspace_Deserialize | null,
 	unity?: UnityProjectInfo | null,
+	unreal?: UnrealProjectInfo | null,
 };
 
 export type ProjectInfo_Serialize = {
@@ -11525,6 +11667,7 @@ export type ProjectInfo_Serialize = {
 	settings: Settings_Serialize,
 	workspace?: Workspace_Serialize | null,
 	unity?: UnityProjectInfo | null,
+	unreal?: UnrealProjectInfo | null,
 };
 
 /**  An interpreter another project uses: the project root and the SDK itself. */
@@ -12535,6 +12678,13 @@ export type RunExtras_Deserialize = {
 	 *  test output parser and how a single test is selected.
 	 */
 	testRunner?: string | null,
+	/**  Jest / Vitest "Watch for changes": the run stays alive and reruns the tests after each edit. */
+	watch?: boolean,
+	/**
+	 *  The plugin executor a launch goes through ("Run with <title>"): the plugin's id. Set
+	 *  on the launched copy, not saved; the plugin's executor-bound Java agent loads only then.
+	 */
+	executor?: string | null,
 };
 
 export type RunExtras_Serialize = {
@@ -12585,6 +12735,13 @@ export type RunExtras_Serialize = {
 	 *  test output parser and how a single test is selected.
 	 */
 	testRunner?: string | null,
+	/**  Jest / Vitest "Watch for changes": the run stays alive and reruns the tests after each edit. */
+	watch?: boolean,
+	/**
+	 *  The plugin executor a launch goes through ("Run with <title>"): the plugin's id. Set
+	 *  on the launched copy, not saved; the plugin's executor-bound Java agent loads only then.
+	 */
+	executor?: string | null,
 };
 
 /**  A process started from a run configuration. */
@@ -14035,6 +14192,14 @@ export type ToolDownloadSettings = {
 	 *  download on its official host.
 	 */
 	githubMirror?: string,
+	/**
+	 *  Package registries only as configured (a company Nexus or Artifactory): npm and pnpm
+	 *  installs and update checks never retry against the public npm registry, and the IDE
+	 *  fetches nothing from public package registries itself (the JUnit Platform launcher from
+	 *  Maven Central, dependency version completion from Maven Central, npm, PyPI and
+	 *  crates.io). Off by default.
+	 */
+	configuredRegistriesOnly?: boolean,
 };
 
 /**  UI-facing state of one tool. */
@@ -14181,6 +14346,11 @@ export type TypeScriptSettings = {
 	 *  vtsls default 3072 dies in a GC death spiral), else unset (vtsls default).
 	 */
 	tsserverMaxMemory?: number,
+	/**
+	 *  Problems › TypeScript project errors: the project's own `tsc --watch` per root
+	 *  `tsconfig.json` reports the errors of files that are not open.
+	 */
+	watchProblems?: boolean,
 };
 
 /**  A misspelt word. */
@@ -14227,6 +14397,22 @@ export type UnityProjectInfo = {
 	/**  File names relative to the Unity root, in stable order. */
 	solutions: string[],
 	projects: string[],
+};
+
+/**  A located engine, shown so a project without run configurations says why. */
+export type UnrealEngine = {
+	/**  `5.8` for a launcher install, or the registry key a source build registered under. */
+	id: string,
+	/**  Absolute engine root. */
+	root: string,
+};
+
+export type UnrealProjectInfo = {
+	/**
+	 *  The engine the project builds against. `None` means none could be located, which is the
+	 *  only reason such a project offers no run configuration at all.
+	 */
+	engine: UnrealEngine | null,
 };
 
 /**  A requirement the project's interpreter does not satisfy. */

@@ -42,6 +42,7 @@ import {
 } from "./organize";
 import {
   externalKey,
+  forkExternalSession,
   importExternalSession,
   moveTasksToGroup,
   moveTasksToStatusGroup,
@@ -717,6 +718,21 @@ export function AgentsView() {
                             onClick={() => void importExternalSession(s.provider, s.sessionId).catch(() => {})}
                           >
                             <T>Import</T>
+                          </button>
+                          <button
+                            type="button"
+                            className={styles.link}
+                            disabled={importing.has(key)}
+                            title={tx("Fork into a new task")}
+                            onClick={() =>
+                              void forkExternalSession(
+                                s.provider,
+                                s.sessionId,
+                                s.cwd ?? useProject.getState().project?.root ?? "",
+                              ).catch(() => {})
+                            }
+                          >
+                            <T>Fork</T>
                           </button>
                         </div>
                       );

@@ -68,6 +68,17 @@ pub trait PluginWorkspace: Send + Sync {
     fn problems(&self, _client: &str, _path: Option<&Path>) -> Result<Vec<ide_plugin::FileProblems>, HostError> {
         Ok(Vec::new())
     }
+    /// Fork a recorded native agent session into a new task in the invoking
+    /// window's project, returning the new task id (API 1.18).
+    fn fork_agent_session(
+        &self,
+        _client: &str,
+        _agent: &str,
+        _session_id: &str,
+        _cwd: &Path,
+    ) -> Result<String, HostError> {
+        Err(HostError::Failed("agent fork unavailable".into()))
+    }
 
     /// Roots of the open projects.
     fn projects(&self) -> Vec<PathBuf>;
@@ -203,6 +214,61 @@ impl SecretStore for FileSecretStore {
         ide_vfs::create_private_dir(file.parent().expect("has parent")).map_err(|e| e.to_string())?;
         let bytes = serde_json::to_vec(&map).map_err(|e| e.to_string())?;
         replace_entry(&file, &bytes).map_err(|e| e.to_string())
+    }
+}
+
+/// Plugin secrets in the OS credential store (Secret Service, Windows Credential
+/// Manager), like saved SSH and agent values. Without a credential store a value
+/// stays in the owner-only [`FileSecretStore`] file, which also still answers for
+/// values saved there by an older version until they are set again.
+pub struct CredentialSecretStore {
+    store: ide_ssh::secrets::SecretFile,
+    fallback: FileSecretStore,
+}
+
+impl CredentialSecretStore {
+    /// `dir`: the plugins' data directory (the index file and the fallback files live there).
+    pub fn new(dir: PathBuf) -> Self {
+        Self::with_store(ide_ssh::secrets::SecretFile::new(dir.join("plugin-secrets.json")), dir)
+    }
+
+    fn with_store(store: ide_ssh::secrets::SecretFile, dir: PathBuf) -> Self {
+        Self { store, fallback: FileSecretStore { dir } }
+    }
+
+    fn key(plugin: &str, name: &str) -> String {
+        format!("{plugin}/{name}")
+    }
+
+    /// Drops a value from the fallback file, writing it only when it held one.
+    fn forget_fallback(&self, plugin: &str, name: &str) -> Result<(), String> {
+        if self.fallback.get(plugin, name).is_none() {
+            return Ok(());
+        }
+        self.fallback.set(plugin, name, None)
+    }
+}
+
+impl SecretStore for CredentialSecretStore {
+    fn get(&self, plugin: &str, name: &str) -> Option<String> {
+        self.store.get(&Self::key(plugin, name)).or_else(|| self.fallback.get(plugin, name))
+    }
+
+    fn set(&self, plugin: &str, name: &str, value: Option<&str>) -> Result<(), String> {
+        let key = Self::key(plugin, name);
+        match value {
+            Some(v) => match self.store.set(&key, v) {
+                Ok(()) => self.forget_fallback(plugin, name),
+                Err(e) => {
+                    tracing::warn!("plugin secrets: {key} is kept in the plugin's data directory: {}", e.message);
+                    self.fallback.set(plugin, name, Some(v))
+                }
+            },
+            None => {
+                self.store.delete(&key);
+                self.forget_fallback(plugin, name)
+            }
+        }
     }
 }
 
@@ -675,6 +741,9 @@ pub(super) struct Shared {
     net_prompts: Mutex<HashMap<String, Option<Instant>>>,
     pub net_hosts_session_only: AtomicBool,
     session_net_hosts: Mutex<HashMap<String, BTreeSet<String>>>,
+    /// Setting-derived approvals kept for the session only (remote hosts),
+    /// plugin → `net:setting:` grant → its approved host.
+    pub(super) session_setting_hosts: Mutex<HashMap<String, BTreeMap<String, String>>>,
     pub(super) next_prompt: AtomicU64,
     pub(super) run_configurations: super::run_detectors::DynamicConfigurations,
     pub(super) run_targets: Mutex<super::run_targets::Targets>,
@@ -722,6 +791,29 @@ pub(super) struct Shared {
 /// A window's log tabs of one plugin: key → what it runs, oldest first.
 type LogTabs = Vec<(String, ide_plugin::ServiceLog)>;
 
+/// The settings key a `net:setting:` grant derives its host from.
+fn setting_key(cap: &Capability) -> String {
+    match cap {
+        Capability::NetSetting { key, .. } => key.clone(),
+        _ => String::new(),
+    }
+}
+
+/// The host a setting value names: a bare host, or a URL the user pasted
+/// (`https://jira.corp.example/`), checked with the manifest host rules — a `*`
+/// is refused. `Ok(None)` when the value is empty (the setting is cleared).
+pub(super) fn setting_host(value: &str) -> Result<Option<String>, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let host =
+        if value.contains("://") { ide_plugin::net_host(value)? } else { value.trim_end_matches('.').to_owned() };
+    ide_extension::manifest_host(&host)
+        .map(Some)
+        .map_err(|_| format!("{value:?} is not a host (example.com) or a URL (https://example.com/)"))
+}
+
 /// Log tabs a plugin's code may have open in one window; opening more forgets
 /// the oldest (that tab can no longer start its program).
 const MAX_LOG_TABS: usize = 32;
@@ -760,6 +852,7 @@ impl Shared {
             net_prompts: Mutex::default(),
             net_hosts_session_only: AtomicBool::new(false),
             session_net_hosts: Mutex::default(),
+            session_setting_hosts: Mutex::default(),
             next_prompt: AtomicU64::new(1),
             run_configurations: Arc::default(),
             run_targets: Mutex::default(),
@@ -1027,6 +1120,7 @@ impl Shared {
         self.withdraw_prompts(plugin);
         self.net_prompts.lock().remove(plugin);
         self.session_net_hosts.lock().remove(plugin);
+        self.session_setting_hosts.lock().remove(plugin);
         let removed: Vec<(Option<String>, String)> = {
             let mut contexts = self.contexts.lock();
             let keys: Vec<_> = contexts.keys().filter(|(_, p, _)| p == plugin).cloned().collect();
@@ -1545,6 +1639,51 @@ fn project_subdirectory(root: &Path, cwd: &str) -> Result<PathBuf, HostError> {
     Ok(dir)
 }
 
+impl PluginApi {
+    /// The value of `key` the user set for this plugin, as a plain string
+    /// (`None` when unset or not a string).
+    pub(super) fn setting_value(&self, key: &str) -> Option<String> {
+        let raw = self.setting(None, key)?;
+        serde_json::from_str::<String>(&raw).ok()
+    }
+
+    /// The plugin's `net:setting:` grants with their hosts: the approved host
+    /// while the setting still holds it, and the pending one to approve
+    /// otherwise (`None` when the value is unset or not a host).
+    pub(super) fn net_setting_hosts(&self, subject: &Subject) -> Vec<(Capability, Option<String>, Option<String>)> {
+        let derived: Vec<Capability> = self
+            .pkg
+            .manifest
+            .capabilities
+            .all()
+            .filter(|c| matches!(c, Capability::NetSetting { .. }))
+            .cloned()
+            .collect();
+        if derived.is_empty() {
+            return Vec::new();
+        }
+        let ledger = self.shared.ledger.lock();
+        let grant = ledger.get(subject).filter(|g| g.confirmed);
+        let session = self.shared.session_setting_hosts.lock().get(self.id()).cloned().unwrap_or_default();
+        derived
+            .into_iter()
+            .map(|cap| {
+                let current = self.setting_value(&setting_key(&cap)).and_then(|v| setting_host(&v).ok()).flatten();
+                let record = grant.and_then(|g| g.setting_hosts.get(&cap.to_string())).map(String::as_str);
+                let session_host = session.get(&cap.to_string()).map(String::as_str);
+                // An approval covers requests only while the setting still holds it.
+                let approved = [record, session_host]
+                    .into_iter()
+                    .flatten()
+                    .find(|host| current.as_deref() == Some(host))
+                    .map(str::to_owned);
+                let pending = current.filter(|host| approved.as_deref() != Some(host));
+                (cap, approved, pending)
+            })
+            .collect()
+    }
+}
+
 impl HostApi for PluginApi {
     fn database_upsert(&self, root: &Path, source: ide_plugin::PluginDataSource) -> Result<(), HostError> {
         let (host, db) = self.database_host(root)?;
@@ -1917,6 +2056,12 @@ impl HostApi for PluginApi {
     }
     fn file_icon_decorations(&self, set: &str, items: Vec<(PathBuf, String)>) -> Result<(), HostError> {
         self.set_file_icon_decorations(set, items)
+    }
+    fn fork_agent_session(&self, client: &str, agent: &str, session_id: &str, cwd: &Path) -> Result<String, HostError> {
+        self.shared
+            .workspace()
+            .ok_or_else(|| HostError::NotFound("window project".into()))?
+            .fork_agent_session(client, agent, session_id, cwd)
     }
     fn console_rules(&self, rules: Vec<ide_plugin::ConsoleRule>) -> Result<(), HostError> {
         let rules = super::console_rules::normalize(rules).map_err(HostError::Invalid)?;
@@ -2781,6 +2926,16 @@ impl HostApi for PluginApi {
             return Ok(None);
         }
         let host = host.trim_end_matches('.').to_ascii_lowercase();
+        // A host the plugin derives from a setting is approved in Settings,
+        // not asked about here: pending or revoked, it stays denied without a
+        // dialog (#3809).
+        if self.pkg.manifest.capabilities.all().any(|cap| {
+            matches!(cap, Capability::NetSetting { http: false, key: _ })
+                && self.setting_value(&setting_key(cap)).and_then(|v| setting_host(&v).ok()).flatten().as_deref()
+                    == Some(host.as_str())
+        }) {
+            return Ok(None);
+        }
         {
             let ledger = self.shared.ledger.lock();
             if let Some(grant) = ledger.get(subject)
@@ -3602,6 +3757,14 @@ impl PluginWorkspace for HostWorkspace {
         Ok(config)
     }
 
+    fn fork_agent_session(&self, client: &str, agent: &str, session_id: &str, cwd: &Path) -> Result<String, HostError> {
+        let host = self.0.upgrade().ok_or(HostError::Cancelled)?;
+        let project = host.project(client).map_err(failed)?;
+        project.require_trust().map_err(failed)?;
+        // Scans the recorded transcripts on disk; plugin calls already run off the UI thread.
+        Ok(project.agents.fork_session(agent, session_id, cwd).map_err(failed)?.id)
+    }
+
     fn buffer_text_in(&self, client: Option<&str>, path: &Path) -> Option<String> {
         client
             .and_then(|w| self.0.upgrade()?.project(w).ok()?.documents.text_of(path))
@@ -4100,6 +4263,67 @@ mod tests {
         secrets.set("acme.lint", "key", Some("after")).unwrap();
         assert_eq!(secrets.get("acme.lint", "key").as_deref(), Some("after"));
         assert_eq!(std::fs::read_to_string(&outside).unwrap(), "unchanged");
+    }
+
+    /// Plugin secrets go to the credential store; a value an older version left in
+    /// the owner-only file keeps working until it is set again, and then leaves the file.
+    #[test]
+    fn plugin_secrets_go_to_the_credential_store() {
+        ide_ssh::secrets::testing::use_memory_store();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("plugins");
+        FileSecretStore { dir: dir.clone() }.set("acme.lint", "old", Some("legacy-3f9a")).unwrap();
+        let secrets = CredentialSecretStore::new(dir.clone());
+        assert_eq!(secrets.get("acme.lint", "old").as_deref(), Some("legacy-3f9a"));
+
+        secrets.set("acme.lint", "token", Some("value-7c1e")).unwrap();
+        secrets.set("acme.lint", "old", Some("moved-5d2b")).unwrap();
+        let on_disk = ide_ssh::secrets::testing::files_containing(tmp.path(), "value-7c1e");
+        assert_eq!(on_disk, Vec::<PathBuf>::new());
+        assert_eq!(ide_ssh::secrets::testing::files_containing(tmp.path(), "legacy-3f9a"), Vec::<PathBuf>::new());
+        let again = CredentialSecretStore::new(dir);
+        assert_eq!(again.get("acme.lint", "token").as_deref(), Some("value-7c1e"));
+        assert_eq!(again.get("acme.lint", "old").as_deref(), Some("moved-5d2b"));
+        assert_eq!(again.get("other.plugin", "token"), None);
+
+        again.set("acme.lint", "token", None).unwrap();
+        assert_eq!(again.get("acme.lint", "token"), None);
+    }
+
+    /// Without a credential store a value stays in the owner-only file.
+    #[test]
+    fn plugin_secrets_without_a_credential_store_stay_in_the_file() {
+        struct NoStore;
+        impl ide_ssh::secrets::Vault for NoStore {
+            fn available(&self) -> bool {
+                false
+            }
+            fn get(&self, _: &str, _: &str) -> ide_ssh::secrets::StoreResult<String> {
+                Err(ide_ssh::secrets::StoreError::NoDefaultStore)
+            }
+            fn set(&self, _: &str, _: &str, _: &str) -> ide_ssh::secrets::StoreResult<()> {
+                Err(ide_ssh::secrets::StoreError::NoDefaultStore)
+            }
+            fn delete(&self, _: &str, _: &str) -> ide_ssh::secrets::StoreResult<()> {
+                Err(ide_ssh::secrets::StoreError::NoDefaultStore)
+            }
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("plugins");
+        let store = ide_ssh::secrets::SecretFile::with_vault(
+            dir.join("plugin-secrets.json"),
+            |v| serde_json::from_value(v).ok(),
+            Arc::new(NoStore),
+        );
+        let secrets = CredentialSecretStore::with_store(store, dir.clone());
+        secrets.set("acme.lint", "token", Some("value-7c1e")).unwrap();
+        assert_eq!(
+            ide_ssh::secrets::testing::files_containing(tmp.path(), "value-7c1e"),
+            [dir.join("acme.lint").join("secrets.json")]
+        );
+        assert_eq!(secrets.get("acme.lint", "token").as_deref(), Some("value-7c1e"));
+        secrets.set("acme.lint", "token", None).unwrap();
+        assert_eq!(secrets.get("acme.lint", "token"), None);
     }
 
     #[cfg(unix)]

@@ -12,7 +12,7 @@ import type {
   DataSource,
 } from "@/platform/ipc";
 import type { SshConfigValid } from "@/platform/remoteSettings";
-import { blankSnowflake, vendorOf, vendorOfScheme } from "./vendors";
+import { DUCKDB_JDBC_PREFIX, blankSnowflake, vendorOf, vendorOfScheme } from "./vendors";
 
 export type Cell = string | null;
 
@@ -30,9 +30,18 @@ export function toTsv(header: readonly string[] | null, rows: ReadonlyArray<read
  * single-quoted with `'` doubled. `numeric(c)` decides quoting per column.
  */
 export function toOneRow(rows: ReadonlyArray<readonly Cell[]>, numeric: (col: number) => boolean): string {
-  const literal = (v: Cell, c: number) =>
-    v === null ? "NULL" : numeric(c) && Number.isFinite(Number(v)) ? v : `'${v.replace(/'/g, "''")}'`;
-  return rows.flatMap((r) => r.map(literal)).join(", ");
+  return rows.flatMap((r) => r.map((v, c) => sqlLiteral(v, numeric(c)))).join(", ");
+}
+
+/**
+ * A value as an SQL literal: NULL, a number unquoted in a numeric column, else single-quoted
+ * with `'` doubled (and `\\` doubled for drivers that read backslash escapes in strings).
+ */
+export function sqlLiteral(v: Cell, numeric: boolean, driver?: DbDriver): string {
+  if (v === null) return "NULL";
+  if (numeric && Number.isFinite(Number(v))) return v;
+  const escaped = driver === "clickhouse" || driver === "snowflake" ? v.replace(/\\/g, "\\\\") : v;
+  return `'${escaped.replace(/'/g, "''")}'`;
 }
 
 /** RFC 4180 CSV; NULL is an empty field. */
@@ -410,11 +419,17 @@ function snowflakeParameter(source: Partial<DataSource>, name: string, value: st
 /**
  * Data Source from URL (and the General tab's URL field): `postgres://user:pass@host:5432/db`,
  * `mysql://…`, `mariadb://…`, wire-compatible products (`redshift://`, `tidb://`…), the
- * `jdbc:` forms of those, `jdbc:sqlite:path` / `sqlite:path`. SSL parameters fill the
- * SSL tab, other parameters become driver properties. Null when the URL names no supported driver.
+ * `jdbc:` forms of those, `jdbc:sqlite:path` / `sqlite:path` and `jdbc:duckdb:`.
+ * DuckDB keeps the explicit JDBC URL. For native drivers, SSL parameters fill
+ * the SSL tab and other parameters become driver properties.
  */
 export function parseSourceUrl(raw: string): { source: Partial<DataSource>; password: string | null } | null {
-  const url = raw.trim().replace(/^jdbc:/i, "");
+  const trimmed = raw.trim();
+  if (trimmed.startsWith(DUCKDB_JDBC_PREFIX)) {
+    if (/[\r\n]/.test(trimmed)) return null;
+    return { source: { driver: "jdbc", vendor: "duckdb", url: trimmed, urlOnly: true }, password: null };
+  }
+  const url = trimmed.replace(/^jdbc:/i, "");
   const sqlite = /^sqlite3?:(?:\/\/)?(.+)$/i.exec(url);
   if (sqlite) {
     const file = sqlite[1]!.replace(/^\/([A-Za-z]:)/, "$1");

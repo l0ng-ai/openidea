@@ -31,6 +31,8 @@ const TYPE_LIKE: u32 = 20;
 
 thread_local! {
     static MATCHER: RefCell<Matcher> = RefCell::new(Matcher::new(Config::DEFAULT.match_paths()));
+    /// An ASCII candidate with `_` read as `-`, for a folding [`Needle`].
+    static FOLDED: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
 fn with_matcher<R>(f: impl FnOnce(&mut Matcher) -> R) -> R {
@@ -43,30 +45,74 @@ struct Needle {
     original: String,
     utf32: Utf32String,
     mask: u64,
+    /// A file or folder needle with `-` or `_`: either matches both in a candidate
+    /// (`bit_matcher` finds `bit-matcher/`); both sides are matched with `_` read as `-`.
+    fold: bool,
 }
 
 impl Needle {
     fn new(s: &str) -> Self {
         let lower = s.to_lowercase();
-        Self { mask: char_mask(&lower), utf32: Utf32String::from(lower.as_str()), lower, original: s.to_owned() }
+        Self {
+            mask: char_mask(&lower),
+            utf32: Utf32String::from(lower.as_str()),
+            lower,
+            original: s.to_owned(),
+            fold: false,
+        }
+    }
+
+    /// A needle for file and folder names, whose `-` and `_` match each other.
+    fn file(s: &str) -> Self {
+        let mut needle = Self::new(s);
+        needle.fold = needle.lower.contains(['-', '_']);
+        if needle.fold {
+            needle.utf32 = Utf32String::from(needle.lower.replace('_', "-").as_str());
+        }
+        needle
     }
 
     fn is_empty(&self) -> bool {
         self.lower.is_empty()
     }
 
+    /// `hay` as the matcher reads it; for a folding needle, a copy with `_` as `-`.
+    fn hay<'a>(&self, hay: &'a str, buf: &'a mut Vec<char>) -> Utf32Str<'a> {
+        if !self.fold {
+            return Utf32Str::new(hay, buf);
+        }
+        // The same characters `Utf32Str::new` would give, so match indices stay valid.
+        if matches!(Utf32Str::new(hay, &mut *buf), Utf32Str::Ascii(_)) {
+            buf.clear();
+            buf.extend(hay.bytes().map(char::from));
+        }
+        for c in buf.iter_mut() {
+            if *c == '_' {
+                *c = '-';
+            }
+        }
+        Utf32Str::Unicode(buf)
+    }
+
     fn score(&self, m: &mut Matcher, hay: &str, buf: &mut Vec<char>) -> Option<u32> {
-        m.fuzzy_match(Utf32Str::new(hay, buf), self.utf32.slice(..)).map(u32::from)
+        m.fuzzy_match(self.hay(hay, buf), self.utf32.slice(..)).map(u32::from)
     }
 
     /// `hay` is pure ASCII: skip `Utf32Str::new`'s check and UTF-32 conversion.
     fn score_ascii(&self, m: &mut Matcher, hay: &str) -> Option<u32> {
-        m.fuzzy_match(Utf32Str::Ascii(hay.as_bytes()), self.utf32.slice(..)).map(u32::from)
+        if !self.fold {
+            return m.fuzzy_match(Utf32Str::Ascii(hay.as_bytes()), self.utf32.slice(..)).map(u32::from);
+        }
+        FOLDED.with_borrow_mut(|folded| {
+            folded.clear();
+            folded.extend(hay.bytes().map(|b| if b == b'_' { b'-' } else { b }));
+            m.fuzzy_match(Utf32Str::Ascii(folded), self.utf32.slice(..)).map(u32::from)
+        })
     }
 
     fn indices(&self, m: &mut Matcher, hay: &str, buf: &mut Vec<char>, out: &mut Vec<u32>) -> Option<u32> {
         out.clear();
-        let s = m.fuzzy_indices(Utf32Str::new(hay, buf), self.utf32.slice(..), out).map(u32::from);
+        let s = m.fuzzy_indices(self.hay(hay, buf), self.utf32.slice(..), out).map(u32::from);
         out.sort_unstable();
         out.dedup();
         s
@@ -282,8 +328,8 @@ pub(crate) fn find_files(
             .collect();
     }
     let fq = match q.rsplit_once('/') {
-        Some((dir, name)) => FileQuery::Path { dir: Needle::new(dir), name: Needle::new(name) },
-        None => FileQuery::Name(Needle::new(&q)),
+        Some((dir, name)) => FileQuery::Path { dir: Needle::file(dir), name: Needle::file(name) },
+        None => FileQuery::Name(Needle::file(&q)),
     };
     let tiebreak = |a: &Cand, b: &Cand| a.len.cmp(&b.len).then_with(|| data.hot.rel(a.slot).cmp(data.hot.rel(b.slot)));
     let pool = limit * 4 + 64;
@@ -350,7 +396,7 @@ pub(crate) fn find_dirs(data: &IndexData, query: &str, root: Option<&Path>, limi
         return Vec::new();
     }
     let by_path = q.contains('/');
-    let needle = Needle::new(q.trim_end_matches('/'));
+    let needle = Needle::file(q.trim_end_matches('/'));
     let text = data.dirs_hot.text();
     // (score, rel without the trailing `/`, char offset of the name when it matched by name)
     let (mut best, _): (Vec<_>, Vec<char>) = data
@@ -670,6 +716,34 @@ pub(crate) fn symbols_named_within(
     out
 }
 
+/// Symbols of `kind` whose name starts with `prefix` (CSS custom properties: `--`), by path
+/// then position.
+pub(crate) fn symbols_prefixed(data: &IndexData, prefix: &str, kind: SymbolKind, limit: usize) -> Vec<SymbolMatch> {
+    let syms = &data.syms;
+    let mut out: Vec<SymbolMatch> = data
+        .files
+        .iter()
+        .flatten()
+        .flat_map(|e| {
+            (e.sym_start..e.sym_start + e.sym_len)
+                .filter(|&i| syms.kind(i) == kind && syms.name(i).starts_with(prefix))
+                .map(move |i| SymbolMatch {
+                    name: syms.name(i).to_string(),
+                    kind,
+                    container: syms.container(i).map(str::to_owned),
+                    path: e.path.clone().into(),
+                    rel_path: e.rel.to_string(),
+                    range: syms.range(i),
+                    score: 0,
+                    indices: Vec::new(),
+                })
+        })
+        .collect();
+    out.sort_by(|a, b| a.rel_path.cmp(&b.rel_path).then_with(|| a.range.cmp(&b.range)));
+    out.truncate(limit);
+    out
+}
+
 /// Symbols named exactly one of `names` whose file is inside `root`, at most `limit` per
 /// name, by path then position: one walk over the index for every name an agent reply shows.
 pub(crate) fn symbols_named_any(data: &IndexData, names: &[String], root: &Path, limit: usize) -> Vec<SymbolMatch> {
@@ -733,5 +807,54 @@ mod tests {
     fn humps() {
         assert!(hump_bonus("OrderController", &[0, 5, 6]) > hump_bonus("OrderController", &[0, 3, 6]));
         assert_eq!(hump_bonus("abc", &[]), 0);
+    }
+
+    fn index(rels: &[&str]) -> IndexData {
+        let mut data = IndexData::default();
+        for rel in rels {
+            let record =
+                crate::data::FileRecord { mtime: 0, size: 0, hash: [0; 32], symbols: Vec::new(), ignored: false };
+            let (entry, symbols) = FileEntry::new(Path::new("/p").join(rel), (*rel).to_owned(), record);
+            data.insert(entry, symbols);
+        }
+        data
+    }
+
+    fn files(data: &IndexData, q: &str) -> Vec<String> {
+        find_files(data, &Recents::new(&[]), q, None, 20).into_iter().map(|m| m.rel_path).collect()
+    }
+
+    fn dirs(data: &IndexData, q: &str) -> Vec<String> {
+        find_dirs(data, q, None, 20).into_iter().map(|m| m.rel_path).collect()
+    }
+
+    #[test]
+    fn dash_and_underscore_match_each_other_in_file_and_folder_names() {
+        let data =
+            index(&["bit-matcher/lib.rs", "line_parser/lib.rs", "docs/token-stream.rs", "docs/frame_sampler.rs"]);
+        assert_eq!(dirs(&data, "bit_matcher"), ["bit-matcher/"]);
+        assert_eq!(dirs(&data, "line-parser"), ["line_parser/"]);
+        assert_eq!(files(&data, "token_stream"), ["docs/token-stream.rs"]);
+        assert_eq!(files(&data, "frame-sampler"), ["docs/frame_sampler.rs"]);
+        assert_eq!(files(&data, "docs/token_stream"), ["docs/token-stream.rs"]);
+        // As before: a space or no separator matches any; `.` is not a word separator here.
+        assert_eq!(dirs(&data, "bit matcher"), ["bit-matcher/"]);
+        assert_eq!(dirs(&data, "bitmatcher"), ["bit-matcher/"]);
+        assert!(dirs(&data, "bit.matcher").is_empty());
+    }
+
+    #[test]
+    fn the_exact_separator_ranks_first() {
+        let data = index(&["src/bit-matcher.rs", "src/bit_matcher.rs"]);
+        assert_eq!(files(&data, "bit_matcher"), ["src/bit_matcher.rs", "src/bit-matcher.rs"]);
+        assert_eq!(files(&data, "bit-matcher"), ["src/bit-matcher.rs", "src/bit_matcher.rs"]);
+    }
+
+    #[test]
+    fn highlights_the_other_separator() {
+        let data = index(&["bit-matcher/lib.rs", "docs/token-stream.rs"]);
+        assert_eq!(find_dirs(&data, "bit_matcher", None, 1)[0].indices, (0..11).collect::<Vec<u32>>());
+        let file = &find_files(&data, &Recents::new(&[]), "token_stream", None, 1)[0];
+        assert_eq!(file.indices, (5..17).collect::<Vec<u32>>());
     }
 }

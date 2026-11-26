@@ -92,12 +92,29 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(k.unknownActions).toEqual([]);
   });
 
+  it("maps Scroll Up / Scroll Down and Move if Necessary", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="E" parent="$default"><action id="EditorScrollUpAndMove"><keyboard-shortcut first-keystroke="alt UP"/></action><action id="EditorScrollDownAndMove"><keyboard-shortcut first-keystroke="alt DOWN"/></action></keymap>`,
+    );
+    expect(k.overrides["editor.scrollUpAndMove"]).toEqual([normalizeBinding("Alt+Up")]);
+    expect(k.overrides["editor.scrollDownAndMove"]).toEqual([normalizeBinding("Alt+Down")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
   it("maps Scroll to Top / Scroll to Bottom", () => {
     const k = parseIdeaKeymap(
       `<keymap name="X" parent="Mac OS X 10.5+"><action id="EditorScrollTop"><keyboard-shortcut first-keystroke="HOME"/></action><action id="EditorScrollBottom"><keyboard-shortcut first-keystroke="END"/></action></keymap>`,
     );
     expect(k.overrides["editor.scrollToTop"]).toEqual([normalizeBinding("Home")]);
     expect(k.overrides["editor.scrollToBottom"]).toEqual([normalizeBinding("End")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
+  it("maps Toggle Zen Mode", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="E" parent="Mac OS X 10.5+"><action id="ToggleZenMode"><keyboard-shortcut first-keystroke="control meta Z"/></action></keymap>`,
+    );
+    expect(k.overrides["view.toggleZenMode"]).toEqual([normalizeBinding("Ctrl+Meta+Z")]);
     expect(k.unknownActions).toEqual([]);
   });
 
@@ -142,6 +159,18 @@ describe("IntelliJ IDEA keymap import", () => {
     );
     expect(k.overrides["editor.paragraphForward"]).toEqual([normalizeBinding("Alt+Shift+]")]);
     expect(k.overrides["editor.paragraphBackwardWithSelection"]).toEqual([normalizeBinding("Ctrl+Alt+Shift+[")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
+  it('maps the word moves and deletes in Different "CamelHumps" Mode', () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="H" parent="$default"><action id="EditorNextWordInDifferentHumpsMode"><keyboard-shortcut first-keystroke="control alt RIGHT"/></action><action id="EditorPreviousWordInDifferentHumpsModeWithSelection"><keyboard-shortcut first-keystroke="control alt shift LEFT"/></action><action id="EditorDeleteToWordStartInDifferentHumpsMode"><keyboard-shortcut first-keystroke="control alt BACK_SPACE"/></action></keymap>`,
+    );
+    expect(k.overrides["editor.nextWordInDifferentHumpsMode"]).toEqual([normalizeBinding("Ctrl+Alt+Right")]);
+    expect(k.overrides["editor.previousWordInDifferentHumpsModeWithSelection"]).toEqual([
+      normalizeBinding("Ctrl+Alt+Shift+Left"),
+    ]);
+    expect(k.overrides["code.deleteToWordStartInDifferentHumpsMode"]).toEqual([normalizeBinding("Ctrl+Alt+Backspace")]);
     expect(k.unknownActions).toEqual([]);
   });
 

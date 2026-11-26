@@ -156,6 +156,7 @@
   "menu.editor.splitDown": "Scinder vers le bas",
   "menu.editor.splitRight": "Scinder vers la droite",
   "menu.editor.toggleZen": "{distractionFree, select, on {Quitter le mode sans distraction} other {Passer en mode sans distraction}}",
+  "menu.view.toggleZenMode": "{zenMode, select, on {Quitter le mode Zen} other {Passer en mode Zen}}",
   "menu.editor.unsplit": "Annuler la scission",
   "menu.file": "Fichier",
   "menu.fileProperties": "Propriétés du fichier",

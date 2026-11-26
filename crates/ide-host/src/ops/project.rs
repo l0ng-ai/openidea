@@ -22,6 +22,8 @@ pub struct ProjectInfo {
     pub workspace: Option<ide_workspace::workspace::Workspace>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unity: Option<ide_workspace::unity::UnityProjectInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unreal: Option<ide_workspace::unreal::UnrealProjectInfo>,
 }
 
 pub fn info(project: &Project) -> ProjectInfo {
@@ -45,6 +47,7 @@ pub fn info(project: &Project) -> ProjectInfo {
         root: project.root.clone().into(),
         workspace,
         unity: ide_workspace::unity::detect(&project.root),
+        unreal: ide_workspace::unreal::detect(&project.root),
     }
 }
 
@@ -124,6 +127,11 @@ pub fn settings_set(
     }
     if key == "terminal" || key.starts_with("terminal.") {
         super::term::apply_output_rate(host, window);
+    }
+    if "languages.typescript.watchProblems".starts_with(&key)
+        && let Some(watch) = host.project(window).ok().and_then(|p| p.tsc_watch.clone())
+    {
+        watch.apply(&host.runtime);
     }
     let sink = host.window_sink(window);
     sink.emit(IdeEvent::SettingsChanged { key });

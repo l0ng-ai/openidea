@@ -180,7 +180,11 @@ export async function javaLaunchConfig(
   const agentNote = await remoteJavaAgentNote(rc);
   if (agentNote) preparation?.report?.(agentNote);
   // The host adds JetBrains Runtime's flag for it, or says in the console why the session runs without.
-  const enhanced = rc.params?.enhancedClassRedefinition === "true" ? { enhancedClassRedefinition: true } : {};
+  const enhanced = {
+    ...(rc.params?.enhancedClassRedefinition === "true" ? { enhancedClassRedefinition: true } : {}),
+    // A plugin executor's launch ("Debug with …"): the host adds that plugin's Java agent.
+    ...(rc.executor ? { executor: rc.executor } : {}),
+  };
   if (kotlin) {
     return {
       name: rc.name,

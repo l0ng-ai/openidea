@@ -157,6 +157,7 @@
   "menu.editor.splitDown": "Dividir para baixo",
   "menu.editor.splitRight": "Dividir à direita",
   "menu.editor.toggleZen": "{distractionFree, select, on {Sair do modo sem distrações} other {Entrar no modo sem distrações}}",
+  "menu.view.toggleZenMode": "{zenMode, select, on {Sair do modo Zen} other {Entrar no modo Zen}}",
   "menu.editor.unsplit": "Remover divisão",
   "menu.file": "Arquivo",
   "menu.fileProperties": "Propriedades do arquivo",

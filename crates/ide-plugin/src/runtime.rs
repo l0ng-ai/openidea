@@ -208,6 +208,9 @@ pub trait HostApi: Send + Sync {
     ) -> Result<(), HostError>;
     /// Replace all `(path, icon)` entries of a tree decoration set at once (API 1.8).
     fn file_icon_decorations(&self, set: &str, items: Vec<(PathBuf, String)>) -> Result<(), HostError>;
+    /// Fork a recorded native agent session into a new task in the invoking
+    /// window's project, returning the new task id (API 1.18).
+    fn fork_agent_session(&self, client: &str, agent: &str, session_id: &str, cwd: &Path) -> Result<String, HostError>;
     /// Trusted repository history.
     fn vcs_log(
         &self,

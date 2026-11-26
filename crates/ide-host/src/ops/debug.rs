@@ -34,9 +34,10 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
     };
     let mut config = config;
     let enhanced = take_enhanced_redefinition(&mut config);
+    let executor = take_executor(&mut config);
     let java_exec = java_exec_path(&config);
     let mut agents = if is_jvm_launch(&config) {
-        ide_run::java_agent::current_for(java_exec.as_deref())
+        ide_run::java_agent::current_for_executor(java_exec.as_deref(), executor.as_deref())
     } else {
         ide_run::java_agent::Agents::default()
     };
@@ -269,6 +270,19 @@ fn take_enhanced_redefinition(config: &mut LaunchConfig) -> Option<Result<&'stat
     config.extra_json = Some(serde_json::Value::Object(extra).to_string());
     (on && is_jvm_launch(config))
         .then(|| ide_run::java_hotswap::enhanced_redefinition(java_exec_path(config).as_deref()))
+}
+
+/// The plugin executor the session launches through (`executor` in the launch extras, which
+/// this removes): its plugin's executor-bound Java agent loads only then.
+fn take_executor(config: &mut LaunchConfig) -> Option<String> {
+    let Some(serde_json::Value::Object(mut extra)) =
+        config.extra_json.as_deref().and_then(|e| serde_json::from_str(e).ok())
+    else {
+        return None;
+    };
+    let executor = extra.remove("executor")?;
+    config.extra_json = Some(serde_json::Value::Object(extra).to_string());
+    executor.as_str().filter(|s| !s.is_empty()).map(str::to_owned)
 }
 
 /// Plugins' Java agents ([`ide_run::java_agent`]) after the configuration's VM options:
@@ -993,6 +1007,21 @@ mod tests {
             assert_eq!(take_enhanced_redefinition(&mut config), None);
             assert!(extras(&config).get("enhancedClassRedefinition").is_none());
         }
+    }
+
+    #[test]
+    fn the_executor_is_taken_out_of_the_launch_extras() {
+        let extras = |config: &LaunchConfig| {
+            serde_json::from_str::<serde_json::Value>(config.extra_json.as_deref().unwrap()).unwrap()
+        };
+        let mut config =
+            launch("java-debug", "launch", serde_json::json!({"vmArgs": "-Xmx1g", "executor": "acme.reload"}));
+        assert_eq!(take_executor(&mut config).as_deref(), Some("acme.reload"));
+        assert!(extras(&config).get("executor").is_none(), "not passed on to the adapter");
+        assert_eq!(extras(&config)["vmArgs"], "-Xmx1g");
+        let mut plain = launch("java-debug", "launch", serde_json::json!({"vmArgs": "-Xmx1g"}));
+        assert_eq!(take_executor(&mut plain), None);
+        assert_eq!(extras(&plain)["vmArgs"], "-Xmx1g");
     }
 
     #[test]

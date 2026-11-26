@@ -631,25 +631,32 @@ function Details({
 /** Splits arguments on whitespace, honoring single and double quotes. */
 function parseArgs(text: string): string[] {
   const out: string[] = [];
-  let current = "";
+  let current: string | null = null;
   let quote: '"' | "'" | null = null;
   for (const ch of text.trim()) {
     if (quote) {
       if (ch === quote) quote = null;
       else current += ch;
     } else if (ch === '"' || ch === "'") {
+      current ??= "";
       quote = ch;
     } else if (/\s/.test(ch)) {
-      if (current) {
+      if (current !== null) {
         out.push(current);
-        current = "";
+        current = null;
       }
     } else {
-      current += ch;
+      current = (current ?? "") + ch;
     }
   }
-  if (current) out.push(current);
+  if (quote) throw new Error(tx("Close the quoted argument before applying."));
+  if (current !== null) out.push(current);
   return out;
+}
+
+/** Quotes one argv token at a time; `parseArgs` can read the result without shell expansion. */
+function formatArgs(args: readonly string[]): string {
+  return args.map((arg) => (/^[\w./:=@%+,-]+$/.test(arg) ? arg : `'${arg.replaceAll("'", `'"'"'`)}'`)).join(" ");
 }
 
 function CustomAgentModal({
@@ -826,6 +833,14 @@ function ProviderSettings({
     onChanged?.();
     return command === agent.defaultProgram ? "" : (command ?? "");
   });
+  const argsBase = formatArgs(agent.additionalArgs ?? []);
+  const args = form.useExternal(`agents.${agent.id}.additionalArgs`, argsBase, async (draft) => {
+    const parsed = parseArgs(draft);
+    await backend.setAdditionalArgs(agent.id, parsed);
+    await refresh();
+    onChanged?.();
+    return formatArgs(parsed);
+  });
   const accountBase = agent.env[COPILOT_GITHUB_ACCOUNT_ENV] ?? "";
   const account = form.useExternal(`agents.${agent.id}.githubAccount`, accountBase, async (draft) => {
     const next = { ...agent.env };
@@ -851,9 +866,14 @@ function ProviderSettings({
   // An edit can have been staged by a previous page instance. Its Apply callback
   // refreshes that instance; the mounted one follows the newly applied value too.
   useEffect(() => {
-    if (!saving && current !== base) void refresh().catch((e: unknown) => setError(errorText(e)));
-  }, [base, current, saving, refresh]);
-  const launch = [agent.defaultProgram, ...agent.defaultArgs].join(" ");
+    if (!saving && (current !== base || args.current !== argsBase)) {
+      void refresh().catch((e: unknown) => setError(errorText(e)));
+    }
+  }, [args.current, argsBase, base, current, saving, refresh]);
+  const launch =
+    agent.additionalArgs == null
+      ? [agent.defaultProgram, ...agent.defaultArgs].join(" ")
+      : formatArgs([agent.program, ...agent.args]);
   const envEditable = agent.commandReadOnlyReason !== "registry" && agent.commandReadOnlyReason !== "customAgent";
   return (
     <>
@@ -940,6 +960,31 @@ function ProviderSettings({
                 <T>This agent is configured in its agent file.</T>
               )}
             </p>
+          )}
+          {agent.additionalArgs != null && (
+            <Row
+              label={<T>Additional arguments</T>}
+              htmlFor={`agent-args-${agent.id}`}
+              hint={<T>Appended to the launch command. Quote values containing spaces.</T>}
+            >
+              <div className={styles.field}>
+                <Input
+                  id={`agent-args-${agent.id}`}
+                  mono
+                  value={args.value}
+                  disabled={args.saving}
+                  onChange={(e) => args.set(e.target.value)}
+                />
+                {args.value && (
+                  <IconButton
+                    icon="undo"
+                    title="Reset additional arguments"
+                    disabled={args.saving}
+                    onClick={() => args.set("")}
+                  />
+                )}
+              </div>
+            </Row>
           )}
           {envEditable && (
             <Row

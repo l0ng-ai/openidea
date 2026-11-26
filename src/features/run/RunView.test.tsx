@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunConfig } from "@/platform/ipc";
 import { debugSession, resetRuns, useRun, type RunSession } from "./store";
-import { sessionIcon } from "./RunView";
+import { sessionIcon, testsRun } from "./RunView";
 
 const actions = vi.hoisted(() => ({ executeAction: vi.fn() }));
 vi.mock("@/platform/actions", async (orig) => ({ ...(await orig<object>()), executeAction: actions.executeAction }));
@@ -78,5 +78,15 @@ describe("debugSession", () => {
   it("ignores unknown session ids", () => {
     debugSession("nope");
     expect(actions.executeAction).not.toHaveBeenCalled();
+  });
+});
+
+describe("testsRun", () => {
+  const live = { status: "running" } as RunSession;
+  it("ends a watch run's tests with each cycle", () => {
+    expect(testsRun({ ...live, watching: true }, { finished: false })).toBe("running");
+    expect(testsRun({ ...live, watching: true }, { finished: true })).toBe("done");
+    expect(testsRun(live, { finished: true })).toBe("running");
+    expect(testsRun({ ...live, status: "finished" }, { finished: false })).toBe("done");
   });
 });

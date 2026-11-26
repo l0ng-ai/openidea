@@ -1,7 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { usePlatform } from "@/platform/platformInfo";
-import { ToolWindowShownProvider, useServiceProviders, type ServiceTreeItem } from "@/workbench/contributions";
+import {
+  ToolWindowShownProvider,
+  registerServiceSelectionItems,
+  useServiceProviders,
+  type ServiceContext,
+  type ServiceTreeItem,
+} from "@/workbench/contributions";
 import { ServicesTreeView } from "./ServicesTree";
 import { useServicesTree } from "./tree";
 import { selectedServices, selectionActions, selectionMenu } from "./selection";
@@ -188,6 +194,30 @@ it("ignores removed rows and avoids invoking a selected group's descendants twic
   const actions = selectionActions(selection, [...useServiceProviders.getState().providers.values()]);
   actions.find((a) => a.id === "stop")!.run();
   expect(stop.mock.calls).toEqual([["group"]]);
+});
+
+it("adds other features' entries for selected services, never for a group", () => {
+  const context = (item: ServiceTreeItem): ServiceContext | null =>
+    item.children ? null : { provider: "a", id: item.key, kind: "app", name: item.label, running: false };
+  const provider = { id: "a", useRoots: () => [], menu: () => [{ label: "Own", run }], context };
+  const seen: string[][] = [];
+  const off = registerServiceSelectionItems({
+    id: "extra",
+    menu: (services) => {
+      seen.push(services.map((s) => s.id));
+      return [{ label: "Extra", run }];
+    },
+    actions: () => [{ id: "extra", title: "Extra", icon: "run", run }],
+  });
+  const at = (item: ServiceTreeItem) => ({ provider: "a", item, parent: null });
+  expect(
+    selectionMenu([at(roots[0]!), at(roots[1]!)], [provider]).map((i) => ("label" in i ? i.label : i.kind)),
+  ).toEqual(["Own", "separator", "Extra"]);
+  expect(seen).toEqual([["one", "two"]]);
+  expect(selectionActions([at(roots[0]!)], [provider]).map((a) => a.id)).toEqual(["extra"]);
+  const group = { key: "g", label: "g", icon: "run", children: [roots[0]!] };
+  expect(selectionMenu([at(group)], [provider]).map((i) => ("label" in i ? i.label : i.kind))).toEqual(["Own"]);
+  off();
 });
 
 it("disables actions when no selected row can run them", () => {

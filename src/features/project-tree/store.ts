@@ -4,7 +4,7 @@
  * Kept outside React so actions (keyboard, Find Action, context menu) share it.
  */
 import { create } from "zustand";
-import type { UnityProjectInfo } from "@/bindings";
+import type { UnrealProjectInfo, UnityProjectInfo } from "@/bindings";
 import { call } from "@/platform/ipc";
 import { commands, type FileEntry, type OutlineItem } from "@/bindings";
 import { withDocument } from "@/editor/lsp/files";
@@ -37,6 +37,7 @@ import {
   visibleEntries,
   visibleInfo,
   unityPathVisible,
+  unrealPathVisible,
   type Placeholder,
   type ProjectNode,
   type TreeModel,
@@ -89,10 +90,19 @@ function storedOptions(): ViewOptions {
 }
 
 /** IDEA's Project view panes ("Project ▾" in the tool window header). */
-export type ViewMode = "unity" | "project" | "projectFiles" | "openFiles" | "changedFiles" | "scratches" | "scope";
+export type ViewMode =
+  | "unity"
+  | "unreal"
+  | "project"
+  | "projectFiles"
+  | "openFiles"
+  | "changedFiles"
+  | "scratches"
+  | "scope";
 
 export const VIEW_MODES: ReadonlyArray<[ViewMode, string]> = [
   ["unity", "Unity"],
+  ["unreal", "Unreal"],
   ["project", "Project"],
   ["projectFiles", "Project Files"],
   ["openFiles", "Open Files"],
@@ -118,6 +128,7 @@ export interface Clipboard {
 
 interface ProjectTreeState {
   unity: UnityProjectInfo | null;
+  unreal: UnrealProjectInfo | null;
   root: string | null;
   name: string;
   members: readonly string[] | null;
@@ -172,6 +183,7 @@ function writeJson(key: string, value: unknown) {
 
 export const useProjectTree = create<ProjectTreeState>(() => ({
   unity: null,
+  unreal: null,
   root: null,
   name: "",
   members: null,
@@ -207,6 +219,7 @@ const set = (patch: Partial<ProjectTreeState>) => useProjectTree.setState(patch)
 
 let memo: {
   unity: UnityProjectInfo | null;
+  unreal: UnrealProjectInfo | null;
   root: string | null;
   name: string;
   members: readonly string[] | null;
@@ -232,7 +245,9 @@ const filesOf = (s: ProjectTreeState) =>
         : null;
 
 function treeOptions(s: ProjectTreeState): TreeOptions {
-  return s.mode === "unity" && s.unity && s.root ? { ...s.options, compact: false, unityRoot: s.root } : s.options;
+  if (s.mode === "unity" && s.unity && s.root) return { ...s.options, compact: false, unityRoot: s.root };
+  if (s.mode === "unreal" && s.unreal && s.root) return { ...s.options, compact: false, unrealRoot: s.root };
+  return s.options;
 }
 
 export function selectModel(s: ProjectTreeState): TreeModel {
@@ -240,6 +255,7 @@ export function selectModel(s: ProjectTreeState): TreeModel {
   if (
     memo &&
     memo.unity === s.unity &&
+    memo.unreal === s.unreal &&
     memo.root === s.root &&
     memo.name === s.name &&
     memo.members === s.members &&
@@ -300,6 +316,8 @@ export function selectModel(s: ProjectTreeState): TreeModel {
     else model = withExtraRoots(project(), contributed, s.listings, options, placeholder);
     if (s.unity && s.mode === "unity" && model.roots[0])
       model.roots[0].detail = s.unity.editorVersion ? `Unity ${s.unity.editorVersion}` : "Unity";
+    if (s.unreal && s.mode === "unreal" && model.roots[0])
+      model.roots[0].detail = s.unreal.engine ? `Unreal ${s.unreal.engine.id}` : "Unreal · engine not found";
     const libraries = extraFolders(contributed).flatMap((r) =>
       r.readOnly && r.path !== undefined && isSameOrInside(r.path, s.root!) ? [r.path] : [],
     );
@@ -307,6 +325,7 @@ export function selectModel(s: ProjectTreeState): TreeModel {
   }
   memo = {
     unity: s.unity,
+    unreal: s.unreal,
     root: s.root,
     name: s.name,
     members: s.members,
@@ -350,6 +369,7 @@ export function initProjectTree(
   name = "",
   members: readonly string[] | null = null,
   unity: UnityProjectInfo | null = null,
+  unreal: UnrealProjectInfo | null = null,
 ) {
   cancelExpansion();
   generation++;
@@ -363,8 +383,13 @@ export function initProjectTree(
   autoExpanded.clear();
   const previous = get();
   const previousMode = previous.mode;
+  const engineMode: ViewMode | null = unreal ? "unreal" : unity ? "unity" : null;
   const mode =
-    unity && previousMode === "project" ? "unity" : !unity && previousMode === "unity" ? "project" : previousMode;
+    engineMode && previousMode === "project"
+      ? engineMode
+      : !engineMode && (previousMode === "unity" || previousMode === "unreal")
+        ? "project"
+        : previousMode;
   // Keep the remaining members' types visible while the workspace is rescanned.
   const projectTypes = new Map<string, ProjectType>();
   if (root === previous.root && members) {
@@ -375,6 +400,7 @@ export function initProjectTree(
   }
   set({
     unity,
+    unreal,
     mode,
     root,
     name,
@@ -411,7 +437,7 @@ function initialExpanded(root: string | null, mode: ViewMode, members = get().me
   // Keys of nodes that no longer exist are inert. Only a first open expands the roots.
   const scope = projectLocation(root) ?? root;
   const persisted =
-    mode === "project" || mode === "unity"
+    mode === "project" || mode === "unity" || mode === "unreal"
       ? (readJson<string[]>(expandedKey(scope)) ?? (scope !== root ? readJson<string[]>(expandedKey(root)) : null))
       : null;
   if (persisted) return new Set(persisted);
@@ -419,11 +445,11 @@ function initialExpanded(root: string | null, mode: ViewMode, members = get().me
 }
 
 function persistExpanded() {
-  if (get().mode !== "project" && get().mode !== "unity") return;
+  if (get().mode !== "project" && get().mode !== "unity" && get().mode !== "unreal") return;
   clearTimeout(persistTimer);
   persistTimer = setTimeout(() => {
     const { root, expanded, mode } = get();
-    if (root && (mode === "project" || mode === "unity"))
+    if (root && (mode === "project" || mode === "unity" || mode === "unreal"))
       writeJson(expandedKey(projectLocation(root) ?? root), [...expanded].slice(0, MAX_PERSISTED));
   }, 300);
 }
@@ -432,6 +458,7 @@ function persistExpanded() {
 export function setViewMode(mode: ViewMode) {
   const s = get();
   if (mode === "unity" && !s.unity) return;
+  if (mode === "unreal" && !s.unreal) return;
   if (s.mode === mode) return;
   cancelExpansion();
   modeExpanded.set(s.mode, s.expanded);
@@ -901,6 +928,8 @@ export function modeShows(path: string, mode = get().mode): boolean {
   switch (mode) {
     case "unity":
       return !!state.unity && unityPathVisible(path, treeOptions({ ...state, mode }));
+    case "unreal":
+      return !!state.unreal && unrealPathVisible(path, treeOptions({ ...state, mode }));
     case "project":
       return true;
     case "projectFiles":

@@ -140,7 +140,7 @@ export function BranchesPanel() {
   const remoteBusy = useVcs((s) => s.remoteBusy);
   const current = useVcs((s) => s.branch?.head ?? null);
   const favorites = useFavoriteBranches((s) => s.names);
-  const filterBranches = filters.branches;
+  const { branches: filterBranches, branchTargets } = filters;
   const [query, setQuery] = useState("");
   const [tags, setTags] = useState<string[]>([]);
   useEffect(() => loadFavoriteBranches(), [root]);
@@ -205,9 +205,15 @@ export function BranchesPanel() {
       filterBranches.flatMap((b) => {
         if (b === "HEAD") return ["head"];
         if (repositories.length < 2 || merged) return [`b:${b}`];
-        return repositories.map((r) => `${r}:b:${b}`);
+        return repositories
+          .filter(
+            (repo) =>
+              !branchTargets ||
+              branchTargets.some((target) => target.ref === b && (!target.repo || target.repo === repo)),
+          )
+          .map((repo) => `${repo}:b:${b}`);
       }),
-    [filterBranches, repositories, merged],
+    [filterBranches, branchTargets, repositories, merged],
   );
   const filterKey = filterKeys.join("\n");
   const [shownKey, setShownKey] = useState(filterKey);
@@ -369,13 +375,13 @@ export function BranchesPanel() {
           selected={selected}
           onSelectionChange={(sel) => setSelected(sel)}
           onActivate={(n) => {
-            // Double click (or Enter) filters the log to that branch, or to every selected one
-            // in a multi-selection; checking out stays in the context menu. Only the branch filter
-            // changes: repositories without the branch contribute no commits, and leaving the
-            // repository filter alone keeps every repository listed here, so clearing the branch
-            // filter restores the whole log.
             if (!n.ref) return;
-            setLogFilters({ branches: selected.has(n.key) ? [...new Set(targets.map((r) => r.ref))] : [n.ref] });
+            const activated = selected.has(n.key) ? targets : expand(n, scopedRepo);
+            const branchTargets = activated.map(({ ref, repo }) => ({ ref, repo }));
+            setLogFilters({
+              branches: [...new Set(branchTargets.map(({ ref }) => ref))],
+              branchTargets: branchTargets.some(({ repo }) => repo) ? branchTargets : undefined,
+            });
           }}
           onContextMenu={(n, _sel, e) => {
             if (readOnly) {

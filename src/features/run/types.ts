@@ -31,6 +31,7 @@ import { rakeType, rspecType, rubyScriptType } from "./rubyTypes";
 import { djangoTestType } from "./djangoTypes";
 import { pythonType } from "./pythonTypes";
 import { phpunitType } from "./phpunitTypes";
+import { cypressType } from "./cypressType";
 import { UNITY_CONFIG_KIND } from "./unity";
 
 export const COMPOUND = "compound";
@@ -200,6 +201,47 @@ const godot: RunConfigTypeContribution = {
       scene,
       arguments: formatArgs(rest.filter((a) => a !== scene)),
       ...(c.command !== "godot" ? { executable: c.command } : {}),
+    };
+  },
+};
+
+const isUProject = (a: string) => !a.startsWith("-") && /\.uproject$/i.test(a);
+
+/**
+ * Unreal Engine: `<editor> <project>.uproject [-game|-server]`. The editor comes from the
+ * detected configuration (the engine is registered per version); the mode stays in the
+ * arguments, so the editor, a game and a server are the same type.
+ */
+const unreal: RunConfigTypeContribution = {
+  id: "unreal",
+  label: "Unreal Engine",
+  icon: "file-cpp",
+  group: "Unreal",
+  description: "Open an Unreal Engine project in the editor, or in game mode",
+  debugAdapter: "lldb-dap",
+  fields: [
+    {
+      key: "project",
+      label: "Project",
+      mono: true,
+      browse: "file",
+      required: true,
+      placeholder: "…/Game.uproject",
+    },
+    { key: "arguments", label: "Arguments", mono: true, placeholder: "e.g. -game" },
+  ],
+  commandLine: (p) => ({
+    command: p.executable || "UnrealEditor.exe",
+    args: [p.project ?? "", ...parseArgs(p.arguments ?? "")],
+    cwd: null,
+  }),
+  paramsFrom(c) {
+    const project = c.args.find(isUProject);
+    if (!project) return null;
+    return {
+      project,
+      arguments: formatArgs(c.args.filter((a) => a !== project)),
+      ...(c.command !== "UnrealEditor.exe" ? { executable: c.command } : {}),
     };
   },
 };
@@ -570,10 +612,12 @@ export const BUILTIN_TYPES: readonly RunConfigTypeContribution[] = [
   npm,
   node,
   bun,
+  cypressType,
   gradle,
   maven,
   godot,
   flutterType,
+  unreal,
   pythonType,
   pytest,
   rubyScriptType,
@@ -637,7 +681,8 @@ export function withParams(config: RunConfig, params: Record<string, string>, ty
     ...(config.kind === "dotnet" && config.beforeLaunch === undefined
       ? { beforeLaunch: [{ kind: "dotnetBuild", target: "" }] }
       : {}),
-    ...(config.kind === "dotnet-test" ||
+    ...(config.kind === "cypress" ||
+    config.kind === "dotnet-test" ||
     config.kind === "django-test" ||
     config.kind === "phpunit" ||
     config.kind === "junit" ||

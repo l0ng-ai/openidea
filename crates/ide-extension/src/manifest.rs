@@ -369,6 +369,12 @@ impl Manifest {
             if matches!(cap, Capability::ClipboardRead) {
                 self.needs_api(&format!("capability `{cap}`"), 11)?;
             }
+            if matches!(cap, Capability::Agents) {
+                self.needs_api(&format!("capability `{cap}`"), 18)?;
+            }
+            if matches!(cap, Capability::NetSetting { .. }) {
+                self.needs_api(&format!("capability `{cap}`"), 18)?;
+            }
             if matches!(cap, Capability::JavaAgent) {
                 return Err(
                     "`java.agent` comes from `[[contributes.javaAgents]]`: remove it from [capabilities]".into()
@@ -762,6 +768,20 @@ required = [\"lsp:phoxite\"]
         assert!(err(&format!("{}{caps}", BASE.replace("^1.2", "^1.10"))).contains("new in plugin API 1.11"));
         let m = Manifest::parse(&format!("{}{caps}", BASE.replace("^1.2", "^1.11"))).unwrap();
         assert_eq!(m.capabilities.optional, [Capability::ClipboardRead]);
+    }
+
+    #[test]
+    fn setting_derived_net_capabilities_need_the_current_api_minor() {
+        for cap in ["net:setting:server", "net.http:setting:server"] {
+            let caps = format!("[capabilities]\noptional = [\"{cap}\"]\n");
+            assert!(
+                err(&format!("{}{caps}", BASE.replace("^1.2", "^1.17"))).contains("new in plugin API 1.18"),
+                "{cap}"
+            );
+            let m = Manifest::parse(&format!("{}{caps}", BASE.replace("^1.2", "^1.18"))).unwrap();
+            assert_eq!(m.capabilities.optional.len(), 1, "{cap}");
+            assert_eq!(m.capabilities.optional[0].to_string(), cap);
+        }
     }
 
     #[test]
