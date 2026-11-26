@@ -5826,5 +5826,7 @@
   "Blocked command pattern": "Motif de commande bloquée",
   "Mode applies to": "Le mode s'applique à",
   "Context": "Contexte",
-  "Allow all optional permissions": "Autoriser toutes les autorisations facultatives"
+  "Allow all optional permissions": "Autoriser toutes les autorisations facultatives",
+  "Get from Version Control": "Récupérer depuis le contrôle de version",
+  "Cannot connect to the remote host": "Impossible de se connecter à l’hôte distant"
 }

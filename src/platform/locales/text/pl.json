@@ -5990,5 +5990,7 @@
   "Blocked command pattern": "Wzorzec zablokowanego polecenia",
   "Mode applies to": "Tryb dotyczy",
   "Context": "Kontekst",
-  "Allow all optional permissions": "Zezwól na wszystkie opcjonalne uprawnienia"
+  "Allow all optional permissions": "Zezwól na wszystkie opcjonalne uprawnienia",
+  "Get from Version Control": "Pobierz z systemu kontroli wersji",
+  "Cannot connect to the remote host": "Nie można połączyć się z hostem zdalnym"
 }

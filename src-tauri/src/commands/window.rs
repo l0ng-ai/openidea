@@ -152,6 +152,42 @@ pub async fn window_open_deployment(
     windows::open_deployment_window(&app, &window, server, paths, background)
 }
 
+/// Opens this window's New Project window (or focuses it). `background` (`#rrggbb`) paints a new
+/// window until its page has loaded.
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub async fn window_open_new_project(
+    app: AppHandle,
+    window: WebviewWindow,
+    background: Option<String>,
+) -> IdeResult<()> {
+    windows::open_new_project_window(&app, &window, background)
+}
+
+/// Opens this window's Get from VCS window (or focuses it), filling in `url` when given.
+/// `background` (`#rrggbb`) paints a new window until its page has loaded.
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub async fn window_open_clone(
+    app: AppHandle,
+    window: WebviewWindow,
+    url: Option<String>,
+    background: Option<String>,
+) -> IdeResult<()> {
+    windows::open_clone_window(&app, &window, url, background)
+}
+
+/// Opens this window's Remote Development window (or focuses it). `background` (`#rrggbb`)
+/// paints a new window until its page has loaded.
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub async fn window_open_connect(app: AppHandle, window: WebviewWindow, background: Option<String>) -> IdeResult<()> {
+    windows::open_connect_window(&app, &window, background)
+}
+
 /// Focuses the next / previous window (⌘` / ⇧⌘`).
 #[desktop_command(trust = always)]
 #[tauri::command]
@@ -437,7 +473,7 @@ pub fn menu_configure(
 
 fn owns_menu_config(source: &str, target: &str) -> bool {
     let owner = match windows::auxiliary(target) {
-        Some((windows::AuxKind::Settings, parent)) => parent,
+        Some((kind, parent)) if kind.runs_menu_in_parent() => parent,
         _ => target,
     };
     source == owner
@@ -1021,11 +1057,14 @@ ide_command::desktop_domain!(
     window_flash_taskbar,
     window_is_fullscreen,
     window_new,
+    window_open_clone,
     window_open_comparison,
+    window_open_connect,
     window_open_deployment,
     window_open_diff,
     window_open_editor,
     window_open_file_in_new_window,
+    window_open_new_project,
     window_open_files,
     window_open_project,
     window_open_projects,
