@@ -780,6 +780,51 @@ fn npm_server(tools: &Path, name: &str, bin: &str, init: Option<serde_json::Valu
     }
 }
 
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires OPENIDEA_TEST_NPM_TOOLS (vtsls and typescript-language-server) and OPENIDEA_TEST_TS7 (native tsc)"]
+async fn typescript_servers_distinguish_global_and_local_function_calls() {
+    let tools = std::env::var_os("OPENIDEA_TEST_NPM_TOOLS").expect("set OPENIDEA_TEST_NPM_TOOLS");
+    let tools = Path::new(&tools);
+    let mut native = npm_server(tools, "typescript-7", "tsc", None);
+    native.command = std::env::var("OPENIDEA_TEST_TS7").expect("set OPENIDEA_TEST_TS7");
+    native.args.insert(0, "--lsp".into());
+
+    let text = "function outer(x) { return x; }\nexport function run() {\n  function local() { return 1; }\n  return outer(local());\n}\n";
+    for server in [
+        native,
+        npm_server(tools, "vtsls", "vtsls", None),
+        npm_server(tools, "typescript-language-server", "typescript-language-server", None),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(root.join("package.json"), r#"{"type":"module"}"#).unwrap();
+        std::fs::write(root.join("tsconfig.json"), r#"{"compilerOptions":{"allowJs":true}}"#).unwrap();
+        let name = server.name.clone();
+        let registry = LanguageRegistry::from_configs(vec![
+            lang("typescript", "ts", server.clone()),
+            lang("javascript", "js", server),
+        ]);
+        let (mgr, _) = manager(&root, registry);
+        for (language, ext) in [("typescript", "ts"), ("javascript", "js")] {
+            let file = root.join(format!("sample.{ext}"));
+            std::fs::write(&file, text).unwrap();
+            let doc = DocId::next();
+            mgr.did_open(doc, &file, &LanguageId::new(language), 1, text);
+            let tokens = retry(&format!("{name} {language} tokens"), Duration::from_secs(8), || async {
+                mgr.semantic_tokens(doc).await.ok().flatten().filter(|t| !t.data.is_empty())
+            })
+            .await;
+            let local = tokens.token_modifiers.iter().position(|m| m == "local").expect(&name);
+            for (column, is_local) in [(9, false), (15, true)] {
+                let token = tokens.data.chunks_exact(5).find(|t| t[0] == 3 && t[1] == column).unwrap();
+                assert_eq!(tokens.token_types[token[3] as usize], "function", "{name} {language}");
+                assert_eq!(token[4] & (1 << local) != 0, is_local, "{name} {language}:{column}");
+            }
+        }
+        mgr.shutdown_all().await;
+    }
+}
+
 /// Vue Language Server 3 in hybrid mode: its `tsserver/request`s go through the
 /// client to vtsls with `@vue/typescript-plugin` (issue #25). Set
 /// `OPENIDEA_TEST_NPM_TOOLS` to a dir with `npm i @vue/language-server typescript@6 @vtsls/language-server`.
