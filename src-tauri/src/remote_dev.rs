@@ -471,6 +471,13 @@ fn unversioned_server_binary(data: &std::path::Path, os: &str, arch: &str) -> Op
     Some(data.join("server").join(format!("{os}-{arch}")).join("openidea-server")).filter(|p| p.is_file())
 }
 
+/// Whether the server binary at `path` names `version` anywhere: every build embeds its own
+/// version (`--version`), so a binary without it is certainly another version. The binary is
+/// for the remote platform, so it can't be asked here.
+fn mentions_version(path: &std::path::Path, version: &str) -> bool {
+    std::fs::read(path).is_ok_and(|bytes| bytes.windows(version.len()).any(|w| w == version.as_bytes()))
+}
+
 /// The release build of the server for `os`/`arch`, downloaded once into the data dir.
 async fn download_server(
     state: &AppState,
@@ -541,6 +548,15 @@ pub(crate) async fn local_server(
                     return Ok(LocalServer::Installed(bin.clone()));
                 }
                 match unversioned_server_binary(&state.local_data_dir, os, arch) {
+                    // A server of another version fails the handshake with a bare EOF (#5742).
+                    Some(local) if !mentions_version(&local, version) => {
+                        return Err(IdeError::unavailable(format!(
+                            "no openidea-server {version} for {os}-{arch} ({}), and {} is another version. Delete it, \
+                             or replace it with openidea-server-{os}-{arch}.gz from the {version} release, unpacked",
+                            e.message,
+                            local.display()
+                        )));
+                    }
                     Some(local) => {
                         tracing::warn!(
                             "no openidea-server {version} for {os}-{arch} ({}); using {}, which may be another version",
@@ -1397,6 +1413,16 @@ async fn invoke_reply(peer: &Peer, call: Invoke, entries_timeout: std::time::Dur
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_hand_placed_server_of_another_version_is_recognised() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("openidea-server");
+        std::fs::write(&bin, b"\x7fELF...openidea-server 0.1.43 (protocol 2)...").unwrap();
+        assert!(mentions_version(&bin, "0.1.43"));
+        assert!(!mentions_version(&bin, "0.1.51"));
+        assert!(!mentions_version(&dir.path().join("missing"), "0.1.51"));
+    }
 
     #[test]
     fn remote_locations_round_trip_like_the_frontend() {
