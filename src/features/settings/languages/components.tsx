@@ -98,7 +98,7 @@ export function SdkField({
       const tooOld = major !== null && !!minJava && major < minJava;
       const detail = tooOld ? tx`too old, needs JDK ${minJava}+ · ${tildify(sdk.path)}` : tildify(sdk.path);
       if (out.some((option) => option.value === sdk.path)) continue;
-      out.push({ value: sdk.path, label: sdk.name, detail, icon: optionIcon?.(sdk) });
+      out.push({ value: sdk.path, verbatim: true, label: sdk.name, detail, icon: optionIcon?.(sdk) });
     }
     if (value && !out.some((o) => o.value === value)) {
       out.push(

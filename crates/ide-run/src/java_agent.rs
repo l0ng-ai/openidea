@@ -3,6 +3,10 @@
 //! per plugin whose `java.agent` capability the user granted, for Run and Debug alike,
 //! plus any `vmOptions` the declaration lists (before the agent).
 //!
+//! An agent bound to a plugin executor (`executor = "<title>"`, API 1.18) is added only to
+//! launches through that executor ("Run with <title>" / "Debug with <title>"), whose id is
+//! the plugin's id.
+//!
 //! The grant records the jar's content hash; an agent whose jar no longer has it is
 //! left out (with a console line) until the user approves it again. The desktop
 //! installs the [`JavaAgentSource`]; elsewhere (`openidea-server`) there is none, so
@@ -33,6 +37,8 @@ pub struct ContributedAgent {
     pub jdk: Option<String>,
     /// The jar's hash recorded when the user granted `java.agent`; `None`: not granted.
     pub approved_hash: Option<String>,
+    /// The title of the plugin executor the agent is bound to: added only to its launches.
+    pub executor: Option<String>,
 }
 
 /// The agents of the enabled plugins.
@@ -61,8 +67,42 @@ pub fn current() -> Agents {
 
 /// Like [`current`], gating `vmOptions` with `jdk = "jetbrains"` against `java`.
 pub fn current_for(java: Option<&Path>) -> Agents {
+    current_for_executor(java, None)
+}
+
+/// Like [`current_for`] for a launch through `executor` (a plugin id) or a plain one.
+pub fn current_for_executor(java: Option<&Path>, executor: Option<&str>) -> Agents {
     let source = SOURCE.read().clone();
-    source.map(|s| approved_for(&s.agents(), java)).unwrap_or_default()
+    match source {
+        Some(s) => for_executor(&s.agents(), java, executor),
+        None => {
+            Agents { options: Vec::new(), notes: executor.map(|e| missing_executor(e, None)).into_iter().collect() }
+        }
+    }
+}
+
+/// The agents a launch gets: those bound to no executor, plus the one of `executor` (a plugin
+/// id). A launch through an executor whose agent is not there or not granted says so.
+pub fn for_executor(agents: &[ContributedAgent], java: Option<&Path>, executor: Option<&str>) -> Agents {
+    let chosen: Vec<ContributedAgent> =
+        agents.iter().filter(|a| a.executor.is_none() || (executor == Some(a.plugin.as_str()))).cloned().collect();
+    let mut out = approved_for(&chosen, java);
+    if let Some(executor) = executor {
+        let own = agents.iter().find(|a| a.plugin == executor && a.executor.is_some());
+        if own.is_none_or(|a| a.approved_hash.is_none()) {
+            out.notes.push(missing_executor(executor, own.and_then(|a| a.executor.as_deref())));
+        }
+    }
+    out
+}
+
+fn missing_executor(plugin: &str, title: Option<&str>) -> String {
+    match title {
+        Some(title) => format!(
+            "{title} was not applied: the Java agent of plugin {plugin} needs the java.agent permission (Settings › Plugins)."
+        ),
+        None => format!("The executor of plugin {plugin} is not available: the plugin is disabled or was removed."),
+    }
 }
 
 /// Granted agents whose jar still has the hash approved for it; an ungranted one is
@@ -311,6 +351,7 @@ mod tests {
             vm_options: Vec::new(),
             jdk: None,
             approved_hash: granted.then(|| jar.hash.clone()),
+            executor: None,
         }
     }
 
@@ -450,6 +491,34 @@ mod tests {
         let mut again = strings(&["-XX:+AllowEnhancedClassRedefinition", "-cp", "x", "Main"]);
         add_to_args(&mut again, &["-XX:+AllowEnhancedClassRedefinition".into(), javaagent.clone()]);
         assert_eq!(again, strings(&["-XX:+AllowEnhancedClassRedefinition", "-cp", "x", &javaagent, "Main"]));
+    }
+
+    #[test]
+    fn an_executor_agent_loads_only_through_its_executor() {
+        let (plain_jar, bound_jar) = (jar(), jar());
+        let plain = agent(&plain_jar, None, true);
+        let mut bound = agent(&bound_jar, None, true);
+        bound.plugin = "acme.reload".into();
+        bound.executor = Some("Hot Reload".into());
+        let agents = [plain, bound.clone()];
+        let plain_opt = format!("-javaagent:{}", plain_jar.path.display());
+        let bound_opt = format!("-javaagent:{}", bound_jar.path.display());
+
+        let run = for_executor(&agents, None, None);
+        assert_eq!(run.options, std::slice::from_ref(&plain_opt), "a plain launch leaves the executor's agent out");
+        assert!(run.notes.is_empty());
+        let with = for_executor(&agents, None, Some("acme.reload"));
+        assert_eq!(with.options, [plain_opt.clone(), bound_opt]);
+        assert!(with.notes.is_empty());
+        // Another plugin's executor id: only the plain agent, and a note.
+        let other = for_executor(&agents, None, Some("acme.spring"));
+        assert_eq!(other.options, std::slice::from_ref(&plain_opt));
+        assert_eq!(other.notes.len(), 1);
+
+        bound.approved_hash = None;
+        let ungranted = for_executor(&[bound], None, Some("acme.reload"));
+        assert!(ungranted.options.is_empty());
+        assert!(ungranted.notes[0].starts_with("Hot Reload was not applied"), "{:?}", ungranted.notes);
     }
 
     #[test]

@@ -247,6 +247,7 @@ function PaneView({ paneId }: { paneId: string }) {
           </>
         ),
         text: prefix ? `${prefix}${name}` : dupe ? `${name} — ${dupe}` : name,
+        verbatim: true,
         icon: showFileIcon
           ? t.input.kind === "file" && t.input.path
             ? (tabIcons[i] ?? file?.icon)

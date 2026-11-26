@@ -15,8 +15,9 @@ use ide_core::{IdeError, IdeResult, RunId, Severity};
 use ide_run::{OutputChunk, RunConfig};
 use parking_lot::Mutex;
 use serde_json::{Map, Value, json};
+use std::collections::HashSet;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 const DEFAULT_TIMEOUT_MS: usize = 10_000;
@@ -281,7 +282,19 @@ workingDirectory, envs).",
 }
 
 /// Polls how run `id` ended: `None` while running, else its exit code (if known).
-fn run_exit(host: &crate::Host, id: RunId) -> Option<Option<i32>> {
+/// The runs `execute_run_configuration` started: `stop_run` takes their `runId`, and only theirs,
+/// not the user's own runs.
+static STARTED: LazyLock<Mutex<HashSet<RunId>>> = LazyLock::new(Default::default);
+
+pub(super) fn started_by_mcp(id: RunId) -> bool {
+    STARTED.lock().contains(&id)
+}
+
+pub(super) fn forget_started(id: RunId) {
+    STARTED.lock().remove(&id);
+}
+
+pub(super) fn run_exit(host: &crate::Host, id: RunId) -> Option<Option<i32>> {
     match host.processes.exit_code(id) {
         Ok(exit) => exit,
         // Remote (SSH) runs, or a finished run already forgotten: the run list knows whether it runs.
@@ -294,7 +307,7 @@ fn run_exit(host: &crate::Host, id: RunId) -> Option<Option<i32>> {
 
 /// Waits for run `id` to exit, until `deadline`: `None` when it is still running. Cancelling
 /// the call stops the run.
-async fn wait_exit(call: &Call, id: RunId, deadline: Option<Instant>) -> IdeResult<Option<Option<i32>>> {
+pub(super) async fn wait_exit(call: &Call, id: RunId, deadline: Option<Instant>) -> IdeResult<Option<Option<i32>>> {
     let host = call.host();
     loop {
         if let Some(exit) = run_exit(&host, id) {
@@ -741,7 +754,8 @@ Behavior:
 Returns the execution result including current output snapshot, optional exit code, and optional `fullOutputPath`.
 In OpenIDEA the user is asked first for every call; `programArguments` replace the configuration's \
 arguments (appended to a command that is one shell line, such as `npm run dev`); the run does not appear in the Run \
-tool window; output files are private and deleted after a day.",
+tool window: while it is still running, the result carries `runId`, which `stop_run` stops; output files are private \
+and deleted after a day.",
         |call| async move {
             let target = execution_target(
                 call.opt_str("configurationName")?,
@@ -807,14 +821,24 @@ one by one",
                 }
             };
 
+            STARTED.lock().insert(info.id);
             let exit = match limit {
                 Some(limit) if !limit.is_zero() => wait_exit(&call, info.id, Some(Instant::now() + limit)).await?,
                 _ => None,
             };
+            if exit.is_some() {
+                STARTED.lock().remove(&info.id);
+            }
             let c = collector.lock();
             let mut result = Map::new();
-            if let Some(Some(code)) = exit {
-                result.insert("exitCode".into(), code.into());
+            match exit {
+                Some(Some(code)) => {
+                    result.insert("exitCode".into(), code.into());
+                }
+                Some(None) => {}
+                None => {
+                    result.insert("runId".into(), info.id.0.into());
+                }
             }
             result.insert("output".into(), c.preview().into());
             // An exited run whose whole output is in `output` needs no file.

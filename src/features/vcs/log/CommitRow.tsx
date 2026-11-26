@@ -105,8 +105,24 @@ function CommitRowView({
       left={opts.refsOnLeft}
     />
   );
+  const repository = opts.showRepository && !!commitRepo(c) && useVcs.getState().roots.length > 1;
+  // The header's neighbours: an id without a shown column (a hidden one) is skipped.
+  const visibleIds = columnSequence(opts.columnOrder, columns).filter(
+    (cid) => cid === SUBJECT_COLUMN.id || columns.some((col) => col.id === cid),
+  );
   const subjectCell = (
     <span key={SUBJECT_COLUMN.id} className={styles.colSubject}>
+      {/* A leading Commit cell's left edge is the only row divider for the Repository column. */}
+      {repository && visibleIds[0] === SUBJECT_COLUMN.id && (
+        <RowResizeHandle
+          target={{
+            id: SUBJECT_COLUMN.id,
+            width: 0,
+            ...columnPrev(visibleIds, SUBJECT_COLUMN.id, opts, columns, repository),
+            leftOnly: true,
+          }}
+        />
+      )}
       {graph && (
         <GraphCell
           row={graph}
@@ -160,11 +176,6 @@ function CommitRowView({
         </div>
       </Popup>
     </span>
-  );
-  const repository = opts.showRepository && !!commitRepo(c) && useVcs.getState().roots.length > 1;
-  // The header's neighbours: an id without a shown column (a hidden one) is skipped.
-  const visibleIds = columnSequence(opts.columnOrder, columns).filter(
-    (cid) => cid === SUBJECT_COLUMN.id || columns.some((col) => col.id === cid),
   );
   return (
     <div

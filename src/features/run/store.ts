@@ -59,6 +59,14 @@ import { flutterMachineOutput, isFlutterMachineRun } from "./flutterMachine";
 import { recordTestStates } from "./testing/states";
 import { failedTestPaths, leafTestPaths, rerunFailedConfigs, testsConfigs } from "./testing/rerun";
 import { testsBySubproject } from "./testing/gradleSubprojects";
+import {
+  snapshotFailures,
+  snapshotRunner,
+  snapshotTestConfigs,
+  snapshotUpdateArgs,
+  targetNodes,
+} from "./testing/snapshots";
+import type { StateQuery } from "./testing/states";
 import { buildCMake, isCMakeBuild } from "./cmake";
 import { compoundChildren } from "./configs";
 import { remoteLabel, startWithRemedies } from "./remote";
@@ -1732,6 +1740,68 @@ export function canRunSelectedTests(sessionId: string, nodeIds: readonly string[
   const nodes = nodeIds.map((id) => tests.get(id)).filter((n) => !!n);
   const selection = testsConfigs(baseConfigOf(session), leafTestPaths(nodes), "");
   return selection instanceof Promise ? selection.then((configs) => configs.length > 0) : selection.length > 0;
+}
+
+/** The snapshot mismatches among (or under) a session's test-tree nodes that its configuration can update. */
+function snapshotSelection(sessionId: string, nodeIds: readonly string[]) {
+  const session = getSession(sessionId);
+  const tests = runtimes.get(sessionId)?.tests;
+  if (!session || !tests || isLive(session)) return null;
+  const nodes = snapshotFailures(nodeIds.map((id) => tests.get(id)).filter((n) => !!n));
+  const paths = nodes.map((n) => n.path);
+  const base = baseConfigOf(session);
+  const name = nodes.length === 1 ? nodes[0]!.name : `${nodes.length} tests`;
+  const configs = snapshotTestConfigs(base, paths, name);
+  if (!configs.length) return null;
+  const update = snapshotUpdateArgs(
+    base,
+    paths,
+    nodes.some((n) => snapshotRunner(n) === "jest"),
+  );
+  return { session, base, paths, configs, update };
+}
+
+/** Whether Update Snapshot applies to this test-tree selection (Jest / Vitest snapshot mismatches). */
+export function canUpdateSnapshots(sessionId: string, nodeIds: readonly string[]): boolean {
+  return snapshotSelection(sessionId, nodeIds) !== null;
+}
+
+/** "Update Snapshot": reruns the selection's snapshot mismatches with `-u` in the same tab. */
+export async function updateSnapshots(sessionId: string, nodeIds: readonly string[]): Promise<boolean> {
+  const selection = snapshotSelection(sessionId, nodeIds);
+  if (!selection) return false;
+  const { session, base, paths, configs, update } = selection;
+  const derived = await Promise.all(configs.map((c) => testsBySubproject(c, paths)));
+  if (getSession(sessionId) !== session || isLive(session)) return false;
+  derived.forEach(
+    (config, index) => void startSnapshotUpdate(config, update, index === 0 ? sessionId : undefined, base),
+  );
+  return true;
+}
+
+/** Runs `config` with `update`, then keeps the tab's configuration without it: its Rerun runs the tests, not another update. */
+async function startSnapshotUpdate(config: RunConfig, update: string[], reuse: string | undefined, base: RunConfig) {
+  const started = await startRun({ ...config, args: [...config.args, ...update] }, reuse, base);
+  const current = started && getSession(started.id);
+  if (!current || current.startedAt !== started.startedAt) return;
+  const args = current.config.args;
+  if (args.slice(-update.length).join("\0") === update.join("\0"))
+    patchSession(current.id, { config: { ...current.config, args: args.slice(0, -update.length) } });
+}
+
+/** The snapshot mismatches of a gutter target in the newest finished session with a result for it. */
+export function snapshotFailuresAt(query: StateQuery): { sessionId: string; nodeIds: string[] } | null {
+  const sessions = [...useRun.getState().sessions].sort((a, b) => b.startedAt - a.startedAt);
+  for (const session of sessions) {
+    const tests = runtimes.get(session.id)?.tests;
+    const matched = tests ? targetNodes(tests.roots, query) : [];
+    if (!matched.length) continue;
+    const nodeIds = snapshotFailures(matched).map((n) => n.id);
+    return !isLive(session) && nodeIds.length && canUpdateSnapshots(session.id, nodeIds)
+      ? { sessionId: session.id, nodeIds }
+      : null;
+  }
+  return null;
 }
 
 /** Whether the console takes typed input: the process runs and its stdin is open. */

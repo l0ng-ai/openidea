@@ -297,6 +297,8 @@ pub struct DbManager {
 type Session = Arc<tokio::sync::Mutex<Option<Held>>>;
 
 const MAX_META_ROWS: usize = 100_000;
+/// Completion columns of the default schema, which are read without the shared cap.
+const MAX_SCHEMA_COMPLETION_ROWS: usize = 1_000_000;
 
 /// Rows of catalog query `q`, run again as [`sql::postgres_legacy`] when a PostgreSQL server's
 /// catalog lacks a column it reads (openGauss, PostgreSQL 9).
@@ -1429,13 +1431,34 @@ impl DbManager {
         let pool = self.pool(id).await?;
         let driver = pool.driver();
         let mut tables: Vec<CompletionTable> = Vec::new();
+        if let Pool::Jdbc(p) = &*pool {
+            return self.jdbc_completion(id, p).await;
+        }
+        let default_schema = match sql::current_schema(driver) {
+            None => "main".to_owned(),
+            Some(q) => pool
+                .rows(q, 1)
+                .await?
+                .into_iter()
+                .next()
+                .and_then(|r| r.into_iter().next().flatten())
+                .unwrap_or_default(),
+        };
         let rows = match &*pool {
-            Pool::Jdbc(p) => return self.jdbc_completion(id, p).await,
             Pool::Snowflake(p) => {
                 tables = snowflake::meta::completion(p).await?;
                 Vec::new()
             }
-            _ => pool.rows(sql::completion_columns(driver), MAX_META_ROWS).await?,
+            // The default schema is read in full: under a shared row cap, a schema with many
+            // tables lost the columns of the tables sorting last (#6118). Other schemas share the cap.
+            _ if !default_schema.is_empty() => {
+                let only = sql::completion_columns(driver, sql::CompletionScope::Only(&default_schema));
+                let mut rows = pool.rows(&only, MAX_SCHEMA_COMPLETION_ROWS).await?;
+                let rest = sql::completion_columns(driver, sql::CompletionScope::Except(&default_schema));
+                rows.extend(pool.rows(&rest, MAX_META_ROWS).await?);
+                rows
+            }
+            _ => pool.rows(&sql::completion_columns(driver, sql::CompletionScope::All), MAX_META_ROWS).await?,
         };
         for r in rows {
             let mut it = r.into_iter().map(Option::unwrap_or_default);
@@ -1471,16 +1494,6 @@ impl DbManager {
             })
         };
         let foreign_keys = group_foreign_keys(fk_rows, &tables);
-        let default_schema = match sql::current_schema(driver) {
-            None => "main".to_owned(),
-            Some(q) => pool
-                .rows(q, 1)
-                .await?
-                .into_iter()
-                .next()
-                .and_then(|r| r.into_iter().next().flatten())
-                .unwrap_or_default(),
-        };
         Ok(CompletionModel { default_schema, tables, foreign_keys })
     }
 

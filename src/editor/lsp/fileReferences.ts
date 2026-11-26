@@ -44,6 +44,14 @@ export const pathLike = (prefix: string) => /^\.{1,2}\/|\//.test(prefix);
 
 /** The path being typed at the end of `before` (the line up to the caret), if any. */
 export function pathContext(before: string, language: string): PathContext | null {
+  if (language === "ignore") {
+    // Every non-comment line in a .gitignore-style file is a path pattern:
+    // complete it eagerly, but leave glob patterns to the user.
+    if (/^\s*#/.test(before)) return null;
+    const prefix = before.replace(/^\s*!?\s*/, "");
+    if (/[*?[\]]/.test(prefix)) return null;
+    return { prefix, eager: true };
+  }
   for (const re of [URL_ATTRIBUTE, CSS_URL, CSS_IMPORT, MARKDOWN_LINK]) {
     const m = re.exec(before);
     if (m) return { prefix: m[1]!, eager: true };

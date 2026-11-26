@@ -343,7 +343,7 @@ const theme = EditorView.baseTheme({
     height: "var(--cm-review-line, 1.4em)",
     display: "flex",
     alignItems: "center",
-    cursor: "pointer",
+    cursor: "default",
   },
   ".cm-reviewHandle": {
     position: "absolute",
