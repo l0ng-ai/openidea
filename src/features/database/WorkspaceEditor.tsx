@@ -8,7 +8,7 @@ import {
 } from "@codemirror/autocomplete";
 import { EditorState, Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
-import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { findLanguageDescription, loadSupport } from "@/editor/core/cm/languages";
 import { baseExtensions, compartments } from "@/editor/core/cm/setup";
 import { executeAction } from "@/platform/actions";
@@ -24,8 +24,9 @@ import {
   type RequestId,
 } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { Button, Dialog, IconButton, Input, Select, Spinner, T, Toolbar } from "@/ui";
+import { Button, Dialog, IconButton, Input, Select, Spinner, T, Tabs, Toolbar } from "@/ui";
 import type { EditorInput } from "@/workbench/contributions";
+import { executionMarks, trackExecution } from "./executionMarks";
 import { Grid } from "./Grid";
 import { jdbcProfileOption, JdbcDriverProfiles, useJdbcDrivers } from "./JdbcDriverProfiles";
 import { projectRequest } from "./requests";
@@ -42,10 +43,34 @@ import {
   workspaceSourceAliasError,
   workspaceSourceNames,
   workspaceSourceSide,
+  workspaceStatementRanges,
 } from "./workspaceQuery";
+import dbStyles from "./Database.module.css";
 import styles from "./WorkspaceEditor.module.css";
 
 const PAGE_SIZE = 500;
+const MAX_BATCH_STATEMENTS = 12;
+const MAX_BATCH_ROWS = 100_000;
+const MAX_BATCH_BYTES = 64 * 1024 * 1024;
+
+type WorkspaceResult = { sql: string; data: DbQueryResult; page: number };
+type WorkspaceRun = { request: RequestId | null; cancelled: boolean };
+
+// Estimate retained JS payload without serializing or copying the grid's rows.
+function resultBytes(result: DbQueryResult, available: number): number {
+  let bytes = 0;
+  for (const column of result.columns) bytes += 64 + 2 * (column.name.length + column.typeName.length);
+  for (const row of result.rows) {
+    bytes += 24 + 8 * row.length;
+    for (const cell of row) if (cell !== null) bytes += 24 + 2 * cell.length;
+    if (bytes > available) break;
+  }
+  return bytes;
+}
+
+function resultLabel(n: number) {
+  return tx`Result ${n}`;
+}
 const sides = ["left", "right"] as const;
 type Side = (typeof sides)[number];
 type Selections = Record<Side, string>;
@@ -222,11 +247,13 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
   const [empty, setEmpty] = useState(() => draft.sql.length === 0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [result, setResult] = useState<DbQueryResult | null>(null);
-  const [page, setPage] = useState(0);
+  const [results, setResults] = useState<WorkspaceResult[]>([]);
+  const [active, setActive] = useState("feedback");
+  const panelId = useId();
+  const panel = useRef<HTMLDivElement>(null);
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
-  const request = useRef<RequestId | null>(null);
+  const running = useRef<WorkspaceRun | null>(null);
   const candidates = sources.filter(eligible);
   const drivers = registry.drivers?.filter((d) => d.vendor === "duckdb" && d.className === DUCKDB_JDBC_CLASS) ?? [];
   const driverFor = (id: string) => (id ? drivers.find((driver) => driver.id === id) : drivers[0]);
@@ -262,53 +289,123 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
     return () => cancelAnimationFrame(frame);
   }, [settingsRequested, busy, config]);
 
-  const execute = async () => {
-    if (request.current !== null || !view.current) return;
+  const stop = () => {
+    const run = running.current;
+    if (!run || run.cancelled) return;
+    run.cancelled = true;
+    if (run.request !== null) void commands.cancelRequest(run.request);
+  };
+  const execute = async (script = false) => {
+    const editor = view.current;
+    if (running.current || !editor) return;
     const driver = driverFor(config.profile);
     if (!ready || !driver) {
       setSettings(config);
       return;
     }
-    const state = view.current.state;
+    const state = editor.state;
     const range = state.selection.main;
     // Tab fields in Insert JOIN are selections for editing the template.
-    const selected = !range.empty && !hasNextSnippetField(state) && !hasPrevSnippetField(state);
-    if ((selected ? range.to - range.from : state.doc.length) > WORKSPACE_SQL_LIMIT) {
-      setError(tx("Workspace SQL exceeds 65,536 characters."));
+    const selected = !script && !range.empty && !hasNextSnippetField(state) && !hasPrevSnippetField(state);
+    const from = selected ? range.from : 0;
+    const to = selected ? range.to : state.doc.length;
+    const submitted = selected || script;
+    const reportError = (message: string) => {
+      setError(message);
+      setActive("feedback");
+    };
+    if (to - from > WORKSPACE_SQL_LIMIT) {
+      reportError(tx("Workspace SQL exceeds 65,536 characters."));
       return;
     }
-    const sql = selected ? state.sliceDoc(range.from, range.to) : state.doc.toString();
-    if (!sql.trim()) {
-      view.current.focus();
+    const sql = state.sliceDoc(from, to);
+    const spans = workspaceStatementRanges(sql, submitted ? undefined : range.head).map((span) => ({
+      from: span.from + from,
+      to: span.to + from,
+    }));
+    if (!spans.length) {
+      editor.focus();
       return;
+    }
+    if (spans.length > MAX_BATCH_STATEMENTS) {
+      reportError(tx("The workspace can run up to 12 statements at a time."));
+      return;
+    }
+    const tracker = trackExecution(editor);
+    const table = (ref: ReturnType<typeof workspaceJoinQuery>[number]) => {
+      const source = sourceFor(config[ref.source])!;
+      return {
+        sourceId: source.id,
+        database: source.driver === "clickhouse" ? ref.schema : "",
+        schema: ref.schema,
+        table: ref.table,
+        key: ref.key,
+      };
+    };
+    const queries = [];
+    // Validate the entire batch before the first request touches either source.
+    for (const span of spans) {
+      const text = state.sliceDoc(span.from, span.to);
+      try {
+        const [a, b] = workspaceJoinQuery(text, references.names, references.aliases);
+        queries.push({ text, left: table(a), right: table(b) });
+      } catch (e) {
+        const error = e instanceof Error ? e.message : String(e);
+        tracker.start([span]);
+        tracker.update(null, [{ index: 0, error, ms: null }]);
+        tracker.end();
+        reportError(error);
+        return;
+      }
     }
     const activeProject = projectRequest();
-    const id = nextRequestId();
-    request.current = id;
+    const run: WorkspaceRun = { request: null, cancelled: false };
+    const ownsRun = () => activeProject() && running.current === run;
+    running.current = run;
     setError("");
-    setResult(null);
-    setPage(0);
+    setResults([]);
+    setActive("feedback");
     setBusy(true);
+    tracker.start(spans);
+    let rows = 0;
+    let bytes = 0;
     try {
-      const [a, b] = workspaceJoinQuery(sql, references.names, references.aliases, selected ? undefined : range.head);
-      const table = (ref: typeof a) => {
-        const source = sourceFor(config[ref.source])!;
-        return {
-          sourceId: source.id,
-          database: source.driver === "clickhouse" ? ref.schema : "",
-          schema: ref.schema,
-          table: ref.table,
-          key: ref.key,
-        };
-      };
-      const output = await call(commands.dbWorkspaceJoin(id, driver.id, table(a), table(b)));
-      if (activeProject() && request.current === id) setResult(output);
-    } catch (e) {
-      if (activeProject() && request.current === id)
-        setError(isCancelled(e) ? tx("Cancelled") : e instanceof Error ? e.message : String(e));
+      for (const [index, { text, left, right }] of queries.entries()) {
+        if (!ownsRun()) break;
+        if (run.cancelled) {
+          reportError(tx("Cancelled"));
+          break;
+        }
+        const request = nextRequestId();
+        run.request = request;
+        const startedAt = Date.now();
+        tracker.update({ index, startedAt });
+        try {
+          // Each JOIN owns the source reads and staging until it finishes.
+          // oxlint-disable-next-line no-await-in-loop
+          const data = await call(commands.dbWorkspaceJoin(request, driver.id, left, right));
+          if (!ownsRun()) break;
+          rows += data.rows.length;
+          bytes += resultBytes(data, MAX_BATCH_BYTES - bytes);
+          if (rows > MAX_BATCH_ROWS || bytes > MAX_BATCH_BYTES)
+            throw new Error(tx("The workspace batch exceeds the result size limit."));
+          tracker.update(null, [{ index, error: null, ms: data.elapsedMs ?? Date.now() - startedAt }]);
+          setResults((previous) => [...previous, { sql: text, page: 0, data }]);
+          setActive(String(index));
+        } catch (e) {
+          if (!ownsRun()) break;
+          const error = isCancelled(e) ? tx("Cancelled") : e instanceof Error ? e.message : String(e);
+          tracker.update(null, [{ index, error, ms: Date.now() - startedAt }]);
+          reportError(error);
+          break;
+        } finally {
+          run.request = null;
+        }
+      }
     } finally {
-      if (request.current === id) {
-        request.current = null;
+      if (running.current === run) {
+        running.current = null;
+        tracker.end();
         setBusy(false);
       }
     }
@@ -333,6 +430,7 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
           docLength: draft.sql.length,
           contributions: [],
           extra: [
+            executionMarks,
             autocompletion({ override: [complete(() => current.current)] }),
             EditorView.updateListener.of((update) => {
               if (update.docChanged) setEmpty(update.state.doc.length === 0);
@@ -377,9 +475,8 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
           editor.dispatch({ effects: compartments.language.reconfigure(language) });
       });
     return () => {
-      const pending = request.current;
-      request.current = null;
-      if (pending !== null) void commands.cancelRequest(pending);
+      stop();
+      running.current = null;
       save();
       editor.dom.removeEventListener("focusout", save);
       panel?.removeEventListener("focus", focusEditor);
@@ -418,9 +515,9 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
       JSON.stringify(next.sourceAliases) !== JSON.stringify(config.sourceAliases)
     ) {
       setConfig(next);
-      setResult(null);
+      setResults([]);
+      setActive("feedback");
       setError("");
-      setPage(0);
     }
     setSettings(null);
     const editor = view.current;
@@ -428,7 +525,14 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
       if (view.current === editor) editor?.focus();
     });
   };
-  const start = page * PAGE_SIZE;
+  const result = results[Number(active)];
+  const start = (result?.page ?? 0) * PAGE_SIZE;
+  const first = start + 1;
+  const total = result?.data.rows.length ?? 0;
+  const last = Math.min(start + PAGE_SIZE, total);
+  const hasFeedback = busy || results.length > 0 || !!error;
+  const setPage = (page: number) =>
+    setResults((previous) => previous.map((item) => (item === result ? { ...item, page } : item)));
   const configureLabel = t("Configure Sources…");
   const connectionContext = ready
     ? [
@@ -445,27 +549,18 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
     <section className={styles.workspace} aria-label={t("Query Workspace")}>
       <Toolbar className={styles.toolbar} aria-label="Workspace actions">
         {busy ? (
-          <IconButton
-            icon="stop"
-            title="Stop"
-            tone="danger"
-            onClick={() => {
-              if (request.current !== null) void commands.cancelRequest(request.current);
-            }}
-          />
+          <IconButton icon="stop" title="Stop" tone="danger" onClick={stop} />
         ) : (
-          <IconButton
-            icon="run"
-            title="Run"
-            tone="accent"
-            shortcut={shortcutLabel("db.execute")}
-            onClick={() => void execute()}
-          />
-        )}
-        {busy && (
-          <span className={styles.running}>
-            <Spinner label={t("Running query")} /> <T>Running query</T>
-          </span>
+          <>
+            <IconButton
+              icon="run"
+              title="Run"
+              tone="accent"
+              shortcut={shortcutLabel("db.execute")}
+              onClick={() => void execute()}
+            />
+            <IconButton icon="gutter-run-all" title="Execute Script" onClick={() => void execute(true)} />
+          </>
         )}
         <Button
           variant="ghost"
@@ -481,7 +576,7 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
           </span>
         </Button>
       </Toolbar>
-      <div className={styles.query} data-result={result ? "" : undefined}>
+      <div className={styles.query} data-result={hasFeedback ? "" : undefined}>
         <div className={styles.editor} ref={host} />
         {empty && (
           <div className={styles.firstRun}>
@@ -511,42 +606,95 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
           </div>
         )}
       </div>
-      {error && (
-        <div role="alert" className={styles.status}>
-          {error}
-        </div>
-      )}
-      {result && (
+      {hasFeedback && (
         <>
-          <div className={styles.status}>
-            <span>{t`${result.rows.length} rows`}</span>
-            {result.elapsedMs !== null && <span>{formatElapsed(result.elapsedMs)}</span>}
-            {result.rows.length > PAGE_SIZE && (
+          <Tabs
+            className={dbStyles.resultTabs}
+            variant="compact"
+            aria-label={t("Results")}
+            activeId={active}
+            panelIdPrefix={panelId}
+            onSelect={setActive}
+            items={[
+              { id: "feedback", label: "Feedback", icon: "db-console" },
+              ...results.map(({ sql }, index) => ({
+                id: String(index),
+                label: resultLabel(index + 1),
+                icon: "db-table",
+                verbatim: true,
+                tooltip: sql,
+              })),
+            ]}
+            focusContent={() => {
+              const target = panel.current?.querySelector<HTMLElement>('[role="grid"], [role="log"]');
+              target?.focus();
+              return !!target && document.activeElement === target;
+            }}
+          />
+          <div
+            ref={panel}
+            className={styles.results}
+            role="tabpanel"
+            id={`${panelId}-panel-${active}`}
+            aria-labelledby={`${panelId}-tab-${active}`}
+          >
+            {result ? (
               <>
-                <Button size="small" disabled={page === 0} onClick={() => setPage(page - 1)}>
-                  <T>Previous Page</T>
-                </Button>
-                <span>
-                  {start + 1}–{Math.min(start + PAGE_SIZE, result.rows.length)}
-                </span>
-                <Button
-                  size="small"
-                  disabled={start + PAGE_SIZE >= result.rows.length}
-                  onClick={() => setPage(page + 1)}
-                >
-                  <T>Next Page</T>
-                </Button>
+                <div className={dbStyles.fill}>
+                  <Grid
+                    key={`${active}-${result.page}`}
+                    columns={result.data.columns.map((c) => ({ name: c.name, type: c.typeName }))}
+                    rowCount={Math.min(PAGE_SIZE, result.data.rows.length - start)}
+                    firstRowNumber={first}
+                    value={(row, col) => result.data.rows[start + row]?.[col] ?? null}
+                  />
+                </div>
+                <div className={dbStyles.pagerDock}>
+                  <Toolbar className={dbStyles.resultPager} aria-label={t("Result pages")}>
+                    {result.data.rows.length > PAGE_SIZE ? (
+                      <>
+                        <IconButton
+                          size="small"
+                          icon="chevron-left"
+                          title="Previous Page"
+                          disabled={result.page === 0}
+                          onClick={() => setPage(result.page - 1)}
+                        />
+                        <span className={dbStyles.resultPagerRange}>{t`${first}-${last} of ${total}`}</span>
+                        <IconButton
+                          size="small"
+                          icon="chevron-right"
+                          title="Next Page"
+                          disabled={start + PAGE_SIZE >= result.data.rows.length}
+                          onClick={() => setPage(result.page + 1)}
+                        />
+                      </>
+                    ) : (
+                      <span className={dbStyles.resultPagerRange}>{t`${result.data.rows.length} rows`}</span>
+                    )}
+                  </Toolbar>
+                </div>
               </>
+            ) : (
+              <div role="log" tabIndex={0} className={dbStyles.output} aria-label={t("Feedback")}>
+                {results.map(({ data }, index) => (
+                  <div key={index} className={dbStyles.outputLine}>
+                    {resultLabel(index + 1)} · {t`${data.rows.length} rows`}
+                    {data.elapsedMs !== null && ` · ${formatElapsed(data.elapsedMs)}`}
+                  </div>
+                ))}
+                {error && (
+                  <div role="alert" className={dbStyles.outputError}>
+                    {error}
+                  </div>
+                )}
+                {busy && (
+                  <div role="status" className={styles.running}>
+                    <Spinner label={t("Running query")} /> <T>Running query</T>
+                  </div>
+                )}
+              </div>
             )}
-          </div>
-          <div className={styles.results}>
-            <Grid
-              key={page}
-              columns={result.columns.map((c) => ({ name: c.name, type: c.typeName }))}
-              rowCount={Math.min(PAGE_SIZE, result.rows.length - start)}
-              firstRowNumber={start + 1}
-              value={(row, col) => result.rows[start + row]?.[col] ?? null}
-            />
           </div>
         </>
       )}
@@ -619,21 +767,18 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
                 </Button>
               )}
             </div>
-            {settingsReferences && (
-              <details className={styles.aliases}>
-                <summary>
-                  <T>SQL aliases</T>
-                </summary>
-                <div className={styles.aliasFields}>
-                  <p>
-                    <T>Use a short SQL name for a source. Leave it blank to use the connection name.</T>
-                  </p>
-                  {sides.map((side) => (
+            {settingsReferences && sides.some((side) => sourceFor(settings[side])) && (
+              <div className={styles.aliasFields}>
+                <p>
+                  <T>Use a short SQL name for a source. Leave it blank to use the connection name.</T>
+                </p>
+                {sides
+                  .filter((side) => sourceFor(settings[side]))
+                  .map((side) => (
                     <label key={side} className={styles.field}>
                       <span>{t(side === "left" ? "Left SQL alias" : "Right SQL alias")}</span>
                       <Input
                         aria-label={t(side === "left" ? "Left SQL alias" : "Right SQL alias")}
-                        disabled={!sourceFor(settings[side])}
                         mono
                         invalid={!!settingsError}
                         value={settingsReferences.aliases[side]}
@@ -647,8 +792,7 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
                       />
                     </label>
                   ))}
-                </div>
-              </details>
+              </div>
             )}
             {settingsError && <p role="alert">{settingsError}</p>}
             {registry.error && <div role="alert">{registry.error}</div>}

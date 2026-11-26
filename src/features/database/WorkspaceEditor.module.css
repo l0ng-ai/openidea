@@ -8,20 +8,16 @@
 .toolbar,
 .firstRunActions,
 .running,
-.settingsActions,
-.status {
+.settingsActions {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: var(--space-2);
 }
-.toolbar,
-.status {
+.toolbar {
   flex: none;
   padding: var(--space-1) var(--space-2);
   border-bottom: 1px solid var(--border);
-}
-.toolbar {
   gap: var(--space-0-5);
 }
 .context {
@@ -41,7 +37,6 @@
 .running {
   margin-inline-start: var(--space-2);
 }
-.status[role="alert"],
 .settings [role="alert"] {
   color: var(--danger);
 }
@@ -58,9 +53,6 @@
 .driverMode {
   margin-inline-start: var(--space-2);
   color: var(--fg-muted);
-}
-.aliases > summary {
-  cursor: pointer;
 }
 .aliasFields {
   display: grid;
@@ -117,6 +109,8 @@
   height: 100%;
 }
 .results {
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 0;
   overflow: hidden;

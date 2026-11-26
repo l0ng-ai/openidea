@@ -1,5 +1,4 @@
 {
-  "SQL aliases": "SQL 别名",
   "Use a short SQL name for a source. Leave it blank to use the connection name.": "可以为数据源设置简短的 SQL 名称。留空时使用连接名称。",
   "Left SQL alias": "左侧数据源 SQL 别名",
   "Right SQL alias": "右侧数据源 SQL 别名",
@@ -28,7 +27,10 @@
   "Choose a source from completion after #, or use #left or #right.": "输入 # 后从补全列表选择数据源，也可以使用 #left 或 #right。",
   "The join must compare one column from each table.": "联接条件必须比较两张表中各一列的值。",
   "Use two different sources and table aliases.": "请使用两个不同的数据源，并为表指定不同的别名。",
-  "The workspace supports one direct equality JOIN per run.": "工作区每次运行仅支持一次直接等值联接。",
+  "The workspace supports one direct equality JOIN per statement.": "工作区每条语句仅支持一次直接等值联接。",
+  "The workspace can run up to 12 statements at a time.": "工作区一次最多可运行 12 条语句。",
+  "The workspace batch exceeds the result size limit.": "工作区的批处理结果超出大小限制。",
+  "Feedback": "执行反馈",
   "No images to compare": "没有可比较的图像",
   "Image diff": "图像差异",
   "Highlight changed pixels": "高亮显示更改的像素",

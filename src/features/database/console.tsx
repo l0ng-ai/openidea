@@ -17,27 +17,12 @@ import {
   type CompletionResult,
   type CompletionSource,
 } from "@codemirror/autocomplete";
-import {
-  Compartment,
-  EditorSelection,
-  EditorState,
-  Facet,
-  Prec,
-  RangeSet,
-  type Range,
-  StateEffect,
-  StateField,
-  type Extension,
-} from "@codemirror/state";
+import { Compartment, EditorState, Facet, Prec, StateEffect, StateField, type Extension } from "@codemirror/state";
 import {
   Decoration,
   EditorView,
-  GutterMarker,
-  RectangleMarker,
   ViewPlugin,
   WidgetType,
-  gutter,
-  layer,
   showPanel,
   showTooltip,
   type Panel,
@@ -46,15 +31,7 @@ import {
 import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { createRoot } from "react-dom/client";
 import type { EditorDocContext } from "@/editor/api";
-import { iconNode, spinnerNode } from "@/ui/iconNode";
-import {
-  call,
-  commands,
-  type DbDriver,
-  type DbSessionContext,
-  type DbStatementOutcome,
-  type SqlStatement,
-} from "@/platform/ipc";
+import { call, commands, type DbDriver, type DbSessionContext, type DbStatementOutcome } from "@/platform/ipc";
 import { shortcutLabel } from "@/platform/keymap";
 import { Icon, IconButton, Select, Toolbar, lazyComponent } from "@/ui";
 import { useProject } from "@/platform/project";
@@ -114,249 +91,36 @@ import type { ResultTab } from "./store";
 /** `templates` feature's language-data key for finer template contexts. */
 const TEMPLATE_CONTEXT_KEY = "openideaTemplateContexts";
 
-import { formatElapsed } from "./resultView";
+import { executionMarks, runField, setPreview, trackExecution } from "./executionMarks";
 import { SQL_LANGUAGE } from "./sqlLanguage";
 import { jdbcDialect } from "./vendors";
 export { SQL_LANGUAGE };
 const ROW_LIMITS = ["100", "500", "1000", "5000", "50000"];
 
-/** Statement outcomes of the last run, kept on the text (IDEA's gutter check / error and timing). */
-interface RunMark {
-  from: number;
-  to: number;
-  /** After the statement's `;` when it has one. */
-  timingAt: number;
-  error: string | null;
-  ms: number | null;
-}
-
-interface Executing {
-  /** Tells this run from a later one on the same console. */
-  token: number;
-  active: { index: number; startedAt: number } | null;
-  spans: readonly { from: number; to: number }[];
-}
-
-function activeSpan(ex: Executing | null) {
-  const span = ex?.active ? ex.spans[ex.active.index] : undefined;
-  return span && span.from < span.to ? span : undefined;
-}
-
-interface RunState {
-  marks: readonly RunMark[];
-  /** Message of the bottom error banner (`null`: hidden). */
-  banner: string | null;
-  executing: Executing | null;
-}
-
-const setRun = StateEffect.define<RunState>();
-
-const runField = StateField.define<RunState>({
-  create: () => ({ marks: [], banner: null, executing: null }),
-  update(value, tr) {
-    for (const e of tr.effects) if (e.is(setRun)) return e.value;
-    if (!tr.docChanged) return value;
-    // The request runs the text it was sent; edits only move where that shows.
-    const ex = value.executing;
-    const executing = ex && {
-      ...ex,
-      spans: ex.spans.map((r) => ({ from: tr.changes.mapPos(r.from, 1), to: tr.changes.mapPos(r.to, -1) })),
-    };
-    // Editing a statement drops its mark.
-    const marks: RunMark[] = [];
-    for (const m of value.marks) {
-      let touched = false;
-      tr.changes.iterChangedRanges((a, b) => {
-        if (a <= m.to && b >= m.from) touched = true;
-      });
-      if (!touched)
-        marks.push({
-          ...m,
-          from: tr.changes.mapPos(m.from),
-          to: tr.changes.mapPos(m.to),
-          timingAt: tr.changes.mapPos(m.timingAt),
-        });
-    }
-    return { ...value, marks, executing };
-  },
-  provide: (f) => [
-    EditorView.decorations.compute([f], (state) => {
-      const st = state.field(f);
-      const ranges = [];
-      const active = st.executing?.active;
-      const span = activeSpan(st.executing);
-      if (active && span) {
-        const end = state.sliceDoc(span.to, span.to + 1) === ";" ? span.to + 1 : span.to;
-        const at = Math.min(end, state.doc.lineAt(span.from).to);
-        ranges.push(Decoration.mark({ class: "cm-openidea-db-executing" }).range(span.from, span.to));
-        ranges.push(Decoration.widget({ widget: new ElapsedWidget(active.startedAt), side: 1 }).range(at));
-      }
-      for (const m of st.marks) {
-        if (m.error)
-          ranges.push(
-            Decoration.mark({ class: "cm-openidea-db-error", attributes: { title: m.error } }).range(m.from, m.to),
-          );
-        if (m.ms !== null)
-          ranges.push(Decoration.widget({ widget: new TimingWidget(m.ms), side: 1 }).range(m.timingAt));
-      }
-      return Decoration.set(ranges, true);
-    }),
-    showPanel.from(f, (st) => (st.banner ? errorBanner(st.banner) : null)),
-  ],
-});
-
-class TimingWidget extends WidgetType {
-  constructor(readonly ms: number) {
-    super();
-  }
-  eq(other: TimingWidget) {
-    return other.ms === this.ms;
-  }
-  toDOM() {
-    const span = document.createElement("span");
-    span.className = "cm-openidea-db-timing";
-    span.textContent = formatElapsed(this.ms);
-    return span;
-  }
-}
-
-/** The running time of the request, ticking until it ends. */
-class ElapsedWidget extends WidgetType {
-  private timer: ReturnType<typeof setInterval> | undefined;
-  constructor(readonly startedAt: number) {
-    super();
-  }
-  eq(other: ElapsedWidget) {
-    return other.startedAt === this.startedAt;
-  }
-  toDOM() {
-    const span = document.createElement("span");
-    span.className = "cm-openidea-db-timing cm-openidea-db-elapsed";
-    const tick = () => {
-      const elapsed = formatElapsed(Date.now() - this.startedAt);
-      span.textContent = tx`Executing… ${elapsed}`;
-    };
-    tick();
-    this.timer = setInterval(tick, 100);
-    return span;
-  }
-  destroy() {
-    clearInterval(this.timer);
-  }
-}
-
-class ExecutingMarker extends GutterMarker {
-  eq(other: GutterMarker) {
-    return other instanceof ExecutingMarker;
-  }
-  toDOM() {
-    const el = spinnerNode(12, "cm-openidea-db-run-executing");
-    el.title = tx("Executing");
-    return el;
-  }
-}
-
-class RunMarker extends GutterMarker {
-  constructor(readonly error: string | null) {
-    super();
-  }
-  eq(other: RunMarker) {
-    return other.error === this.error;
-  }
-  toDOM() {
-    const el = iconNode(
-      this.error ? "error" : "check",
-      14,
-      this.error ? "cm-openidea-db-run-error" : "cm-openidea-db-run-ok",
-    );
-    el.title = this.error ?? "Executed";
-    return el;
-  }
-}
-
-const runGutter = gutter({
-  class: "cm-openidea-db-gutter",
-  markers: (view) => {
-    const st = view.state.field(runField);
-    const doc = view.state.doc;
-    const active = activeSpan(st.executing);
-    const line = active ? doc.lineAt(active.from).from : undefined;
-    const ranges: Range<GutterMarker>[] = st.marks
-      .filter((m) => m.from <= doc.length)
-      .map((m) => new RunMarker(m.error).range(doc.lineAt(m.from).from));
-    if (line !== undefined) ranges.push(new ExecutingMarker().range(line));
-    return RangeSet.of(ranges, true);
-  },
-});
-
-function errorBanner(message: string) {
-  return (view: EditorView): Panel => {
-    const dom = document.createElement("div");
-    dom.className = "cm-openidea-db-banner";
-    dom.setAttribute("role", "alert");
-    const text = document.createElement("span");
-    text.className = "cm-openidea-db-banner-text";
-    text.textContent = message;
-    text.title = message;
-    const close = document.createElement("button");
-    close.type = "button";
-    close.className = "cm-openidea-db-banner-close";
-    close.setAttribute("aria-label", "Close");
-    close.appendChild(iconNode("close", 14));
-    close.onclick = () => view.dispatch({ effects: setRun.of({ ...view.state.field(runField), banner: null }) });
-    dom.append(text, close);
-    return { dom, top: false };
-  };
-}
-
-let nextExecution = 0;
+export { previewRanges } from "./executionMarks";
 
 /** Runs `from`–`to` of `view`, following each statement as it executes. */
 async function executeRange(view: EditorView, path: string, from: number, to: number) {
-  const token = ++nextExecution;
   const sent = view.state.doc;
-  const start = (statements: readonly SqlStatement[]) => {
-    const st = view.state.field(runField, false);
-    // The offsets are into the text sent; an edit since (while asking for parameters) leaves them unplaced.
-    if (!st || view.state.doc !== sent) return;
-    const spans = statements.map((st) => ({ from: st.from, to: st.to }));
-    const first = spans[0]!;
-    const last = spans[spans.length - 1]!;
-    const marks = st.marks.filter((mark) => mark.to <= first.from || mark.from >= last.to);
-    view.dispatch({ effects: setRun.of({ marks, banner: null, executing: { token, spans, active: null } }) });
-  };
+  const tracker = trackExecution(view, (error) => `[${sourceById(consoleSource(path))?.name ?? ""}] ${error}`);
   try {
-    await executeConsole(path, sent.toString(), from, to, start, (events) => {
-      const st = view.state.field(runField, false);
-      const ex = st?.executing;
-      if (!st || ex?.token !== token) return;
+    await executeConsole(path, sent.toString(), from, to, tracker.start, (events) => {
       const last = events[events.length - 1]!;
       const active = last.type === "started" ? { index: last.index, startedAt: Date.now() } : null;
-      const marks = [...st.marks];
-      let banner = st.banner;
+      const completed = events.filter((event) => event.type !== "started");
+      const spans = tracker.update(
+        active,
+        completed.map(({ index, outcome }) => ({ index, error: outcome.error, ms: outcome.result?.elapsedMs ?? null })),
+      );
       const placed = new Map<number, DbStatementOutcome>();
-      for (const event of events) {
-        if (event.type === "started") continue;
-        const span = ex.spans[event.index];
-        if (!span || span.from >= span.to) continue;
-        const { from, to } = span;
-        const { error, result } = event.outcome;
-        marks.push({
-          from,
-          to,
-          timingAt: view.state.sliceDoc(to, to + 1) === ";" ? to + 1 : to,
-          error,
-          ms: result?.elapsedMs ?? null,
-        });
-        if (error) banner = `[${sourceById(consoleSource(path))?.name ?? ""}] ${error}`;
-        placed.set(event.index, { ...event.outcome, statement: { ...event.outcome.statement, ...span } });
+      for (const { index, outcome } of completed) {
+        const span = spans.get(index);
+        if (span) placed.set(index, { ...outcome, statement: { ...outcome.statement, ...span } });
       }
-      view.dispatch({ effects: setRun.of({ marks, banner, executing: { ...ex, active } }) });
       return placed;
     });
   } finally {
-    const st = view.state.field(runField, false);
-    if (st?.executing?.token === token) view.dispatch({ effects: setRun.of({ ...st, executing: null }) });
+    tracker.end();
   }
 }
 
@@ -378,94 +142,6 @@ export async function explainInView(view: EditorView, path: string) {
 }
 
 const consolePath = Facet.define<string, string>({ combine: (v) => v[0] ?? "" });
-
-const setPreview = StateEffect.define<readonly { from: number; to: number }[]>();
-
-/**
- * The range the console's next Execute would submit, bordered on the text (DataGrip's current
- * statement border): the caret's statement, or the selection's — the statements `db_statements`
- * splits that range into, the very call the run itself makes.
- */
-const previewField = StateField.define<readonly { from: number; to: number }[]>({
-  create: () => [],
-  update(value, tr) {
-    for (const e of tr.effects) if (e.is(setPreview)) return e.value;
-    if (!tr.docChanged) return value;
-    // The preview is of the text it was computed for; edits only move where that is.
-    const next: { from: number; to: number }[] = [];
-    for (const r of value) {
-      const from = tr.changes.mapPos(r.from, 1);
-      const to = tr.changes.mapPos(r.to, -1);
-      if (from < to) next.push({ from, to });
-    }
-    return next;
-  },
-});
-
-/** The bordered ranges: a run in progress keeps its submitted range, whatever the caret does. */
-export function previewRanges(state: EditorState): readonly { from: number; to: number }[] {
-  const ex = state.field(runField, false)?.executing;
-  const ranges = ex?.spans.length
-    ? [{ from: ex.spans[0]!.from, to: ex.spans[ex.spans.length - 1]!.to }]
-    : (state.field(previewField, false) ?? []);
-  return ranges.filter((r) => r.from < r.to);
-}
-
-const PREVIEW_CLASS = "cm-openidea-db-preview";
-
-/**
- * One box around each statement's text: the union of its lines' text (indentation and trailing
- * blanks left out), as tall as the statement even where it runs out of view.
- */
-function previewBoxes(view: EditorView): RectangleMarker[] {
-  const { doc } = view.state;
-  const boxes: RectangleMarker[] = [];
-  for (const r of previewRanges(view.state)) {
-    let left = Infinity;
-    let right = -Infinity;
-    let offset: number | null = null;
-    for (const visible of view.visibleRanges) {
-      const from = Math.max(r.from, visible.from);
-      const to = Math.min(r.to, visible.to);
-      if (from >= to) continue;
-      for (let pos = from; pos <= to;) {
-        const line = doc.lineAt(pos);
-        const text = line.text;
-        let start = Math.max(from, line.from) - line.from;
-        let end = Math.min(to, line.to) - line.from;
-        while (start < end && /\s/.test(text[start]!)) start++;
-        while (end > start && /\s/.test(text[end - 1]!)) end--;
-        if (start < end)
-          for (const m of RectangleMarker.forRange(
-            view,
-            PREVIEW_CLASS,
-            EditorSelection.range(line.from + start, line.from + end),
-          )) {
-            left = Math.min(left, m.left);
-            right = Math.max(right, m.left + (m.width ?? 0));
-            offset ??= m.top - view.lineBlockAt(line.from).top;
-          }
-        pos = line.to + 1;
-      }
-    }
-    if (offset == null || right <= left) continue;
-    const top = view.lineBlockAt(r.from).top + offset;
-    const bottom = view.lineBlockAt(r.to).bottom + offset;
-    boxes.push(new RectangleMarker(PREVIEW_CLASS, left - 2, top, right - left + 4, bottom - top));
-  }
-  return boxes;
-}
-
-const previewLayer = layer({
-  above: false,
-  markers: previewBoxes,
-  update: (u) =>
-    u.docChanged ||
-    u.viewportChanged ||
-    u.geometryChanged ||
-    u.startState.field(previewField, false) !== u.state.field(previewField, false) ||
-    u.startState.field(runField, false)?.executing !== u.state.field(runField, false)?.executing,
-});
 
 /** How long typing pauses before the preview is split again (until then it follows the edit). */
 const PREVIEW_TYPING_DELAY_MS = 150;
@@ -1364,10 +1040,7 @@ export function consoleExtension(ctx: EditorDocContext): Extension {
   if (ctx.language !== SQL_LANGUAGE || ctx.virtual || ctx.readOnly) return [];
   return [
     consolePath.of(ctx.path),
-    runField,
-    runGutter,
-    previewField,
-    previewLayer,
+    executionMarks,
     previewSync,
     inlineField,
     syncInline,

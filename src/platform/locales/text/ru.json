@@ -1,5 +1,4 @@
 {
-  "SQL aliases": "Псевдонимы SQL",
   "Use a short SQL name for a source. Leave it blank to use the connection name.": "Можно задать источнику короткое имя для SQL. По умолчанию используется имя подключения.",
   "Left SQL alias": "Псевдоним первого источника",
   "Right SQL alias": "Псевдоним второго источника",
@@ -29,7 +28,10 @@
   "Choose a source from completion after #, or use #left or #right.": "Введите # и выберите источник из подсказки или используйте #left и #right.",
   "The join must compare one column from each table.": "В условии соединения укажите по одному столбцу из каждой таблицы.",
   "Use two different sources and table aliases.": "Выберите два разных источника и укажите разные псевдонимы таблиц.",
-  "The workspace supports one direct equality JOIN per run.": "За один запуск рабочая область выполняет один JOIN с условием равенства.",
+  "The workspace supports one direct equality JOIN per statement.": "В каждом выражении рабочая область поддерживает один JOIN с условием равенства.",
+  "The workspace can run up to 12 statements at a time.": "В рабочей области можно выполнить до 12 выражений за запуск.",
+  "The workspace batch exceeds the result size limit.": "Общий размер результатов превышает лимит рабочей области.",
+  "Feedback": "Выполнение",
   "Create function '{name}'": "Создать функцию '{name}'",
   "Create class '{name}'": "Создать класс '{name}'",
   "Create method '{name}' in '{owner}'": "Создать метод '{name}' в '{owner}'",

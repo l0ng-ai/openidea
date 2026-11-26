@@ -110,6 +110,38 @@ function parseWorkspaceJoin(tokens: readonly Token[], names: SourceNames, aliase
   return { relations, identifier, columnOwner, column, take, need, at };
 }
 
+/** Split on SQL delimiters, matching the console's trimmed UTF-16 ranges and caret rules. */
+export function workspaceStatementRanges(sql: string, caret?: number): { from: number; to: number }[] {
+  if (sql.length > WORKSPACE_SQL_LIMIT) throw new Error(tx("Workspace SQL exceeds 65,536 characters."));
+  const ranges: { from: number; to: number }[] = [];
+  let start = 0;
+  let hasCode = false;
+  const add = (end: number) => {
+    if (!hasCode) return;
+    const segment = sql.slice(start, end);
+    ranges.push({ from: end - segment.trimStart().length, to: start + segment.trimEnd().length });
+    hasCode = false;
+  };
+  for (const token of lex(sql, "postgres").tokens) {
+    if (token.kind === "punct" && token.text === ";") {
+      add(token.from);
+      start = token.to;
+    } else {
+      hasCode = true;
+    }
+  }
+  add(sql.length);
+  if (caret === undefined || !ranges.length) return ranges;
+  const next = ranges.findIndex(({ to }) => to >= caret);
+  if (next === -1) return [ranges.at(-1)!];
+  const current = ranges[next]!;
+  const previous = ranges[next - 1];
+  if (caret < current.from && previous && (sql.slice(previous.to, caret).match(/\n/g)?.length ?? 0) <= 1) {
+    return [previous];
+  }
+  return [current];
+}
+
 /** Compile the workspace's direct table JOIN to structured host arguments. */
 export function workspaceJoinQuery(
   sql: string,
@@ -118,22 +150,17 @@ export function workspaceJoinQuery(
   caret?: number,
 ): [WorkspaceRelation, WorkspaceRelation] {
   if (sql.length > WORKSPACE_SQL_LIMIT) throw new Error(tx("Workspace SQL exceeds 65,536 characters."));
-  let { tokens } = lex(sql, "postgres");
   if (caret !== undefined) {
-    // Run the preceding JOIN immediately after its delimiter, including trailing whitespace at EOF.
-    const last = tokens.at(-1);
-    let at = caret;
-    if (sql[at - 1] === ";") at--;
-    else if (last?.text === ";" && at >= last.to && !sql.slice(last.to).trim()) at = last.from;
-    const { start, end } = statementTokenRange(tokens, at);
-    tokens = tokens.slice(start, end);
+    const range = workspaceStatementRanges(sql, caret)[0];
+    sql = range ? sql.slice(range.from, range.to) : "";
   }
+  const { tokens } = lex(sql, "postgres");
   const query = parseWorkspaceJoin(tokens, names, aliases);
   query.column();
   query.need("=");
   query.column();
   query.take(";");
-  if (!query.at(tokens.length)) throw new Error(tx("The workspace supports one direct equality JOIN per run."));
+  if (!query.at(tokens.length)) throw new Error(tx("The workspace supports one direct equality JOIN per statement."));
   return query.relations;
 }
 

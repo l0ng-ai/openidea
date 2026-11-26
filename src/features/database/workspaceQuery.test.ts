@@ -7,6 +7,7 @@ import {
   workspaceJoinQuery,
   workspaceSourceAliasError,
   workspaceSourceNames,
+  workspaceStatementRanges,
 } from "./workspaceQuery";
 
 describe("workspace table references", () => {
@@ -22,6 +23,22 @@ describe("workspace table references", () => {
       expect(workspaceJoinQuery(text, undefined, undefined, caret)[0].table).toBe(table);
     }
     expect(() => workspaceJoinQuery(text)).toThrow(/one direct equality JOIN/);
+  });
+
+  it("uses exact UTF-16 console ranges and ignores delimiters inside comments and names", () => {
+    const first = '-- 👋 ;\nSELECT * FROM #left.public."customer;orders" a JOIN #right.db.t b ON a.id=b.id';
+    const second = "SELECT * FROM #left.public.next a JOIN #right.events.t b ON a.id=b.id";
+    const text = "  " + first + " ;\n\n  " + second + ";\n-- comment only";
+    const from = text.indexOf(second);
+    const spans = workspaceStatementRanges(text);
+    expect(spans).toEqual([
+      { from: 2, to: 2 + first.length },
+      { from, to: from + second.length },
+    ]);
+    expect(workspaceStatementRanges(text, text.indexOf(" ;") + 2)).toEqual([spans[0]]);
+    expect(workspaceStatementRanges(text, from - 1)).toEqual([spans[1]]);
+    expect(workspaceStatementRanges(text, text.length)).toEqual([spans[1]]);
+    expect(workspaceStatementRanges("-- nothing;\n;; ")).toEqual([]);
   });
 
   it("completes the current JOIN after another statement", () => {

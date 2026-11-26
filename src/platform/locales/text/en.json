@@ -1,5 +1,4 @@
 {
-  "SQL aliases": "SQL aliases",
   "Use a short SQL name for a source. Leave it blank to use the connection name.": "Use a short SQL name for a source. Leave it blank to use the connection name.",
   "Left SQL alias": "Left SQL alias",
   "Right SQL alias": "Right SQL alias",
@@ -29,7 +28,10 @@
   "Choose a source from completion after #, or use #left or #right.": "Choose a source from completion after #, or use #left or #right.",
   "The join must compare one column from each table.": "The join must compare one column from each table.",
   "Use two different sources and table aliases.": "Use two different sources and table aliases.",
-  "The workspace supports one direct equality JOIN per run.": "The workspace supports one direct equality JOIN per run.",
+  "The workspace supports one direct equality JOIN per statement.": "The workspace supports one direct equality JOIN per statement.",
+  "The workspace can run up to 12 statements at a time.": "The workspace can run up to 12 statements at a time.",
+  "The workspace batch exceeds the result size limit.": "The workspace batch exceeds the result size limit.",
+  "Feedback": "Feedback",
   "No images to compare": "No images to compare",
   "Image diff": "Image diff",
   "Highlight changed pixels": "Highlight changed pixels",

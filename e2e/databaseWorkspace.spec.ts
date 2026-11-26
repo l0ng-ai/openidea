@@ -178,7 +178,6 @@ test("completes preferred aliases and pages the same workspace result", async ({
   await selectSources(page, settings);
   await expect(settings.getByText("In memory", { exact: true })).toBeVisible();
   await page.screenshot({ path: info.outputPath("workspace-settings.png"), animations: "disabled" });
-  await settings.getByText("SQL aliases", { exact: true }).click();
   await settings.getByRole("textbox", { name: "Left SQL alias" }).fill("  acct  ");
   const rightAlias = settings.getByRole("textbox", { name: "Right SQL alias" });
   await rightAlias.fill("acct");
@@ -267,7 +266,9 @@ test("completes preferred aliases and pages the same workspace result", async ({
   await page.screenshot({ path: info.outputPath("workspace-join.png"), animations: "disabled" });
 });
 
-test("runs the selected JOIN or the one at the caret from a multi-statement draft", async ({ workbench: page }) => {
+test("runs the selected JOIN or the one at the caret from a multi-statement draft", async ({
+  workbench: page,
+}, info) => {
   await setupWorkspace(page);
   const workspace = await openWorkspace(page);
   const settings = await settingsFor(page, workspace);
@@ -289,18 +290,63 @@ test("runs the selected JOIN or the one at the caret from a multi-statement draf
   await expect.poll(async () => (await ipcCalls(page, "db_workspace_join")).length).toBe(2);
   expect((await ipcCalls(page, "db_workspace_join"))[1]).toMatchObject({ left: { schema: "public" } });
 
+  await page.evaluate(() => {
+    const reply = window.__ipc.handlers.db_workspace_join;
+    window.__ipc.handlers.db_workspace_join = async (args) => {
+      await new Promise<void>((resolve) => {
+        window.addEventListener("workspace-test-release", () => resolve(), { once: true });
+      });
+      const result = reply?.(args) as { rows: string[][] };
+      if ((args.left as { schema: string }).schema === "legacy") result.rows[0]![1] = "Legacy customer";
+      return result;
+    };
+  });
+  const release = () => page.evaluate(() => window.dispatchEvent(new Event("workspace-test-release")));
+  const selectionRange = () =>
+    editor.evaluate((element) => {
+      const state = (element as HTMLElement & { cmTile: { view: import("@codemirror/view").EditorView } }).cmTile.view
+        .state;
+      const { from, to } = state.selection.main;
+      return { from, to };
+    });
   await editor.press("Meta+A");
+  const fullRange = await selectionRange();
   await editor.press("Meta+Enter");
-  await expect(workspace.getByRole("alert")).toHaveText("The workspace supports one direct equality JOIN per run.");
-  expect(await ipcCalls(page, "db_workspace_join")).toHaveLength(2);
+  const running = workspace.locator(".cm-openidea-db-executing");
+  const runningText = () => running.evaluateAll((nodes) => nodes.map((node) => node.textContent).join(""));
+  await expect.poll(runningText).toBe(SQL);
+  expect(await selectionRange()).toEqual(fullRange);
+  expect(await ipcCalls(page, "db_workspace_join")).toHaveLength(3);
+  await page.screenshot({ path: info.outputPath("workspace-batch-running.png"), animations: "disabled" });
+  await release();
+  await expect.poll(runningText).toBe(second);
+  expect(await ipcCalls(page, "db_workspace_join")).toHaveLength(4);
+  await release();
+  await expect(workspace.getByRole("tab", { name: "Result 2", exact: true })).toBeVisible();
+  await expect(workspace.locator(".cm-openidea-db-run-ok")).toHaveCount(2);
+  const grid = workspace.getByRole("grid");
+  await expect(grid.getByText("Legacy customer", { exact: true })).toBeVisible();
+  await workspace.getByRole("tab", { name: "Result 1", exact: true }).click();
+  await expect(grid.getByText("Customer 1", { exact: true })).toBeVisible();
+  await workspace.getByRole("button", { name: "Next Page" }).click();
+  await expect(grid.getByText("Last customer", { exact: true })).toBeVisible();
+  await workspace.getByRole("tab", { name: "Result 2", exact: true }).click();
+  await expect(grid.getByText("Legacy customer", { exact: true })).toBeVisible();
+  await workspace.getByRole("tab", { name: "Result 1", exact: true }).click();
+  await expect(grid.getByText("Last customer", { exact: true })).toBeVisible();
+  await page.screenshot({ path: info.outputPath("workspace-batch-results.png"), animations: "disabled" });
+  const calls = await ipcCalls(page, "db_workspace_join");
+  expect(calls.slice(2)).toMatchObject([{ left: { schema: "public" } }, { left: { schema: "legacy" } }]);
   expect(await ipcCalls(page, "db_execute")).toHaveLength(0);
 
+  await editor.press("Meta+A");
   await editor.press("Backspace");
   await workspace.getByRole("button", { name: "Insert JOIN" }).click();
   expect(await page.evaluate(() => window.getSelection()?.toString())).toBe("public");
   await editor.press("Meta+Enter");
-  await expect.poll(async () => (await ipcCalls(page, "db_workspace_join")).length).toBe(3);
-  expect((await ipcCalls(page, "db_workspace_join"))[2]).toMatchObject({ left: { table: "customers" } });
+  await expect.poll(async () => (await ipcCalls(page, "db_workspace_join")).length).toBe(5);
+  expect((await ipcCalls(page, "db_workspace_join"))[4]).toMatchObject({ left: { table: "customers" } });
+  await release();
 });
 
 test("cancels the active request and surfaces parser, source and limit errors", async ({ workbench: page }) => {
@@ -361,15 +407,80 @@ test("cancels the active request and surfaces parser, source and limit errors", 
   expect(await ipcCalls(page, "db_workspace_join")).toHaveLength(4);
 });
 
+test("validates all selected statements before reading either source", async ({ workbench: page }) => {
+  await setupWorkspace(page);
+  const workspace = await openWorkspace(page);
+  const settings = await settingsFor(page, workspace);
+  await selectSources(page, settings);
+  await settings.getByRole("button", { name: "OK", exact: true }).click();
+  const editor = workspace.getByLabel("Workspace SQL");
+  const alert = workspace.getByRole("alert");
+  await editor.click();
+  await page.keyboard.insertText(SQL + ";\nDELETE FROM #left.public.customers;");
+  await editor.press("Meta+A");
+  await editor.press("Meta+Enter");
+  await expect(alert).toHaveText("Expected SELECT in the workspace query.");
+  await expect(workspace.locator(".cm-openidea-db-run-error")).toHaveCount(1);
+  expect(await ipcCalls(page, "db_workspace_join")).toHaveLength(0);
+
+  await page.keyboard.insertText(Array.from({ length: 13 }, () => SQL + ";").join("\n"));
+  await workspace.getByRole("button", { name: "Execute Script" }).click();
+  await expect(alert).toHaveText("The workspace can run up to 12 statements at a time.");
+  expect(await ipcCalls(page, "db_workspace_join")).toHaveLength(0);
+});
+
+for (const failure of ["cancel", "error", "row budget"] as const) {
+  test(`stops the script after ${failure} and keeps the completed result`, async ({ workbench: page }) => {
+    await setupWorkspace(page);
+    const workspace = await openWorkspace(page);
+    const settings = await settingsFor(page, workspace);
+    await selectSources(page, settings);
+    await settings.getByRole("button", { name: "OK", exact: true }).click();
+    const editor = workspace.getByLabel("Workspace SQL");
+    await editor.click();
+    await page.keyboard.insertText([SQL, SQL.replace("public.customers", "legacy.customers"), SQL].join(";\n") + ";");
+    await page.evaluate((failure) => {
+      const reply = window.__ipc.handlers.db_workspace_join;
+      window.__ipc.handlers.db_workspace_join = ({ request, left, ...args }) => {
+        const result = reply?.({ request, left, ...args }) as { rows: Array<Array<string | null>> };
+        if ((left as { schema: string }).schema !== "legacy") return result;
+        if (failure === "error") throw { kind: "invalidInput", message: "Could not connect to Events", data: null };
+        if (failure === "row budget") return { ...result, rows: Array(100_000).fill(result.rows[0]) };
+        return new Promise((_, reject) => {
+          window.__ipc.handlers.cancel_request = ({ id }) => {
+            if (id !== request) throw new Error("Unexpected cancellation request.");
+            reject({ kind: "cancelled", message: "Operation cancelled", data: null });
+          };
+        });
+      };
+    }, failure);
+    await workspace.getByRole("button", { name: "Execute Script" }).click();
+    const result = workspace.getByRole("tab", { name: "Result 1", exact: true });
+    await expect(result).toBeVisible();
+    if (failure === "cancel") await workspace.getByRole("button", { name: "Stop", exact: true }).click();
+    const message = {
+      cancel: "Cancelled",
+      error: "Could not connect to Events",
+      "row budget": "The workspace batch exceeds the result size limit.",
+    }[failure];
+    await expect(workspace.getByRole("alert")).toHaveText(message);
+    await expect(workspace.locator(".cm-openidea-db-run-ok")).toHaveCount(1);
+    await expect(workspace.locator(".cm-openidea-db-run-error")).toHaveCount(1);
+    await expect(workspace.locator(".cm-openidea-db-timing")).toHaveCount(2);
+    await result.click();
+    await expect(workspace.getByRole("grid").getByText("Customer 1", { exact: true })).toBeVisible();
+    expect(await ipcCalls(page, "db_workspace_join")).toHaveLength(2);
+    expect(await ipcCalls(page, "db_execute")).toHaveLength(0);
+  });
+}
+
 test("restores the SQL, sources and driver on reopen within each project", async ({ workbench: page }) => {
   await setupWorkspace(page);
   const workspace = await openWorkspace(page);
   const settings = await settingsFor(page, workspace);
   await selectSources(page, settings);
-  const aliases = settings.getByText("SQL aliases", { exact: true });
   const leftAlias = settings.getByRole("textbox", { name: "Left SQL alias" });
   const rightAlias = settings.getByRole("textbox", { name: "Right SQL alias" });
-  await aliases.click();
   await leftAlias.fill("acct");
   await rightAlias.fill("events");
   const driver = settings.getByRole("button", { name: "Workspace DuckDB driver" });
@@ -392,7 +503,6 @@ test("restores the SQL, sources and driver on reopen within each project", async
   await expect(settings.getByRole("button", { name: "Left data source" })).toHaveText("Accounts · PostgreSQL");
   await expect(settings.getByRole("button", { name: "Right data source" })).toHaveText("Events · ClickHouse");
   await expect(driver).toHaveText("DuckDB Local");
-  await aliases.click();
   await expect(leftAlias).toHaveValue("acct");
   await expect(rightAlias).toHaveValue("events");
   await settings.getByRole("button", { name: "Swap Sides" }).click();
@@ -407,7 +517,6 @@ test("restores the SQL, sources and driver on reopen within each project", async
   await expect(editor).toHaveText(SQL);
   await settingsFor(page, workspace);
   await expect(driver).toHaveText("DuckDB Local");
-  await aliases.click();
   await expect(leftAlias).toHaveValue("acct");
   await expect(rightAlias).toHaveValue("events");
   await expect(settings.getByRole("button", { name: "Left data source" })).toHaveText("Accounts · PostgreSQL");
