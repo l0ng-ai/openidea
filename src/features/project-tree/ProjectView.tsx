@@ -605,7 +605,7 @@ export function ProjectView() {
       const rootNode = m.roots[0];
       if (!rootNode) return;
       setSelection(new Set([rootNode.key]), rootNode.key);
-      showContextMenu(e, contextMenuItems([rootNode]));
+      showContextMenu(e, contextMenuItems([rootNode], { x: e.clientX, y: e.clientY }));
       return;
     }
     const nodes = [...sel].map((k) => m.byKey.get(k)).filter((n): n is ProjectNode => !!n && !n.placeholder);
@@ -614,7 +614,7 @@ export function ProjectView() {
     // Contributed groups may read the file first (bounded wait).
     const at = { x: e.clientX, y: e.clientY };
     void prepareMenuGroups("projectView", menuGroupContext(target)).then(() =>
-      showContextMenu(at, contextMenuItems(target)),
+      showContextMenu(at, contextMenuItems(target, at)),
     );
   }, []);
 

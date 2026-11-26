@@ -8,6 +8,7 @@ import { registerMenuGroup } from "@/workbench/contributions";
 import { contextMenuItems, keyLabel, revealLabel } from "./contextMenu";
 import type { ProjectNode } from "./model";
 import { useProjectTree } from "./store";
+import { closePopup, useLspPopup } from "@/editor/lsp/popupStore";
 
 vi.mock("@/platform/ipc", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/platform/ipc")>()),
@@ -79,6 +80,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  closePopup();
   disposers.forEach((d) => d());
   useProject.setState({ project: null, settings: null });
   useProjectTree.setState({ root: null });
@@ -147,38 +149,56 @@ describe("project view context menu", () => {
     }
   });
 
-  it("lists contributed links in Copy Path/Reference…", () => {
+  /** Runs Copy Path/Reference… and returns the chooser's rows as `label: preview`. */
+  const chooser = (items: MenuItem[]) => {
+    const item = resolveMenuItems(items).find((r) => r.label === "Copy Path/Reference…");
+    expect(item?.submenu).toBeUndefined();
+    item!.run!();
+    const popup = useLspPopup.getState().popup;
+    return popup?.kind === "list" ? popup.items.map((i) => `${i.label}: ${i.preview}`) : undefined;
+  };
+
+  it("previews each way Copy Path/Reference… copies the selection, contributed links included", () => {
     disposers.push(
       registerMenuGroup({
         id: "test.link",
         menus: ["copyPath"],
         items: (_menu, ctx) => [
-          { label: `Link ${ctx.paths.join()} ${ctx.dirs?.join()}`, verbatim: true, run: () => undefined },
+          {
+            id: "test.link",
+            label: "Link",
+            verbatim: true,
+            preview: `${ctx.paths.join()} ${ctx.dirs?.join()}`,
+            run: () => undefined,
+          },
+          // Without a preview a contribution has nothing to show in the chooser.
+          { id: "test.bare", label: "Bare", run: () => undefined },
         ],
       }),
     );
-    expect(sub(contextMenuItems([node("/p/src", true)]), "Copy Path/Reference…")).toEqual([
-      "Absolute Path",
-      "File Name",
-      "Path From Content Root",
-      "-",
-      "Link /p/src true",
+    expect(chooser(contextMenuItems([node("/p/src", true), node("/p/src/a.ts")], { x: 10, y: 20 }))).toEqual([
+      "Absolute Path: /p/src\n/p/src/a.ts",
+      "File Name: src\na.ts",
+      "Path From Content Root: src\nsrc/a.ts",
+      "Link: /p/src,/p/src/a.ts true,false",
     ]);
+    expect(useLspPopup.getState().popup).toMatchObject({ layout: "copyPath", anchor: { x: 10, y: 20 } });
   });
 
-  it("lists contributed links in Copy Path/Reference… of library files too", () => {
+  it("offers no content root paths for library files in Copy Path/Reference…", () => {
     disposers.push(
       registerMenuGroup({
         id: "test.link",
         menus: ["copyPath"],
-        items: (_menu, ctx) => [{ label: `Link ${ctx.paths.join()}`, verbatim: true, run: () => undefined }],
+        items: (_menu, ctx) => [
+          { id: "test.link", label: "Link", verbatim: true, preview: ctx.paths.join(), run: () => undefined },
+        ],
       }),
     );
-    expect(sub(contextMenuItems([{ ...node("/root/.m2/lib.jar"), readOnly: true }]), "Copy Path/Reference…")).toEqual([
-      "Absolute Path",
-      "File Name",
-      "-",
-      "Link /root/.m2/lib.jar",
+    expect(chooser(contextMenuItems([{ ...node("/root/.m2/lib.jar"), readOnly: true }]))).toEqual([
+      "Absolute Path: /root/.m2/lib.jar",
+      "File Name: lib.jar",
+      "Link: /root/.m2/lib.jar",
     ]);
   });
 
