@@ -120,6 +120,8 @@ export const IDEA_ACTIONS: Readonly<Record<string, string>> = {
   ToggleZenMode: "view.toggleZenMode",
   EditorScrollUp: "editor.scrollUp",
   EditorScrollDown: "editor.scrollDown",
+  EditorScrollUpAndMove: "editor.scrollUpAndMove",
+  EditorScrollDownAndMove: "editor.scrollDownAndMove",
   EditorScrollTop: "editor.scrollToTop",
   EditorScrollBottom: "editor.scrollToBottom",
   EditorMoveToPageTop: "editor.moveToPageTop",

@@ -139,6 +139,8 @@ export const intellijWindows: Record<string, string[]> = {
   "editor.scrollToCenter": ["Ctrl+M"],
   "editor.scrollUp": ["Ctrl+Up"],
   "editor.scrollDown": ["Ctrl+Down"],
+  "editor.scrollUpAndMove": [],
+  "editor.scrollDownAndMove": [],
   "editor.scrollToTop": [],
   "editor.scrollToBottom": [],
   "editor.moveToPageTop": ["Ctrl+PageUp"],
