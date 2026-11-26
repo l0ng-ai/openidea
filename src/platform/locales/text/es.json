@@ -1920,6 +1920,8 @@
   "Scratches": "Borradores",
   "Script": "Script",
   "Scroll to End": "Desplazarse hasta el final",
+  "Up the Stack Trace": "Subir por el seguimiento de la pila",
+  "Down the Stack Trace": "Bajar por el seguimiento de la pila",
   "Scrolling": "Desplazamiento",
   "Search Everywhere": "Buscar en todas partes",
   "Search Structurally": "Buscar estructuralmente",

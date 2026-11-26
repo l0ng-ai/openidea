@@ -3256,6 +3256,8 @@
   "Scratches": "临时文件",
   "Script": "脚本",
   "Scroll to End": "滚动到末尾",
+  "Up the Stack Trace": "沿堆栈跟踪向上",
+  "Down the Stack Trace": "沿堆栈跟踪向下",
   "Scrolling": "滚动",
   "Search Everywhere": "随处搜索",
   "Search Structurally": "结构化搜索",

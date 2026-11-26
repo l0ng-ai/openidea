@@ -1836,6 +1836,8 @@
   "Scratches": "Brouillons",
   "Script": "Script",
   "Scroll to End": "Défiler jusqu'à la fin",
+  "Up the Stack Trace": "Remonter la trace de la pile",
+  "Down the Stack Trace": "Descendre la trace de la pile",
   "Scrolling": "Défilement",
   "Search Everywhere": "Rechercher partout",
   "Search Structurally": "Recherche structurelle",
