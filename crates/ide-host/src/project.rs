@@ -222,6 +222,9 @@ impl Host {
                     ide_sdk::apply::configure_python_extra_paths(cfg, &paths);
                 }
                 if cfg.name == "jdtls" {
+                    // Before anything reads the install the command resolves to.
+                    let managed = ide_tools::tools_dir(&data_dir).join("jdtls").join("bin").join("jdtls");
+                    ide_sdk::jdtls::skip_plain_launcher_wrappers(cfg, &managed);
                     // A workspace member keeps its build model under its own key (Build Project).
                     let cache = match &member {
                         Some(member) if member != window_root => build_cache.join(crate::project::project_key(member)),
