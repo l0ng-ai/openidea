@@ -9162,6 +9162,18 @@ export type LanguageCodeStyle_Deserialize = {
 	keywordCase?: string | null,
 	/**  SQL › Case › Identifiers (unquoted names): `upper` | `lower` | `keep`. */
 	identifierCase?: string | null,
+	/**
+	 *  Java: organize imports switches to a wildcard import once this many
+	 *  classes of one package are used (jdtls `starThreshold`; IDEA's default
+	 *  5; unset keeps the language server's default).
+	 */
+	classCountToUseImportWithStar?: number | null,
+	/**
+	 *  Java: organize imports switches to a wildcard static import once this
+	 *  many statically imported names are used (jdtls `staticStarThreshold`;
+	 *  IDEA's default 3; unset keeps the language server's default).
+	 */
+	namesCountToUseStaticImportWithStar?: number | null,
 	/**  JavaScript / TypeScript › Punctuation › Semicolons: `ignore` | `insert` | `remove`. */
 	semicolons?: string | null,
 	/**  JavaScript / TypeScript › Punctuation › Quotes: `auto` | `single` | `double`. */
@@ -9192,6 +9204,18 @@ export type LanguageCodeStyle_Serialize = {
 	keywordCase?: string | null,
 	/**  SQL › Case › Identifiers (unquoted names): `upper` | `lower` | `keep`. */
 	identifierCase?: string | null,
+	/**
+	 *  Java: organize imports switches to a wildcard import once this many
+	 *  classes of one package are used (jdtls `starThreshold`; IDEA's default
+	 *  5; unset keeps the language server's default).
+	 */
+	classCountToUseImportWithStar?: number | null,
+	/**
+	 *  Java: organize imports switches to a wildcard static import once this
+	 *  many statically imported names are used (jdtls `staticStarThreshold`;
+	 *  IDEA's default 3; unset keeps the language server's default).
+	 */
+	namesCountToUseStaticImportWithStar?: number | null,
 	/**  JavaScript / TypeScript › Punctuation › Semicolons: `ignore` | `insert` | `remove`. */
 	semicolons?: string | null,
 	/**  JavaScript / TypeScript › Punctuation › Quotes: `auto` | `single` | `double`. */
