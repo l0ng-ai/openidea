@@ -103,45 +103,73 @@ public final class OpenIdeaJdbc {
         return literal.replace(escape, escape + escape).replace("%", escape + "%").replace("_", escape + "_");
     }
 
-    void schemas(DataOutputStream out) throws Exception {
+    void catalogs(DataOutputStream out) throws Exception {
+        String current = connection.getCatalog();
+        header(out, "catalog", "current");
+        try (ResultSet rs = connection.getMetaData().getCatalogs()) {
+            int n = 0;
+            while (rs.next() && n < 20000) {
+                String name = rs.getString("TABLE_CAT");
+                if (name == null || name.isEmpty()) continue;
+                row(out, name, name.equals(current) ? "1" : "0");
+                n++;
+            }
+        }
+    }
+
+    void schemas(String catalog, DataOutputStream out) throws Exception {
         var m = connection.getMetaData();
         header(out, "schema");
         Set<String> names = new TreeSet<>();
-        try (ResultSet rs = m.getSchemas()) {
+        try (ResultSet rs = catalog == null ? m.getSchemas() : m.getSchemas(catalog, "%")) {
             while (rs.next() && names.size() < 20000) {
+                if (catalog != null && !catalog.equals(rs.getString("TABLE_CATALOG"))) continue;
                 String s = rs.getString("TABLE_SCHEM");
                 if (s != null && !s.isEmpty()) names.add(s);
             }
-        } catch (SQLFeatureNotSupportedException ignored) {}
-        catalogs = names.isEmpty();
-        namespaceKnown = true;
-        if (catalogs) {
-            try (ResultSet rs = m.getCatalogs()) {
-                while (rs.next() && names.size() < 20000) {
-                    String s = rs.getString(1);
-                    if (s != null && !s.isEmpty()) names.add(s);
-                }
-            } catch (SQLFeatureNotSupportedException ignored) {}
+        } catch (SQLFeatureNotSupportedException e) {
+            if (catalog != null) throw e;
         }
-        if (names.isEmpty()) names.add("");
+        if (catalog == null) {
+            catalogs = names.isEmpty();
+            namespaceKnown = true;
+            if (catalogs) {
+                try (ResultSet rs = m.getCatalogs()) {
+                    while (rs.next() && names.size() < 20000) {
+                        String s = rs.getString(1);
+                        if (s != null && !s.isEmpty()) names.add(s);
+                    }
+                } catch (SQLFeatureNotSupportedException ignored) {}
+            }
+            if (names.isEmpty()) names.add("");
+        }
         for (String s : names) row(out, s);
     }
 
     void discoverNamespace() throws Exception {
-        if (!namespaceKnown) schemas(new DataOutputStream(OutputStream.nullOutputStream()));
+        if (!namespaceKnown) schemas(null, new DataOutputStream(OutputStream.nullOutputStream()));
+    }
+
+    static boolean inNamespace(ResultSet rs, String catalog, String schema) throws SQLException {
+        return catalog == null
+            || (catalog.equals(rs.getString("TABLE_CAT")) && schema.equals(rs.getString("TABLE_SCHEM")));
     }
 
     void metadata(String op, List<String> a, DataOutputStream out) throws Exception {
-        discoverNamespace();
+        int catalogIndex = op.equals("columns") ? 2 : 1;
+        String scope = a.size() > catalogIndex ? a.get(catalogIndex) : null;
+        if (scope == null) discoverNamespace();
         var m = connection.getMetaData();
         String name = a.get(0);
-        String catalog = catalogs && !name.isEmpty() ? name : connection.getCatalog();
-        String schema = catalogs || name.isEmpty() ? null : pattern(m, name);
+        String catalog = scope != null ? scope : catalogs && !name.isEmpty() ? name : connection.getCatalog();
+        String schemaName = scope == null && (catalogs || name.isEmpty()) ? null : name;
+        String schema = schemaName == null ? null : pattern(m, schemaName);
         if (op.equals("tables")) {
             header(out, "name", "kind");
             try (ResultSet rs = m.getTables(catalog, schema, "%", null)) {
                 int n = 0;
                 while (rs.next() && n < 20000) {
+                    if (!inNamespace(rs, scope, name)) continue;
                     String type = rs.getString("TABLE_TYPE").toLowerCase(Locale.ROOT);
                     if (!Set.of("table","base table","view","materialized view","system table","local temporary","foreign table").contains(type)) continue;
                     row(out, rs.getString("TABLE_NAME"), type);
@@ -154,6 +182,7 @@ public final class OpenIdeaJdbc {
             try (ResultSet rs = m.getColumns(catalog, schema, "%", "%")) {
                 int n = 0;
                 while (rs.next() && n < 100000) {
+                    if (!inNamespace(rs, scope, name)) continue;
                     row(out, rs.getString("TABLE_NAME"), rs.getString("COLUMN_NAME"), rs.getString("TYPE_NAME"),
                         rs.getInt("NULLABLE") == 0 ? "0" : "1", rs.getString("COLUMN_DEF"));
                     n++;
@@ -163,13 +192,17 @@ public final class OpenIdeaJdbc {
             header(out, "name", "type", "nullable", "default", "primary");
             String table = a.get(1);
             Set<String> keys = new HashSet<>();
-            try (ResultSet rs = m.getPrimaryKeys(catalog, catalogs || name.isEmpty() ? null : name, table)) {
-                while (rs.next()) keys.add(rs.getString("COLUMN_NAME"));
+            try (ResultSet rs = m.getPrimaryKeys(catalog, schemaName, table)) {
+                while (rs.next()) {
+                    if (inNamespace(rs, scope, name) && (scope == null || table.equals(rs.getString("TABLE_NAME")))) {
+                        keys.add(rs.getString("COLUMN_NAME"));
+                    }
+                }
             } catch (SQLFeatureNotSupportedException ignored) {}
             try (ResultSet rs = m.getColumns(catalog, schema, pattern(m, table), "%")) {
                 int n = 0;
                 while (rs.next() && n < 20000) {
-                    if (!table.equals(rs.getString("TABLE_NAME"))) continue;
+                    if (!inNamespace(rs, scope, name) || !table.equals(rs.getString("TABLE_NAME"))) continue;
                     String col = rs.getString("COLUMN_NAME");
                     row(out, col, rs.getString("TYPE_NAME"), rs.getInt("NULLABLE") == 0 ? "0" : "1",
                         rs.getString("COLUMN_DEF"), keys.contains(col) ? "1" : "0");
@@ -271,7 +304,8 @@ public final class OpenIdeaJdbc {
             reply.writeBoolean(true);
             switch (op) {
                 case "open" -> open(a, reply);
-                case "schemas" -> schemas(reply);
+                case "catalogs" -> catalogs(reply);
+                case "schemas" -> schemas(a.isEmpty() ? null : a.get(0), reply);
                 case "tables", "columns", "schemaColumns" -> metadata(op, a, reply);
                 case "namespace" -> {
                     header(reply, "namespace");

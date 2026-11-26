@@ -31,7 +31,26 @@ public class SelfTest {
                 case "getDatabaseProductVersion" -> "1";
                 case "getIdentifierQuoteString" -> "\"";
                 case "getSearchStringEscape" -> "\\";
-                case "getSchemas" -> rows(List.of(Map.of("TABLE_SCHEM", "app")));
+                case "getCatalogs" -> rows(List.of(
+                    Map.of("TABLE_CAT", "root"), Map.of("TABLE_CAT", "archive.db:1")));
+                case "getSchemas" -> a == null
+                    ? rows(List.of(Map.of("TABLE_SCHEM", "app")))
+                    : Arrays.equals(a, new Object[]{"archive.db:1", "%"})
+                        ? rows(List.of(
+                            Map.of("TABLE_CATALOG", "archive.db:1", "TABLE_SCHEM", "qa_%"),
+                            Map.of("TABLE_CATALOG", "root", "TABLE_SCHEM", "outside_catalog")))
+                        : rows(List.of());
+                case "getTables" -> Arrays.equals(a, new Object[]{"archive.db:1", "qa\\_\\%", "%", null})
+                    ? rows(List.of(
+                        Map.of("TABLE_CAT", "archive.db:1", "TABLE_SCHEM", "qa_%", "TABLE_NAME", "items",
+                            "TABLE_TYPE", "BASE TABLE"),
+                        Map.of("TABLE_CAT", "root", "TABLE_SCHEM", "qa_%", "TABLE_NAME", "outside_catalog",
+                            "TABLE_TYPE", "BASE TABLE"),
+                        Map.of("TABLE_CAT", "archive.db:1", "TABLE_SCHEM", "qaABC", "TABLE_NAME", "outside_schema",
+                            "TABLE_TYPE", "BASE TABLE")))
+                    : Arrays.equals(a, new Object[]{"root", "app", "%", null})
+                        ? rows(List.of(Map.of("TABLE_NAME", "orders", "TABLE_TYPE", "TABLE")))
+                        : rows(List.of());
                 case "getColumns" -> "app".equals(a[1]) && "%".equals(a[2]) ? rows(List.of(
                     Map.of("TABLE_NAME", "orders", "COLUMN_NAME", "id", "TYPE_NAME", "INT", "NULLABLE", 0),
                     Map.of("TABLE_NAME", "orders", "COLUMN_NAME", "note", "TYPE_NAME", "VARCHAR", "NULLABLE", 1,
@@ -45,7 +64,7 @@ public class SelfTest {
                 case "createStatement" -> statement();
                 case "isClosed" -> false;
                 case "isValid" -> !dropped;
-                case "getCatalog" -> null;
+                case "getCatalog" -> "root";
                 default -> throw new SQLFeatureNotSupportedException();
             });
         }
@@ -154,6 +173,24 @@ public class SelfTest {
             send(out, 9, "schemaColumns", "app");
             var columns = new String(reply(in), StandardCharsets.UTF_8);
             assert columns.contains("orders") && columns.contains("note") && columns.contains("'none'") : columns;
+            send(out, 10, "catalogs");
+            var catalogs = reply(in);
+            assert catalogs[0] == 1 : new String(catalogs, StandardCharsets.UTF_8);
+            var catalogRows = new String(catalogs, StandardCharsets.UTF_8);
+            assert catalogRows.contains("archive.db:1") && catalogRows.contains("root") : catalogRows;
+            send(out, 11, "schemas", "archive.db:1");
+            var scoped = new String(reply(in), StandardCharsets.UTF_8);
+            assert scoped.contains("qa_%") && !scoped.contains("outside_catalog") : scoped;
+            send(out, 12, "tables", "qa_%", "archive.db:1");
+            var tables = new String(reply(in), StandardCharsets.UTF_8);
+            assert tables.contains("items") && !tables.contains("outside_catalog") && !tables.contains("outside_schema")
+                : tables;
+            send(out, 13, "schemas");
+            var unscoped = new String(reply(in), StandardCharsets.UTF_8);
+            assert unscoped.contains("app") && !unscoped.contains("qa_%") : unscoped;
+            send(out, 14, "tables", "app");
+            var genericTables = new String(reply(in), StandardCharsets.UTF_8);
+            assert genericTables.contains("orders") && !genericTables.contains("items") : genericTables;
         } finally {
             child.destroyForcibly().waitFor();
         }
