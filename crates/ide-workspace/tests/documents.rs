@@ -350,6 +350,13 @@ fn autosave_checks_the_disk_before_the_watcher_reports_a_change() {
     );
 }
 
+/// Writes `bytes` with an mtime clearly after the current one, whatever the filesystem's granularity.
+fn rewrite_later(path: &Path, bytes: &[u8]) {
+    let mtime = fs::metadata(path).unwrap().modified().unwrap() + std::time::Duration::from_secs(2);
+    fs::write(path, bytes).unwrap();
+    fs::File::options().write(true).open(path).unwrap().set_modified(mtime).unwrap();
+}
+
 #[test]
 fn rewriting_the_same_bytes_is_no_disk_conflict() {
     let f = fixture();
@@ -357,9 +364,8 @@ fn rewriting_the_same_bytes_is_no_disk_conflict() {
     fs::write(&path, "alpha\nbeta\n").unwrap();
     let info = f.docs.open(&path).unwrap();
     f.docs.edit(info.id, 0, change(0, 5, "edited")).unwrap();
-    // `touch` / `git stash pop` back to the same content: only the mtime moves.
-    std::thread::sleep(std::time::Duration::from_millis(20));
-    fs::write(&path, "alpha\nbeta\n").unwrap();
+    // A touch, or a tool rewriting the file unchanged: only the mtime moves.
+    rewrite_later(&path, b"alpha\nbeta\n");
     f.docs.on_disk_changed(std::slice::from_ref(&path));
     assert!(f.docs.autosave(info.id).unwrap(), "autosave stopped on a file whose bytes did not change");
     assert_eq!(fs::read_to_string(&path).unwrap(), "edited\nbeta\n");
@@ -373,8 +379,7 @@ fn autosave_ignores_a_rewrite_of_the_same_bytes_before_the_watcher_reports_it() 
     fs::write(&path, "alpha\nbeta\n").unwrap();
     let info = f.docs.open(&path).unwrap();
     f.docs.edit(info.id, 0, change(0, 5, "edited")).unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(20));
-    fs::write(&path, "alpha\nbeta\n").unwrap();
+    rewrite_later(&path, b"alpha\nbeta\n");
     assert!(f.docs.autosave(info.id).unwrap(), "autosave stopped on a file whose bytes did not change");
     assert_eq!(fs::read_to_string(&path).unwrap(), "edited\nbeta\n");
 }
@@ -386,8 +391,7 @@ fn assert_other_bytes_conflict(name: &str, bytes: &[u8], external: &[u8]) {
     fs::write(&path, bytes).unwrap();
     let info = f.docs.open(&path).unwrap();
     f.docs.edit(info.id, 0, change(0, 0, "x")).unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(20));
-    fs::write(&path, external).unwrap();
+    rewrite_later(&path, external);
     f.docs.on_disk_changed(std::slice::from_ref(&path));
     assert!(!f.docs.autosave(info.id).unwrap(), "{name}: autosave overwrote other bytes of the same text");
     assert_eq!(fs::read(&path).unwrap(), external);

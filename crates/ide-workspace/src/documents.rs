@@ -203,7 +203,7 @@ impl DocState {
     }
 
     /// Whether the file changed on disk since the buffer last matched it. A moved stamp with the
-    /// same bytes (touch, `git stash pop`) is no change and its stamp is adopted. Reads the file
+    /// same bytes (touch, a tool rewriting the file unchanged) is no change and its stamp is adopted. Reads the file
     /// only when the mtime moved but the length did not; without a clean text to compare (large
     /// files, a pending encoding, line-ending or BOM change, a reported conflict) a moved stamp counts.
     fn changed_on_disk(&mut self, meta: &std::fs::Metadata) -> bool {

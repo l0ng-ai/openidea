@@ -139,8 +139,9 @@ fn rollback_keeps_a_disk_conflict_of_an_unsaved_buffer() {
     docs.edit(info.id, info.version, ChangeSet { changes: vec![TextChange { from: 0, to: 3, insert: "own".into() }] })
         .unwrap();
     // An external write under the unsaved buffer, warned about before the refactoring.
-    std::thread::sleep(std::time::Duration::from_millis(10));
+    let mtime = std::fs::metadata(&first).unwrap().modified().unwrap() + std::time::Duration::from_secs(2);
     std::fs::write(&first, "ext\n").unwrap();
+    std::fs::File::options().write(true).open(&first).unwrap().set_modified(mtime).unwrap();
     docs.on_disk_changed(std::slice::from_ref(&first));
     docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&first, "new")], ..Default::default() }).unwrap();
     docs.undo_workspace_edit(undo_id(&events)).unwrap();
