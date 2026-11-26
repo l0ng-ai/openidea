@@ -735,6 +735,42 @@ mod tests {
         assert!(args.lines().any(|a| a == "compile"), "{args}");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn no_build_keeps_the_last_launch_classpath_after_a_pom_change() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        fixture(&root);
+        let pom = fs::read_to_string(root.join("app/pom.xml")).unwrap();
+        write(
+            &root,
+            "app/pom.xml",
+            &pom.replace("<artifactId>app</artifactId>", "<artifactId>app</artifactId><packaging>pom</packaging>"),
+        );
+        write(
+            &root,
+            "mvnw",
+            "#!/bin/sh\necho called >> calls.txt\nprintf '%s\\n' \"$@\" > args.txt\nmkdir -p app/target repo\ntouch repo/runtime.jar repo/runtime-v2.jar\nif grep -q changed app/pom.xml; then printf \"$PWD/repo/runtime-v2.jar\" > app/target/ide-compile-cp.txt; else printf \"$PWD/repo/runtime.jar\" > app/target/ide-compile-cp.txt; fi\n",
+        );
+        fs::set_permissions(root.join("mvnw"), fs::Permissions::from_mode(0o755)).unwrap();
+        let model = crate::load(&root, &root.join("cache"), None);
+        let cancel = CancellationToken::new();
+        let previous =
+            module_classpath(&root, &model, &root.join("app"), false, None, &root.join("cache"), &cancel).unwrap();
+        assert!(previous.contains("repo/runtime.jar"), "{previous}");
+
+        let pom = fs::read_to_string(root.join("app/pom.xml")).unwrap();
+        write(&root, "app/pom.xml", &pom.replace("</project>", "<description>changed</description></project>"));
+        let launch =
+            module_classpath_without_build(&root, &model, &root.join("app"), false, &root.join("cache"), &cancel)
+                .unwrap();
+        assert!(launch.contains("repo/runtime.jar"), "{launch}");
+        assert!(!launch.contains("runtime-v2.jar"), "{launch}");
+        assert_eq!(fs::read_to_string(root.join("calls.txt")).unwrap().lines().count(), 1);
+    }
+
     #[test]
     fn javac_prefers_the_module_jdk_and_scopes_test_sources() {
         let dir = tempfile::tempdir().unwrap();
