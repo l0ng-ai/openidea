@@ -62,7 +62,7 @@ pub enum Capability {
     /// Load the plugin's Java agent into the JVMs of Java run configurations. Never
     /// declared: it comes from `[[contributes.javaAgents]]`.
     JavaAgent,
-    /// Fork a recorded native agent session into a new task in the open project (API 1.15).
+    /// Fork a recorded native agent session into a new task in the open project (API 1.18).
     Agents,
 }
 

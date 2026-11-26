@@ -364,7 +364,6 @@
   border-radius: 0 var(--radius-control, 4px) var(--radius-control, 4px) 0;
   background: var(--bg-button-primary);
   color: var(--fg-button-primary);
-  cursor: pointer;
 }
 .optionArrow:disabled {
   opacity: 0.5;

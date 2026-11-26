@@ -24,8 +24,10 @@ import {
   moveStatementUp,
   nextOccurrence,
   selectAllOccurrences,
+  selectLineAtCaret,
   startNewLine,
   startNewLineBefore,
+  swapSelectionBoundaries,
   toggleCase,
   unselectOccurrence,
 } from "./cm/editing";
@@ -73,13 +75,19 @@ import {
   cursorMatchBrace,
   cursorPageBottom,
   cursorPageTop,
+  cursorParagraphBackward,
+  cursorParagraphForward,
   scrollDown,
+  scrollToBottom,
   scrollToCenter,
+  scrollToTop,
   scrollUp,
   selectCodeBlockEnd,
   selectCodeBlockStart,
   selectPageBottom,
   selectPageTop,
+  selectParagraphBackward,
+  selectParagraphForward,
   splitLine,
 } from "./cm/caretCommands";
 import { isOverwrite, toggleOverwrite } from "./cm/overwrite";
@@ -126,8 +134,10 @@ import { shortcutLabel } from "@/platform/keymap";
 /**
  * Text-editing actions: the editor has focus, or a popup (Find Action) runs them on it. Not a
  * tool window's speed search: it opens a layer too, but the keys belong to its tree (⌘⌫).
+ * `suspendEditorKeys` is set only while dispatching a key that belongs to something else
+ * (a commit message, the Push dialog), so Find Action can still run these actions.
  */
-export const TEXT_WHEN = "editorTextFocus || textEditorActive && popupOpen && !toolWindowFocus";
+export const TEXT_WHEN = "editorTextFocus || textEditorActive && popupOpen && !toolWindowFocus && !suspendEditorKeys";
 const EDITOR_WHEN = "textEditorActive && (editorFocus || !toolWindowFocus)";
 const TABS_WHEN = "editorTabsOpen && !toolWindowFocus";
 
@@ -1020,6 +1030,8 @@ export function registerEditorActions(): () => void {
     caret("editor.scrollToCenter", "Scroll to Center", (v) => scrollToCenter(v), { category: "Editor Actions" }),
     caret("editor.scrollUp", "Scroll Up", (v) => scrollUp(v), { category: "Editor Actions" }),
     caret("editor.scrollDown", "Scroll Down", (v) => scrollDown(v), { category: "Editor Actions" }),
+    caret("editor.scrollToTop", "Scroll to Top", (v) => scrollToTop(v), { category: "Editor Actions" }),
+    caret("editor.scrollToBottom", "Scroll to Bottom", (v) => scrollToBottom(v), { category: "Editor Actions" }),
     caret("editor.moveToPageTop", "Move Caret to Page Top", (v) => cursorPageTop(v), { category: "Editor Actions" }),
     caret("editor.moveToPageBottom", "Move Caret to Page Bottom", (v) => cursorPageBottom(v), {
       category: "Editor Actions",
@@ -1052,6 +1064,24 @@ export function registerEditorActions(): () => void {
       {
         category: "Editor Actions",
       },
+    ),
+    caret("editor.paragraphForward", "Move Caret Forward a Paragraph", (v) => cursorParagraphForward(v), {
+      category: "Editor Actions",
+    }),
+    caret("editor.paragraphBackward", "Move Caret Backward a Paragraph", (v) => cursorParagraphBackward(v), {
+      category: "Editor Actions",
+    }),
+    caret(
+      "editor.paragraphForwardWithSelection",
+      "Move Caret Forward a Paragraph with Selection",
+      (v) => selectParagraphForward(v),
+      { category: "Editor Actions" },
+    ),
+    caret(
+      "editor.paragraphBackwardWithSelection",
+      "Move Caret Backward a Paragraph with Selection",
+      (v) => selectParagraphBackward(v),
+      { category: "Editor Actions" },
     ),
     text("editor.contextInfo", "Context Info", (v) => showContextInfo(v), {
       category: "View",
@@ -1117,6 +1147,11 @@ export function registerEditorActions(): () => void {
     caret("code.addCaretsToLineEnds", "Add Carets to Ends of Selected Lines", (v) => addCaretsToLineEnds(v), {
       category: "Edit",
     }),
+    caret("editor.swapSelectionBoundaries", "Swap Selection Boundaries", (v) => swapSelectionBoundaries(v), {
+      category: "Editor Actions",
+      keywords: ["anchor", "exchange point and mark"],
+    }),
+    caret("editor.selectLine", "Select Line at Caret", (v) => selectLineAtCaret(v), { category: "Editor Actions" }),
     occurrence("code.unselectOccurrence", "Unselect Occurrence", unselectOccurrence),
     text("code.pasteFromHistory", "Paste from History…", (v) => pasteFromHistory(v), {
       category: "Edit",

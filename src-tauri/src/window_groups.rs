@@ -1,6 +1,4 @@
 //! Desktop adapter for application-drawn project tabs. Each member retains its WebView and services.
-use crate::windows::WorkbenchWindows;
-
 use crate::{
     state::AppState,
     windows::{self, WindowsState},
@@ -35,7 +33,7 @@ pub fn current(app: &AppHandle, caller: &str) -> Vec<WindowTab> {
         .members
         .iter()
         .filter_map(|label| {
-            let window = app.workbench_window(label)?;
+            let window = app.get_webview_window(label)?;
             let project = host.project(label).ok();
             let name = project.as_ref().map(|p| ide_host::ops::project::info(p).display_name).unwrap_or_else(|| {
                 // Taken its launch but not finished opening: name the tab after that project.
@@ -77,7 +75,7 @@ pub fn toggle_fullscreen(window: &WebviewWindow) -> IdeResult<bool> {
 }
 
 pub fn select(app: &AppHandle, caller: &str, target: &str) -> IdeResult<()> {
-    let to = app.workbench_window(target).ok_or_else(|| IdeError::not_found("Window closed"))?;
+    let to = app.get_webview_window(target).ok_or_else(|| IdeError::not_found("Window closed"))?;
     let state = app.state::<WindowsState>();
     let previous = state.groups.lock().select(caller, target)?;
     #[cfg(target_os = "macos")]
@@ -87,7 +85,7 @@ pub fn select(app: &AppHandle, caller: &str, target: &str) -> IdeResult<()> {
     if result.is_err() {
         let _ = state.groups.lock().select(caller, &previous.selected);
         #[cfg(target_os = "macos")]
-        if let Some(window) = app.workbench_window(&previous.selected) {
+        if let Some(window) = app.get_webview_window(&previous.selected) {
             let _ = native_select(app, &previous, &window);
         }
         #[cfg(not(target_os = "macos"))]
@@ -105,8 +103,8 @@ pub fn select(app: &AppHandle, caller: &str, target: &str) -> IdeResult<()> {
 /// Shows `to` as the selected tab of the group's native tab group.
 #[cfg(target_os = "macos")]
 fn native_select(app: &AppHandle, group: &Group, to: &WebviewWindow) -> IdeResult<()> {
-    let members = group.members.iter().filter_map(|m| app.workbench_window(m)).collect();
-    let anchor = app.workbench_window(&group.selected).unwrap_or_else(|| to.clone());
+    let members = group.members.iter().filter_map(|m| app.get_webview_window(m)).collect();
+    let anchor = app.get_webview_window(&group.selected).unwrap_or_else(|| to.clone());
     to.unminimize().map_err(|e| IdeError::internal(e.to_string()))?;
     crate::macos::sync_tab_group(members, &anchor, to).map_err(|e| IdeError::internal(e.to_string()))
 }
@@ -127,7 +125,7 @@ pub fn merge(app: &AppHandle, caller: &str) -> IdeResult<()> {
     }
     // Native fullscreen puts each window in a separate Space; leave it before grouping.
     for label in &members {
-        if let Some(window) = app.workbench_window(label) {
+        if let Some(window) = app.get_webview_window(label) {
             window.set_fullscreen(false).map_err(|e| IdeError::internal(e.to_string()))?;
         }
     }
@@ -142,13 +140,13 @@ pub fn detach(app: &AppHandle, caller: &str) -> IdeResult<()> {
         changed(app);
         return Ok(());
     };
-    let window = app.workbench_window(caller);
+    let window = app.get_webview_window(caller);
     // A tab moved out of a fullscreen group stays fullscreen in a Space of its own.
     #[cfg(target_os = "macos")]
     if let Some(window) = &window {
         crate::macos::move_tab_to_new_window(window).map_err(err)?;
     }
-    if let Some(next) = app.workbench_window(&next) {
+    if let Some(next) = app.get_webview_window(&next) {
         #[cfg(target_os = "macos")]
         if state.groups.lock().group(next.label()).is_some() {
             select(app, next.label(), next.label())?;
@@ -186,12 +184,12 @@ pub fn destroyed(app: &AppHandle, caller: &str) {
     let more_closing = state.has_other_pending_closes(caller);
     if !state.quitting() {
         if let Some(keep) = batch_done_keep {
-            if let Some(window) = app.workbench_window(&keep)
+            if let Some(window) = app.get_webview_window(&keep)
                 && !window.is_focused().unwrap_or(false)
             {
                 windows::focus(&window);
             }
-        } else if !next_closing && let Some(window) = next.as_deref().and_then(|label| app.workbench_window(label)) {
+        } else if !next_closing && let Some(window) = next.as_deref().and_then(|label| app.get_webview_window(label)) {
             windows::focus(&window);
         }
         if !more_closing {
@@ -247,7 +245,7 @@ pub fn close_tabs(app: &AppHandle, caller: &str, keep: &str, labels: Vec<String>
     }
     let mut any_sent = false;
     for label in targets {
-        if let Some(window) = app.workbench_window(&label)
+        if let Some(window) = app.get_webview_window(&label)
             && window.close().is_ok()
         {
             any_sent = true;
@@ -260,7 +258,7 @@ pub fn close_tabs(app: &AppHandle, caller: &str, keep: &str, labels: Vec<String>
     }
     if !any_sent {
         *state.tab_closes.lock() = None;
-        if let Some(window) = app.workbench_window(keep) {
+        if let Some(window) = app.get_webview_window(keep) {
             windows::focus(&window);
         }
     }
@@ -284,7 +282,7 @@ pub fn cancel_close(app: &AppHandle, caller: &str) {
     // For a red-button group close where this tab stayed open (e.g. returned to Welcome),
     // select it so closing siblings disappear behind it without flashing.
     if state.groups.lock().group(caller).is_some()
-        && let Some(window) = app.workbench_window(caller)
+        && let Some(window) = app.get_webview_window(caller)
     {
         windows::focus(&window);
     }
@@ -351,7 +349,7 @@ pub async fn ready_to_close(app: &AppHandle, window: &WebviewWindow) -> bool {
 
         let (cohort, keep_label) = close_cohort(app, &state, label);
         let any_undecided =
-            cohort.iter().any(|peer| peer != label && app.workbench_window(peer).is_some() && !state.is_ready(peer));
+            cohort.iter().any(|peer| peer != label && app.get_webview_window(peer).is_some() && !state.is_ready(peer));
 
         if !any_undecided {
             finish_cohort_visuals(app, &state, label, &cohort, keep_label.as_deref());
@@ -431,7 +429,7 @@ fn finish_cohort_visuals(
 ) {
     if state.quitting() {
         let to_hide = state.claim_hide(cohort);
-        let windows: Vec<_> = to_hide.into_iter().filter_map(|l| app.workbench_window(&l)).collect();
+        let windows: Vec<_> = to_hide.into_iter().filter_map(|l| app.get_webview_window(&l)).collect();
         windows::hide_windows(windows);
         return;
     }
@@ -441,7 +439,7 @@ fn finish_cohort_visuals(
         let all_closing = group.members.iter().all(|m| cohort_set.contains(m.as_str()));
         if all_closing {
             let to_hide = state.claim_hide(&group.members);
-            let windows: Vec<_> = to_hide.into_iter().filter_map(|l| app.workbench_window(&l)).collect();
+            let windows: Vec<_> = to_hide.into_iter().filter_map(|l| app.get_webview_window(&l)).collect();
             windows::hide_windows(windows);
         } else {
             let survivor = keep_label
@@ -452,21 +450,21 @@ fn finish_cohort_visuals(
             if cohort_set.contains(group.selected.as_str())
                 && let Some(survivor) = survivor
                 && !state.claim_hide(cohort).is_empty()
-                && let Some(window) = app.workbench_window(&survivor)
+                && let Some(window) = app.get_webview_window(&survivor)
             {
                 windows::focus(&window);
             }
         }
     } else {
         let to_hide = state.claim_hide(cohort);
-        let windows: Vec<_> = to_hide.into_iter().filter_map(|l| app.workbench_window(&l)).collect();
+        let windows: Vec<_> = to_hide.into_iter().filter_map(|l| app.get_webview_window(&l)).collect();
         windows::hide_windows(windows);
     }
 }
 
 /// Window labels in creation order: `main`, then `project-1`, `project-2`, ….
 fn labels_in_order(app: &AppHandle) -> Vec<String> {
-    let mut labels: Vec<String> = app.workbench_windows().into_keys().collect();
+    let mut labels: Vec<String> = app.webview_windows().into_keys().collect();
     labels.sort_by_key(|l| (l != "main", l.rsplit('-').next().and_then(|n| n.parse::<u32>().ok()), l.clone()));
     labels
 }

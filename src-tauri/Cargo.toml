@@ -14,8 +14,7 @@ tauri-build = { version = "2", features = [] }
 dunce.workspace = true
 
 [dependencies]
-# Tauri 2 gates Window::add_child behind its multiwebview feature.
-tauri = { version = "2", features = ["unstable"] }
+tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-notification = "2.8.1"
 tauri-plugin-dialog = { version = "2", default-features = false, features = ["xdg-portal"] }
@@ -32,6 +31,7 @@ serde_json.workspace = true
 base64.workspace = true
 percent-encoding = "2"
 tokio.workspace = true
+reqwest.workspace = true
 parking_lot.workspace = true
 blake3.workspace = true
 tracing.workspace = true
@@ -80,8 +80,8 @@ security-framework = "3.7"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-core-foundation", "NSApplication", "NSButton", "NSEvent", "NSGraphics", "NSResponder", "NSScreen", "NSTitlebarAccessoryViewController", "NSToolbar", "NSView", "NSViewController", "NSWindow", "NSWindowTabGroup", "NSWorkspace"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "NSArray", "NSLocale", "NSNotification", "NSOperation", "NSString"] }
-# Browser history and the debug font-restriction override.
-objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "WKWebView", "WKWebViewConfiguration", "WKPreferences"] }
+# Used only by the debug font-restriction override; Cargo dependency cfg cannot test debug_assertions.
+objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "WKWebViewConfiguration", "WKPreferences"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Wayland detection and the client size without GTK's CSD shadow (linux_window_state.rs).

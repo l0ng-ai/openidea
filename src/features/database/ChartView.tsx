@@ -56,7 +56,7 @@ export function ChartView({ columns, rows }: { columns: readonly GridColumn[]; r
     return () => ro.disconnect();
   }, []);
 
-  const options = columns.map((c, i) => ({ value: String(i), label: c.name }));
+  const options = columns.map((c, i) => ({ value: String(i), label: c.name, verbatim: true }));
   const values = points.map((p) => p.value);
   const ticks = niceTicks(
     Math.min(0, ...values),

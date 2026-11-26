@@ -273,6 +273,19 @@ describe("DocumentManager + slots", () => {
     expect(backend.docs.get(model.doc)?.text).toBe(">hello world\n");
   });
 
+  it("clears the modified mark when an edit returns the buffer to the saved text", async () => {
+    const { manager, frame } = setup({ "/p/a.txt": "hello\n" });
+    const model = await manager.acquire("/p/a.txt");
+    const slot = new EditorSlot(model, "t1", host);
+    slot.dispatchLocal({ changes: { from: 0, insert: "x" } });
+    await frame();
+    expect(model.getMeta().dirty).toBe(true);
+    slot.dispatchLocal({ changes: { from: 0, to: 1 }, userEvent: "undo" });
+    expect(model.getMeta().dirty).toBe(true);
+    await frame();
+    expect(model.getMeta().dirty).toBe(false);
+  });
+
   it("applies backend patches to every slot, annotated as remote", async () => {
     const { backend, manager, frame } = setup({ "/p/a.txt": "abc" });
     const model = await manager.acquire("/p/a.txt");
@@ -506,6 +519,32 @@ describe("DocumentManager + slots", () => {
       }
     },
   );
+
+  it("save cleanup keeps what a rollback put back", async () => {
+    const { backend, manager } = setup({ "/p/Posts.php": "<?php\n}\n", "/p/a.txt": "x\n" });
+    try {
+      const php = new EditorSlot(await manager.acquire("/p/Posts.php"), "t1", host);
+      // Reverting an added line break at the end: saving doesn't add it back.
+      php.dispatchLocal({ changes: { from: 7, to: 8 }, userEvent: "revert" });
+      await php.model.save("auto");
+      expect(backend.files.get("/p/Posts.php")).toBe("<?php\n}");
+      await php.model.save("explicit");
+      expect(backend.files.get("/p/Posts.php")).toBe("<?php\n}");
+      // The user's own edit at the end ensures it again.
+      php.dispatchLocal({ changes: { from: 7, insert: " " }, userEvent: "input.type" });
+      await php.model.save("auto");
+      expect(backend.files.get("/p/Posts.php")).toBe("<?php\n}\n");
+
+      // Trailing spaces a rollback restored aren't stripped as an edited line's.
+      const txt = new EditorSlot(await manager.acquire("/p/a.txt"), "t2", host);
+      txt.dispatchLocal({ changes: { from: 0, to: 1, insert: "y" }, userEvent: "input.type" });
+      txt.dispatchLocal({ changes: { from: 0, to: 1, insert: "x  " }, userEvent: "input.rollback" });
+      await txt.model.save("auto");
+      expect(backend.files.get("/p/a.txt")).toBe("x  \n");
+    } finally {
+      manager.stop();
+    }
+  });
 
   it("checks dirty state when each queued save starts", async () => {
     const { backend, manager } = setup({ "/p/query.sql": "SELECT 1" });

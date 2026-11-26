@@ -200,10 +200,14 @@ export function FileColorsEditor() {
     row?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, []);
 
-  const scopeNames = [...BUILTIN_SCOPES, ...validateScopes(rawScopes).map((s) => s.name)];
-  const scopeOptions: SelectOption[] = scopeNames.map((n) => ({ value: n, label: n }));
+  const customNames = validateScopes(rawScopes).map((s) => s.name);
+  const scopeNames = [...BUILTIN_SCOPES, ...customNames];
+  const scopeOptions: SelectOption[] = [
+    ...BUILTIN_SCOPES.map((n) => ({ value: n, label: n })),
+    ...customNames.map((n) => ({ value: n, label: n, verbatim: true })),
+  ];
   if (current && !scopeNames.includes(current.scope))
-    scopeOptions.push({ value: current.scope, label: tx`${current.scope} (missing)` });
+    scopeOptions.push({ value: current.scope, label: tx`${current.scope} (missing)`, verbatim: true });
   const presets = FILE_COLOR_NAMES.map((n) => ({ value: n, label: colorLabel(n), css: fileColorCss(n) }));
 
   return (

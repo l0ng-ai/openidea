@@ -50,9 +50,6 @@
   max-block-size: 45%;
   border-bottom: 1px solid var(--border);
 }
-.skippedSummary summary {
-  cursor: pointer;
-}
 .skippedOnly h3 {
   margin: 0;
   font: inherit;

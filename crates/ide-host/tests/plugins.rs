@@ -1431,14 +1431,14 @@ async fn granted_agents_fork_reaches_the_core() {
     host.open_project("main", &f.project).unwrap();
     f.host.set_workspace(Some(Arc::new(HostWorkspace(Arc::downgrade(&host)))));
 
-    // `misbehave` with the `agents` grant, which needs API 1.17.
+    // `misbehave` with the `agents` grant, which needs API 1.18.
     let pkg = f._tmp.path().join("misbehave-agents");
     copy_dir(&misbehave_pkg(), &pkg);
     let manifest = pkg.join("plugin.toml");
     let text = std::fs::read_to_string(&manifest).unwrap();
     let text = text
         .replace("required = [\"project.read\"]", "required = [\"project.read\", \"agents\"]")
-        .replace("engines.openidea = \"^1.0\"", "engines.openidea = \"^1.17\"");
+        .replace("engines.openidea = \"^1.0\"", "engines.openidea = \"^1.18\"");
     std::fs::write(&manifest, text).unwrap();
     f.install(&pkg);
 
@@ -6184,6 +6184,7 @@ fn files_changed_wakes_idle_once_and_keeps_every_delta() {
                 created: vec![to_ipc(&f.project.join(format!("新建😀-{i}.rs")))],
                 modified: vec![to_ipc(&f.project.join("shared.rs"))],
                 removed: vec![to_ipc(&f.project.join("gone.rs"))],
+                ..Default::default()
             })],
         );
     }
@@ -6321,6 +6322,7 @@ fn files_changed_filters_each_category_before_waking_idle_plugins() {
             created: vec![path("src/unrelated.rs")],
             modified: vec![path("notes.txt")],
             removed: vec![path("elsewhere/a.yaml")],
+            ..Default::default()
         })],
     );
     f.host.flush_events();
@@ -6331,6 +6333,7 @@ fn files_changed_filters_each_category_before_waking_idle_plugins() {
             created: vec![path("config/new.yaml"), path("src/unrelated.rs")],
             modified: vec![path("config/changed.yaml"), path("notes.txt")],
             removed: vec![path("config/gone.yaml"), path("elsewhere/a.yaml")],
+            ..Default::default()
         })],
     );
     f.host.flush_events();
@@ -6343,6 +6346,7 @@ fn files_changed_filters_each_category_before_waking_idle_plugins() {
             created: vec![path("config/new.yaml")],
             modified: vec![path("config/changed.yaml")],
             removed: vec![path("config/gone.yaml")],
+            ..Default::default()
         }]
     );
 }
@@ -7685,7 +7689,7 @@ fn contributes_skills_needs_api_1_15_and_warns_without_failing_plugin_on_bad_ent
         "id = \"acme.mixed-skills\"\n\
          name = \"Mixed Skills\"\n\
          version = \"1.0.0\"\n\
-         engines.openidea = \"^1.17\"\n\n\
+         engines.openidea = \"^1.18\"\n\n\
          [[contributes.skills]]\npath = \"skills/good-skill/SKILL.md\"\n\
          [[contributes.skills]]\npath = \"../outside/SKILL.md\"\n\
          [[contributes.skills]]\npath = \"skills/not-skill-md/README.md\"\n\

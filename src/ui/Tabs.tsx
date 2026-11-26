@@ -32,6 +32,8 @@ export interface TabItem {
   label: ReactNode;
   /** Plain text used by the overflow menu and type-ahead when `label` isn't a string. */
   text?: string;
+  /** The label is data (a file, session or result name): shown as written, never looked up in the catalog. */
+  verbatim?: boolean;
   icon?: IconName | (string & {});
   closable?: boolean;
   /** With `onTogglePin`, the tab shows Unpin in the action slot. */
@@ -366,7 +368,10 @@ export function Tabs({
 
   const menuItems: MenuItem[] = items.map((t) => ({
     id: t.id,
-    label: given(t.text ?? (typeof t.label === "string" ? t.label : t.id)),
+    label: t.verbatim
+      ? (t.text ?? (typeof t.label === "string" ? t.label : t.id))
+      : given(t.text ?? (typeof t.label === "string" ? t.label : t.id)),
+    verbatim: true,
     icon: t.icon,
     checked: t.id === activeId ? true : undefined,
     run: () => onSelect(t.id),
@@ -521,7 +526,7 @@ export function Tabs({
               >
                 {item.icon && <Icon name={item.icon} size={14} className={styles.tabIcon} />}
                 <span className={clsx(styles.tabLabel, item.italic && styles.italic, item.error && styles.error)}>
-                  {typeof item.label === "string" ? <Given>{item.label}</Given> : item.label}
+                  {typeof item.label === "string" && !item.verbatim ? <Given>{item.label}</Given> : item.label}
                 </span>
                 {item.trailing}
                 {item.modified && !showClose && !pinModified && (

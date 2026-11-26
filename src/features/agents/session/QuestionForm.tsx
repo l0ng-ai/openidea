@@ -323,6 +323,7 @@ export function QuestionForm({
               id: String(index),
               label: <span>{item.question.header?.trim() || item.question.question}</span>,
               text: item.question.header?.trim() || item.question.question,
+              verbatim: true,
               tooltip: item.question.question,
               trailing: isAnswered(item) ? (
                 <Icon name="check" size={12} className={styles.questionTabCheck} />

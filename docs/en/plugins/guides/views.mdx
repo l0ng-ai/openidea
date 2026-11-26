@@ -152,7 +152,9 @@ double click and Enter with `event.table_activate()` (API 1.3, absolute 0-based 
 Bodies, fields and events added by later APIs travel as `Other { kind, data }`: an IDE that
 doesn't know a body says it needs updating, and leaves out a field type it doesn't know.
 Item right-click menus use `viewItem.context` (see
-[Commands and actions](/en/plugins/guides/commands#menus)).
+[Commands and actions](/en/plugins/guides/commands#menus)). A command that menu offers for the selected item,
+run from its shortcut (or Find Action) while the view has the keyboard focus, gets that
+item's key as its argument, as from the menu; none when nothing is selected.
 
 ## Custom editors
 
@@ -382,17 +384,18 @@ divider. The host asks after the item's `select` event and again after `refresh_
 
 These are called from a command or event of a window:
 
-| Function                                          | Opens                                                                                                                                                       |
-| ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `host::open_location(path, line, column)`         | A project file in an editor, caret at the position (`project.read`; a file in the plugin's private directory also works).                                   |
-| `host::open_editor(path, selection)`              | API 1.4: open a project file and select a range.                                                                                                            |
-| `host::open_terminal(title, program, args)`       | A Terminal tab running an approved `process:<program>` in the project root.                                                                                 |
-| `host::open_terminal_session(key, title, &cmd)`   | API 1.4: a keyed terminal; reopening the key focuses it. Write to it with `host::write_terminal(key, text)`; its exit arrives as a `terminal-exited` event. |
-| `host::open_log_tab(key, title, &log)`            | API 1.3: the read-only log tab, from a `ProcessLog`. At most 32 per window; not yet in remote projects.                                                     |
-| `host::open_content_tab(&ContentTab { .. })`      | API 1.4: a content editor tab without a web view; actions arrive as `content-tab-action` events, answered with `host::reply_content_tab`.                   |
-| `host::open_diff(&ContentDiff { .. }, file_name)` | API 1.7: the diff viewer on two texts, such as a review's file before and after; `file_name` picks the syntax highlighting.                                 |
-| `host::open_file_diff(&diff, file_name)`          | API 1.10: the same with a `FileDiff`, whose `None` side is a file that doesn't exist there; an added or deleted file shows alone.                           |
-| `host::output_append(channel, text)`              | API 1.4: a read-only **Output** tab per channel (32 channels, 1 MiB each); `output_clear`, `output_reveal`.                                                 |
+| Function                                                | Opens                                                                                                                                                       |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `host::open_location(path, line, column)`               | A project file in an editor, caret at the position (`project.read`; a file in the plugin's private directory also works).                                   |
+| `host::open_editor(path, selection)`                    | API 1.4: open a project file and select a range.                                                                                                            |
+| `host::open_terminal(title, program, args)`             | A Terminal tab running an approved `process:<program>` in the project root.                                                                                 |
+| `host::open_terminal_session(key, title, &cmd)`         | API 1.4: a keyed terminal; reopening the key focuses it. Write to it with `host::write_terminal(key, text)`; its exit arrives as a `terminal-exited` event. |
+| `host::open_terminal_session_in(key, title, &cmd, cwd)` | API 1.18: the same, started in `cwd`, a directory of the project relative to its root that must stay inside it.                                             |
+| `host::open_log_tab(key, title, &log)`                  | API 1.3: the read-only log tab, from a `ProcessLog`. At most 32 per window; not yet in remote projects.                                                     |
+| `host::open_content_tab(&ContentTab { .. })`            | API 1.4: a content editor tab without a web view; actions arrive as `content-tab-action` events, answered with `host::reply_content_tab`.                   |
+| `host::open_diff(&ContentDiff { .. }, file_name)`       | API 1.7: the diff viewer on two texts, such as a review's file before and after; `file_name` picks the syntax highlighting.                                 |
+| `host::open_file_diff(&diff, file_name)`                | API 1.10: the same with a `FileDiff`, whose `None` side is a file that doesn't exist there; an added or deleted file shows alone.                           |
+| `host::output_append(channel, text)`                    | API 1.4: a read-only **Output** tab per channel (32 channels, 1 MiB each); `output_clear`, `output_reveal`.                                                 |
 
 ```rust
 use openidea_plugin::{ContentAction, ContentTab, host};

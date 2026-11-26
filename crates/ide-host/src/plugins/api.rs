@@ -69,7 +69,7 @@ pub trait PluginWorkspace: Send + Sync {
         Ok(Vec::new())
     }
     /// Fork a recorded native agent session into a new task in the invoking
-    /// window's project, returning the new task id (API 1.15).
+    /// window's project, returning the new task id (API 1.18).
     fn fork_agent_session(
         &self,
         _client: &str,
@@ -708,6 +708,7 @@ pub(super) struct Shared {
     pub subscriptions: Mutex<super::event_paths::Subscriptions>,
     /// plugin → files it shows problems for, withdrawn when it stops.
     diagnostics: Mutex<HashMap<String, BTreeSet<PathBuf>>>,
+    project_generations: Mutex<HashMap<PathBuf, u64>>,
     pub secrets: RwLock<Arc<dyn SecretStore>>,
     /// (plugin, `process:` capability) → the approved program.
     pub pins: Arc<RwLock<HashMap<(String, String), ProgramPin>>>,
@@ -785,8 +786,31 @@ impl Shared {
             closed_clients: Mutex::default(),
             subscriptions: Mutex::default(),
             diagnostics: Mutex::default(),
+            project_generations: Mutex::default(),
             log_tabs: Mutex::default(),
         })
+    }
+
+    pub(super) fn project_generation(&self, root: &Path) -> Result<u64, HostError> {
+        let workspace = self.workspace().ok_or(HostError::Cancelled)?;
+        if !workspace.projects().iter().any(|r| r == root) {
+            return Err(HostError::NotFound("project is not open".into()));
+        }
+        let mut gens = self.project_generations.lock();
+        Ok(*gens.entry(root.to_path_buf()).or_insert(1))
+    }
+
+    pub(super) fn bump_project_generation(&self, root: &Path) -> u64 {
+        let mut gens = self.project_generations.lock();
+        let cur = gens.entry(root.to_path_buf()).or_insert(1);
+        *cur = cur.saturating_add(1);
+        *cur
+    }
+
+    /// Moves a closed project's generation on rather than forgetting it, so a handle
+    /// taken before the close stays stale if the project is opened again.
+    pub(super) fn close_project_generation(&self, root: &Path) {
+        self.bump_project_generation(root);
     }
 
     pub(super) fn workspace(&self) -> Option<Arc<dyn PluginWorkspace>> {
@@ -1504,6 +1528,28 @@ fn failed(e: impl std::fmt::Display) -> HostError {
     HostError::Failed(e.to_string())
 }
 
+/// `cwd` of `open-terminal-session-in`: a directory of the project, relative to `root`
+/// (`""` is the root), that exists and stays inside the project once symlinks are resolved.
+fn project_subdirectory(root: &Path, cwd: &str) -> Result<PathBuf, HostError> {
+    let invalid = |why: &str| HostError::Invalid(format!("terminal directory {cwd:?}: {why}"));
+    if cwd.len() > 4096 || cwd.contains('\0') {
+        return Err(invalid("not a path"));
+    }
+    let relative = Path::new(cwd);
+    if relative.is_absolute() || relative.has_root() {
+        return Err(invalid("must be relative to the project root"));
+    }
+    let base = dunce::canonicalize(root).map_err(|_| invalid("the project root is gone"))?;
+    let dir = dunce::canonicalize(base.join(relative)).map_err(|_| invalid("no such directory"))?;
+    if !dir.starts_with(&base) {
+        return Err(invalid("outside the project"));
+    }
+    if !dir.is_dir() {
+        return Err(invalid("not a directory"));
+    }
+    Ok(dir)
+}
+
 impl HostApi for PluginApi {
     fn database_upsert(&self, root: &Path, source: ide_plugin::PluginDataSource) -> Result<(), HostError> {
         let (host, db) = self.database_host(root)?;
@@ -1572,8 +1618,13 @@ impl HostApi for PluginApi {
         }
     }
 
-    fn register_run_target(&self, root: &Path, target: ide_plugin::PluginRunTarget) -> Result<(), HostError> {
-        self.register_target(root, target)
+    fn register_run_target(
+        &self,
+        root: &Path,
+        target: ide_plugin::PluginRunTarget,
+        generation: Option<u64>,
+    ) -> Result<(), HostError> {
+        self.register_target(root, target, generation)
     }
     fn unregister_run_target(&self, root: &Path, id: &str) {
         self.unregister_target(root, id);
@@ -1584,7 +1635,7 @@ impl HostApi for PluginApi {
         client: &str,
         config: &str,
         args: Vec<String>,
-        debug: bool,
+        options: ide_plugin::PluginRunStartOptions,
         cancel: &CancellationToken,
         timeout: Duration,
     ) -> Result<String, HostError> {
@@ -1595,15 +1646,40 @@ impl HostApi for PluginApi {
         let mut run =
             self.shared.workspace().ok_or(HostError::Cancelled)?.run_configuration(client, self.id(), config)?;
         let binary = self.approved_program_in_project(&run.command, self.shared.project_of(client).as_deref())?;
+        let user_override = !run.detected;
+        let debug = options.debug;
         if debug && run.debug_adapter.is_none() {
             return Err(HostError::Invalid("this configuration has no debugger".into()));
         }
         let program = run.command.clone();
-        if debug && run.extras.target.as_ref().is_some_and(|t| !t.is_empty()) {
+        let has_target = run.extras.target.as_ref().is_some_and(|t| !t.is_empty());
+        if debug && has_target {
             return Err(HostError::Invalid("debugging this target is not supported".into()));
         }
+        if debug && options.output_mode == Some(ide_plugin::PluginOutputMode::Pty) {
+            return Err(HostError::Invalid("terminal emulation cannot be used when debugging".into()));
+        }
         if debug {
+            run.extras.emulate_terminal = false;
             run.command = binary.to_string_lossy().into_owned();
+        } else {
+            // Precedence: user-saved override > per-invocation override > plugin default.
+            if !user_override && let Some(mode) = options.output_mode {
+                run.extras.emulate_terminal = mode == ide_plugin::PluginOutputMode::Pty;
+            }
+            if run.extras.emulate_terminal {
+                if run.is_test {
+                    return Err(HostError::Invalid("terminal emulation cannot be used for test configurations".into()));
+                }
+                if run.extras.stdin_file.is_some() {
+                    return Err(HostError::Invalid(
+                        "input cannot be redirected from a file when emulating a terminal".into(),
+                    ));
+                }
+                if has_target {
+                    return Err(HostError::Invalid("terminal emulation on this target is not supported".into()));
+                }
+            }
         }
         run.args.extend(args);
         let id = self.new_operation(
@@ -1624,6 +1700,7 @@ impl HostApi for PluginApi {
         key: String,
         title: String,
         cmd: ProcessCommand,
+        cwd: Option<String>,
         cancel: &CancellationToken,
         timeout: Duration,
     ) -> Result<String, HostError> {
@@ -1634,6 +1711,11 @@ impl HostApi for PluginApi {
         if !self.shared.workspace().is_some_and(|w| w.trusted(&root)) {
             return Err(HostError::Denied("project is not trusted".into()));
         }
+        // Trust and the program pin stay the project's; the directory only moves the shell.
+        let dir = match &cwd {
+            Some(cwd) => project_subdirectory(&root, cwd)?,
+            None => root.clone(),
+        };
         let binary = self.approved_program_in_project(&cmd.program, Some(&root))?;
         let mut command = StdCommand::new(&binary);
         append_process_env(&mut command, &cmd.env)?;
@@ -1665,7 +1747,7 @@ impl HostApi for PluginApi {
             program: binary.into(),
             args: cmd.args,
             env: cmd.env.into_iter().collect(),
-            cwd: root.into(),
+            cwd: dir.into(),
         };
         if let Err(error) = self.window_request(client, request, cancel, timeout) {
             self.shared.operations.lock().remove(&id);
@@ -2213,7 +2295,10 @@ impl HostApi for PluginApi {
 
     fn reveal_view(&self, client: Option<&str>, view: &str) -> Result<(), HostError> {
         let client = from_window(client, "reveal a view")?;
-        let declared = self.shared.ui.items(super::ui_points::VIEWS, Some(self.id())).iter().any(|i| i.key == view);
+        // A tool window comes to the front; a dialog (API 1.18) opens.
+        let declared = [super::ui_points::VIEWS, super::ui_points::DIALOGS]
+            .into_iter()
+            .any(|point| self.shared.ui.items(point, Some(self.id())).iter().any(|i| i.key == view));
         if !declared {
             return Err(HostError::NotFound(format!("the plugin declares no view {view:?}")));
         }
@@ -2949,12 +3034,30 @@ impl HostApi for PluginApi {
         }
     }
 
-    fn subscribe_paths(&self, kind: &str, globs: Vec<String>) -> Result<(), HostError> {
-        let filter = super::event_paths::PathFilter::new(kind, globs)?;
+    fn subscribe_paths_with_options(
+        &self,
+        kind: &str,
+        globs: Vec<String>,
+        debounce_ms: Option<u32>,
+    ) -> Result<(), HostError> {
+        let debounce = match debounce_ms {
+            Some(ms) if ms > 60_000 => return Err(HostError::Invalid("debounce must not exceed 60000 ms".into())),
+            Some(ms) => Some(Duration::from_millis(ms as u64)),
+            None => None,
+        };
+        let filter = super::event_paths::PathFilter::with_debounce(kind, globs, debounce)?;
         if self.shared.subscriptions.lock().set_paths(self.id(), kind, filter) {
             self.shared.sink.emit(None, PluginEvent::SubscriptionsChanged);
         }
         Ok(())
+    }
+
+    fn subscribe_paths(&self, kind: &str, globs: Vec<String>) -> Result<(), HostError> {
+        self.subscribe_paths_with_options(kind, globs, None)
+    }
+
+    fn project_generation(&self, root: &Path) -> Result<u64, HostError> {
+        self.shared.project_generation(root)
     }
 
     fn unsubscribe(&self, kind: &str) {
@@ -3874,6 +3977,29 @@ impl PluginWorkspace for HostWorkspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_directories_stay_inside_the_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap().join("project");
+        std::fs::create_dir_all(root.join("sub/deeper")).unwrap();
+        std::fs::write(root.join("file.txt"), "").unwrap();
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        assert_eq!(project_subdirectory(&root, "").unwrap(), root);
+        assert_eq!(project_subdirectory(&root, "sub/deeper").unwrap(), root.join("sub/deeper"));
+        assert_eq!(project_subdirectory(&root, "sub/../sub").unwrap(), root.join("sub"));
+        for bad in ["/tmp", "../outside", "sub/../../outside", "missing", "file.txt", "a\0b"] {
+            assert!(matches!(project_subdirectory(&root, bad), Err(HostError::Invalid(_))), "{bad:?}");
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
+            assert!(project_subdirectory(&root, "escape").is_err(), "a link out of the project");
+            std::os::unix::fs::symlink(root.join("sub"), root.join("inside")).unwrap();
+            assert_eq!(project_subdirectory(&root, "inside").unwrap(), root.join("sub"));
+        }
+    }
 
     fn api(dir: &Path, pins: Arc<RwLock<HashMap<(String, String), ProgramPin>>>) -> PluginApi {
         let manifest = ide_extension::Manifest::parse(

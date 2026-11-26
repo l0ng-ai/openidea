@@ -27,6 +27,7 @@ export function CoverageTabs() {
       items={suites.map((s) => ({
         id: s.id,
         label: s.name,
+        verbatim: true,
         closable: true,
         tooltip: `${s.data.runner}, ${new Date(s.createdAt).toLocaleTimeString()}`,
       }))}

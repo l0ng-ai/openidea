@@ -776,6 +776,42 @@ async fn execute_reports_output_exit_code_and_requires_confirmation() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_configuration_left_running_is_stopped_by_its_run_id() {
+    let h = Harness::new();
+    h.trust().await;
+    let config = ide_run::RunConfig {
+        id: "server".into(),
+        name: "Server".into(),
+        kind: "shell".into(),
+        command: if cfg!(windows) { "ping -n 60 127.0.0.1" } else { "sleep 60" }.into(),
+        args: vec![],
+        cwd: None,
+        env: Default::default(),
+        detected: false,
+        is_test: false,
+        debug_adapter: None,
+        allow_parallel: false,
+        extras: Default::default(),
+    };
+    ide_run::save_user_configs(&h.root, &[config]).unwrap();
+    h.host.mcp_requests.set_ready("main", true);
+    let run = h.json("execute_run_configuration", json!({"configurationName":"Server","waitForExit":false}));
+    let allow = async {
+        let id = h.request().await;
+        h.host.mcp_requests.answer("main", id, true, None).unwrap();
+    };
+    let (result, ()) = tokio::join!(run, allow);
+    assert!(result.get("exitCode").is_none());
+    let id = result["runId"].as_u64().expect("a run left running carries its id");
+
+    let user_run = id + 1000;
+    assert!(h.error("stop_run", json!({"runId": user_run})).await.contains("started by execute_run_configuration"));
+    let stopped = h.json("stop_run", json!({"runId": id, "force": true, "timeout": 10000})).await;
+    assert_eq!(stopped["state"], "stopped", "{stopped}");
+    assert!(h.error("stop_run", json!({"runId": id})).await.contains("started by execute_run_configuration"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires rust-analyzer, like language_smoke::rust"]
 async fn rust_references_and_rename_through_mcp() {
     let h = Harness::new();

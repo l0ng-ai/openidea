@@ -20,7 +20,6 @@
   font: inherit;
   padding: 2px 6px;
   border-radius: 4px;
-  cursor: pointer;
 }
 
 .textButton:hover:not(:disabled) {
@@ -173,7 +172,6 @@
 
 /* A sortable table's header: clickable, the sorted one marked by an arrow. */
 .headerCell {
-  cursor: pointer;
   user-select: none;
 }
 
