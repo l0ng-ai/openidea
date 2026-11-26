@@ -1517,6 +1517,9 @@ the final close only after queued frames have drained.
 Provider calls can use `host::project_of(&doc.path)` (`workspace.project-of`)
 without an invocation project or enumerating every open project. It returns the
 deepest open project containing the absolute path, or `None` outside open roots.
+In a call for a window (a command, an event, or `gutter-actions` / `hover-actions`
+asked for that window's editor), the window's project wins when it holds the path,
+even if a project opened inside it holds it too.
 Symlinks and missing file tails are resolved before checking containment.
 Obtaining a handle grants no read access: `Project::root` and file operations
 still require `project.read`.
@@ -1798,7 +1801,7 @@ and register `register_plugin!(MyPlugin, language_features)`:
 | `document-symbols`    | `document_symbols(doc)`                          | Structure and breadcrumbs use these only when LSP returns no document symbols (including an empty list); otherwise LSP symbols win. Tree-sitter is the final fallback.                                                                                                                                                                                          |
 | `implementation`      | `implementation(doc, at)`                        | Merged with LSP Go to Implementation, deduplicated by location.                                                                                                                                                                                                                                                                                                 |
 | `type-definition`     | `type_definition(doc, at)`                       | Merged with LSP Go to Type Declaration, deduplicated by location.                                                                                                                                                                                                                                                                                               |
-| `gutter-actions`      | `gutter_actions(doc)`                            | Buttons beside line markers. Clicks invoke only the returning plugin's declared command, with its optional string argument and the editor window/project context. Icons accept the same names, aliases and declared marker SVG paths as line markers.                                                                                                           |
+| `gutter-actions`      | `gutter_actions(doc)`                            | Buttons beside line markers. Clicks invoke only the returning plugin's declared command, with its optional string argument and the editor window/project context. After an edit the buttons are inert until the provider answers for the new text. Icons accept the same names, aliases and declared marker SVG paths as line markers.                          |
 | `hover-actions`       | `hover_actions(doc)`                             | Left-edge actions revealed by line-edge hover, with an anchor line and an inclusive trigger line range (API 1.14).                                                                                                                                                                                                                                              |
 
 The optional WIT interface is `language-features`, in worlds

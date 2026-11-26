@@ -93,13 +93,15 @@ impl LanguageFeatures for Fixture {
     fn type_definition(&mut self, d: &Document, _: Position) -> Vec<Location> {
         vec![Location { path: d.path.clone(), range: range(2, 3) }]
     }
-    fn gutter_actions(&mut self, _: &Document) -> Vec<GutterAction> {
+    fn gutter_actions(&mut self, d: &Document) -> Vec<GutterAction> {
+        // The project the action is for: the editor's, also when another project holds it.
+        let project = openidea_plugin::project_of(&d.path).and_then(|p| p.root().ok());
         vec![GutterAction {
             line: 0,
             icon: Some("run".into()),
             tooltip: "Run fixture".into(),
             command: "run".into(),
-            argument: Some("gutter".into()),
+            argument: Some(project.unwrap_or_else(|| "gutter".into())),
         }]
     }
 }
