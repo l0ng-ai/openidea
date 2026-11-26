@@ -2005,7 +2005,9 @@ fn independent_eclipse_projects(root: &Path) -> Vec<PathBuf> {
 
 /// The detected roots with the last Gradle sync's source sets first: Gradle evaluated what
 /// static detection guesses. Folders outside the project keep their absolute path, which
-/// `normalize` turns into the same form the UI compares (`Users/me/svc/src/main/java`).
+/// `normalize` turns into the same form the UI compares (`Users/me/svc/src/main/java`);
+/// their `detected_from` owner keeps its leading `/` or drive (`<project>/Gradle`) so
+/// module lists still address them as absolute paths.
 fn with_gradle_roots(
     root: &Path,
     build_cache: &Path,
@@ -2029,11 +2031,14 @@ fn with_gradle_roots(
         };
         if !out.iter().any(|f| f.path == path) {
             // `<module>/Gradle`, like the `<module>/build.gradle` static detection reports, so the
-            // UI still finds the module after a sync. Projects outside the root stay `Gradle`:
-            // the UI reads the folder as project-relative.
+            // UI still finds the module after a sync. Projects outside the root keep their
+            // absolute owner (without `normalize`, which strips a leading `/`).
             let detected_from = match project.strip_prefix(root) {
                 Ok(rel) if !rel.as_os_str().is_empty() => {
                     format!("{}/Gradle", ide_workspace::roots::normalize(&rel.to_string_lossy()))
+                }
+                Err(_) if !project.as_os_str().is_empty() => {
+                    format!("{}/Gradle", project.to_string_lossy().replace('\\', "/").trim_end_matches('/'))
                 }
                 _ => "Gradle".into(),
             };
@@ -2482,14 +2487,15 @@ mod gradle_roots_tests {
         std::fs::write(root.join("build.gradle"), "").unwrap();
         let out = with_gradle_roots(&root, &cache, &Default::default(), &[guessed, other.clone()]);
         let abs = |p: PathBuf| ide_workspace::roots::normalize(&s(p));
+        let owner = format!("{}/Gradle", svc.to_string_lossy().replace('\\', "/"));
         let got: Vec<_> = out.iter().map(|f| (f.path.clone(), f.kind, f.detected_from.as_deref())).collect();
-        // A project outside the root is not a module the UI could address.
+        // A project outside the root keeps its absolute owner so module lists still address it.
         assert_eq!(
             got,
             [
                 ("src/it/java".into(), RootKind::Test, Some("Gradle")),
-                (abs(svc.join("src/main/java")), RootKind::Source, Some("Gradle")),
-                (abs(svc.join("build")), RootKind::Excluded, Some("Gradle")),
+                (abs(svc.join("src/main/java")), RootKind::Source, Some(owner.as_str())),
+                (abs(svc.join("build")), RootKind::Excluded, Some(owner.as_str())),
                 ("web".into(), RootKind::Source, None),
             ]
         );

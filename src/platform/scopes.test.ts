@@ -61,6 +61,44 @@ describe("scope expressions", () => {
     expect(inScope("Web", "/p/src/app.ts", c)).toBe(false);
   });
 
+  it("matches absolute module paths on POSIX and Windows drives", () => {
+    useProject.setState({
+      project: {
+        name: "ws",
+        root: "/ws",
+        trusted: true,
+        settings: {},
+        workspace: { version: 1, name: "ws", projects: ["/ws/app", "/ws/svc"] },
+      } as never,
+    });
+    const posix = ctx([{ name: "Svc", pattern: "file[svc]:*.java" }], {
+      modules: [
+        { name: "app", path: "/ws/app" },
+        { name: "svc", path: "/ws/svc" },
+      ],
+    });
+    expect(inScope("Svc", "/ws/svc/src/App.java", posix)).toBe(true);
+    expect(inScope("Svc", "/ws/app/src/App.java", posix)).toBe(false);
+
+    useProject.setState({
+      project: {
+        name: "ws",
+        root: "C:/ws",
+        trusted: true,
+        settings: {},
+        workspace: { version: 1, name: "ws", projects: ["C:/ws/app", "C:/ws/svc"] },
+      } as never,
+    });
+    const win = ctx([{ name: "Svc", pattern: "file[svc]:*.java" }], {
+      modules: [
+        { name: "app", path: "C:/ws/app" },
+        { name: "svc", path: "C:/ws/svc" },
+      ],
+    });
+    expect(inScope("Svc", "C:/ws/svc/src/App.java", win)).toBe(true);
+    expect(inScope("Svc", "C:/ws/app/src/App.java", win)).toBe(false);
+  });
+
   it("reports where a pattern goes wrong", () => {
     expect(scopeError("file:a && (file:b")).toEqual({ message: "')' expected", at: 17 });
     expect(scopeError("src/*")).toEqual({ message: "'file:' expected", at: 0 });
