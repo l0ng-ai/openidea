@@ -110,13 +110,15 @@ pub fn run_streamed_picking(
 }
 
 /// Runs an `npm` / `pnpm` command against the user's configured registry first (preserving
-/// corporate mirrors, proxies, and CAs), and retries once against [`PUBLIC_NPM_REGISTRY`] when
-/// the configured registry misses the package/version or rejects auth. Preserves the primary
-/// error if the public registry is unreachable.
+/// corporate mirrors, proxies, and CAs), and with `public_fallback` retries once against
+/// [`PUBLIC_NPM_REGISTRY`] when the configured registry misses the package/version or rejects
+/// auth. Preserves the primary error if the public registry is unreachable. Without
+/// `public_fallback` (Settings › Tools › Download Mirrors) the configured registry's error stands.
 pub fn run_npm_with_public_fallback(
     mut build: impl FnMut(&[String]) -> Command,
     specs: &[String],
     pnpm: bool,
+    public_fallback: bool,
     cancel: &CancellationToken,
     emit: Emit,
 ) -> IdeResult<String> {
@@ -127,7 +129,7 @@ pub fn run_npm_with_public_fallback(
         return Ok(output);
     }
     let err = failed_command(&label, &output, &status);
-    if cancel.is_cancelled() || !is_npm_registry_miss(&output) {
+    if !public_fallback || cancel.is_cancelled() || !is_npm_registry_miss(&output) {
         return Err(err);
     }
     emit(InstallEvent::Line {

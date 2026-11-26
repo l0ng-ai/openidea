@@ -432,6 +432,12 @@ pub struct ToolDownloadSettings {
     /// commas or whitespace and tried in order before the official host; empty keeps every
     /// download on its official host.
     pub github_mirror: String,
+    /// Package registries only as configured (a company Nexus or Artifactory): npm and pnpm
+    /// installs and update checks never retry against the public npm registry, and the IDE
+    /// fetches nothing from public package registries itself (the JUnit Platform launcher from
+    /// Maven Central, dependency version completion from Maven Central, npm, PyPI and
+    /// crates.io). Off by default.
+    pub configured_registries_only: bool,
 }
 
 /// Absent profiles retain automatic discovery for existing projects.
