@@ -36,7 +36,7 @@ sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
 crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave, semantic-tokens, hover, commit, inlay-hints, decorations
 ```
 
-The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.17.0`, world
+The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.18.0`, world
 `plugin`).
 
 ## 1. Quick start
@@ -427,9 +427,23 @@ are always available. Calling a gated function without its capability returns
 
 ## 3. Writing code (Rust SDK)
 
+### API 1.18
+
+API 1.18.0 is in development on `main`. Use `engines.openidea = "^1.18"` and the
+matching SDK. Plugins for 1.17 and earlier keep working. New in 1.18:
+
+- `host::subscribe_paths_with_options(kind, &SubscriptionOptions)` (`events.subscribe-paths-with-options`)
+  adds optional `debounce_ms` coalescing for `files-changed` events on the host side (up to 5 s) and
+  cooperatively cancels in-flight event-handler work via `cancel_soft()` when a newer delta arrives.
+- `Project::generation()` (`workspace.project.generation`) returns a monotonically increasing project state
+  generation; `FilesChanged` carries `project` and `generation`, and registering run targets or run
+  configurations from a superseded generation is rejected with `Error::Stale`.
+- `EventKind::ProjectClosed` (`project-closed`) notifies subscribed plugins when a project closes,
+  after queued project events are dropped and project run targets and configurations are withdrawn.
+
 ### API 1.17
 
-API 1.17.0 is in development on `main`. Use `engines.openidea = "^1.17"` and the
+API 1.17.0 shipped with OpenIDEA 0.1.53. Use `engines.openidea = "^1.17"` and the
 matching SDK. Plugins for 1.16 and earlier keep working. New in 1.17:
 
 - [Editor decorations](#editor-and-project-snapshots-api-14):
@@ -1382,6 +1396,7 @@ log/blame return empty lists and diff returns `None`.
 | `editor-focused`     | `events`       | the focused editor changes (path, or none)                                                                                                 |
 | `vcs-changed`        | `events`       | a repository's state changed (commit, checkout, fetch…; its root)                                                                          |
 | `action-performed`   | `events.input` | an IDE action ran: id, title, source (keyboard, menu, toolbar…), shortcut                                                                  |
+| `project-closed`     | `events`       | API 1.18: a project was closed or detached; JSON root path string (`Event::ProjectClosed`)                                                 |
 | `scheduled`          | —              | the `on-schedule` period elapsed                                                                                                           |
 
 Events are batched: a running plugin gets them within a fraction of a second,
@@ -1415,6 +1430,20 @@ its own project, which the event names in `project` (the root's absolute path):
 two open projects can hold the same relative path, so key per-document state by
 both. IDEs before this field omit it. For `files-changed`, each category is filtered and an empty batch
 is omitted; replacing or pausing a filter also affects batches already queued.
+API 1.18 adds `project` (the project root path) and `generation` (the monotonic project workspace generation)
+to `FilesChanged`.
+
+API 1.18 adds `host::subscribe_paths_with_options(kind, &SubscriptionOptions)` (`events.subscribe-paths-with-options`)
+with an optional `debounce_ms` setting. When configured, incoming filesystem events for `files-changed` are debounced on the
+host side across rapid edits, coalescing deltas and avoiding redundant plugin invocations (with a maximum delay cap of 5 s
+during continuous changes). In-flight `files-changed` discovery work is cooperatively cancelled via `cancel_soft()` when a newer
+delta arrives for the same project.
+
+Each project maintains an internal monotonic `generation` incremented on filesystem changes and project transitions. Plugins
+can read it via `project.generation()` (API 1.18). If a plugin attempts to publish run targets or run configurations discovered
+with an older generation after the project generation has moved forward, the registration is rejected with `Error::Stale`. When
+a project closes, in-flight work and queued events for that project are cancelled and dropped, run targets and configurations
+under that root are withdrawn, and `project-closed` (`Event::ProjectClosed`) is delivered to subscribed plugins.
 Patterns use `/`, `*` stays within a directory, and `**` crosses
 directories. Up to 64 patterns of 1024 bytes each are accepted; absolute paths,
 parent traversal and malformed patterns fail without replacing the old filter.
@@ -3132,7 +3161,7 @@ the API itself follows _Evolving the plugin API_ below.
 
 Released versions are frozen: 1.0.0 shipped with OpenIDEA 0.1.36, 1.1.0
 with 0.1.37, 1.2.0 with 0.1.38, 1.3.0 with 0.1.39 and 1.4.0 with 0.1.40.
-API 1.5.0 shipped with 0.1.41, 1.6.0 with 0.1.43, 1.7.0 with 0.1.44, 1.8.0 with 0.1.45, 1.9.0 with 0.1.46 and 1.10.0 with 0.1.47; API 1.11.0, 1.12.0, 1.13.0, 1.14.0 1.15.0 and 1.16.0 are in development on `main`. wasmtime decides what stays compatible: it resolves interface names
+API 1.5.0 shipped with 0.1.41, 1.6.0 with 0.1.43, 1.7.0 with 0.1.44, 1.8.0 with 0.1.45, 1.9.0 with 0.1.46, 1.10.0 with 0.1.47, 1.13.0 with 0.1.49, 1.16.0 with 0.1.52 and 1.17.0 with 0.1.53; API 1.11.0, 1.12.0, 1.14.0, 1.15.0 and 1.18.0 are in development on `main`. wasmtime decides what stays compatible: it resolves interface names
 by semver (a component importing `openidea:plugin/x@1.0.0` links against a
 host defining `@1.1.0`, and the host finds its exports the same way), but
 function types must match exactly — a record with another field count, or a
