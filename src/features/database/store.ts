@@ -53,6 +53,7 @@ import {
   idleTargets,
   newSourceId,
   sourceIcon,
+  supportsExplain,
   splitTarget,
   targetOf,
 } from "./model";
@@ -1746,7 +1747,7 @@ async function explain(id: string, statement: SqlStatement, schema?: string): Pr
 /** Explain Plan: the plan of the statement at `from` (the first selected one) of console `path`. */
 export async function explainConsole(path: string, text: string, from: number, to: number): Promise<void> {
   const id = consoleSource(path);
-  if (!id || sourceById(id)?.driver === "jdbc") return;
+  if (!id || !supportsExplain(sourceById(id))) return;
   try {
     const [statement] = await consoleStatements(id, text, from, to);
     if (!statement) return;

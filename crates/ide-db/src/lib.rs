@@ -1598,9 +1598,24 @@ impl DbManager {
         cancel: &CancellationToken,
         schema: Option<&str>,
     ) -> IdeResult<Vec<PlanNode>> {
-        let driver = self.pool(id).await?.driver();
-        if driver == DbDriver::Jdbc {
-            return Err(IdeError::invalid("Custom JDBC execution plans are unsupported"));
+        let pool = self.pool(id).await?;
+        let driver = pool.driver();
+        if let Pool::Jdbc(jdbc) = &*pool {
+            if self.source(id)?.vendor != "duckdb" || !jdbc.version.starts_with("DuckDB ") {
+                return Err(IdeError::invalid("Custom JDBC execution plans are unsupported"));
+            }
+            let sql = statement.trim().trim_end_matches(';');
+            if sql.contains(';') {
+                // The driver can execute a whole script. Have DuckDB count its statements before prefixing EXPLAIN.
+                let literal = sql::quote_literal(driver, sql);
+                let check = format!("SELECT json_array_length(json_serialize_plan({literal}), '$.plans')");
+                let result = jdbc.query_in_schema(&check, 0, 1, cancel, schema).await?;
+                if result.rows.first().and_then(|r| r.first()).and_then(Option::as_deref) != Some("1") {
+                    return Err(IdeError::invalid("Choose one statement to explain"));
+                }
+            }
+            let result = jdbc.query_in_schema(&format!("EXPLAIN (FORMAT JSON) {sql}"), 0, 3, cancel, schema).await?;
+            return plan::duckdb(&result);
         }
         if driver == DbDriver::Oracle {
             // EXPLAIN PLAN writes PLAN_TABLE; the plan is read (and cleaned up) separately.

@@ -1137,6 +1137,18 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
     },
   );
 
+  it.each([
+    ["duckdb", 1],
+    ["mysql", 0],
+    ["", 0],
+  ] as const)("requests a plan for JDBC vendor %s only when supported", async (vendor, calls) => {
+    useDatabase.setState({ sources: [{ id: "pg", name: "Local", driver: "jdbc", vendor }] });
+    backend.explain.mockResolvedValue({ status: "ok", data: [] });
+    await explainConsole("a.sql", "SELECT 1", 0, 0);
+    expect(backend.explain).toHaveBeenCalledTimes(calls);
+    expect(useDatabase.getState().results).toHaveLength(calls);
+  });
+
   it("never replaces the Query Plan from a run, and appends a new plan beside a pinned one", async () => {
     backend.explain.mockResolvedValue({ status: "ok", data: [] });
     await explainConsole("a.sql", "SELECT 1", 0, 0);
