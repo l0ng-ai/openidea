@@ -920,6 +920,7 @@ mod tests {
             json!({
                 "nonModal": true,
                 "clearInitialMessage": false,
+                "template": "",
                 "analyzeCode": true,
                 "postponeSlowChecks": true,
                 "checkTodo": true,

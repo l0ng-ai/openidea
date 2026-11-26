@@ -4589,6 +4589,8 @@ export type CommitSettings = {
 	commitAllWhenNothingStaged?: boolean,
 	/**  Start with an empty message instead of the last one / the changelist's. */
 	clearInitialMessage?: boolean,
+	/**  Message inserted by Commit Options › Fill with Template. */
+	template?: string,
 	analyzeCode?: boolean,
 	postponeSlowChecks?: boolean,
 	checkTodo?: boolean,

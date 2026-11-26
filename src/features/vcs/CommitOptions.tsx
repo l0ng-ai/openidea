@@ -16,6 +16,7 @@ import { runConfigurationChecks, useCommitCheckProviders } from "@/workbench/con
 import { Checkbox, Menu, Popup, Select, T } from "@/ui";
 import { editTodoFiltersItem, todoFilterChoices } from "@/workbench/todoFilterMenu";
 import { CommitAuthorFields } from "./CommitAuthorFields";
+import { FILL_WITH_TEMPLATE } from "./actions";
 import { setCommitAuthor, useCommit } from "./commitStore";
 import { useStagingArea } from "./staging";
 import { setCommitTestSelection, useCommitTestSelection } from "./commitTests";
@@ -139,9 +140,11 @@ function TestOption({ busy }: { busy: boolean }) {
 /** The options themselves: in the popup, and inline beside the Commit dialog's message. */
 export function CommitOptionsBody({
   afterRunChecks,
+  onClose,
   focusAuthor,
 }: {
   afterRunChecks?: () => void;
+  onClose?: () => void;
   focusAuthor?: boolean;
 }) {
   const author = useCommit((s) => s.author);
@@ -179,6 +182,17 @@ export function CommitOptionsBody({
             label="Commit All when Nothing Is Staged"
           />
         )}
+        <button
+          type="button"
+          className={styles.optLink}
+          disabled={busy}
+          onClick={() => {
+            onClose?.();
+            void executeAction(FILL_WITH_TEMPLATE);
+          }}
+        >
+          <T>Fill with Template</T>
+        </button>
       </Section>
       <Section title="Commit Checks">
         {check("reformat", "Reformat code")}
@@ -239,7 +253,7 @@ export function CommitOptionsPopup({
     >
       {/* IDEA opens the options without focusing the Author field. */}
       {!focusAuthor && <div tabIndex={-1} data-autofocus className={styles.optFocus} />}
-      <CommitOptionsBody afterRunChecks={onClose} focusAuthor={focusAuthor} />
+      <CommitOptionsBody afterRunChecks={onClose} onClose={onClose} focusAuthor={focusAuthor} />
     </Popup>
   );
 }

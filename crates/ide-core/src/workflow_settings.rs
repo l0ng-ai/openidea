@@ -232,6 +232,8 @@ pub struct CommitSettings {
     pub commit_all_when_nothing_staged: bool,
     /// Start with an empty message instead of the last one / the changelist's.
     pub clear_initial_message: bool,
+    /// Message inserted by Commit Options › Fill with Template.
+    pub template: String,
     pub analyze_code: bool,
     pub postpone_slow_checks: bool,
     pub check_todo: bool,
@@ -273,6 +275,7 @@ impl Default for CommitSettings {
             include_changes_by_default: true,
             commit_all_when_nothing_staged: true,
             clear_initial_message: false,
+            template: String::new(),
             analyze_code: true,
             postpone_slow_checks: true,
             check_todo: true,

@@ -60,7 +60,9 @@ Turn off **View Options › Show Unversioned Files Separately** to list untracke
   </Step>
   <Step title="Write the message">
     Type in the message box. The **Commit Message History** button (or `⌃M` / `Ctrl+M`) offers your last 20 messages.
-    During a merge, cherry-pick or revert the message is pre-filled from Git; otherwise from `commit.template`.
+    During a merge, cherry-pick or revert the message is pre-filled from Git; otherwise from `commit.template`. To use
+    your own starter text instead, set **Commit template** in **Settings › Version Control › Commit** and choose **Fill
+    with Template** in the Commit Options menu.
   </Step>
   <Step title="Commit">
     Click **Commit**, or press `⌘Enter` / `Ctrl+Enter` in the message box. **Commit and Push…** (`⌥⌘Enter` /
@@ -90,6 +92,7 @@ Changelists group local changes without touching Git. The default list is called
 
 The gear button (**Commit Options**) next to **Commit** has:
 
+- **Fill with Template**: replaces the message with the **Commit template** from **Settings › Version Control › Commit**.
 - **Author:** to commit as someone else (`Name <email>`), and **Sign-off commit**.
 - **Commit Checks**: **Reformat code**, **Optimize imports**, **Cleanup** (applies fix-all code actions) and **Run Git hooks** (off adds `--no-verify`).
 - **Advanced Commit Checks**: **Analyze code** (errors and warnings from the language servers) and **Check TODO** (matches from **Settings › Editor › TODO** in changed lines).
@@ -272,7 +275,7 @@ Retention is set in the **Local History** section of **Settings › Appearance &
 
 | Page                   | Main options                                                                                                                                                                                                                                      |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Commit**             | Non-modal commit interface, clearing the message after commit, message inspections (blank line after subject, subject and body length, right margin), default commit checks.                                                                      |
+| **Commit**             | Non-modal commit interface, clearing the message after commit, commit template, message inspections (blank line after subject, subject and body length, right margin), default commit checks.                                                     |
 | **Confirmation**       | What to do when files are created or deleted, **Show options before Update**, confirm before dropping commits, highlight modified folders in the Project view, history row limit.                                                                 |
 | **Directory Mappings** | Add and remove Git repository mappings and exclude auto-detected repositories from Git integration.                                                                                                                                               |
 | **Issue Navigation**   | Regex patterns that turn issue IDs in commit messages into links (presets for JIRA, YouTrack and GitHub).                                                                                                                                         |

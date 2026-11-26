@@ -63,6 +63,8 @@ export interface CommitSettingsValid {
   includeChangesByDefault: boolean;
   commitAllWhenNothingStaged: boolean;
   clearInitialMessage: boolean;
+  /** Message inserted by Commit Options › Fill with Template. */
+  template: string;
   analyzeCode: boolean;
   postponeSlowChecks: boolean;
   checkTodo: boolean;
@@ -336,6 +338,7 @@ export const DEFAULT_WORKFLOW: WorkflowSettings = {
       includeChangesByDefault: true,
       commitAllWhenNothingStaged: true,
       clearInitialMessage: false,
+      template: "",
       analyzeCode: true,
       postponeSlowChecks: true,
       checkTodo: true,
@@ -527,6 +530,7 @@ export function validateVcs(raw: unknown): VcsSettingsValid {
       includeChangesByDefault: bool(c.includeChangesByDefault, d.commit.includeChangesByDefault),
       commitAllWhenNothingStaged: bool(c.commitAllWhenNothingStaged, d.commit.commitAllWhenNothingStaged),
       clearInitialMessage: bool(c.clearInitialMessage, d.commit.clearInitialMessage),
+      template: text(c.template, d.commit.template),
       analyzeCode: bool(c.analyzeCode, d.commit.analyzeCode),
       postponeSlowChecks: bool(c.postponeSlowChecks, d.commit.postponeSlowChecks),
       checkTodo: bool(c.checkTodo, d.commit.checkTodo),

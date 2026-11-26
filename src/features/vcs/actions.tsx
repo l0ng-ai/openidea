@@ -133,6 +133,13 @@ import { tx } from "@/platform/i18n";
 import { addToIgnore } from "./ignore";
 import { hasFileHistory, showCurrentRevision, trackFileHistory } from "./fileRevisions";
 
+/** Commit Options › Fill with Template: put the configured commit template in the message box. */
+export const FILL_WITH_TEMPLATE = "vcs.fillWithTemplate";
+
+export function fillWithCommitTemplate(): void {
+  useCommit.setState({ message: workflowSettings().vcs.commit.template });
+}
+
 const VCS = "vcsAvailable";
 const IN_COMMIT_WINDOW = "vcsAvailable && activeToolWindow == commit";
 
@@ -384,6 +391,14 @@ export function registerVcsActions(): () => void {
       icon: "commit",
       when: VCS,
       run: commitFromContext,
+    },
+    {
+      id: FILL_WITH_TEMPLATE,
+      title: "Fill with Template",
+      category: "Git",
+      when: VCS,
+      keywords: ["commit message", "template"],
+      run: fillWithCommitTemplate,
     },
     {
       id: "vcs.runCommitChecks",

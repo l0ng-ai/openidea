@@ -636,6 +636,30 @@ function CommitAgentRows() {
   );
 }
 
+/** Settings › Version Control › Commit: the message Fill with Template inserts. */
+function CommitTemplateRow() {
+  const [value, set] = useSetting<string>("vcs.commit.template");
+  const id = useId();
+  return (
+    <Row
+      label="Commit template"
+      htmlFor={id}
+      hint="Inserted into the commit message by Commit Options › Fill with Template. Leave empty to use no template."
+      stacked
+    >
+      <textarea
+        id={id}
+        className={styles.instructions}
+        rows={4}
+        spellCheck={false}
+        placeholder={tx("Subject line\n\nBody of the commit message")}
+        value={value}
+        onChange={(e) => set(e.target.value)}
+      />
+    </Row>
+  );
+}
+
 function AgentInstructionsRow() {
   const [value, set] = useSetting<string>("vcs.commit.agentInstructions");
   const id = useId();
@@ -801,6 +825,12 @@ export const VCS_PAGES: PageSpec[] = [
             label: "Include changes in the commit by default",
           },
           { kind: "toggle", key: "vcs.commit.clearInitialMessage", label: "Clear initial commit message" },
+          {
+            kind: "custom",
+            label: "Commit template",
+            keywords: ["message", "fill", "commit options"],
+            component: CommitTemplateRow,
+          },
         ],
       },
       {

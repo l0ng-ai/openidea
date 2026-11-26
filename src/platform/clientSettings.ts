@@ -106,6 +106,7 @@ export const CLIENT_SETTINGS_KEYS = [
   "vcs.git.stashDiffTarget",
   "vcs.git.stagingArea",
   "vcs.commit.nonModal",
+  "vcs.commit.template",
   "vcs.commit.includeChangesByDefault",
   "vcs.commit.commitAllWhenNothingStaged",
   "vcs.commit.doubleClickOpensDiff",
