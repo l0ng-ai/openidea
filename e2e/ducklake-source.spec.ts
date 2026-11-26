@@ -28,7 +28,7 @@ test("opens an existing DuckLake and creates a new one only after confirmation t
         file_dialog_needs_gtk: () => false,
         "plugin:dialog|save": () => newDirectory,
         db_test: () => "DuckDB 2.0.1 (mock)",
-        db_approve_jdbc_source: () => null,
+        db_approve_ducklake_source: () => null,
         db_set_password: () => null,
         db_save_sources: ({ sources: next }: { sources: DataSource_Deserialize[] }) => {
           sources = next;
@@ -77,7 +77,8 @@ test("opens an existing DuckLake and creates a new one only after confirmation t
   await draft.screenshot({ path: info.outputPath("ducklake-existing.png"), animations: "disabled" });
   await draft.getByRole("button", { name: "OK", exact: true }).click();
   await expect(draft).not.toBeVisible();
-  expect(await ipcCalls(page, "db_approve_jdbc_source")).toEqual([{ source: expect.objectContaining(connection) }]);
+  expect(await ipcCalls(page, "db_approve_ducklake_source")).toEqual([{ source: expect.objectContaining(connection) }]);
+  expect(await ipcCalls(page, "db_approve_jdbc_source")).toHaveLength(0);
   expect(await ipcCalls(page, "db_save_sources")).toEqual([{ sources: [expect.objectContaining(connection)] }]);
 
   await page.evaluate(async () => {
