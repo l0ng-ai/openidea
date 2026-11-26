@@ -546,11 +546,16 @@ function DocPopup({ popup }: { popup: Extract<LspPopup, { kind: "doc" }> }) {
       scope.current?.querySelector<HTMLElement>("[data-lsp-doc]")?.focus({ preventScroll: true });
   }, [focusSeq]);
   const [initialSize] = useState(loadDocSize);
+  const pinned = !!popup.pinned;
+  // 固定后鼠标/光标离开编辑器不关闭；Esc 仍然关闭。
+  const onClose = (reason: "escape" | "outside" | "action") => {
+    if (!pinned || reason === "escape") closePopup();
+  };
   return (
     <Popup
       open
       anchor={anchor}
-      onClose={closePopup}
+      onClose={onClose}
       aria-label="Documentation"
       className={styles.docPopup}
       // As in IDEA the popup leaves the keyboard to the editor until F1 focuses it.
@@ -562,7 +567,12 @@ function DocPopup({ popup }: { popup: Extract<LspPopup, { kind: "doc" }> }) {
       onResized={saveDocSize}
     >
       <div ref={scope} data-testid="doc-popup" className={styles.docScope}>
-        <DocView host="popup" history={popup} themeClasses={popup.themeClasses} />
+        <DocView
+          host="popup"
+          history={popup}
+          themeClasses={popup.themeClasses}
+          pin={{ pinned, onToggle: () => updatePopup("doc", { pinned: !pinned }) }}
+        />
       </div>
     </Popup>
   );

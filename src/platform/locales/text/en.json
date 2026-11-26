@@ -4081,5 +4081,7 @@
   "Granted with grant option": "Granted with grant option",
   "No privileges are granted on this table.": "No privileges are granted on this table.",
   "* With grant option: the grantee may grant the privilege to others.": "* With grant option: the grantee may grant the privilege to others.",
-  "Separate several prefixes with commas: they are tried in order, then the official source.": "Separate several prefixes with commas: they are tried in order, then the official source."
+  "Separate several prefixes with commas: they are tried in order, then the official source.": "Separate several prefixes with commas: they are tried in order, then the official source.",
+  "Pin Documentation": "Pin Documentation",
+  "Unpin Documentation": "Unpin Documentation"
 }

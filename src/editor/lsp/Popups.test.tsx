@@ -260,6 +260,46 @@ describe("documentation", () => {
     expect(container).toBeTruthy();
   });
 
+  const openDoc = () =>
+    openPopup({
+      kind: "doc",
+      anchor: { x: 0, y: 0 },
+      entries: [{ markup: { kind: "plaintext", value: "docs" }, language: null }],
+      index: 0,
+      themeClasses: "",
+    });
+
+  it("pins and unpins the documentation popup from its toolbar button", () => {
+    openDoc();
+    render(<LspPopups />);
+    const pin = () => screen.getByRole("button", { name: /Documentation$/ }) as HTMLButtonElement;
+    expect(pin().getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(pin());
+    expect((useLspPopup.getState().popup as { pinned?: boolean }).pinned).toBe(true);
+    expect(pin().getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(pin());
+    expect((useLspPopup.getState().popup as { pinned?: boolean }).pinned).toBe(false);
+    expect(pin().getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("keeps a pinned documentation popup open on outside clicks but still closes on Escape", () => {
+    openDoc();
+    render(<LspPopups />);
+    fireEvent.click(screen.getByRole("button", { name: /Documentation$/ }));
+    expect((useLspPopup.getState().popup as { pinned?: boolean }).pinned).toBe(true);
+    fireEvent.pointerDown(document.body);
+    expect(useLspPopup.getState().popup).not.toBeNull();
+    fireEvent.keyDown(screen.getByRole("dialog", { name: "Documentation" }), { key: "Escape" });
+    expect(useLspPopup.getState().popup).toBeNull();
+  });
+
+  it("closes an unpinned documentation popup on outside clicks", () => {
+    openDoc();
+    render(<LspPopups />);
+    fireEvent.pointerDown(document.body);
+    expect(useLspPopup.getState().popup).toBeNull();
+  });
+
   it("navigates the popup history from More Actions and moves it to the Documentation tool window", () => {
     openPopup({
       kind: "doc",

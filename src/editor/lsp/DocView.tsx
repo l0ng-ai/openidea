@@ -39,7 +39,23 @@ export function DomContent({ build, className }: { build: () => HTMLElement; cla
   return <div ref={ref} className={className} />;
 }
 
-export function DocView({ host, history, themeClasses }: { host: DocHost; history: DocHistory; themeClasses: string }) {
+/** Pin control supplied by the F1 popup; the hover and tool window have none. */
+export interface DocPinControl {
+  pinned: boolean;
+  onToggle: () => void;
+}
+
+export function DocView({
+  host,
+  history,
+  themeClasses,
+  pin,
+}: {
+  host: DocHost;
+  history: DocHistory;
+  themeClasses: string;
+  pin?: DocPinControl;
+}) {
   const entry = history.entries[history.index];
   const tx = useTx();
   const moreButton = useRef<HTMLButtonElement>(null);
@@ -107,6 +123,15 @@ export function DocView({ host, history, themeClasses }: { host: DocHost; histor
         )}
         {host === "popup" ? (
           <>
+            {pin && (
+              <IconButton
+                icon="pin"
+                size="small"
+                title={pin.pinned ? "Unpin Documentation" : "Pin Documentation"}
+                pressed={pin.pinned}
+                onClick={pin.onToggle}
+              />
+            )}
             <IconButton
               ref={moreButton}
               icon="more-horizontal"

@@ -89,6 +89,8 @@ export type LspPopup =
       entries: DocEntry[];
       index: number;
       themeClasses: string;
+      /** Pinned docs stay open when the caret/mouse leaves the editor. */
+      pinned?: boolean;
     }
   | {
       kind: "definition";
