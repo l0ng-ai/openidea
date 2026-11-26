@@ -2756,6 +2756,8 @@
   "Scratches": "臨時檔案",
   "Script": "指令碼",
   "Scroll to End": "捲動到末尾",
+  "Up the Stack Trace": "沿堆疊跟蹤向上",
+  "Down the Stack Trace": "沿堆疊跟蹤向下",
   "Scrolling": "捲動",
   "Search Everywhere": "隨處搜尋",
   "Search Structurally": "結構化搜尋",

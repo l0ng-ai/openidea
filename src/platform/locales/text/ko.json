@@ -1966,6 +1966,8 @@
   "Scratches": "스크래치",
   "Script": "스크립트",
   "Scroll to End": "끝으로 스크롤",
+  "Up the Stack Trace": "스택 추적 위로",
+  "Down the Stack Trace": "스택 추적 아래로",
   "Scrolling": "스크롤",
   "Search Everywhere": "전체 검색",
   "Search Structurally": "구조적 검색",

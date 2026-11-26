@@ -3171,6 +3171,8 @@
   "Scratches": "Временные файлы",
   "Script": "Скрипт",
   "Scroll to End": "Прокрутить до конца",
+  "Up the Stack Trace": "Вверх по трассировке стека",
+  "Down the Stack Trace": "Вниз по трассировке стека",
   "Scrolling": "Прокрутка",
   "Search Everywhere": "Поиск везде",
   "Search Structurally": "Структурный поиск",
