@@ -8,6 +8,7 @@ import {
   withOwnFileColor,
 } from "./fileColors";
 import { useProject } from "./project";
+import { projectModules } from "./projectRoots";
 import { filePatternRegExp, inScope, parseScope, scopeError, type ScopeContext } from "./scopes";
 
 const ctx = (scopes: ScopeContext["scopes"] = [], extra: Partial<ScopeContext> = {}): ScopeContext => ({
@@ -97,6 +98,39 @@ describe("scope expressions", () => {
     });
     expect(inScope("Svc", "C:/ws/svc/src/App.java", win)).toBe(true);
     expect(inScope("Svc", "C:/ws/app/src/App.java", win)).toBe(false);
+  });
+
+  it("keeps subproject and root module scopes matching when synced from a subproject folder", () => {
+    // Opened at `/checkout/composite/app` while Gradle reports ancestor `composite` as plain `Gradle`,
+    // in-project `app` as `Gradle`, child `app:lib` as `lib/Gradle`, and sibling included build `svc`.
+    useProject.setState({
+      project: { name: "app", root: "/checkout/composite/app", trusted: true, settings: {} } as never,
+    });
+    const modules = projectModules(
+      [
+        { path: "checkout/composite/src/main/java", kind: "source", detectedFrom: "Gradle" },
+        { path: "src/main/java", kind: "source", detectedFrom: "Gradle" },
+        { path: "lib/src/main/java", kind: "source", detectedFrom: "lib/Gradle" },
+        { path: "checkout/svc/src/main/java", kind: "source", detectedFrom: "/checkout/svc/Gradle" },
+      ],
+      "app",
+    );
+    expect(modules).toEqual([
+      { path: "", name: "app" },
+      { path: "/checkout/svc", name: "svc" },
+      { path: "lib", name: "lib" },
+    ]);
+    const c = ctx(
+      [
+        { name: "App", pattern: "file[app]:*.java" },
+        { name: "Lib", pattern: "file[lib]:*.java" },
+      ],
+      { modules },
+    );
+    expect(inScope("Lib", "/checkout/composite/app/lib/src/main/java/A.java", c)).toBe(true);
+    expect(inScope("App", "/checkout/composite/app/src/main/java/B.java", c)).toBe(true);
+    expect(inScope("Lib", "/checkout/composite/app/src/main/java/B.java", c)).toBe(false);
+    expect(inScope("App", "/checkout/composite/app/lib/src/main/java/A.java", c)).toBe(false);
   });
 
   it("reports where a pattern goes wrong", () => {
