@@ -169,11 +169,13 @@ pub enum EventKind {
     VcsChanged,
     /// Problems of the window's files changed (a language server or a report).
     ProblemsChanged,
+    /// A project was closed (or its window closed): the project root path.
+    ProjectClosed,
     Scheduled,
 }
 
 impl EventKind {
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
         Self::DocumentChanged,
         Self::WebsocketReady,
         Self::FileClosed,
@@ -191,6 +193,7 @@ impl EventKind {
         Self::ActionPerformed,
         Self::VcsChanged,
         Self::ProblemsChanged,
+        Self::ProjectClosed,
         Self::Scheduled,
     ];
 
@@ -213,6 +216,7 @@ impl EventKind {
             Self::ActionPerformed => "action-performed",
             Self::VcsChanged => "vcs-changed",
             Self::ProblemsChanged => "problems-changed",
+            Self::ProjectClosed => "project-closed",
             Self::Scheduled => "scheduled",
         }
     }
@@ -274,6 +278,12 @@ pub struct ActionPerformed {
 /// Debounced worktree changes. Paths use the same absolute form as `file-saved`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct FilesChanged {
+    /// Canonical absolute root of the project where changes occurred (API 1.18).
+    #[serde(default)]
+    pub project: Option<String>,
+    /// Project state generation at the time this batch was emitted (API 1.18).
+    #[serde(default)]
+    pub generation: Option<u64>,
     pub created: Vec<String>,
     pub modified: Vec<String>,
     pub removed: Vec<String>,
@@ -367,6 +377,8 @@ pub enum WorkbenchEvent {
     VcsChanged(String),
     /// Problems of the window's files changed; plugins re-read `problems`.
     ProblemsChanged,
+    /// A project closed (API 1.18); payload is the canonical absolute root path.
+    ProjectClosed(String),
     Scheduled,
 }
 
@@ -390,6 +402,7 @@ impl WorkbenchEvent {
             Self::ActionPerformed(_) => EventKind::ActionPerformed,
             Self::VcsChanged(_) => EventKind::VcsChanged,
             Self::ProblemsChanged => EventKind::ProblemsChanged,
+            Self::ProjectClosed(_) => EventKind::ProjectClosed,
             Self::Scheduled => EventKind::Scheduled,
         }
     }

@@ -237,9 +237,10 @@ use bindings::openidea::plugin::{
     settings, storage, tasks, types as wit, ui, vcs, views, workspace,
 };
 
-/// A project handle: its root.
+/// A project handle: its root and generation when borrowed.
 pub struct ProjectRes {
-    root: PathBuf,
+    pub(crate) root: PathBuf,
+    pub(crate) generation: u64,
 }
 
 /// A program a plugin started behind a handle (`process.start`); dropping the
@@ -896,7 +897,13 @@ impl workspace::Host for StoreData {
     }
 
     fn project_of(&mut self, path: String) -> wasmtime::Result<Option<Resource<ProjectRes>>> {
-        self.host.project_of(Path::new(&path)).map(|root| self.push(ProjectRes { root })).transpose()
+        self.host
+            .project_of(Path::new(&path))
+            .map(|root| {
+                let generation = self.host.project_generation(&root).unwrap_or(0);
+                self.push(ProjectRes { root, generation })
+            })
+            .transpose()
     }
 
     fn projects(&mut self) -> Fallible<Vec<Resource<ProjectRes>>> {
@@ -905,7 +912,8 @@ impl workspace::Host for StoreData {
         }
         let mut out = Vec::new();
         for root in self.host.projects() {
-            out.push(self.push(ProjectRes { root })?);
+            let generation = self.host.project_generation(&root).unwrap_or(0);
+            out.push(self.push(ProjectRes { root, generation })?);
         }
         Ok(Ok(out))
     }
@@ -1090,6 +1098,17 @@ impl workspace::HostProject for StoreData {
             return Ok(Err(wit::Error::Failed(format!("{path}: {e}"))));
         }
         Ok(self.host.write_text_file(&real, &text).map_err(to_wit))
+    }
+
+    fn generation(&mut self, this: Resource<ProjectRes>) -> Fallible<u64> {
+        if let Err(e) = self.require(Capability::ProjectRead) {
+            return Ok(Err(e));
+        }
+        if let Err(e) = self.host.require_api("project.generation", 18) {
+            return Ok(Err(to_wit(e)));
+        }
+        let root = self.table.get(&this)?.root.clone();
+        Ok(self.host.project_generation(&root).map_err(to_wit))
     }
 
     fn drop(&mut self, rep: Resource<ProjectRes>) -> wasmtime::Result<()> {
@@ -1320,7 +1339,10 @@ impl invocation::Host for StoreData {}
 impl invocation::HostInvocation for StoreData {
     fn project(&mut self, _this: Resource<InvocationRes>) -> wasmtime::Result<Option<Resource<ProjectRes>>> {
         match self.invocation.workspace_root.clone() {
-            Some(root) => Ok(Some(self.push(ProjectRes { root })?)),
+            Some(root) => {
+                let generation = self.host.project_generation(&root).unwrap_or(0);
+                Ok(Some(self.push(ProjectRes { root, generation })?))
+            }
             None => Ok(None),
         }
     }
@@ -1592,6 +1614,11 @@ impl events::Host for StoreData {
         {
             return Ok(Err(to_wit(e)));
         }
+        if kind == EventKind::ProjectClosed
+            && let Err(e) = self.host.require_api(kind.name(), 18)
+        {
+            return Ok(Err(to_wit(e)));
+        }
         if kind == EventKind::DocumentChanged {
             return Ok(Err(wit::Error::Invalid(
                 "document-changed is delivered only for paths named with subscribe-paths".into(),
@@ -1619,6 +1646,28 @@ impl events::Host for StoreData {
             }
         }
         Ok(self.host.subscribe_paths(&kind, globs).map_err(to_wit))
+    }
+
+    fn subscribe_paths_with_options(
+        &mut self,
+        kind: String,
+        options: bindings::openidea::plugin::events::SubscriptionOptions,
+    ) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::Events) {
+            return Ok(Err(e));
+        }
+        if let Err(e) = self.host.require_api("subscribe-paths-with-options", 18) {
+            return Ok(Err(to_wit(e)));
+        }
+        if kind == EventKind::DocumentChanged.name() {
+            if let Err(e) = self.host.require_api(&kind, 6) {
+                return Ok(Err(to_wit(e)));
+            }
+            if let Err(e) = self.require(Capability::ProjectRead).and_then(|_| self.require(Capability::EditorRead)) {
+                return Ok(Err(e));
+            }
+        }
+        Ok(self.host.subscribe_paths_with_options(&kind, options.globs, options.debounce_ms).map_err(to_wit))
     }
 
     fn unsubscribe(&mut self, kind: String) -> wasmtime::Result<()> {
@@ -2558,8 +2607,10 @@ impl StoreData {
         if let Err(e) = self.require(Capability::Process(target.program.clone())) {
             return Ok(Err(e));
         }
-        let root = self.table.get(&project)?.root.clone();
-        Ok(self.host.register_run_target(&root, target).map_err(to_wit))
+        let res = self.table.get(&project)?;
+        let root = res.root.clone();
+        let generation = res.generation;
+        Ok(self.host.register_run_target(&root, target, Some(generation)).map_err(to_wit))
     }
 }
 
