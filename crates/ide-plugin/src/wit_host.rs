@@ -906,6 +906,16 @@ impl workspace::Host for StoreData {
             .transpose()
     }
 
+    fn invoking_project(&mut self) -> wasmtime::Result<Option<Resource<ProjectRes>>> {
+        // Only a project that is still open: a closed window's root is no project any more.
+        let root = self.invocation.workspace_root.clone().filter(|root| self.host.projects().contains(root));
+        root.map(|root| {
+            let generation = self.host.project_generation(&root).unwrap_or(0);
+            self.push(ProjectRes { root, generation })
+        })
+        .transpose()
+    }
+
     fn projects(&mut self) -> Fallible<Vec<Resource<ProjectRes>>> {
         if let Err(e) = self.require(Capability::ProjectRead) {
             return Ok(Err(e));

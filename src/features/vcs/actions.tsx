@@ -278,7 +278,7 @@ function contextPaths(arg: unknown): string[] {
  * else the Project view's — it keeps its selection while another view has focus — else the
  * active file.
  */
-function selectedPaths(arg: unknown): string[] {
+function selectedPaths(arg: unknown, project = projectViewSelection()): string[] {
   const changed = changedPaths(arg);
   if (changed.length) return changed;
   // The Commit dialog tree's selection is final, even when it is empty.
@@ -289,8 +289,15 @@ function selectedPaths(arg: unknown): string[] {
     if (selectionKeys.length && selectionKeys.every((key) => key === "group:ignored" || key.startsWith("ignored:")))
       return [];
   }
-  const project = projectViewSelection();
   return project.length ? project : contextPaths(arg);
+}
+
+/**
+ * Like {@link selectedPaths}, but the Project view's selection counts only while the tree has
+ * focus or owns the context: over the editor the active file wins.
+ */
+function focusedSelection(arg: unknown, ctx: { projectViewFocus?: unknown }): string[] {
+  return selectedPaths(arg, ctx.projectViewFocus || projectViewContextLead() ? projectViewSelection() : []);
 }
 
 /** Uses the Project view's selection while the tree has focus or owns the context. */
@@ -793,7 +800,7 @@ export function registerVcsActions(): () => void {
         }
         const line =
           arg && typeof arg === "object" && "line" in arg ? Number((arg as { line: unknown }).line) : undefined;
-        const paths = selectedPaths(arg);
+        const paths = focusedSelection(arg, ctx);
         if (!paths.length) {
           notifications().notify({ group: "vcs", level: "info", title: "Select a changed file to show its diff" });
           return;
@@ -832,9 +839,9 @@ export function registerVcsActions(): () => void {
       icon: "diff",
       when: VCS,
       keyWhen: "!editorTextFocus",
-      run: ({ arg }) => {
+      run: ({ arg, ctx }) => {
         const requested = arg && typeof arg === "object" && "left" in arg && "right" in arg ? (arg as DiffData) : null;
-        const path = selectedPaths(arg)[0];
+        const path = focusedSelection(arg, ctx)[0];
         const data = requested ?? focusedDiffNavigator()?.viewer?.()?.data ?? (path ? workingDiffData(path) : null);
         if (!data) {
           notifications().notify({ group: "vcs", level: "info", title: "Select a changed file to show its diff" });
@@ -849,8 +856,8 @@ export function registerVcsActions(): () => void {
       category: "Git",
       icon: "diff",
       when: VCS,
-      run: async ({ arg }) => {
-        const paths = selectedPaths(arg);
+      run: async ({ arg, ctx }) => {
+        const paths = focusedSelection(arg, ctx);
         if (!paths.length) {
           notifications().notify({ group: "vcs", level: "info", title: "Open or select a file or folder to compare" });
           return;

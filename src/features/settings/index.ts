@@ -14,6 +14,7 @@
  */
 import { registerActions } from "@/platform/actions";
 import { call, commands, isTauri } from "@/platform/ipc";
+import { isWebMode } from "@/platform/webBridge";
 import { lazyWhen } from "@/ui";
 import { useProject } from "@/platform/project";
 import { provideSettingsSearchIndex, registerOverlay } from "@/workbench/contributions";
@@ -49,7 +50,7 @@ const separateWindow = () => useProject.getState().settings?.appearance?.setting
 
 /** The native Settings window when it is enabled and the backend can make one, else the dialog. */
 async function showSettings(page?: string, newProjects = false) {
-  if (isTauri() && separateWindow()) {
+  if (isTauri() && !isWebMode() && separateWindow()) {
     try {
       await call(commands.windowOpenSettings(page ?? null, newProjects, windowBackgroundHex()));
       return;

@@ -80,6 +80,15 @@ describe("Enter after /**", () => {
   it("closes the comment with an empty summary above anything else, and in other /* */ languages", () => {
     expect(enter("/**|\nclass A {}").text).toBe("/**\n * |\n */\nclass A {}");
     expect(enter("  /**|\n\nconst x = 1;", "javascript").text).toBe("  /**\n   * |\n   */\n\nconst x = 1;");
+    expect(enter('/**|\nfunction f(a = "x", ...b) { return a; }', "javascript").text).toBe(
+      '/**\n * |\n * @param {string} a\n * @param ...b\n * @returns\n */\nfunction f(a = "x", ...b) { return a; }',
+    );
+    expect(enter("/**|\nfunction f(a):{x:number}{ return a; }", "typescript").text).toBe(
+      "/**\n * |\n * @param a\n * @returns\n */\nfunction f(a):{x:number}{ return a; }",
+    );
+    expect(enter('/**|\nfunction f(a = "x") { return a; }', "typescriptreact").text).toBe(
+      '/**\n * |\n * @param a\n * @returns\n */\nfunction f(a = "x") { return a; }',
+    );
   });
 
   it("only breaks the line in an existing doc block, after other text, or without /* */ comments", () => {
@@ -167,13 +176,81 @@ describe("JavaScript / TypeScript documentation stub tags", () => {
       "@param b",
       "@returns",
     ]);
-    expect(jsDocTags("export async function load(url, ...rest) {")).toEqual(["@param url", "@param rest"]);
+    expect(jsDocTags("export async function load(url, ...rest) {")).toEqual(["@param url", "@param ...rest"]);
     expect(jsDocTags("const f = async (x: Map<string, number>, y = 2): Promise<void> => {")).toEqual([
       "@param x",
       "@param y",
     ]);
     expect(jsDocTags("  private static parse<T>(input: string): T {")).toEqual(["@param input", "@returns"]);
     expect(jsDocTags("constructor(private readonly db: Db) {")).toEqual(["@param db"]);
+  });
+
+  it("adds the {type} of a default value in JavaScript only", () => {
+    const f = 'function f(name = "x", n = 3, ok = true, list = [], opts = {}, m = new Map(), other) {}';
+    expect(jsDocTags(f, true)).toEqual([
+      "@param {string} name",
+      "@param {number} n",
+      "@param {boolean} ok",
+      "@param {Array} list",
+      "@param {Object} opts",
+      "@param {Map} m",
+      "@param other",
+    ]);
+    expect(jsDocTags(f)).toEqual([
+      "@param name",
+      "@param n",
+      "@param ok",
+      "@param list",
+      "@param opts",
+      "@param m",
+      "@param other",
+    ]);
+  });
+
+  it("names destructured parameters options and keeps the ... of rest parameters", () => {
+    expect(jsDocTags('function f({ a = "x", b } = {}, [c, d], ...args) {}', true)).toEqual([
+      "@param {Object} options",
+      "@param options1",
+      "@param ...args",
+    ]);
+    expect(jsDocTags("function f({ a, b }: Opts, ...args: string[]) {}")).toEqual(["@param options", "@param ...args"]);
+  });
+
+  it("adds @returns when the body returns a value", () => {
+    expect(jsDocTags("function f(a) { if (a) { return a; } }")).toEqual(["@param a", "@returns"]);
+    expect(jsDocTags("const f = function (a) { return a; }")).toEqual(["@param a", "@returns"]);
+    expect(jsDocTags("const f = (a, b) => a + b;")).toEqual(["@param a", "@param b", "@returns"]);
+    expect(jsDocTags("export const f = x => x * 2;")).toEqual(["@param x", "@returns"]);
+    expect(jsDocTags("  async load(url) { return fetch(url); }")).toEqual(["@param url", "@returns"]);
+  });
+
+  it("leaves out @returns without a result, for nested returns and for constructors", () => {
+    expect(jsDocTags("function f(a) { if (a) { return; } }")).toEqual(["@param a"]);
+    expect(jsDocTags("const f = async x => { await x; };")).toEqual(["@param x"]);
+    expect(jsDocTags("function f(a) { const s = 'return 1'; // return 2\n}")).toEqual(["@param a"]);
+    expect(
+      jsDocTags(
+        "function f(a) { const g = () => { return 1; }; a.map(function (x) { return x; }); ({ m() { return 1; } }); }",
+      ),
+    ).toEqual(["@param a"]);
+    expect(jsDocTags("constructor(a, b = 1) { this.a = a; return; }", true)).toEqual(["@param a", "@param {number} b"]);
+    expect(jsDocTags("  set value(v: number) { this.v = v; }")).toEqual(["@param v"]);
+  });
+
+  it("reads object literal return types", () => {
+    expect(jsDocTags("m(a):{ok:boolean}{ return a; }")).toEqual(["@param a", "@returns"]);
+    expect(jsDocTags("function f(a):{x:number}{")).toEqual(["@param a", "@returns"]);
+    expect(jsDocTags("function f(a): { x: number } {")).toEqual(["@param a", "@returns"]);
+    expect(jsDocTags("const f = (a): {x: 1} => a;")).toEqual(["@param a", "@returns"]);
+    expect(jsDocTags("function f(a): A | { x: () => void } {")).toEqual(["@param a", "@returns"]);
+    expect(jsDocTags("function f(a): Promise<void> { return g(a); }")).toEqual(["@param a"]);
+  });
+
+  it("counts a return inside for await", () => {
+    expect(jsDocTags("async function f(xs) { for await (const x of xs) { return x; } }")).toEqual([
+      "@param xs",
+      "@returns",
+    ]);
   });
 
   it("finds nothing for calls and statements", () => {
