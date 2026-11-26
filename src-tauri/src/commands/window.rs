@@ -805,7 +805,9 @@ pub async fn app_install_update(
 /// can show the UI's language and fall back to English. An install records the
 /// notes it saw, so this is only for an update installed outside the app.
 /// `Ok(None)` when the manifest covers another version or carries no notes.
-#[desktop_command(trust = trusted)]
+/// Reads only the public manifest, like the update check: the page usually opens
+/// in a window without a project.
+#[desktop_command(trust = always)]
 #[tauri::command]
 #[specta::specta]
 pub async fn app_release_notes(
