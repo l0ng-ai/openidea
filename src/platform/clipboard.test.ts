@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { commands } from "./ipc";
+import { usePlatform } from "./platformInfo";
 import {
   pasteClipboardFiles,
+  readClipboardPlainText,
   readClipboardPng,
   readClipboardText,
   writeClipboardPng,
@@ -42,6 +44,29 @@ describe("clipboard text", () => {
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { readText: async () => text } });
     expect(await readClipboardText()).toBe(expected);
     expect(list).toHaveBeenCalledTimes(calls);
+  });
+
+  // WebKit on macOS asks the user to confirm navigator.clipboard reads outside a paste event.
+  it("treats no native text on macOS as empty, but falls back when the backend refuses", async () => {
+    usePlatform.setState({ os: "macos" });
+    const readText = vi.fn(async () => "web");
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { readText } });
+    const native = vi.spyOn(commands, "clipboardText").mockResolvedValue({ status: "ok", data: null });
+    expect(await readClipboardPlainText()).toBe("");
+    expect(readText).not.toHaveBeenCalled();
+    native.mockRejectedValue(new Error("restricted"));
+    expect(await readClipboardPlainText()).toBe("web");
+  });
+
+  it("falls back to the WebView where the backend has no text reader", async () => {
+    usePlatform.setState({ os: "windows" });
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { readText: async () => "web" } });
+    vi.spyOn(commands, "clipboardText").mockResolvedValue({ status: "ok", data: null });
+    try {
+      expect(await readClipboardPlainText()).toBe("web");
+    } finally {
+      usePlatform.setState({ os: "macos" });
+    }
   });
 
   it("does not consult files for an empty text-only event or a browser", async () => {

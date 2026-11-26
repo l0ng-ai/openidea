@@ -24,7 +24,7 @@ pub(crate) fn block_history(
         crate::repo::blob_at(&repo, &rel, "HEAD")?
     };
     let Some(head) = head else {
-        return Ok(BlockHistory { head_lines: None, revisions: Vec::new() });
+        return Ok(BlockHistory { head_lines: None, head: None, revisions: Vec::new() });
     };
     let head = decode(&head, encoding);
     let current = match current_text {
@@ -32,12 +32,18 @@ pub(crate) fn block_history(
         None => decode(&std::fs::read(r.abs_path(&rel))?, encoding).into_owned(),
     };
     let Some((start, end)) = head_range(&crate::diff::line_hunks(&head, &current), lines) else {
-        return Ok(BlockHistory { head_lines: None, revisions: Vec::new() });
+        return Ok(BlockHistory { head_lines: None, head: None, revisions: Vec::new() });
     };
     let range = format!("-L{},{}:{rel}", start + 1, end + 1);
     let args = ["log", "--no-color", "--no-ext-diff", "--no-textconv", FORMAT, &range, "HEAD"];
     let out = cli::run_cancellable(r.root(), &args, cancel)?;
-    Ok(BlockHistory { head_lines: Some((start, end)), revisions: parse_log(&out.stdout, encoding) })
+    // The newest row's block can't stand in for HEAD's: a merge row has none.
+    let mut block = String::new();
+    for line in head.lines().skip(start as usize).take((end - start) as usize + 1) {
+        push_line(&mut block, line);
+    }
+    let revisions = parse_log(&out.stdout, encoding);
+    Ok(BlockHistory { head_lines: Some((start, end)), head: Some(block), revisions })
 }
 
 /// The HEAD lines (0-based, inclusive) of `lines` in the current text, given the
