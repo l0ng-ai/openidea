@@ -3203,6 +3203,46 @@ async fn rapid_idle_model_switches_share_discovery_and_never_apply_a_stale_compl
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn explicit_service_tier_reaches_the_session_even_when_it_matches_the_reported_default() {
+    for value in [None, Some("false"), Some("true")] {
+        let tmp = tempfile::tempdir().unwrap();
+        let agent = Arc::new(FakeAgent::default());
+        *agent.extra_options.lock() = vec![json!({
+            "id": "service_tier", "name": "Fast", "category": "model_config", "type": "select",
+            "currentValue": value.unwrap_or("true"),
+            "options": [{"value": "false"}, {"value": "true"}]
+        })];
+        let mgr = manager(tmp.path(), agent.clone());
+        let task = mgr
+            .create(NewAgentTask {
+                prompt: text("again"),
+                provider: "codex".into(),
+                config: value
+                    .map(|value| vec![AgentConfigChoice { id: "service_tier".into(), value: value.into() }])
+                    .unwrap_or_default(),
+                isolation: Isolation::Local,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+        let calls = agent.calls.lock();
+        let prompt = calls.iter().position(|call| call == "session/prompt").unwrap();
+        if let Some(value) = value {
+            let setting = calls
+                .iter()
+                .position(|call| call == &format!("session/set_config_option \"{value}\""))
+                .expect("an explicit tier must not be mistaken for an inherited default");
+            assert!(setting < prompt);
+        } else {
+            assert!(!calls.iter().any(|call| call == "session/set_config_option"));
+        }
+        drop(calls);
+        mgr.shutdown();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn upfront_effort_is_validated_after_changing_model_before_the_prompt() {
     for (effort, applied) in [("medium", true), ("high", false)] {
         let tmp = tempfile::tempdir().unwrap();

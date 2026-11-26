@@ -565,6 +565,8 @@
   "Pinned": "Pinned",
   "Models": "Models",
   "Effort Level": "Effort Level",
+  "Fast": "Fast",
+  "Standard": "Standard",
   "Model settings": "Model settings",
   "Model settings: {summary}": "Model settings: {summary}",
   "Context Size": "Context Size",
