@@ -69,6 +69,7 @@ export const KIND_CATEGORIES: Record<string, string> = {
   node: "JavaScript",
   bun: "JavaScript",
   deno: "JavaScript",
+  cypress: "JavaScript",
   python: "Python",
   pytest: "Python",
   cargo: "Rust",

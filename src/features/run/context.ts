@@ -8,6 +8,7 @@ import { jvmModuleDir } from "@/platform/javaLaunch";
 import { djangoLabel, djangoTestsOf, hasDjangoTests } from "./djangoTypes";
 import { inGradleModule } from "./gradleModuleTests";
 import { systemPython } from "./pythonTypes";
+import { cypressSelection, isCypressComponentSpec } from "./testing/cypress";
 import { phpunitArgs } from "./testing/phpunit";
 import { frameworkFor } from "./testing";
 import { goTestParts } from "./goArguments";
@@ -55,7 +56,7 @@ const stem = (p: string) => (p.split("/").pop() ?? p).replace(/\.[^.]+$/, "");
 /** Kinds whose test configs can run a file of this extension. */
 function testKinds(relPath: string): string[] {
   if (/\.cs$/i.test(relPath)) return ["dotnet-test"];
-  if (/\.[cm]?[jt]sx?$/.test(relPath)) return ["npm", "deno", "bun", "node"];
+  if (/\.[cm]?[jt]sx?$/.test(relPath)) return ["npm", "deno", "bun", "node", "cypress"];
   if (/\.py$/.test(relPath)) return ["pytest", "python", "django-test"];
   if (/\.php$/.test(relPath)) return ["phpunit"];
   if (/_spec\.rb$/.test(relPath)) return ["rspec", "rake", "ruby"];
@@ -211,6 +212,14 @@ function byRunner(bases: RunConfig[], content: string): RunConfig[] {
   return isPlaywrightSpec(content) ? playwright : bases.filter((c) => !playwright.includes(c));
 }
 
+/** A project with Cypress and another JS runner: Cypress specs (`*.cy.*`, `cypress/`) run on Cypress's configurations. */
+function byCypress(bases: RunConfig[], relPath: string): RunConfig[] {
+  const cypress = bases.filter((c) => frameworkFor(c) === "cypress");
+  if (!cypress.length || cypress.length === bases.length) return bases;
+  const spec = /\.cy\.[cm]?[jt]sx?$|(^|\/)cypress\//.test(relPath);
+  return spec ? cypress : bases.filter((c) => !cypress.includes(c));
+}
+
 /**
  * Test configurations that can run `relPath` equally well (same, closest working
  * directory: `npm run test` and `npm run test:unit`…); the default one first.
@@ -225,7 +234,10 @@ export function testBasesFor(relPath: string, configs: RunConfig[], content?: st
     .filter((c) => c.kind !== "node" || frameworkFor(c) === "playwright")
     .sort((a, b) => kinds.indexOf(a.kind) - kinds.indexOf(b.kind));
   const best = allClosest(candidates, relPath);
-  if (best.length) return content === undefined ? best : byRunner(best, content);
+  if (best.length) {
+    const runners = byCypress(best, relPath);
+    return content === undefined ? runners : byRunner(runners, content);
+  }
   const fallback = implicitPytest(relPath, configs);
   return fallback ? [fallback] : [];
 }
@@ -243,6 +255,13 @@ export function testConfigFor(
   base ??= testBasesFor(relPath, configs, content)[0];
   if (!base) return null;
   const file = relToCwd(relPath, base);
+  if (frameworkFor(base) === "cypress") {
+    return derived(
+      base,
+      relPath,
+      cypressSelection(base, [file], { component: isCypressComponentSpec(relPath, content) }),
+    );
+  }
   switch (base.kind) {
     case "dotnet-test": {
       const methods = csharpTargets(content ?? "")

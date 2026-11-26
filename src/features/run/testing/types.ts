@@ -14,6 +14,8 @@ export interface TestLocation {
   resolve: "path" | "name" | "rubyTest";
   /** JVM frames: the class's binary name; `path` is then the file under its package directory. */
   className?: string;
+  /** No line: the describe chain and name of a JS test to find in the file (Cypress reports none). */
+  test?: string[];
 }
 
 export type TestEvent =

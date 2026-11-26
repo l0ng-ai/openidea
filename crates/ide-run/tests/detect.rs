@@ -77,6 +77,31 @@ fn playwright_scripts_and_configs() {
 }
 
 #[test]
+fn cypress_scripts_dependencies_and_configs() {
+    let dir = project(&[
+        ("package.json", r#"{"scripts":{"cy:run":"cypress run --browser chrome","cy:open":"cypress open"}}"#),
+        ("cypress.config.ts", ""),
+        ("web/package.json", r#"{"devDependencies":{"cypress":"^15.0.0"}}"#),
+        ("docs/package.json", r#"{"scripts":{"build":"vite build"}}"#),
+        ("docs/cypress.config.js", ""),
+    ]);
+    let c = detect(dir.path());
+    let run = find(&c, "npm:cy:run");
+    assert!(run.is_test);
+    assert_eq!(run.extras.test_runner.as_deref(), Some("cypress"));
+    assert!(!find(&c, "npm:cy:open").is_test);
+    // The root's script runs Cypress already.
+    assert!(!ids(&c).contains(&"cypress"));
+    let web = find(&c, "cypress:web");
+    assert_eq!(cmdline(web), "npx cypress run");
+    assert_eq!(web.name, "web: cypress run");
+    assert!(web.is_test && web.detected);
+    assert_eq!(web.kind, "cypress");
+    assert_eq!(web.cwd.as_deref(), Some(Path::new("web")));
+    assert_eq!(find(&c, "cypress:docs").kind, "cypress");
+}
+
+#[test]
 fn node_test_scripts() {
     let dir = project(&[(
         "package.json",
