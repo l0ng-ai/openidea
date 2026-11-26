@@ -1040,6 +1040,7 @@ export async function revealOpened(): Promise<void> {
 
 const completionLoads = new Map<string, { current: () => boolean; promise: Promise<DbCompletion | null> }>();
 const preparingConsoles = new Map<string, RequestId>();
+const pendingExplains = new Map<string, RequestId>();
 const stopResultDelivery = new Map<RequestId, () => void>();
 const incompleteResultDelivery = Symbol("incomplete SQL result delivery");
 const streamingResultTabs = new Set<number>();
@@ -1075,6 +1076,7 @@ useProject.subscribe((state, previous) => {
   sourceMutations.clear();
   completionLoads.clear();
   preparingConsoles.clear();
+  pendingExplains.clear();
   lastUsed.clear();
   if (useDatabase.getState().pausedConsoleMetadata.size) useDatabase.setState({ pausedConsoleMetadata: new Set() });
 });
@@ -1548,6 +1550,7 @@ export async function executeConsole(
   const request = nextRequestId();
   const ownsRun = () => current() && useDatabase.getState().running[path] === request;
   preparingConsoles.set(path, request);
+  const earlierExplain = pendingExplains.get(path);
   const resultIds = new Set<number>();
   let finished = false;
   let selectOutput = false;
@@ -1559,6 +1562,7 @@ export async function executeConsole(
     const statements = await consoleStatements(id, text, from, to);
     if (!current() || preparingConsoles.get(path) !== request || !statements.length) return [];
     preparingConsoles.delete(path);
+    if (pendingExplains.get(path) === earlierExplain) pendingExplains.delete(path);
     const prev = useDatabase.getState().running[path];
     if (prev) cancelExecution(prev);
     const execution = { startedAt: Date.now(), statements: statements.length, active: null };
@@ -1743,10 +1747,10 @@ async function consoleStatements(id: string, text: string, from: number, to: num
 
 const PLAN_TITLE = "Query Plan";
 
-/** Shows `plan` of `statement` in the console's Query Plan tab. */
-function showPlan(path: string, id: string, statement: SqlStatement, plan: DbPlanNode[]) {
+/** Publishes the plan, selecting its tab only if Explain still owns the selection. */
+function showPlan(path: string, id: string, statement: SqlStatement, plan: DbPlanNode[], select: boolean) {
   useDatabase.setState((s) => {
-    const old = s.results.find((r) => r.path === path && r.plan && !r.pinned);
+    const old = select ? s.results.find((r) => r.path === path && r.plan && !r.pinned) : undefined;
     const tab: ResultTab = {
       id: old?.id ?? nextTab++,
       title: old?.title ?? PLAN_TITLE,
@@ -1755,10 +1759,14 @@ function showPlan(path: string, id: string, statement: SqlStatement, plan: DbPla
       outcome: { statement, result: null, error: null },
       plan,
     };
-    const results = old
-      ? s.results.map((r) => (r === old ? tab : r))
-      : capResults([...s.results, tab], new Set([tab.id]));
-    return { results, activeResult: tab.id, activeClientResults: { ...s.activeClientResults, [path]: tab.id } };
+    const active = select ? tab.id : activeResultFor(s, path);
+    // Adding a late plan must not evict any of the selected tabs.
+    const keep = select
+      ? new Set([tab.id])
+      : new Set([tab.id, active, s.activeResult ?? OUTPUT_TAB, ...Object.values(s.activeClientResults)]);
+    const results = old ? s.results.map((r) => (r === old ? tab : r)) : capResults([...s.results, tab], keep);
+    const activeClientResults = { ...s.activeClientResults, [path]: active };
+    return select ? { results, activeResult: tab.id, activeClientResults } : { results, activeClientResults };
   });
 }
 
@@ -1767,12 +1775,14 @@ async function explain(
   statement: SqlStatement,
   schema: string | undefined,
   path: string,
+  request = nextRequestId(),
 ): Promise<DbPlanNode[]> {
-  const plan = await withConnection(id, () =>
-    call(commands.dbExplain(nextRequestId(), id, statement.text, schema || null)),
-  );
-  log("statement", `explain ${statement.text}`, `${schema || promptOf(id)}>`, path);
-  log("result", `${plan.length} plan node${plan.length === 1 ? "" : "s"}`, undefined, path);
+  const current = databaseRequest(id);
+  const plan = await withConnection(id, () => call(commands.dbExplain(request, id, statement.text, schema || null)));
+  if (current()) {
+    log("statement", `explain ${statement.text}`, `${schema || promptOf(id)}>`, path);
+    log("result", `${plan.length} plan node${plan.length === 1 ? "" : "s"}`, undefined, path);
+  }
   return plan;
 }
 
@@ -1780,26 +1790,29 @@ async function explain(
 export async function explainConsole(path: string, text: string, from: number, to: number): Promise<void> {
   const id = consoleSource(path);
   if (!id || sourceById(id)?.driver === "jdbc") return;
+  const current = databaseRequest(id);
+  const request = nextRequestId();
+  pendingExplains.set(path, request);
+  const ownsSelection = () => pendingExplains.get(path) === request;
   try {
     const [statement] = await consoleStatements(id, text, from, to);
-    if (!statement) return;
-    revealDatabaseResults(path);
-    showPlan(
-      path,
-      id,
-      statement,
-      await explain(id, statement, useDatabase.getState().consoleSchemas[path] || undefined, path),
-    );
+    if (!current() || !statement) return;
+    if (ownsSelection()) revealDatabaseResults(path);
+    const plan = await explain(id, statement, useDatabase.getState().consoleSchemas[path], path, request);
+    if (current()) showPlan(path, id, statement, plan, ownsSelection());
   } catch (e) {
-    if (isCancelled(e)) return;
-    showOutputFor(path);
+    if (!current() || isCancelled(e)) return;
     log("error", `[${targetLabel(id)}] ${message(e)}`, undefined, path);
+    if (!ownsSelection()) return;
+    showOutputFor(path);
     notifications().notify({
       level: "error",
       title: "Cannot explain the statement",
       body: message(e),
       key: "db-explain",
     });
+  } finally {
+    if (ownsSelection()) pendingExplains.delete(path);
   }
 }
 

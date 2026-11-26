@@ -190,3 +190,113 @@ test("follows the active SQL console and preserves the selected client when anot
   await expect(panel).not.toBeVisible();
   expect(await ipcCalls(page, "db_execute")).toHaveLength(4);
 });
+
+for (const failed of [false, true]) {
+  test(`keeps a newer result selected when an older Explain ${failed ? "fails" : "finishes"}`, async ({
+    workbench: page,
+  }) => {
+    await stubDesktop(page);
+    await page.evaluate(async () => {
+      let finish: ((fail: boolean) => void) | undefined;
+      const projectPath = "/src/platform/project.ts";
+      const storePath = "/src/features/database/store.ts";
+      const { useProject } = await import(/* @vite-ignore */ projectPath);
+      const { useDatabase } = await import(/* @vite-ignore */ storePath);
+      useProject.setState({ settings: {} });
+      useDatabase.setState({
+        loaded: true,
+        sources: [{ id: "db", name: "Demo SQLite", driver: "sqlite", readOnly: true }],
+        completion: { db: { defaultSchema: "main", tables: [], foreignKeys: [] } },
+      });
+      Object.assign(window.__ipc.handlers, {
+        db_connected: () => ["db"],
+        db_statements: ({ text }: { text: string }) => [{ from: 0, to: text.length, text }],
+        db_explain: () =>
+          new Promise((resolve, reject) => {
+            finish = (fail) => {
+              if (fail) reject(new Error("Delayed explain failure"));
+              else resolve([{ parent: null, operation: "Delayed scan", params: "", properties: [] }]);
+            };
+          }),
+        db_execute: ({ statements }: { statements: Array<{ text: string }> }) => [
+          {
+            statement: statements[0],
+            result: {
+              columns: [{ name: "value", typeName: "text" }],
+              rows: [[statements[0]!.text]],
+              hasMore: false,
+              elapsedMs: 2,
+              executionMs: 1,
+            },
+            error: null,
+          },
+        ],
+        "test:finishExplain": ({ fail }: { fail: boolean }) => finish?.(fail),
+      });
+    });
+
+    const open = (path: string) =>
+      page.evaluate(async (path) => {
+        const contributionsPath = "/src/workbench/contributions.ts";
+        const { editorService } = await import(/* @vite-ignore */ contributionsPath);
+        await editorService().openFile(path, { focus: true });
+      }, path);
+    const editor = page.locator(".cm-editor:visible .cm-content[contenteditable=true]");
+    const edit = async (sql: string) => {
+      await editor.click();
+      await editor.press("Meta+A");
+      await page.keyboard.insertText(sql);
+    };
+    const panel = page.locator('section[aria-label="Database Output"]');
+    await open(beta);
+    await edit("select 'Beta'");
+    await editor.press("Meta+Enter");
+    await expect(panel.getByRole("gridcell", { name: "select 'Beta'", exact: true })).toBeVisible();
+
+    await open(alpha);
+    await edit("select 'Older plan'");
+    await page.getByRole("button", { name: "Explain Plan", exact: true }).click();
+    await expect.poll(async () => (await ipcCalls(page, "db_explain")).length).toBe(1);
+    await edit("select 'Newer run'");
+    await editor.press("Meta+Enter");
+    const result = panel.getByRole("gridcell", { name: "select 'Newer run'", exact: true });
+    await expect(result).toBeVisible();
+    await expect(editor).toBeFocused();
+
+    if (failed) await open(beta);
+    await page.evaluate((fail) => window.__ipc.handlers["test:finishExplain"]?.({ fail }), failed);
+    const plan = panel.getByRole("tab", { name: "Query Plan", exact: true });
+    if (failed) {
+      await expect
+        .poll(() =>
+          page.evaluate(async (path) => {
+            const storePath = "/src/features/database/store.ts";
+            const { useDatabase } = await import(/* @vite-ignore */ storePath);
+            return useDatabase
+              .getState()
+              .output.some(
+                (line: { path?: string; text: string }) =>
+                  line.path === path && line.text.includes("Delayed explain failure"),
+              );
+          }, alpha),
+        )
+        .toBe(true);
+      await expect(panel.getByRole("gridcell", { name: "select 'Beta'", exact: true })).toBeVisible();
+      await expect(editor).toBeFocused();
+      await open(alpha);
+    } else {
+      await expect(plan).toBeVisible();
+    }
+    await expect(result).toBeVisible();
+    await expect(editor).toBeFocused();
+
+    if (failed) {
+      await panel.getByRole("tab", { name: "Output", exact: true }).click();
+      await expect(panel.getByRole("log")).toContainText("Delayed explain failure");
+    } else {
+      await plan.click();
+      await expect(panel.getByRole("tree")).toContainText("Delayed scan");
+    }
+    expect(await ipcCalls(page, "db_execute")).toHaveLength(2);
+  });
+}
