@@ -380,6 +380,7 @@ pub fn spec(os: Os) -> Vec<Entry> {
                 "Appearance",
                 vec![
                     act("editor.toggleZen", "Enter Distraction Free Mode"),
+                    act("view.toggleZenMode", "Enter Zen Mode"),
                     act("window.toggleFullScreen", "Toggle Full Screen"),
                     toggle("view.toggleCompactMode", "Compact Mode"),
                     toggle("view.togglePresentationAssistant", "Presentation Assistant"),
