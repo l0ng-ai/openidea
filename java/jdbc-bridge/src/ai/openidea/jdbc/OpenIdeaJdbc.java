@@ -4,6 +4,10 @@ package ai.openidea.jdbc;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
 import java.sql.*;
 import java.util.*;
 import java.util.concurrent.*;
@@ -11,6 +15,9 @@ import java.util.concurrent.atomic.AtomicReference;
 
 public final class OpenIdeaJdbc {
     static final int LIMIT = 16 * 1024 * 1024;
+    private static final String DUCKDB_CLASS = "org.duckdb.DuckDBDriver";
+    private static final String DUCKDB_MEMORY = "jdbc:duckdb:";
+    private static final String DUCKLAKE_CATALOG = "openidea_lake";
     final DataInputStream input = new DataInputStream(new BufferedInputStream(System.in));
     final DataOutputStream output = new DataOutputStream(new BufferedOutputStream(System.out));
     Connection connection;
@@ -69,7 +76,7 @@ public final class OpenIdeaJdbc {
         if (!a.get(2).isEmpty()) props.setProperty("user", a.get(2));
         if (!a.get(3).isEmpty()) props.setProperty("password", a.get(3));
         boolean readOnly = Boolean.parseBoolean(a.get(4));
-        boolean duckDbReadOnly = readOnly && className.equals("org.duckdb.DuckDBDriver") && url.startsWith("jdbc:duckdb:");
+        boolean duckDbReadOnly = readOnly && className.equals(DUCKDB_CLASS) && url.startsWith(DUCKDB_MEMORY);
         if (duckDbReadOnly) {
             // DuckDB fixes its access mode at open, and options in the URL take precedence.
             for (String key : props.stringPropertyNames()) checkDuckDbReadOnly(key, props.getProperty(key));
@@ -92,9 +99,123 @@ public final class OpenIdeaJdbc {
                 throw new ReadOnlyUnavailable("The JDBC driver rejected Read-only. Check the driver settings and database account privileges.");
             }
         }
+        openMetadata(connection, out);
+    }
+
+    private static void openMetadata(Connection connection, DataOutputStream out) throws SQLException, IOException {
         var m = connection.getMetaData();
         header(out, "version", "quote");
         row(out, m.getDatabaseProductName() + " " + m.getDatabaseProductVersion(), m.getIdentifierQuoteString());
+    }
+
+    private static class DuckLakeUnavailable extends SQLException {
+        DuckLakeUnavailable(String message) { super(message); }
+    }
+
+    private static Path absoluteLakePath(String value) throws DuckLakeUnavailable {
+        try {
+            Path path = Path.of(value);
+            if (path.isAbsolute()) return path;
+        } catch (InvalidPathException ignored) {}
+        throw new DuckLakeUnavailable("DuckLake requires an absolute local path on the database host.");
+    }
+
+    private static String sqlLiteral(String value) {
+        return "'" + value.replace("'", "''") + "'";
+    }
+
+    void openDuckLake(Work work, List<String> a, DataOutputStream out) throws Exception {
+        if (a.size() != 8 || !a.get(0).equals(DUCKDB_CLASS) || !a.get(1).equals(DUCKDB_MEMORY)
+                || !a.get(2).isEmpty() || !a.get(3).isEmpty())
+            throw new DuckLakeUnavailable("DuckLake requires a standard DuckDB connection without JDBC overrides.");
+        if (connection != null)
+            throw new DuckLakeUnavailable("DuckLake requires a new JDBC session.");
+
+        String mode = a.get(5), value = a.get(6), dataPath = a.get(7);
+        boolean create = mode.equals("create"), secret = mode.equals("secret");
+        boolean readOnly = !create;
+        if (!create && !secret && !mode.equals("file"))
+            throw new DuckLakeUnavailable("Choose to open a DuckLake file or secret, or create a new DuckLake.");
+        if (!a.get(4).equals(Boolean.toString(readOnly)))
+            throw new DuckLakeUnavailable("Existing DuckLake catalogs must be opened read-only, and creation uses a separate session.");
+        if (create && !dataPath.isEmpty())
+            throw new DuckLakeUnavailable("New DuckLake catalogs use their default data location.");
+
+        Path catalog = null;
+        if (secret) {
+            if (!value.matches("[A-Za-z_][A-Za-z0-9_]*"))
+                throw new DuckLakeUnavailable("Enter an existing DuckLake secret name using letters, digits or underscores.");
+        } else {
+            catalog = absoluteLakePath(value);
+            if (!create && !Files.isRegularFile(catalog))
+                throw new DuckLakeUnavailable("The DuckLake catalog file does not exist on the database host.");
+        }
+        if (!dataPath.isEmpty() && !Files.isDirectory(absoluteLakePath(dataPath)))
+            throw new DuckLakeUnavailable("Choose an existing DuckLake data directory on the database host.");
+
+        Driver driver = Class.forName(DUCKDB_CLASS).asSubclass(Driver.class).getConstructor().newInstance();
+        Connection session = driver.connect(DUCKDB_MEMORY, new Properties());
+        if (session == null) throw new UnsupportedUrl();
+
+        String failure = "DuckLake could not load the official extension. Check the DuckDB version and extension access.";
+        try {
+            try (Statement st = session.createStatement()) {
+                work.begin(st);
+                st.execute("INSTALL ducklake FROM core");
+                st.execute("LOAD ducklake");
+                if (secret) {
+                    failure = "DuckLake could not resolve the named secret on the database host.";
+                    try (var lookup = session.prepareStatement(
+                            "SELECT 1 FROM duckdb_secrets() WHERE name = ? AND type = 'ducklake'")) {
+                        work.begin(lookup);
+                        lookup.setString(1, value);
+                        try (var matches = lookup.executeQuery()) {
+                            if (!matches.next())
+                                throw new DuckLakeUnavailable("The named DuckLake secret was not found on the database host.");
+                        }
+                    }
+                    work.begin(st);
+                }
+                if (create) {
+                    failure = "DuckLake could not create the new directory. Check its parent and permissions.";
+                    try {
+                        Files.createDirectory(catalog);
+                    } catch (FileAlreadyExistsException ignored) {
+                        throw new DuckLakeUnavailable("The DuckLake directory already exists. Choose a new directory.");
+                    }
+                    catalog = catalog.resolve("catalog.ducklake");
+                }
+
+                failure = create ? "DuckLake could not initialize the new catalog. Check the new directory."
+                    : "DuckLake could not open the catalog read-only. Check its metadata and data access.";
+                String location = secret ? value : catalog.toString();
+                String options = create ? "CREATE_IF_NOT_EXISTS true" : "READ_ONLY, CREATE_IF_NOT_EXISTS false";
+                if (!dataPath.isEmpty()) options += ", DATA_PATH " + sqlLiteral(dataPath) + ", OVERRIDE_DATA_PATH true";
+                st.execute("ATTACH " + sqlLiteral("ducklake:" + location) + " AS " + DUCKLAKE_CATALOG
+                    + " (" + options + ", AUTOMATIC_MIGRATION false)");
+                st.execute("USE " + DUCKLAKE_CATALOG);
+                try (var db = st.executeQuery("SELECT readonly FROM duckdb_databases() WHERE database_name = '"
+                        + DUCKLAKE_CATALOG + "' AND database_name = current_database() AND type = 'ducklake'")) {
+                    if (!db.next() || db.getBoolean(1) != readOnly) throw new DuckLakeUnavailable(failure);
+                }
+            }
+            openMetadata(session, out);
+            // Only a read-only session is published for later requests.
+            if (create) {
+                failure = "DuckLake could not finish creating the catalog. Check the new directory.";
+                session.close();
+            } else {
+                connection = session;
+            }
+        } catch (DuckLakeUnavailable e) {
+            throw e;
+        } catch (Exception | LinkageError e) {
+            throw new DuckLakeUnavailable(failure);
+        } finally {
+            if (connection != session) {
+                try { session.close(); } catch (SQLException ignored) {}
+            }
+        }
     }
 
     static String pattern(DatabaseMetaData m, String literal) throws SQLException {
@@ -271,6 +392,7 @@ public final class OpenIdeaJdbc {
             reply.writeBoolean(true);
             switch (op) {
                 case "open" -> open(a, reply);
+                case "openDuckLake" -> openDuckLake(work, a, reply);
                 case "schemas" -> schemas(reply);
                 case "tables", "columns", "schemaColumns" -> metadata(op, a, reply);
                 case "namespace" -> {
@@ -333,11 +455,11 @@ public final class OpenIdeaJdbc {
             if ((e instanceof ClassNotFoundException || e instanceof NoClassDefFoundError)
                     && e.getMessage() != null && e.getMessage().matches("[A-Za-z0-9_.$/]+")) {
                 text(reply, "JDBC class " + e.getMessage() + " was not found. Check the driver class and include its dependency JARs.");
-            } else if (e instanceof ReadOnlyUnavailable) {
+            } else if (e instanceof ReadOnlyUnavailable || e instanceof DuckLakeUnavailable) {
                 text(reply, e.getMessage());
             } else if (e instanceof UnsupportedUrl) {
                 text(reply, "The selected JDBC driver does not accept this URL");
-            } else if (op.equals("open")) {
+            } else if (op.equals("open") || op.equals("openDuckLake")) {
                 // Login exceptions may contain properties or credentials embedded in a vendor URL.
                 String state = e instanceof SQLException ? ((SQLException)e).getSQLState() : null;
                 text(reply, "JDBC connection failed (" + e.getClass().getSimpleName()

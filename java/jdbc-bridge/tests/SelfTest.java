@@ -112,6 +112,17 @@ public class SelfTest {
         return bytes;
     }
 
+    static void rejectedLake(DataOutputStream out, DataInputStream in, String expected, String... fields)
+            throws IOException {
+        send(out, 40, fields);
+        try (var response = new DataInputStream(new ByteArrayInputStream(reply(in)))) {
+            assert !response.readBoolean();
+            String message = new String(response.readNBytes(response.readInt()), StandardCharsets.UTF_8);
+            assert message.contains(expected) : message;
+            assert !message.contains("private-token") : message;
+        }
+    }
+
     public static void main(String[] args) throws Exception {
         var boundary = new DataOutputStream(OutputStream.nullOutputStream());
         OpenIdeaJdbc.text(boundary, "x".repeat(OpenIdeaJdbc.LIMIT - 14));
@@ -127,6 +138,26 @@ public class SelfTest {
         try (var out = new DataOutputStream(child.getOutputStream());
              var in = new DataInputStream(child.getInputStream());
              var log = child.errorReader()) {
+            String duckdb = "org.duckdb.DuckDBDriver", memory = "jdbc:duckdb:";
+            rejectedLake(out, in, "standard DuckDB connection", "openDuckLake", Fixture.class.getName(), memory,
+                "", "", "true", "secret", "sample", "");
+            rejectedLake(out, in, "standard DuckDB connection", "openDuckLake", duckdb, memory + ";private-token",
+                "", "", "true", "secret", "sample", "");
+            rejectedLake(out, in, "standard DuckDB connection", "openDuckLake", duckdb, memory,
+                "", "private-token", "true", "secret", "sample", "");
+            rejectedLake(out, in, "standard DuckDB connection", "openDuckLake", duckdb, memory,
+                "", "", "true", "secret", "sample", "", "arbitrary");
+            rejectedLake(out, in, "read-only", "openDuckLake", duckdb, memory,
+                "", "", "false", "file", "unused", "");
+            rejectedLake(out, in, "absolute", "openDuckLake", duckdb, memory,
+                "", "", "true", "file", "relative/catalog.ducklake", "");
+            rejectedLake(out, in, "existing DuckLake secret name", "openDuckLake", duckdb, memory,
+                "", "", "true", "secret", "postgresql://user:private-token@localhost/catalog", "");
+            rejectedLake(out, in, "absolute", "openDuckLake", duckdb, memory,
+                "", "", "true", "secret", "sample", "s3://bucket/path");
+            rejectedLake(out, in, "default data location", "openDuckLake", duckdb, memory,
+                "", "", "false", "create", "unused", "nonempty");
+
             send(out, 1, "open", Fixture.class.getName(), "jdbc:fixture:", "", "", "true");
             assert reply(in)[0] == 1;
             send(out, 2, "query", "write", "0", "2");
