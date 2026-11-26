@@ -1026,6 +1026,8 @@
   "Scroll to Center": "滚动到中央",
   "Scroll Up": "向上滚动",
   "Scroll Down": "向下滚动",
+  "Scroll to Top": "滚动到顶部",
+  "Scroll to Bottom": "滚动到底部",
   "Move Caret to Page Top": "将光标移至页面顶部",
   "Move Caret to Page Bottom": "将光标移至页面底部",
   "Move Caret to Page Top with Selection": "将光标移至页面顶部并选择",

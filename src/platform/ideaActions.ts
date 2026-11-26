@@ -118,6 +118,8 @@ export const IDEA_ACTIONS: Readonly<Record<string, string>> = {
   ToggleDistractionFreeMode: "editor.toggleZen",
   EditorScrollUp: "editor.scrollUp",
   EditorScrollDown: "editor.scrollDown",
+  EditorScrollTop: "editor.scrollToTop",
+  EditorScrollBottom: "editor.scrollToBottom",
   EditorMoveToPageTop: "editor.moveToPageTop",
   EditorMoveToPageBottom: "editor.moveToPageBottom",
   EditorMoveToPageTopWithSelection: "editor.moveToPageTopWithSelection",

@@ -92,6 +92,15 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(k.unknownActions).toEqual([]);
   });
 
+  it("maps Scroll to Top / Scroll to Bottom", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="X" parent="Mac OS X 10.5+"><action id="EditorScrollTop"><keyboard-shortcut first-keystroke="HOME"/></action><action id="EditorScrollBottom"><keyboard-shortcut first-keystroke="END"/></action></keymap>`,
+    );
+    expect(k.overrides["editor.scrollToTop"]).toEqual([normalizeBinding("Home")]);
+    expect(k.overrides["editor.scrollToBottom"]).toEqual([normalizeBinding("End")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
   it("maps Copy as Plain Text / Copy as Rich Text", () => {
     const k = parseIdeaKeymap(
       `<keymap name="E" parent="Mac OS X 10.5+"><action id="CopyAsPlainText"><keyboard-shortcut first-keystroke="control alt C"/></action><action id="CopyAsRichText"><keyboard-shortcut first-keystroke="control alt shift C"/></action></keymap>`,

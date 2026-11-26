@@ -137,6 +137,8 @@ export const intellijMacos: Record<string, string[]> = {
   "editor.scrollToCenter": ["Ctrl+L"],
   "editor.scrollUp": [],
   "editor.scrollDown": [],
+  "editor.scrollToTop": [],
+  "editor.scrollToBottom": [],
   "editor.moveToPageTop": ["Meta+PageUp"],
   "editor.moveToPageBottom": ["Meta+PageDown"],
   "editor.moveToPageTopWithSelection": ["Meta+Shift+PageUp"],

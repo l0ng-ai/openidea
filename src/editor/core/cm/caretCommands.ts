@@ -1,4 +1,4 @@
-/** IDEA caret commands that CodeMirror has no equivalent for: Split Line, Scroll to Center / Up / Down, Page Top / Bottom, code block, brace and paragraph navigation. */
+/** IDEA caret commands that CodeMirror has no equivalent for: Split Line, Scroll to Center / Up / Down / Top / Bottom, Page Top / Bottom, code block, brace and paragraph navigation. */
 import { countColumn, EditorSelection, findColumn, type EditorState, type Transaction } from "@codemirror/state";
 import { EditorView, type Command } from "@codemirror/view";
 import { insertNewlineAndIndent } from "@codemirror/commands";
@@ -35,6 +35,16 @@ const scrollByLine =
   };
 export const scrollUp = scrollByLine(-1);
 export const scrollDown = scrollByLine(1);
+
+/** Scroll to Top / Scroll to Bottom (as IDEA): show the start of the file at the top, or bring its end toward the middle, without moving the caret. */
+export const scrollToTop: Command = (view) => {
+  view.scrollDOM.scrollTop = 0;
+  return true;
+};
+export const scrollToBottom: Command = (view) => {
+  view.dispatch({ effects: EditorView.scrollIntoView(view.state.doc.length, { y: "center" }) });
+  return true;
+};
 
 /**
  * The line Move Caret to Page Top / Bottom goes to (as IDEA): the first / last line
