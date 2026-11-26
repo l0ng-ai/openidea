@@ -426,6 +426,80 @@ fn undo_refuses_later_changes_and_retains_the_record() {
     assert_eq!(std::fs::read_to_string(a).unwrap(), "old\n");
 }
 
+/// An open file with unsaved typing, refactored: its buffer holds `new`, the disk still `old`.
+fn refactored_unsaved(path: &Path) -> (Documents, Arc<Mutex<Vec<IdeEvent>>>, ide_core::DocId) {
+    std::fs::write(path, "old\n").unwrap();
+    let (docs, events) = recorded_documents();
+    let info = docs.open(path).unwrap();
+    docs.edit(info.id, info.version, ChangeSet { changes: vec![TextChange { from: 0, to: 3, insert: "own".into() }] })
+        .unwrap();
+    docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(path, "new")], ..Default::default() }).unwrap();
+    assert_eq!(docs.snapshot(info.id).unwrap().text, "new\n");
+    (docs, events, info.id)
+}
+
+fn type_text(docs: &Documents, id: ide_core::DocId, text: &str) {
+    let snapshot = docs.snapshot(id).unwrap();
+    let to = snapshot.text.encode_utf16().count() as u32;
+    docs.edit(id, snapshot.version, ChangeSet { changes: vec![TextChange { from: 0, to, insert: text.into() }] })
+        .unwrap();
+}
+
+#[test]
+fn undo_keeps_an_external_write_under_an_unsaved_buffer() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("a.txt");
+    let (docs, events, id) = refactored_unsaved(&path);
+    // Not reported by a watcher: undo itself notices the write.
+    std::fs::write(&path, "external\n").unwrap();
+    assert_eq!(docs.undo_workspace_edit(undo_id(&events)).unwrap_err().kind, ErrorKind::OutOfSync);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "external\n");
+    assert_eq!(docs.snapshot(id).unwrap().text, "new\n");
+}
+
+#[test]
+fn undo_after_saving_and_undoing_the_typing_is_allowed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("a.txt");
+    let (docs, events, id) = refactored_unsaved(&path);
+    type_text(&docs, id, "typed later\n");
+    docs.save(id).unwrap();
+    // The typing undone: the buffer is back to the refactoring's text, the IDE's own save on disk.
+    type_text(&docs, id, "new\n");
+    docs.undo_workspace_edit(undo_id(&events)).unwrap();
+    assert_eq!(docs.snapshot(id).unwrap().text, "own\n");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "old\n");
+}
+
+#[test]
+fn undo_allows_a_disk_conflict_from_before_the_refactoring() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("a.txt");
+    std::fs::write(&path, "old\n").unwrap();
+    let (docs, events) = recorded_documents();
+    let info = docs.open(&path).unwrap();
+    type_text(&docs, info.id, "own\n");
+    std::fs::write(&path, "external\n").unwrap();
+    assert!(!docs.autosave(info.id).unwrap(), "the external write is a disk conflict");
+    docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&path, "new")], ..Default::default() }).unwrap();
+    docs.undo_workspace_edit(undo_id(&events)).unwrap();
+    assert_eq!(docs.snapshot(info.id).unwrap().text, "own\n");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "external\n");
+}
+
+#[test]
+fn redo_keeps_an_external_write_made_after_the_undo() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("a.txt");
+    let (docs, events, id) = refactored_unsaved(&path);
+    let undo = undo_id(&events);
+    docs.undo_workspace_edit(undo).unwrap();
+    std::fs::write(&path, "external\n").unwrap();
+    assert_eq!(docs.redo_workspace_edit(undo).unwrap_err().kind, ErrorKind::OutOfSync);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "external\n");
+    assert_eq!(docs.snapshot(id).unwrap().text, "own\n");
+}
+
 #[test]
 fn ordered_resource_operations_and_binary_deletion_are_undoable() {
     let tmp = tempfile::tempdir().unwrap();

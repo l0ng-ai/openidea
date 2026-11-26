@@ -255,4 +255,89 @@ describe("a kept-alive session tab that stays hidden", { timeout: 30_000 }, () =
     // The one request in the trimmed part of the history is found.
     expect(await screen.findByText("1/1", {}, { timeout: 10_000 })).toBeInTheDocument();
   });
+
+  it("paints earlier messages past folded process runs longer than ENTRY_BATCH on open and after hiding", async () => {
+    const toolCalls = (prefix: string, count: number): AgentEntry[] =>
+      Array.from({ length: count }, (_, k): AgentEntry => ({
+        type: "tool",
+        id: `${prefix}-${k}`,
+        title: `Read src/file${k}.ts`,
+        kind: "read",
+        status: "completed",
+        locations: [],
+        output: null,
+        diffs: [],
+      }));
+    const longRuns: AgentEntry[] = [
+      ...history(5),
+      { type: "user", text: "Split the PR", attachments: [], sentMs: null },
+      ...toolCalls("first-run", 75),
+      { type: "agent", text: "Interim update" },
+      ...toolCalls("second-run", 75),
+    ];
+    useAgents.setState({
+      tasks: new Map([[task("A").id, { ...task("A"), status: "running" }]]),
+      entries: new Map([["A", longRuns]]),
+    });
+
+    const view = render(session(true));
+    expect(await screen.findByText("Request 0", {}, { timeout: 3_000 })).toBeInTheDocument();
+    expect(screen.getByText("Split the PR")).toBeInTheDocument();
+
+    vi.useFakeTimers();
+    view.rerender(session(false));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(LONG_HIDDEN_MS);
+    });
+    expect(screen.queryByText("Request 0")).toBeNull();
+
+    vi.useRealTimers();
+    view.rerender(session(true));
+    expect(await screen.findByText("Request 0", {}, { timeout: 3_000 })).toBeInTheDocument();
+    expect(screen.getByText("Split the PR")).toBeInTheDocument();
+  });
+
+  it("loads earlier messages past a long process run when scrolled to the top with stick disabled", async () => {
+    const longRun: AgentEntry[] = [
+      ...history(3),
+      { type: "user", text: "Prompt before long run", attachments: [], sentMs: null },
+      ...Array.from({ length: 75 }, (_, k): AgentEntry => ({
+        type: "tool",
+        id: `top-run-${k}`,
+        title: `Read src/mod${k}.ts`,
+        kind: "read",
+        status: "completed",
+        locations: [],
+        output: null,
+        diffs: [],
+      })),
+      { type: "agent", text: "Tail reply" },
+    ];
+    useAgents.setState({ entries: new Map([["A", longRun]]) });
+    // Suppress background auto-follow after initial render by scrolling away before history finishes.
+    const view = render(session(true));
+    await settle("Tail reply");
+    vi.useFakeTimers();
+    view.rerender(session(false));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(LONG_HIDDEN_MS);
+    });
+    expect(screen.queryByText("Request 0")).toBeNull();
+
+    // User switches back while holding pointer down, then scrolls to the top (`stick: false`).
+    fireEvent.pointerDown(stream());
+    view.rerender(session(true));
+    const el = stream();
+    layOut(el);
+    fireEvent.wheel(el, { deltaY: -120 });
+    el.scrollTop = 0;
+    fireEvent.scroll(el);
+    fireEvent.pointerUp(window);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+    });
+    vi.useRealTimers();
+    expect(await screen.findByText("Request 0", {}, { timeout: 3_000 })).toBeInTheDocument();
+    expect(screen.getByText("Prompt before long run")).toBeInTheDocument();
+  });
 });
