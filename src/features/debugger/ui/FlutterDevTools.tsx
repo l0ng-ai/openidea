@@ -180,7 +180,7 @@ export function FlutterDevToolsTabs() {
   if (!apps.length) return null;
   const items: TabItem[] = apps.map((app) => {
     const device = devices?.find((d) => d.id === app.device)?.name ?? app.device ?? app.name;
-    return { id: app.key, label: device, text: device };
+    return { id: app.key, label: device, text: device, verbatim: true };
   });
   return (
     <Tabs

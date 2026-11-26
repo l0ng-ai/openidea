@@ -220,11 +220,14 @@ export function matchOutsideFiles(files: readonly OutsideFile[], query: string):
     .toLowerCase();
   if (!q) return [];
   const byPath = q.includes("/");
+  // `-` and `_` match each other, as in the index's file matching; the boost keeps the exact spelling first.
+  const fold = (s: string) => s.replaceAll("_", "-");
+  const folded = fold(q);
   const out: FileMatch[] = [];
   for (const f of files) {
     const name = basename(f.relPath);
     const nameStart = f.relPath.length - name.length;
-    const m = byPath ? wordMatch(f.relPath, q) : wordMatch(name, q);
+    const m = byPath ? wordMatch(fold(f.relPath), folded) : wordMatch(fold(name), folded);
     if (!m) continue;
     const boost = nameBoost(name, byPath ? q.slice(q.lastIndexOf("/") + 1) : q);
     out.push({

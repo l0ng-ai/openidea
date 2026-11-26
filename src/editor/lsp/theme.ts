@@ -189,6 +189,16 @@ export const lspTheme = EditorView.theme({
     alignItems: "center",
     justifyContent: "center",
   },
+  // A color custom property's value (`var(--…)` completion), sized like the gutter's color swatch.
+  ".cm-lsp-completion .cm-lsp-swatch::before": {
+    content: '""',
+    width: "12px",
+    height: "12px",
+    boxSizing: "border-box",
+    border: "1px solid var(--border-strong)",
+    borderRadius: "var(--radius-small)",
+    background: "var(--swatch)",
+  },
   ".cm-lsp-completion .cm-completionLabel": {
     flex: "none",
     maxWidth:
@@ -264,7 +274,6 @@ export const lspTheme = EditorView.theme({
     background: "none",
     color: "var(--fg-subtle)",
     font: "inherit",
-    cursor: "pointer",
   },
   ".cm-lsp-completion-sort:hover": { color: "var(--fg)" },
   '.cm-lsp-completion-sort[aria-pressed="true"]': { color: "var(--link)" },
@@ -519,7 +528,6 @@ export const lspTheme = EditorView.theme({
     whiteSpace: "nowrap",
     overflow: "hidden",
     textOverflow: "ellipsis",
-    cursor: "pointer",
   },
   ".cm-lsp-inplace-suggestions button:hover": { backgroundColor: "var(--bg-hover)" },
   '.cm-lsp-inplace-suggestions button[aria-current="true"]': {

@@ -232,6 +232,7 @@ export function KeymapPage() {
       .sort(([, a], [, b]) => a.name.localeCompare(b.name))
       .map(([id, k]) => ({
         value: id,
+        verbatim: true,
         label: k.name,
         detail: tx`based on ${txPart(PRESET_TITLES[k.parent] ?? k.parent)}`,
       })),

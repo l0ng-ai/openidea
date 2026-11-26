@@ -97,7 +97,9 @@ const UNTRANSLATED = new Set<string>([
   "Prettier",
   "oxfmt",
   "Biome",
+  "dprint",
   "Ruff",
+  "Cypress",
   "IntelliJ IDEA",
   "GitHub",
   "PHPStan",
@@ -111,6 +113,7 @@ const UNTRANSLATED = new Set<string>([
   "Edge",
   "Safari",
   "Firefox",
+  "Electron",
   "JaCoCo",
   // Docker run target placeholder values
   "compose.yaml",
@@ -136,6 +139,9 @@ const UNTRANSLATED = new Set<string>([
   "java",
   "node",
   "python3",
+  // Command Rules pattern placeholders
+  "cargo test",
+  "rm -rf *",
   // Products, tools and formats
   "Amazon Aurora MySQL",
   "Amazon Redshift",

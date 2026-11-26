@@ -34,7 +34,7 @@ import type { LanguageDescription } from "@codemirror/language";
 import type { HunkKind } from "@/bindings";
 import type { LineEnding } from "@/platform/ipc";
 import { create } from "zustand";
-import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
+import { maybeEditorService, type EditorInput, type MenuGroupContext } from "@/workbench/contributions";
 import { isSameOrInside } from "@/platform/paths";
 import { useProject } from "@/platform/project";
 import { rootOfPath } from "@/platform/projectRoots";
@@ -252,6 +252,25 @@ export function activeEditor(): TextEditorHandle | null {
 /** Editors currently showing `path` (split panes may show the same file). */
 export function editorsFor(path: string): TextEditorHandle[] {
   return [...useEditorRegistry.getState().editors].filter((e) => e.ctx.path === path);
+}
+
+/**
+ * While a cell editor of a custom editor (a notebook) has focus, it stands in for the
+ * active editor's view: the notebook publishes the editor context keys for it and
+ * editor actions resolve to it, like a text tab's view. The owner keeps this current
+ * on focus changes (see `_setFocusedCellEditor`); editor/core re-reads it whenever it
+ * republishes contexts, so actions never fall back to the last text tab.
+ */
+let focusedCell: EditorView | null = null;
+
+/** The focused cell editor standing in for the active editor's view, if any. */
+export function focusedCellEditor(): EditorView | null {
+  return focusedCell;
+}
+
+/** Published by the custom editor owning the cell editors (a notebook); `null` once none has focus. */
+export function _setFocusedCellEditor(view: EditorView | null) {
+  focusedCell = view;
 }
 
 // --- called by editor/core only ---------------------------------------------
@@ -614,8 +633,10 @@ export interface NavigationLocation {
   col: number;
   /** `Date.now()` when the location was last visited. */
   time: number;
-  /** A place that is a tab rather than a text position (a diff), opened with this input on Back. */
+  /** A place that is a tab rather than a text position (diff, agent chat, terminal tab…), opened with this input on Back. */
   input?: EditorInput;
+  /** Split pane holding the editor tab when recorded, so Back/Forward returns to the same split when it still exists. */
+  paneId?: string;
 }
 
 export interface NavigationHistorySnapshot {
@@ -994,6 +1015,37 @@ export function codePreviewExtensions(path: string, editable = false): Promise<E
 /** @internal editor/core only. */
 export function _provideCodePreview(provider: typeof codePreviewProvider) {
   codePreviewProvider = provider;
+}
+
+/** A row of the Copy Path/Reference… chooser. */
+export interface CopyPathRow {
+  /** The action whose shortcut the row shows. */
+  id: string;
+  /** English label, translated by the chooser. */
+  label: string;
+  /** The copied text; a row without one is left out. */
+  preview: string | null;
+  run: () => void;
+}
+
+type CopyPathChooser = (
+  anchor: { x: number; y: number } | "center",
+  rows: readonly CopyPathRow[],
+  ctx: MenuGroupContext,
+) => void;
+let copyPathChooser: CopyPathChooser | null = null;
+
+/**
+ * The editor's Copy Path/Reference… chooser for files outside an editor (the Project view's
+ * selection): `rows`, then the rows contributed to the `copyPath` menu for `ctx`, with previews.
+ */
+export function openCopyPathChooser(...args: Parameters<CopyPathChooser>): void {
+  copyPathChooser?.(...args);
+}
+
+/** @internal editor/core only. */
+export function _provideCopyPathChooser(open: CopyPathChooser) {
+  copyPathChooser = open;
 }
 
 let workspaceHistory: ((id: number, redo: boolean) => Promise<void>) | null = null;

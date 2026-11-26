@@ -24,6 +24,12 @@ struct LogAccess {
     cache: PathBuf,
 }
 
+fn external_log_of(host: &Host, window: &str, path: &Path) -> Option<std::sync::Arc<Repo>> {
+    host.external_logs.read().get(host.owner_window(window)).and_then(|repos| {
+        repos.iter().filter(|r| path.starts_with(r.root())).max_by_key(|r| r.root().components().count()).cloned()
+    })
+}
+
 /// Immutable Git objects exposed through the editor's ordinary read-only VFS.
 /// `encoding` re-decodes the blob with it ("Reload with Encoding") instead of
 /// the project's detection.
@@ -81,9 +87,7 @@ async fn revision_text(
     encoding: Option<&str>,
 ) -> IdeResult<Option<(String, &'static encoding_rs::Encoding, bool)>> {
     let project = host.project(window).ok();
-    let external = host.external_logs.read().get(host.owner_window(window)).and_then(|rs| {
-        rs.iter().filter(|r| path.starts_with(r.root())).max_by_key(|r| r.root().components().count()).cloned()
-    });
+    let external = external_log_of(host, window, path);
     let (path, rev, encoding) = (path.to_path_buf(), rev.to_owned(), encoding.map(str::to_owned));
     blocking(move || {
         fn with_repo<T>(
@@ -622,9 +626,7 @@ pub async fn vcs_staging_line_hunks(
 #[command(trust = always)]
 pub async fn vcs_file_at(host: &Host, window: &str, path: PathBuf, rev: Option<String>) -> IdeResult<Option<String>> {
     let project = host.project(window).ok();
-    let external = host.external_logs.read().get(host.owner_window(window)).and_then(|rs| {
-        rs.iter().filter(|r| path.starts_with(r.root())).max_by_key(|r| r.root().components().count()).cloned()
-    });
+    let external = external_log_of(host, window, &path);
     blocking(move || {
         if let Some(project) = project {
             return project.with_log_backend_of(&path, |r| {
@@ -640,14 +642,37 @@ pub async fn vcs_file_at(host: &Host, window: &str, path: PathBuf, rev: Option<S
     .await
 }
 
+/// An image at the selected Git revision or index stage as a data URL, absent if the path is missing.
+#[command(trust = always)]
+pub async fn vcs_image_at(host: &Host, window: &str, path: PathBuf, rev: String) -> IdeResult<Option<String>> {
+    let project = host.project(window).ok();
+    let external = external_log_of(host, window, &path);
+    blocking(move || {
+        let mime = ide_vfs::image_mime(&path)
+            .ok_or_else(|| ide_core::IdeError::invalid(format!("{} is not a supported image", path.display())))?;
+        let read = |repo: &Repo| repo.file_bytes_at_bounded(&path, &rev, ide_vfs::MAX_IMAGE_SIZE as usize);
+        let bytes = if let Some(project) = project {
+            if !ide_vfs::on_local_drive(&path)
+                && external.is_none()
+                && !project.repos().all().iter().any(|repo| ide_vfs::same_share(repo.root(), &path))
+            {
+                return Err(ide_core::IdeError::invalid("image is not on a local drive or an opened share"));
+            }
+            project.with_log_repo_of(&path, read)?
+        } else {
+            read(external.as_deref().ok_or_else(|| ide_core::IdeError::unavailable("external Git log is not open"))?)?
+        };
+        Ok(bytes.map(|bytes| format!("data:{mime};base64,{}", ide_vfs::base64(&bytes))))
+    })
+    .await
+}
+
 /// The file's git mode at `rev` (`100644`, `100755`, `120000`…), `"WT"` for the
 /// worktree; `None` when absent there. Lets the diff viewer report a mode-only change.
 #[command(trust = trusted)]
 pub async fn vcs_file_mode(host: &Host, window: &str, path: PathBuf, rev: Option<String>) -> IdeResult<Option<String>> {
     let project = host.project(window).ok();
-    let external = host.external_logs.read().get(host.owner_window(window)).and_then(|rs| {
-        rs.iter().filter(|r| path.starts_with(r.root())).max_by_key(|r| r.root().components().count()).cloned()
-    });
+    let external = external_log_of(host, window, &path);
     blocking(move || {
         if let Some(project) = project {
             return project.with_log_backend_of(&path, |r| r.file_mode_at(&path, rev.as_deref()));
@@ -3200,6 +3225,7 @@ ide_command::domain!(
     vcs_discard,
     vcs_edit_remote,
     vcs_file_at,
+    vcs_image_at,
     vcs_file_mode,
     vcs_diff_entries,
     vcs_git_version,

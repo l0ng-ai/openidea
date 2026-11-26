@@ -69,6 +69,7 @@ export const KIND_CATEGORIES: Record<string, string> = {
   node: "JavaScript",
   bun: "JavaScript",
   deno: "JavaScript",
+  cypress: "JavaScript",
   python: "Python",
   pytest: "Python",
   cargo: "Rust",
@@ -225,6 +226,22 @@ export function upsertConfig(configs: readonly RunConfig[], edited: RunConfig): 
   const out = [...configs];
   out[i] = next;
   return out;
+}
+
+/**
+ * The saved configurations after "Create Run Configuration" for `config`, or `null` when one with
+ * its id is already saved: that one opens as the user left it. Gutter and tool-window actions
+ * build their configuration with a fixed id, so saving it again would reset the user's edits
+ * (a Dockerfile configuration's bound ports, #6047).
+ */
+export function createdConfigs(
+  configs: readonly RunConfig[],
+  temporary: readonly string[],
+  config: RunConfig,
+): RunConfig[] | null {
+  const saved = configs.filter((c) => !c.detected && !temporary.includes(c.id));
+  if (saved.some((c) => c.id === config.id)) return null;
+  return [...saved, { ...config, detected: false }];
 }
 
 export function removeConfig(configs: readonly RunConfig[], id: string): RunConfig[] {

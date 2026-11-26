@@ -38,9 +38,6 @@
   white-space: nowrap;
   color: var(--fg-strong);
 }
-.sortable {
-  cursor: pointer;
-}
 .sortable:hover {
   background: var(--bg-hover);
 }
@@ -855,7 +852,6 @@
   border-radius: var(--radius-small);
   background: transparent;
   color: var(--fg-secondary);
-  cursor: pointer;
 }
 
 /* Parameter info in `VALUES (…)`. */
@@ -957,6 +953,23 @@
   gap: var(--space-0-5);
   padding: 2px 4px;
   border-bottom: 1px solid var(--border);
+}
+.modifyFilter {
+  flex: 1;
+  min-width: 0;
+}
+.modifyGroup {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: 22px;
+  padding: 0 6px;
+  color: var(--fg-muted);
+  cursor: default;
+  white-space: nowrap;
+}
+.modifyGroup:hover {
+  color: var(--fg);
 }
 .modifyList {
   flex: 1;
@@ -1096,7 +1109,6 @@
   border-radius: var(--radius-small);
   background: transparent;
   color: var(--fg-muted);
-  cursor: pointer;
 }
 .headerFilter:hover {
   background: var(--bg-hover);

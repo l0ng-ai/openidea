@@ -831,18 +831,29 @@ function ToolWindowView({ tw, hidden }: { tw: ToolWindowContribution; hidden: bo
       const root = ref.current;
       if (!root) return;
       const body = root.querySelector<HTMLElement>("[data-toolwindow-body]");
-      // Like IDEA, activation focuses the content (a field, list or tree), never a button or
-      // link: a scripted focus on one draws its focus ring (an empty view's "New…" link).
+      // Like IDEA, activation focuses visible content (a field, list or tree), never a button,
+      // link, or hidden / inert target: a scripted focus on a button draws its focus ring, and
+      // focusing a hidden element (e.g. a file input or inactive tab panel) is a silent no-op
+      // that leaves focus stranded in the previous window.
+      const isVisibleTarget = (el: HTMLElement) => {
+        if (el.matches('input[type="hidden"]') || el.closest("[hidden], [inert]")) return false;
+        for (let cur: HTMLElement | null = el; cur && cur !== body; cur = cur.parentElement) {
+          const style = getComputedStyle(cur);
+          if (style.display === "none" || style.visibility === "hidden") return false;
+        }
+        return true;
+      };
       const contentTarget = () =>
-        body?.querySelector<HTMLElement>("[data-autofocus]") ??
+        [...(body?.querySelectorAll<HTMLElement>("[data-autofocus]") ?? [])].find(isVisibleTarget) ??
         [...(body?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])].find(
-          (el) => !el.matches('button, a[href], [role="button"], [role="link"]'),
+          (el) => !el.matches('button, a[href], [role="button"], [role="link"]') && isVisibleTarget(el),
         );
       const target = contentTarget();
       if (target || !body) {
         (target ?? root).focus({ preventScroll: true });
-        return;
+        if (root.contains(document.activeElement)) return;
       }
+      if (!body) return;
       if (!body.hasAttribute("tabindex")) body.tabIndex = -1;
       body.focus({ preventScroll: true });
       // Lazily loaded views (the Terminal) render their field after this: focus it when it

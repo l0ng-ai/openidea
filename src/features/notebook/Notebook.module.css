@@ -120,7 +120,6 @@
   background: none;
   color: var(--fg-muted);
   text-align: left;
-  cursor: pointer;
 }
 .collapsedCell {
   padding: 6px 12px;
@@ -190,7 +189,7 @@
   min-height: 80px;
   max-height: 600px;
   border: 1px solid var(--border);
-  background: white;
+  background: var(--bg-editor, var(--bg-app));
   resize: vertical;
   box-sizing: border-box;
 }

@@ -163,6 +163,7 @@
   "menu.editor.splitDown": "아래로 분할",
   "menu.editor.splitRight": "오른쪽으로 분할",
   "menu.editor.toggleZen": "{distractionFree, select, on {집중력 분산 방지 모드 종료} other {집중력 분산 방지 모드 시작}}",
+  "menu.view.toggleZenMode": "{zenMode, select, on {Zen 모드 종료} other {Zen 모드 시작}}",
   "menu.editor.unsplit": "분할 해제",
   "menu.file": "파일",
   "menu.fileProperties": "파일 속성",

@@ -297,6 +297,10 @@ mod imp {
         wit::workspace::project_of(path)
     }
 
+    pub fn invoking_project() -> Option<ProjectRes> {
+        wit::workspace::invoking_project()
+    }
+
     pub fn project_root(p: &ProjectRes) -> Result<String, Error> {
         p.root().map_err(error)
     }
@@ -625,8 +629,17 @@ mod imp {
         wit::events::subscribe_paths(kind, &globs.iter().map(|g| (*g).to_owned()).collect::<Vec<_>>()).map_err(error)
     }
 
+    pub fn subscribe_paths_with_options(kind: &str, options: &crate::SubscriptionOptions) -> Result<(), Error> {
+        let opts = wit::events::SubscriptionOptions { globs: options.globs.clone(), debounce_ms: options.debounce_ms };
+        wit::events::subscribe_paths_with_options(kind, &opts).map_err(error)
+    }
+
     pub fn subscribe(k: EventKind) -> Result<(), Error> {
         wit::events::subscribe(k.name()).map_err(error)
+    }
+
+    pub fn watch_paths(paths: &[&str]) -> Result<(), Error> {
+        wit::events::watch_paths(&paths.iter().map(|p| (*p).to_owned()).collect::<Vec<_>>()).map_err(error)
     }
 
     pub fn unsubscribe(k: EventKind) {
@@ -671,6 +684,10 @@ mod imp {
 
     pub fn project_stat(p: &ProjectRes, path: &str) -> Result<FileStat, Error> {
         p.stat(path).map(file_stat).map_err(error)
+    }
+
+    pub fn project_generation(p: &ProjectRes) -> Result<u64, Error> {
+        p.generation().map_err(error)
     }
 
     fn file_kind(kind: wit::workspace::FileKind) -> FileKind {
@@ -1009,11 +1026,32 @@ mod imp {
     pub fn start_run(config: &str, args: &[String], debug: bool) -> Result<String, Error> {
         wit::run::start(config, args, debug).map_err(error)
     }
+    pub fn start_run_with_options(
+        config: &str,
+        args: &[String],
+        options: &crate::RunStartOptions,
+    ) -> Result<String, Error> {
+        let mode = options.output_mode.map(|m| match m {
+            crate::OutputMode::Pipes => wit::run::OutputMode::Pipes,
+            crate::OutputMode::Pty => wit::run::OutputMode::Pty,
+        });
+        wit::run::start_with_options(config, args, wit::run::StartOptions { debug: options.debug, output_mode: mode })
+            .map_err(error)
+    }
     pub fn open_terminal_session(key: &str, title: &str, cmd: &super::Command) -> Result<String, Error> {
         wit::views::open_terminal_session(
             key,
             title,
             &wit::process::Command { program: cmd.program.clone(), args: cmd.args.clone(), env: cmd.env.clone() },
+        )
+        .map_err(error)
+    }
+    pub fn open_terminal_session_in(key: &str, title: &str, cmd: &super::Command, cwd: &str) -> Result<String, Error> {
+        wit::views::open_terminal_session_in(
+            key,
+            title,
+            &wit::process::Command { program: cmd.program.clone(), args: cmd.args.clone(), env: cmd.env.clone() },
+            cwd,
         )
         .map_err(error)
     }
@@ -1056,6 +1094,10 @@ mod imp {
     pub fn extension_contributions(point: &str) -> Result<Vec<crate::Contribution>, Error> {
         let list = wit::extensions::contributions(point).map_err(error)?;
         Ok(list.into_iter().map(|c| crate::Contribution { plugin: c.plugin, data: c.data }).collect())
+    }
+
+    pub fn fork_agent_session(agent: &str, session_id: &str, cwd: &str) -> Result<String, Error> {
+        wit::agents::fork_session(agent, session_id, cwd).map_err(error)
     }
 
     pub fn run_process(
@@ -1216,6 +1258,12 @@ impl Project {
     /// Lists only this plugin's private source ids.
     pub fn data_sources(&self) -> Result<Vec<String>, Error> {
         imp::database_sources(&self.inner)
+    }
+
+    /// Returns the monotonic generation of this project workspace (API 1.18).
+    /// Incremented whenever the project's filesystem or structure changes.
+    pub fn generation(&self) -> Result<u64, Error> {
+        imp::project_generation(&self.inner)
     }
     /// Writes directly to the Database secure store, without a read API.
     pub fn set_data_source_credential(&self, id: &str, password: &str) -> Result<(), Error> {
@@ -1662,6 +1710,14 @@ pub fn project_of(path: &str) -> Option<Project> {
     imp::project_of(path).map(|inner| Project { inner })
 }
 
+/// The project of the window this call serves (API 1.18): the invoking window's in commands
+/// and events, the editor's window's in `gutter_actions` and `hover_actions`; `None` when the
+/// call serves no window. Unlike [`project_of`], it tells overlapping projects apart.
+/// Obtaining the handle needs no capability; reading it still needs `project.read`.
+pub fn invoking_project() -> Option<Project> {
+    imp::invoking_project().map(|inner| Project { inner })
+}
+
 /// A file open in an editor.
 pub struct TextEditor {
     inner: imp::EditorRes,
@@ -1867,6 +1923,12 @@ pub fn subscribe_paths(kind: &str, globs: &[&str]) -> Result<(), Error> {
     imp::subscribe_paths(kind, globs)
 }
 
+/// Subscribe to project-relative path globs with options (including debounce_ms).
+/// Requires `events`. Register during activation before the events you want to observe (API 1.18).
+pub fn subscribe_paths_with_options(kind: &str, options: &crate::SubscriptionOptions) -> Result<(), Error> {
+    imp::subscribe_paths_with_options(kind, options)
+}
+
 /// Delivers `kind` events to [`crate::Plugin::handle_events`] for the rest of
 /// the session (also after the instance is reclaimed: an event activates the
 /// plugin again). Needs `events` (`events.input` for `ActionPerformed`).
@@ -1876,6 +1938,25 @@ pub fn subscribe(kind: EventKind) -> Result<(), Error> {
 
 pub fn unsubscribe(kind: EventKind) {
     imp::unsubscribe(kind)
+}
+
+/// Watches files and directories outside the project of the window this call
+/// serves (a command or an event), replacing what the plugin watched for that
+/// project; an empty list stops (API 1.18). Changes arrive as
+/// [`crate::Event::WatchedFilesChanged`].
+///
+/// Each path is absolute (or `~/…`), exists, and is covered by an `fs.read:<path>`
+/// grant where it really is (a link out of the grant is `Denied`). Paths inside the
+/// project are `Invalid`: [`crate::Event::FilesChanged`] reports them. At most 32.
+/// A file is watched across atomic saves, removal and re-creation; a directory for
+/// its own entries, not recursively, and once removed it is no longer watched.
+/// Batches are debounced and coalesced, so read the files again rather than
+/// replaying steps; a rename is the old path removed and the new one created.
+/// Watches end when the project or its window closes or the plugin stops (also when
+/// a grant is revoked); idle reclaim keeps them. Nothing remote is watched: files
+/// behind a URL need the plugin's own refresh. Needs `events`.
+pub fn watch_paths(paths: &[&str]) -> Result<(), Error> {
+    imp::watch_paths(paths)
 }
 
 /// Files outside the open projects, for a program the plugin integrates with
@@ -2166,9 +2247,23 @@ pub fn set_file_icons(set: &str, items: &[(String, String)]) -> Result<(), Error
 pub fn start_run(config: &str, args: &[String], debug: bool) -> Result<String, Error> {
     imp::start_run(config, args, debug)
 }
+/// Starts an owned run configuration with launch options (API 1.18). Its id receives run-exited.
+pub fn start_run_with_options(
+    config: &str,
+    args: &[String],
+    options: &crate::RunStartOptions,
+) -> Result<String, Error> {
+    imp::start_run_with_options(config, args, options)
+}
 /// Opens/reuses a keyed, approved terminal with append-only environment variables.
 pub fn open_terminal_session(key: &str, title: &str, cmd: &Command) -> Result<String, Error> {
     imp::open_terminal_session(key, title, cmd)
+}
+/// [`open_terminal_session`] started in `cwd` (API 1.18): a directory of the window's
+/// project relative to its root (`""` is the root), which must exist and stay inside the
+/// project. Trust and the approved program stay the project's.
+pub fn open_terminal_session_in(key: &str, title: &str, cmd: &Command, cwd: &str) -> Result<String, Error> {
+    imp::open_terminal_session_in(key, title, cmd, cwd)
 }
 /// Writes to this plugin's running keyed terminal in the invoking window.
 pub fn write_terminal(key: &str, text: &str) -> Result<(), Error> {
@@ -2223,4 +2318,15 @@ pub fn mcp_stdio_command() -> Option<Vec<String>> {
 /// to refresh what was derived from them. Needs `engines.openidea = "^1.4"`.
 pub fn extension_contributions(point: &str) -> Result<Vec<crate::Contribution>, Error> {
     imp::extension_contributions(point)
+}
+
+/// Fork a recorded native agent session into a new task in the open project,
+/// returning the new task id (API 1.18). Requires the `agents` capability and an
+/// invoking window. The session must belong to that window's project and have
+/// been recorded in `cwd`; the host builds the fork invocation and names the
+/// fork's session id for claude (codex assigns its own). `agent` is a
+/// native provider (`claude` or `codex`). The new task's first turn continues the
+/// recording as the agent's own fork. Needs `engines.openidea = "^1.18"`.
+pub fn fork_agent_session(agent: &str, session_id: &str, cwd: &str) -> Result<String, Error> {
+    imp::fork_agent_session(agent, session_id, cwd)
 }

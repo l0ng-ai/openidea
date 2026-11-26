@@ -70,6 +70,24 @@ export async function annotateAtRevision(
 }
 
 /**
+ * The annotate gutter's Annotate Revision (IDEA's): the file as of the line's commit, annotated.
+ * `origin` is the file's path at that commit when it had another name.
+ */
+export async function annotateLineRevision(path: string, commit: string, origin?: string | null): Promise<void> {
+  const data: DiffData = {
+    path,
+    left: { type: "rev", rev: commit, label: commit.slice(0, 8), path: origin ?? path },
+    right: { type: "worktree" },
+    annotateLeft: true,
+  };
+  try {
+    await openDiff(data, { preview: false });
+  } catch (e) {
+    notifyFailure(e);
+  }
+}
+
+/**
  * Opens the previous revision of `commit`, annotated: the line's history before the change. The
  * diff opens at its first change: the annotated line's number belongs to the working copy, not to
  * either revision.

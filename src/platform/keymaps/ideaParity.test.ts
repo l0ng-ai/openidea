@@ -64,6 +64,9 @@ describe("IDEA keymap parity", () => {
     // `Mac OS X 10.5+` removes the ⌘↑ / ⌘↓ it would inherit from `Mac OS X`.
     ["editor.scrollUp", [], ["Ctrl+Up"]],
     ["editor.scrollDown", [], ["Ctrl+Down"]],
+    // Only IDEA's Xcode keymap binds these (Home / End).
+    ["editor.scrollToTop", [], []],
+    ["editor.scrollToBottom", [], []],
     // `$default` Ctrl reads as ⌘ in the Mac keymaps that inherit it.
     ["editor.moveToPageTop", ["Meta+PageUp"], ["Ctrl+PageUp"]],
     ["editor.moveToPageBottom", ["Meta+PageDown"], ["Ctrl+PageDown"]],
@@ -76,19 +79,39 @@ describe("IDEA keymap parity", () => {
     ["code.deleteToLineStart", [], []],
     ["code.deleteToLineEnd", [], []],
     ["code.hungryBackspace", [], []],
+    // EditorSwapSelectionBoundaries has no shortcut.
+    ["editor.swapSelectionBoundaries", [], []],
+    // EditorSelectLine has no shortcut.
+    ["editor.selectLine", [], []],
     // CopyAsPlainText / CopyAsRichText have no shortcut.
     ["code.copyAsPlainText", [], []],
     ["code.copyAsRichText", [], []],
+    // ToggleZenMode has no shortcut.
+    ["view.toggleZenMode", [], []],
     ["navigate.nextOccurrence", ["Meta+Alt+Down"], ["Ctrl+Alt+Down"]],
     ["navigate.prevOccurrence", ["Meta+Alt+Up"], ["Ctrl+Alt+Up"]],
     // Rerun in the Find / Find Usages tool windows uses the Rerun shortcut.
     ["find.rerun", ["Meta+R"], ["Ctrl+F5"]],
     ["usages.rerun", ["Meta+R"], ["Ctrl+F5"]],
+    // ShowRecentFindUsagesGroup has no shortcut.
+    ["find.recentUsages", [], []],
     // Vcs.Log.GoToRef: Find in the Git Log table.
     ["vcs.log.goToRef", ["Meta+F"], ["Ctrl+F"]],
     // Back / Forward also carry the mouse side buttons (`<mouse-shortcut keystroke="button4"/>`).
     ["editor.codeBlockStartWithSelection", ["Meta+Alt+Shift+["], ["Ctrl+Shift+["]],
     ["editor.codeBlockEndWithSelection", ["Meta+Alt+Shift+]"], ["Ctrl+Shift+]"]],
+    // EditorForwardParagraph / EditorBackwardParagraph (and with Selection) have no shortcut.
+    ["editor.paragraphForward", [], []],
+    ["editor.paragraphBackward", [], []],
+    ["editor.paragraphForwardWithSelection", [], []],
+    ["editor.paragraphBackwardWithSelection", [], []],
+    // The "in Different "CamelHumps" Mode" word moves and deletes have no shortcut.
+    ["editor.nextWordInDifferentHumpsMode", [], []],
+    ["editor.previousWordInDifferentHumpsMode", [], []],
+    ["editor.nextWordInDifferentHumpsModeWithSelection", [], []],
+    ["editor.previousWordInDifferentHumpsModeWithSelection", [], []],
+    ["code.deleteToWordStartInDifferentHumpsMode", [], []],
+    ["code.deleteToWordEndInDifferentHumpsMode", [], []],
     ["code.collapseBlock", ["Meta+Shift+."], ["Ctrl+Shift+."]],
     ["code.autoIndentLines", ["Ctrl+Alt+I"], ["Ctrl+Alt+I"]],
     ["code.showErrorDescription", ["Meta+F1"], ["Ctrl+F1"]],

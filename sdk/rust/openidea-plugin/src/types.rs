@@ -380,6 +380,10 @@ pub enum EventKind {
     /// Problems of the window's files changed (a language server or a report): JSON object (`Event::Other`).
     ProblemsChanged,
     Scheduled,
+    /// A project was closed (or its window closed): the project root path (`Event::ProjectClosed`).
+    ProjectClosed,
+    /// Paths watched with [`crate::host::watch_paths`] changed (`Event::WatchedFilesChanged`, API 1.18).
+    WatchedFilesChanged,
 }
 
 impl EventKind {
@@ -403,6 +407,8 @@ impl EventKind {
             Self::ActionPerformed => "action-performed",
             Self::VcsChanged => "vcs-changed",
             Self::ProblemsChanged => "problems-changed",
+            Self::ProjectClosed => "project-closed",
+            Self::WatchedFilesChanged => "watched-files-changed",
             Self::Scheduled => "scheduled",
         }
     }
@@ -500,9 +506,31 @@ pub struct ActionPerformed {
 /// Debounced changes in an open project, delivered with the `events` capability.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FilesChanged {
+    #[serde(default)]
+    pub project: Option<String>,
+    #[serde(default)]
+    pub generation: Option<u64>,
     pub created: Vec<String>,
     pub modified: Vec<String>,
     pub removed: Vec<String>,
+}
+
+/// Options for [`crate::host::subscribe_paths_with_options`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SubscriptionOptions {
+    pub globs: Vec<String>,
+    pub debounce_ms: Option<u32>,
+}
+
+impl SubscriptionOptions {
+    pub fn new(globs: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        Self { globs: globs.into_iter().map(Into::into).collect(), debounce_ms: None }
+    }
+
+    pub fn with_debounce_ms(mut self, debounce_ms: u32) -> Self {
+        self.debounce_ms = Some(debounce_ms);
+        self
+    }
 }
 
 /// A workbench event (see [`crate::host::subscribe`]).
@@ -520,6 +548,11 @@ pub enum Event {
     VcsChanged(String),
     /// The `on-schedule` period elapsed.
     Scheduled,
+    /// A project was closed (or its window closed): the project root path.
+    ProjectClosed(String),
+    /// Paths watched with [`crate::host::watch_paths`] changed (API 1.18): absolute
+    /// paths, and `project` is the project the watch belongs to.
+    WatchedFilesChanged(FilesChanged),
     /// A kind this SDK doesn't know: its name and JSON data.
     Other {
         kind: String,
@@ -791,6 +824,16 @@ impl Event {
             && let Ok(batch) = serde_json::from_str(&data)
         {
             return Self::FilesChanged(batch);
+        }
+        if kind == "project-closed"
+            && let Ok(root) = serde_json::from_str(&data)
+        {
+            return Self::ProjectClosed(root);
+        }
+        if kind == "watched-files-changed"
+            && let Ok(batch) = serde_json::from_str(&data)
+        {
+            return Self::WatchedFilesChanged(batch);
         }
         Self::Other { kind, data }
     }

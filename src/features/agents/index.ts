@@ -17,7 +17,6 @@ import {
   maybeEditorService,
   registerAgentContextSource,
   registerEditorDropHandler,
-  provideAgentDraftAppender,
   registerEditorKind,
   registerMenuGroup,
   registerMenuSlotItem,
@@ -45,7 +44,6 @@ import { focusedSession, inputSession } from "./sessionFocus";
 import { cycleFocusedEffort } from "./effortFocus";
 import { clearAgentTabFontZoom } from "./fontZoom";
 import {
-  appendContextBlock,
   closeActiveTask,
   closeAndNewTask,
   connect,
@@ -127,7 +125,6 @@ export function activate(): () => void {
       else if (s.settings?.agents?.newTaskApprovals !== prev.settings?.agents?.newTaskApprovals && s.project?.root)
         void refreshProviders();
     }),
-    provideAgentDraftAppender(appendContextBlock),
     registerToolWindow({
       id: TOOL_WINDOW,
       title: "Agents",
@@ -167,6 +164,13 @@ export function activate(): () => void {
       trailing: (input) => createElement(TaskStatusMark, { task: (input.data as { task: string }).task }),
       // Tabs of tasks deleted meanwhile are closed when the tasks load (`connect`).
       restorable: true,
+      canNavigate: (input, open) => {
+        if (open) return true;
+        const task = (input.data as { task?: string } | undefined)?.task;
+        if (!task) return false;
+        const s = useAgents.getState();
+        return !s.loaded || s.tasks.has(task);
+      },
       onTabClose: (tabId) => clearAgentTabFontZoom(tabId),
       prepareWindowInput: prepareTaskWindowInput,
       onClose: (input) => {
@@ -190,6 +194,13 @@ export function activate(): () => void {
       },
       icon: () => "diff",
       restorable: true,
+      canNavigate: (input, open) => {
+        if (open) return true;
+        const task = (input.data as { task?: string } | undefined)?.task;
+        if (!task) return false;
+        const s = useAgents.getState();
+        return !s.loaded || s.tasks.has(task);
+      },
       onClose: (input) => releaseClosedTaskCache((input.data as { task: string }).task),
     }),
     registerEditorKind({
@@ -221,7 +232,7 @@ export function activate(): () => void {
     registerStatusItem({ id: "agents.status", align: "right", priority: 3, title: "Agents", component: AgentsStatus }),
     registerMenuGroup({
       id: "agents.send",
-      menus: ["editor", "projectView"],
+      menus: ["editor", "editorTab", "projectView"],
       order: 80,
       items: (menu, { paths, dirs }) =>
         paths.length && !paths.some(isVirtualUri) && agentsHere()
@@ -229,7 +240,8 @@ export function activate(): () => void {
               {
                 kind: "action",
                 action: "agents.sendToAgent",
-                arg: menu === "projectView" ? paths.map((p, i) => (dirs?.[i] ? `${p}/` : p)) : undefined,
+                // The editor sends its selection; a tab or the Project view sends the files.
+                arg: menu === "editor" ? undefined : paths.map((p, i) => (dirs?.[i] ? `${p}/` : p)),
               },
             ]
           : [],

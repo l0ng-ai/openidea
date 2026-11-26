@@ -181,7 +181,13 @@ function ShellPathRow() {
         anchor={menuRef}
         placement="bottom-end"
         aria-label="Installed shells"
-        items={shells.map((p) => ({ id: p, label: p, checked: quotePath(p) === value, run: () => set(quotePath(p)) }))}
+        items={shells.map((p) => ({
+          id: p,
+          verbatim: true,
+          label: p,
+          checked: quotePath(p) === value,
+          run: () => set(quotePath(p)),
+        }))}
       />
     </Row>
   );
@@ -442,6 +448,7 @@ function MacroButton({ onInsert }: { onInsert: (macro: string) => void }) {
         aria-label="Macros"
         items={EXTERNAL_TOOL_MACROS.map((m) => ({
           id: m.name,
+          verbatim: true,
           label: m.name,
           shortcut: m.description,
           run: () => onInsert(m.name),
@@ -786,7 +793,7 @@ export const TOOLS_PAGES: PageSpec[] = [
             key: "agents.newTaskApprovals",
             label: "New tasks start",
             options: NEW_TASK_APPROVAL_OPTIONS,
-            hint: "Without asking means the agent's bypass or full-access mode, where command permissions don't apply",
+            hint: "Without asking uses the agent's bypass or full-access mode, which skips Command Rules.",
           },
         ],
       },
@@ -799,7 +806,7 @@ export const TOOLS_PAGES: PageSpec[] = [
             key: "agents.whileRunning",
             label: "While the agent works, sending",
             options: WHILE_RUNNING_OPTIONS,
-            hint: "The other way is a modifier away: ⌘↵ with Enter, ⌘⇧↵ with ⌘↵",
+            hint: "For the other choice, press ⌘↵ (or ⌘⇧↵ when sending with ⌘↵).",
           },
         ],
       },
@@ -823,7 +830,7 @@ export const TOOLS_PAGES: PageSpec[] = [
             kind: "toggle",
             key: "agents.smoothText",
             label: "Reveal streaming text smoothly",
-            hint: "Text appears at a steady pace instead of in bursts",
+            hint: "Text appears at a steady pace instead of in bursts.",
           },
           {
             kind: "toggle",
@@ -840,13 +847,13 @@ export const TOOLS_PAGES: PageSpec[] = [
             kind: "toggle",
             key: "agents.showUsageLimits",
             label: "Usage limits",
-            hint: "The account's 5-hour and weekly limits, when the agent reports them (Claude Code)",
+            hint: "5-hour and weekly limits, when the agent reports them (Claude Code).",
           },
           {
             kind: "toggle",
             key: "agents.showCost",
             label: "Session cost",
-            hint: "What the session has cost so far, as the agent reports it (API pricing, also shown on subscriptions)",
+            hint: "As the agent reports it, at API pricing.",
           },
         ],
       },
@@ -885,7 +892,20 @@ export const TOOLS_PAGES: PageSpec[] = [
     title: "Download Mirrors",
     group: TOOLS_GROUP,
     order: 590,
-    keywords: ["mirror", "download", "github", "proxy", "slow", "language server", "accelerate"],
+    keywords: [
+      "mirror",
+      "download",
+      "github",
+      "proxy",
+      "slow",
+      "language server",
+      "accelerate",
+      "registry",
+      "npm",
+      "maven central",
+      "nexus",
+      "artifactory",
+    ],
     sections: [
       {
         title: "GitHub",
@@ -895,6 +915,17 @@ export const TOOLS_PAGES: PageSpec[] = [
             label: "Mirror prefix for GitHub downloads",
             keywords: ["https://gh-proxy.com/", "info"],
             component: MirrorPrefixRow,
+          },
+        ],
+      },
+      {
+        title: "Package Registries",
+        options: [
+          {
+            kind: "toggle",
+            key: "toolDownloads.configuredRegistriesOnly",
+            label: "Use only the configured package registries",
+            hint: "For a company registry such as Nexus or Artifactory: installing tools and agents never retries against the public npm registry when the configured one refuses or misses a package, and the IDE fetches nothing from Maven Central, npm, PyPI or crates.io itself (the JUnit launcher, dependency version completion).",
           },
         ],
       },

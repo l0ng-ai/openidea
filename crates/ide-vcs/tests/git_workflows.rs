@@ -1809,6 +1809,37 @@ fn outgoing_commits_follow_the_push_target_and_its_fetch_refspec() {
 }
 
 #[test]
+fn outgoing_commits_need_an_upstream_or_a_push_refspec() {
+    // A new branch reuses the name of an old one still on the server.
+    let (fx, _) = Fixture::with_origin();
+    fx.git(&["switch", "-q", "-c", "topic"]);
+    fx.write("b.txt", "old topic\n");
+    fx.commit_all("Old topic");
+    fx.git(&["push", "-q", "origin", "topic"]);
+    fx.git(&["switch", "-q", "main"]);
+    fx.git(&["branch", "-q", "-D", "topic"]);
+    fx.write("c.txt", "main\n");
+    fx.commit_all("Main moves on");
+    fx.git(&["push", "-q", "origin", "main"]);
+    fx.git(&["switch", "-q", "--no-track", "-c", "topic", "origin/main"]);
+    let repo = fx.repo();
+
+    let info = repo.branch_info().unwrap();
+    assert!(info.upstream.is_none());
+    assert!(info.outgoing.is_none());
+    assert!(repo.branches().unwrap().iter().find(|b| b.current).unwrap().outgoing.is_none());
+    // Push still proposes the remote branch of the same name.
+    let selection = repo.default_push_target(None).unwrap().unwrap().selection;
+    assert_eq!((&*selection.remote, &*selection.target), ("origin", "topic"));
+
+    fx.git(&["config", "remote.origin.push", "refs/heads/topic:refs/heads/topic"]);
+    assert_eq!(repo.branch_info().unwrap().outgoing.map(|o| o.count), Some(1));
+    fx.git(&["config", "--unset", "remote.origin.push"]);
+    fx.git(&["branch", "-q", "--set-upstream-to=origin/topic"]);
+    assert_eq!(repo.branch_info().unwrap().outgoing.map(|o| o.count), Some(1));
+}
+
+#[test]
 fn push_up_to_commit_prefers_a_containing_local_branch_and_only_publishes_the_selection() {
     let (fx, bare) = Fixture::with_origin();
     let base = fx.head();

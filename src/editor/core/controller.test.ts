@@ -908,3 +908,125 @@ describe("editor action when clauses", () => {
     expect(evaluateWhen(when, { ...editorBehind, toolWindowFocus: true })).toBe(false);
   });
 });
+
+describe("non-file tabs and split panes in Back / Forward", () => {
+  it("navigates back and forward across text files and non-path custom tabs while keeping Recent Locations text-only", async () => {
+    ctrl = new EditorController(createMemoryBackend({ "/p/a.ts": "one\ntwo\n", "/p/b.ts": "three\n" }));
+    ctrl.start();
+    await ctrl.openFile("/p/a.ts", { focus: false });
+    const chat = { kind: "agent-session", key: "agent:task-1", data: { task: "task-1" } };
+    const cli = { kind: "cli", key: "cli:term-1", data: { name: "Local", command: "" } };
+    await ctrl.openInput(chat, { focus: false });
+    await ctrl.openInput(cli, { focus: false });
+    await ctrl.openFile("/p/b.ts", { focus: false });
+
+    await ctrl.back();
+    expect(ctrl.activeInput()?.key).toBe(cli.key);
+    await ctrl.back();
+    expect(ctrl.activeInput()?.key).toBe(chat.key);
+    await ctrl.back();
+    expect(ctrl.activeSlot?.model.path).toBe("/p/a.ts");
+
+    await ctrl.forward();
+    expect(ctrl.activeInput()?.key).toBe(chat.key);
+    await ctrl.forward();
+    expect(ctrl.activeInput()?.key).toBe(cli.key);
+    await ctrl.forward();
+    expect(ctrl.activeSlot?.model.path).toBe("/p/b.ts");
+
+    expect(ctrl.nav.snapshot().entries.map((e) => e.path)).toEqual(["/p/a.ts", "/p/b.ts"]);
+  });
+
+  it("skips stale entries via canNavigate and collapses duplicates exposed by skipping them", async () => {
+    let taskExists = true;
+    const disposeTask = registerEditorKind({
+      kind: "ephemeral-task",
+      title: () => "Task",
+      component: () => null,
+      canNavigate: (_input, open) => open || taskExists,
+    });
+    const disposeCli = registerEditorKind({
+      kind: "ephemeral-cli",
+      title: () => "Terminal",
+      component: () => null,
+      canNavigate: (_input, open) => open,
+    });
+    try {
+      ctrl = new EditorController(createMemoryBackend({ "/p/a.ts": "a\n", "/p/b.ts": "b\n" }));
+      ctrl.start();
+      await ctrl.openFile("/p/a.ts", { focus: false });
+      const task = { kind: "ephemeral-task", key: "ephemeral:task-1" };
+      const cli = { kind: "ephemeral-cli", key: "ephemeral:cli-1" };
+      await ctrl.openInput(task, { focus: false });
+      await ctrl.openFile("/p/b.ts", { focus: false });
+      await ctrl.openInput(cli, { focus: false });
+      await ctrl.closeInput(cli.key);
+      await ctrl.closeInput(task.key);
+      taskExists = false;
+
+      // Closing cli activated b.ts; Back skips both closed cli and deleted task and lands directly on a.ts.
+      expect(ctrl.activeSlot?.model.path).toBe("/p/b.ts");
+      await ctrl.back();
+      expect(ctrl.activeSlot?.model.path).toBe("/p/a.ts");
+      await ctrl.forward();
+      expect(ctrl.activeSlot?.model.path).toBe("/p/b.ts");
+    } finally {
+      disposeTask();
+      disposeCli();
+    }
+  });
+
+  it("tracks split panes for both text and non-text tabs, and does not duplicate a moved tab", async () => {
+    ctrl = new EditorController(createMemoryBackend({ "/p/a.ts": "a\n", "/p/b.ts": "b\n" }));
+    ctrl.start();
+    await ctrl.openFile("/p/a.ts", { focus: false });
+    const p1 = useTabs.getState().activePane;
+
+    // Splitting duplicates a.ts into p2; Back / Forward returns to the recorded pane.
+    ctrl.split(p1, "row");
+    await vi.waitFor(() => expect(Object.keys(useTabs.getState().panes)).toHaveLength(2));
+    const p2 = Object.keys(useTabs.getState().panes).find((id) => id !== p1)!;
+    const p2Tab = useTabs.getState().panes[p2]!.active!;
+    await ctrl.ensureSlot(p2Tab);
+    expect(useTabs.getState().activePane).toBe(p2);
+
+    // Open a non-text tab in p2, then focus back into p1 via focusPane (simulating clicking the inactive pane).
+    const chat = { kind: "agent-session", key: "agent:task-1", data: { task: "task-1" } };
+    await ctrl.openInput(chat, { pane: p2, focus: false });
+    expect(useTabs.getState().activePane).toBe(p2);
+
+    ctrl.focusPane(p1);
+    expect(useTabs.getState().activePane).toBe(p1);
+    ctrl.focusPane(p2);
+    expect(useTabs.getState().activePane).toBe(p2);
+
+    await ctrl.back();
+    expect(useTabs.getState().activePane).toBe(p1);
+    expect(ctrl.activeSlot?.model.path).toBe("/p/a.ts");
+
+    await ctrl.back();
+    expect(useTabs.getState().activePane).toBe(p2);
+    expect(ctrl.activeInput()?.key).toBe(chat.key);
+
+    await ctrl.back();
+    expect(useTabs.getState().activePane).toBe(p2);
+    expect(ctrl.activeSlot?.model.path).toBe("/p/a.ts");
+
+    await ctrl.back();
+    expect(useTabs.getState().activePane).toBe(p1);
+    expect(ctrl.activeSlot?.model.path).toBe("/p/a.ts");
+
+    // Moving a tab to the opposite pane keeps Back immediate and avoids duplicating the tab in its old pane.
+    await ctrl.openFile("/p/b.ts", { pane: p1, focus: false });
+    const bTabId = useTabs.getState().panes[p1]!.active!;
+    ctrl.moveToOpposite(p1, bTabId);
+    expect(useTabs.getState().activePane).toBe(p2);
+    await ctrl.back();
+    expect(useTabs.getState().activePane).toBe(p1);
+    expect(ctrl.activeSlot?.model.path).toBe("/p/a.ts");
+    await ctrl.forward();
+    expect(useTabs.getState().activePane).toBe(p2);
+    expect(ctrl.activeSlot?.model.path).toBe("/p/b.ts");
+    expect(useTabs.getState().panes[p1]!.tabs.some((t) => t.input.path === "/p/b.ts")).toBe(false);
+  });
+});

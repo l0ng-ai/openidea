@@ -582,8 +582,13 @@ function choiceOptions(
   values: readonly { value: string; name: string }[],
   saved: string,
 ): SelectOption<string>[] {
-  const options = [{ value: AUTOMATIC, label: automatic }, ...values.map((v) => ({ value: v.value, label: v.name }))];
-  return saved && !values.some((v) => v.value === saved) ? [...options, { value: saved, label: saved }] : options;
+  const options = [
+    { value: AUTOMATIC, label: automatic },
+    ...values.map((v) => ({ value: v.value, verbatim: true, label: v.name })),
+  ];
+  return saved && !values.some((v) => v.value === saved)
+    ? [...options, { value: saved, verbatim: true, label: saved }]
+    : options;
 }
 
 function CommitAgentRows() {

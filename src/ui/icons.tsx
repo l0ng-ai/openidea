@@ -170,6 +170,7 @@ const ICONS = {
   "file-fsharp": "openidea/fileTypes/fsharp",
   "file-swift": "fileTypes/swiftLang",
   "file-go": "openidea/fileTypes/go",
+  "file-go-test": "openidea/fileTypes/goTest",
   "file-gomod": "openidea/fileTypes/goMod",
   "file-gowork": "openidea/fileTypes/goWork",
   "file-rust": "fileTypes/rust",
@@ -250,7 +251,6 @@ const ICONS = {
   "toolwindow-inspection": "toolwindows/toolWindowInspection",
   "toolwindow-duplicates": "toolwindows/toolWindowDuplicates",
   "toolwindow-changes": "toolwindows/changes",
-  "toolwindow-web": "toolwindows/web",
   "toolwindow-database": "openidea/toolwindows/database",
   "toolwindow-agents": "openidea/toolwindows/agents",
   "toolwindow-graphql": "openidea/toolwindows/graphql",
@@ -439,6 +439,7 @@ const ICONS = {
   "db-sqlite": "openidea/database/sqlite",
   "db-postgres": "openidea/database/postgres",
   "db-clickhouse": "openidea/database/clickhouse",
+  "db-duckdb": "openidea/database/duckdb",
   "db-mysql": "openidea/database/mysql",
   "db-sqlserver": "openidea/database/sqlserver",
   "db-oracle": "openidea/database/oracle",
@@ -512,6 +513,7 @@ const ICONS = {
   "gutter-javadoc-edit": "gutter/javadocEdit",
   stop: "run/stop",
   rerun: "run/rerun",
+  "rerun-automatically": "actions/rerunAutomatically",
   "hot-reload": "openidea/general/hotReload",
   "rerun-filled": "run/rerun_stroke",
   "restart-debug": "run/restartDebug",
@@ -1174,7 +1176,8 @@ const EXT_ICONS = table({
   "file-jsp": "jsp jspx jspf jsph tag tagf tagx",
   "file-freemarker": "ftl ftlh ftlx",
   "file-astro": "astro",
-  "file-json": "json jsonc json5 jsonl ndjson geojson topojson webmanifest har avsc code-workspace code-snippets map",
+  "file-json":
+    "json jsonc json5 jsonl ndjson geojson topojson webmanifest har avsc code-workspace code-snippets map uproject uplugin",
   "file-md": "md mdx markdown mdown mkd mkdn mdwn ronn workbook",
   "file-word": "doc docx rtf odt",
   "file-pdf": "pdf",
@@ -1320,6 +1323,8 @@ export function fileIconName(fileName: string, path: string | null = null): Icon
   }
   const themed = fileIconTheme?.file(fileName, path);
   if (themed) return themed as IconName;
+  // A file `go test` builds as a test: the name is case-sensitive, and `_…` / `.…` files are ignored.
+  if (/^[^._].*_test\.go$/.test(fileName)) return "file-go-test";
   const lower = fileName.toLowerCase();
   const named = FILE_NAMES[lower] ?? NAME_PATTERNS.find(([re]) => re.test(lower))?.[1];
   if (named) return named;

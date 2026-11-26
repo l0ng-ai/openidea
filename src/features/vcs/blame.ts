@@ -561,6 +561,14 @@ function blameExtension(lines: BlameLine[], source: BlameSource): Extension {
                       run: () => void import("./FileRevisionChooser").then((m) => m.annotateFileRevision(path)),
                     },
                     {
+                      label: tx("Annotate Revision"),
+                      icon: "history",
+                      run: () =>
+                        void import("./annotateRevision").then((m) =>
+                          m.annotateLineRevision(path, l.commit, l.originPath),
+                        ),
+                    },
+                    {
                       label: tx("Annotate Previous Revision"),
                       icon: "history",
                       // Loads the history and diff viewer code only when it is used.

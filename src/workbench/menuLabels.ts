@@ -5,6 +5,7 @@ import { isVirtualUri } from "@/platform/virtualDocs";
 import { maybeEditorService } from "./contributions";
 import { isDistractionFree } from "./distractionFree";
 import { toolWindowsRestorable } from "./toolwindows/store";
+import { isZenMode } from "./zenMode";
 
 export function javaFileNameOf(path: unknown): string | null {
   if (typeof path !== "string" || !path || isVirtualUri(path) || !/\.java$/i.test(path)) return null;
@@ -16,6 +17,7 @@ export function menuLabelParams(os: string) {
   return {
     os,
     distractionFree: isDistractionFree() ? "on" : "off",
+    zenMode: isZenMode() ? "on" : "off",
     toolWindows: toolWindowsRestorable() ? "hidden" : "shown",
     compileFile: compileFileName ? "yes" : "no",
     compileFileName: compileFileName ?? "",

@@ -106,6 +106,7 @@ export function PythonInterpreterPage() {
         .filter((row) => !row.invalid && !detected.some((sdk) => sameInterpreterPath(sdk.path, row.path, null)))
         .map((row) => ({
           value: row.path,
+          verbatim: true,
           label: row.name,
           detail: tildify(row.path),
           icon: interpreterIcon(row.source),

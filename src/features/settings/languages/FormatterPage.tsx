@@ -71,18 +71,20 @@ function FormatterPage({
         </Row>
         <Toggle label="Run on save" checked={save} onChange={setSave} hint={saveHint} />
       </Section>
-      <Section title="Enabled languages">
-        {DEFAULT_LANGUAGES[tool].languages.map((language) => (
-          <Toggle
-            key={language}
-            label={names[language]!}
-            checked={languages.includes(language)}
-            onChange={(checked) =>
-              setLanguages(checked ? [...languages, language] : languages.filter((l) => l !== language))
-            }
-          />
-        ))}
-      </Section>
+      {DEFAULT_LANGUAGES[tool].languages.length > 0 && (
+        <Section title="Enabled languages">
+          {DEFAULT_LANGUAGES[tool].languages.map((language) => (
+            <Toggle
+              key={language}
+              label={names[language]!}
+              checked={languages.includes(language)}
+              onChange={(checked) =>
+                setLanguages(checked ? [...languages, language] : languages.filter((l) => l !== language))
+              }
+            />
+          ))}
+        </Section>
+      )}
     </>
   );
 }
@@ -155,6 +157,19 @@ export function BiomePage() {
       pathLabel="Biome path"
       providerHint="Biome formats an enabled language instead of Prettier and oxfmt below a Biome configuration file (biome.json, biome.jsonc) or installation, or when it is the selected provider."
       saveHint="Run Biome on save for enabled languages when it is the selected formatting provider."
+    />
+  );
+}
+
+export function DprintPage() {
+  return (
+    <FormatterPage
+      tool="dprint"
+      name="dprint"
+      pathLabel="dprint path"
+      autoLabel="Automatic (projects with dprint)"
+      providerHint="dprint formats every file its plugins cover, before the other formatters, below a dprint configuration file (dprint.json, .dprint.json, dprint.jsonc) or installation, or when it is the selected provider. Other files keep their usual formatter."
+      saveHint="Run dprint on save for the files it formats. Format on save also runs it."
     />
   );
 }

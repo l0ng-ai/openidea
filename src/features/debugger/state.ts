@@ -3,6 +3,7 @@
  * (threads, frames, locals) after each stop.
  */
 import { tx } from "@/platform/i18n";
+import { logError } from "@/platform/errorLog";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { executeAction, getAction } from "@/platform/actions";
 import { create } from "zustand";
@@ -20,6 +21,7 @@ import {
   type LaunchConfig,
   type RunId,
   type RunConfig,
+  type Scope,
   type StackFrame,
   type ThreadInfo,
   type Variable,
@@ -56,6 +58,7 @@ import { missingAdapter } from "./missingAdapter";
 import { startFailureMessage } from "./startFailure";
 import { evaluateWithImports, forgetImports } from "./classImports";
 import { JAVA_ADAPTER } from "./java";
+import { reconnects } from "./remote";
 import { isTracing, markTraceStop } from "./streams/streamStore";
 
 export type SessionStatus = "starting" | "running" | "paused" | "stopping" | "terminated";
@@ -96,6 +99,8 @@ export interface DebugSession {
   threads: ThreadInfo[];
   selectedThread: number | null;
   frames: StackFrame[];
+  /** Why the selected thread's frames could not be loaded (Threads & Variables offers a retry). */
+  framesError?: string | null;
   selectedFrame: number | null;
   /** Breakpoint hits in this session. */
   hits: number;
@@ -356,8 +361,20 @@ function ownSession(id: DebugSessionId, event: DebugEvent): DebugSession | null 
   // of a forgotten session, though its id may be one (another backend numbers from 1 again).
   if (owned.has(id) && event.kind !== "started") return null;
   if (event.kind === "started" && event.parent != null) {
-    if (!st.sessions[event.parent]) return null;
-    return adoptSession(id, { name: event.name, adapter: event.adapter, parent: event.parent });
+    const parent = st.sessions[event.parent];
+    if (!parent) return null;
+    const child = adoptSession(id, { name: event.name, adapter: event.adapter, parent: event.parent });
+    // A process attached again after its restart takes the finished one's place (one tab, its output kept).
+    if (reconnects(rootOf(parent).runConfig))
+      for (const s of Object.values(st.sessions)) {
+        if (s.parent !== event.parent || isLive(s)) continue;
+        flushConsoleOutput();
+        useDebug.setState((cur) => ({
+          console: { ...cur.console, [id]: [...(cur.console[s.id] ?? []), ...(cur.console[id] ?? [])] },
+        }));
+        removeSession(s.id);
+      }
+    return child;
   }
   if (pendingStarts === 0) return null;
   provisional.add(id);
@@ -1296,16 +1313,19 @@ export function selectFrame(id: DebugSessionId, frameId: number, reveal = true) 
 
 /** `newStop`: false when returning to an earlier stop, whose breakpoint hit was handled when it happened. */
 async function loadFrames(id: DebugSessionId, threadId: number, reveal: boolean, newStop = true) {
+  if (useDebug.getState().sessions[id]?.framesError) patch(id, { framesError: null });
   const before = useDebug.getState().sessions[id];
   let frames: StackFrame[] = [];
+  let framesError: string | null = null;
   try {
     frames = await call(commands.debugStackTrace(id, threadId));
   } catch (e) {
-    console.warn("stackTrace failed", e);
+    logError("Debugger stack trace", e);
+    framesError = e instanceof Error ? e.message : String(e);
   }
   const s = useDebug.getState().sessions[id];
   if (!s || s.status !== "paused" || s.selectedThread !== threadId || s.frames !== before?.frames) return;
-  patch(id, { frames });
+  patch(id, { frames, framesError });
   const top = topFrame(frames);
   if (newStop && top?.path && (s.stopReason === "breakpoint" || s.stopReason === "function breakpoint")) {
     void logSuspendingHit(id, top);
@@ -1341,22 +1361,48 @@ async function loadThreads(id: DebugSessionId) {
   }
 }
 
+export interface FrameLocals {
+  scopes: Scope[];
+  /** Variables of the first non-expensive scope. */
+  locals: Variable[];
+}
+
+let frameLocalsMemo: { key: string; frames: readonly StackFrame[] | undefined; value: Promise<FrameLocals> } | null =
+  null;
+
+/**
+ * Scopes and first-scope variables of `frameId` at the current stop. Inline values and the Variables view
+ * ask for the same frame on every stop; they share one request, since an adapter may take seconds to
+ * format a large local (#6170).
+ */
+export function frameLocals(id: DebugSessionId, frameId: number): Promise<FrameLocals> {
+  const { stopSeq, variablesEpoch, sessions } = useDebug.getState();
+  const key = `${id}:${frameId}:${stopSeq}:${variablesEpoch}`;
+  // Every stop loads a new stack: a stop counter that starts over cannot hand out an old answer.
+  const frames = sessions[id]?.frames;
+  if (frameLocalsMemo?.key !== key || frameLocalsMemo.frames !== frames) {
+    const value = (async () => {
+      const scopes = await call(commands.debugScopes(id, frameId));
+      const scope = scopes.find((sc) => !sc.expensive);
+      const locals = scope ? await call(commands.debugVariables(id, scope.variablesReference)) : [];
+      return { scopes, locals };
+    })();
+    frameLocalsMemo = { key, frames, value };
+  }
+  return frameLocalsMemo.value;
+}
+
 /** Locals of `frameId` (first non-expensive scope) for inline values. */
 async function loadLocals(id: DebugSessionId, frameId: number) {
   const frames = useDebug.getState().sessions[id]?.frames;
   const values: Record<string, string> = Object.create(null);
   const variables: Record<string, Variable> = Object.create(null);
   try {
-    const scopes = await call(commands.debugScopes(id, frameId));
-    const scope = scopes.find((sc) => !sc.expensive);
-    if (scope) {
-      const vars = await call(commands.debugVariables(id, scope.variablesReference));
-      for (const v of vars)
-        if (v.name && !Object.hasOwn(values, v.name)) {
-          values[v.name] = v.value;
-          variables[v.name] = v;
-        }
-    }
+    for (const v of (await frameLocals(id, frameId)).locals)
+      if (v.name && !Object.hasOwn(values, v.name)) {
+        values[v.name] = v.value;
+        variables[v.name] = v;
+      }
   } catch {
     // No inline values.
   }

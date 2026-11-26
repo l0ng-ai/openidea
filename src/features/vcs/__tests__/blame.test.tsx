@@ -182,6 +182,7 @@ describe("git blame gutter and commit popup", () => {
       "Copy Revision Number",
       undefined,
       "Annotate at Revision…",
+      "Annotate Revision",
       "Annotate Previous Revision",
       "Show Commit in Git Log",
       "Ignore This Commit",
@@ -197,6 +198,35 @@ describe("git blame gutter and commit popup", () => {
         left: expect.objectContaining({ label: "(does not exist)" }),
         right: expect.objectContaining({ type: "rev", rev: sha }),
       }),
+      { preview: false },
+    );
+  });
+
+  it.each([
+    [undefined, "/repo/src/main.py"],
+    ["/repo/src/original.py", "/repo/src/original.py"],
+  ])("annotates the file as of the line's commit (origin %s)", async (originPath, revisionPath) => {
+    mocks.blame.mockResolvedValue({ status: "ok", data: lines.map((line) => ({ ...line, originPath })) });
+    view = new EditorView({
+      parent: document.body,
+      state: EditorState.create({ doc: "first\nsecond\nthird", extensions: [blameSlot()] }),
+    });
+    await toggleAnnotations(view, "/repo/src/main.py");
+    const firstLine = [...view.dom.querySelectorAll<HTMLElement>(".cm-vcs-blame .cm-gutterElement")].find((el) =>
+      el.querySelector(`[data-commit="${sha}"]`),
+    )!;
+    fireEvent.contextMenu(firstLine);
+    const items = mocks.menu.mock.calls[0]![1] as { label?: string; run?: () => void }[];
+    items.find((i) => i.label === "Annotate Revision")!.run!();
+    await vi.waitFor(() => expect(mocks.openDiff).toHaveBeenCalled());
+    expect(mocks.log).not.toHaveBeenCalled();
+    expect(mocks.openDiff).toHaveBeenCalledWith(
+      {
+        path: "/repo/src/main.py",
+        left: { type: "rev", rev: sha, label: sha.slice(0, 8), path: revisionPath },
+        right: { type: "worktree" },
+        annotateLeft: true,
+      },
       { preview: false },
     );
   });

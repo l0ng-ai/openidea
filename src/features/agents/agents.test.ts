@@ -107,7 +107,6 @@ describe("fenced blocks", () => {
       { open: 1, close: 4, info: "terminal zsh" },
     ]);
     expect(fenceLabel("terminal zsh")).toEqual({ kind: "terminal", label: "zsh", language: null });
-    expect(fenceLabel("element <p>")).toEqual({ kind: "element", label: "<p>", language: null });
     expect(fenceLabel("trace")).toEqual({ kind: "trace", label: "", language: null });
     expect(fenceLabel("ts")).toEqual({ kind: "code", label: "ts", language: "ts" });
   });

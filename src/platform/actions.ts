@@ -189,6 +189,28 @@ export function registerActions(actions: Action[]): () => void {
   };
 }
 
+/**
+ * Registers `actions` over the ones currently registered under the same ids; the disposer
+ * removes them and puts the earlier registrations back, so their owners' own disposers
+ * still remove them later.
+ */
+export function overrideActions(actions: Action[]): () => void {
+  const shadowed = actions.map((a) => sources.get(a.id)).filter((a): a is Action => !!a);
+  const dispose = registerActions(actions);
+  return () => {
+    const mine = new Set(actions);
+    const restore = shadowed.filter((a) => mine.has(sources.get(a.id)!));
+    dispose();
+    if (!restore.length) return;
+    for (const action of restore) sources.set(action.id, action);
+    useActions.setState((s) => {
+      const next = new Map(s.actions);
+      for (const action of restore) next.set(action.id, localize(action));
+      return { actions: next };
+    });
+  };
+}
+
 export function getAction(id: string): Action | undefined {
   return useActions.getState().actions.get(id);
 }

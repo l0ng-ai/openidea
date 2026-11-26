@@ -157,6 +157,10 @@ pub struct ColumnInfo {
     pub nullable: bool,
     pub default: Option<String>,
     pub primary_key: bool,
+    /// `None` when it has none, or the engine keeps no comments.
+    #[serde(default)]
+    #[specta(optional)]
+    pub comment: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -172,6 +176,10 @@ pub struct IndexInfo {
 #[serde(rename_all = "camelCase")]
 #[serde(rename = "DbTableDetails")]
 pub struct TableDetails {
+    /// The table's comment; `None` when it has none, or the engine keeps no comments.
+    #[serde(default)]
+    #[specta(optional)]
+    pub comment: Option<String>,
     pub columns: Vec<ColumnInfo>,
     pub indexes: Vec<IndexInfo>,
     pub foreign_keys: Vec<ForeignKey>,
@@ -297,6 +305,8 @@ pub struct DbManager {
 type Session = Arc<tokio::sync::Mutex<Option<Held>>>;
 
 const MAX_META_ROWS: usize = 100_000;
+/// Completion columns of the default schema, which are read without the shared cap.
+const MAX_SCHEMA_COMPLETION_ROWS: usize = 1_000_000;
 
 /// Rows of catalog query `q`, run again as [`sql::postgres_legacy`] when a PostgreSQL server's
 /// catalog lacks a column it reads (openGauss, PostgreSQL 9).
@@ -1117,11 +1127,18 @@ impl DbManager {
                 let nullable = flag(&it.next().flatten());
                 let default = it.next().flatten();
                 let primary_key = flag(&it.next().flatten());
-                Some(ColumnInfo { name, data_type, nullable, default, primary_key })
+                let comment = it.next().flatten().filter(|c| !c.is_empty());
+                Some(ColumnInfo { name, data_type, nullable, default, primary_key, comment })
             })
             .collect();
         if driver == DbDriver::Jdbc {
-            return Ok(TableDetails { columns, indexes: vec![], foreign_keys: vec![], triggers: vec![] });
+            return Ok(TableDetails {
+                comment: None,
+                columns,
+                indexes: vec![],
+                foreign_keys: vec![],
+                triggers: vec![],
+            });
         }
         let mut indexes: Vec<IndexInfo> = Vec::new();
         for r in pool.rows(&sql::indexes(driver, schema, table), MAX_META_ROWS).await? {
@@ -1173,7 +1190,17 @@ impl DbManager {
                 Some(TriggerInfo { name, timing, events })
             })
             .collect();
-        Ok(TableDetails { columns, indexes, foreign_keys, triggers })
+        let comment = match sql::table_comment(driver, schema, table) {
+            Some(q) => pool.rows(&q, 1).await.map_or_else(
+                |e| {
+                    tracing::warn!("table comment: {}", e.message);
+                    None
+                },
+                |rows| rows.into_iter().next().and_then(|r| r.into_iter().next().flatten()).filter(|c| !c.is_empty()),
+            ),
+            None => None,
+        };
+        Ok(TableDetails { comment, columns, indexes, foreign_keys, triggers })
     }
 
     /// The object privileges granted on `table`; empty, without a query, on the engines
@@ -1429,13 +1456,34 @@ impl DbManager {
         let pool = self.pool(id).await?;
         let driver = pool.driver();
         let mut tables: Vec<CompletionTable> = Vec::new();
+        if let Pool::Jdbc(p) = &*pool {
+            return self.jdbc_completion(id, p).await;
+        }
+        let default_schema = match sql::current_schema(driver) {
+            None => "main".to_owned(),
+            Some(q) => pool
+                .rows(q, 1)
+                .await?
+                .into_iter()
+                .next()
+                .and_then(|r| r.into_iter().next().flatten())
+                .unwrap_or_default(),
+        };
         let rows = match &*pool {
-            Pool::Jdbc(p) => return self.jdbc_completion(id, p).await,
             Pool::Snowflake(p) => {
                 tables = snowflake::meta::completion(p).await?;
                 Vec::new()
             }
-            _ => pool.rows(sql::completion_columns(driver), MAX_META_ROWS).await?,
+            // The default schema is read in full: under a shared row cap, a schema with many
+            // tables lost the columns of the tables sorting last (#6118). Other schemas share the cap.
+            _ if !default_schema.is_empty() => {
+                let only = sql::completion_columns(driver, sql::CompletionScope::Only(&default_schema));
+                let mut rows = pool.rows(&only, MAX_SCHEMA_COMPLETION_ROWS).await?;
+                let rest = sql::completion_columns(driver, sql::CompletionScope::Except(&default_schema));
+                rows.extend(pool.rows(&rest, MAX_META_ROWS).await?);
+                rows
+            }
+            _ => pool.rows(&sql::completion_columns(driver, sql::CompletionScope::All), MAX_META_ROWS).await?,
         };
         for r in rows {
             let mut it = r.into_iter().map(Option::unwrap_or_default);
@@ -1471,16 +1519,6 @@ impl DbManager {
             })
         };
         let foreign_keys = group_foreign_keys(fk_rows, &tables);
-        let default_schema = match sql::current_schema(driver) {
-            None => "main".to_owned(),
-            Some(q) => pool
-                .rows(q, 1)
-                .await?
-                .into_iter()
-                .next()
-                .and_then(|r| r.into_iter().next().flatten())
-                .unwrap_or_default(),
-        };
         Ok(CompletionModel { default_schema, tables, foreign_keys })
     }
 

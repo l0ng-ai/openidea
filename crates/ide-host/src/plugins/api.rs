@@ -68,6 +68,17 @@ pub trait PluginWorkspace: Send + Sync {
     fn problems(&self, _client: &str, _path: Option<&Path>) -> Result<Vec<ide_plugin::FileProblems>, HostError> {
         Ok(Vec::new())
     }
+    /// Fork a recorded native agent session into a new task in the invoking
+    /// window's project, returning the new task id (API 1.18).
+    fn fork_agent_session(
+        &self,
+        _client: &str,
+        _agent: &str,
+        _session_id: &str,
+        _cwd: &Path,
+    ) -> Result<String, HostError> {
+        Err(HostError::Failed("agent fork unavailable".into()))
+    }
 
     /// Roots of the open projects.
     fn projects(&self) -> Vec<PathBuf>;
@@ -203,6 +214,61 @@ impl SecretStore for FileSecretStore {
         ide_vfs::create_private_dir(file.parent().expect("has parent")).map_err(|e| e.to_string())?;
         let bytes = serde_json::to_vec(&map).map_err(|e| e.to_string())?;
         replace_entry(&file, &bytes).map_err(|e| e.to_string())
+    }
+}
+
+/// Plugin secrets in the OS credential store (Secret Service, Windows Credential
+/// Manager), like saved SSH and agent values. Without a credential store a value
+/// stays in the owner-only [`FileSecretStore`] file, which also still answers for
+/// values saved there by an older version until they are set again.
+pub struct CredentialSecretStore {
+    store: ide_ssh::secrets::SecretFile,
+    fallback: FileSecretStore,
+}
+
+impl CredentialSecretStore {
+    /// `dir`: the plugins' data directory (the index file and the fallback files live there).
+    pub fn new(dir: PathBuf) -> Self {
+        Self::with_store(ide_ssh::secrets::SecretFile::new(dir.join("plugin-secrets.json")), dir)
+    }
+
+    fn with_store(store: ide_ssh::secrets::SecretFile, dir: PathBuf) -> Self {
+        Self { store, fallback: FileSecretStore { dir } }
+    }
+
+    fn key(plugin: &str, name: &str) -> String {
+        format!("{plugin}/{name}")
+    }
+
+    /// Drops a value from the fallback file, writing it only when it held one.
+    fn forget_fallback(&self, plugin: &str, name: &str) -> Result<(), String> {
+        if self.fallback.get(plugin, name).is_none() {
+            return Ok(());
+        }
+        self.fallback.set(plugin, name, None)
+    }
+}
+
+impl SecretStore for CredentialSecretStore {
+    fn get(&self, plugin: &str, name: &str) -> Option<String> {
+        self.store.get(&Self::key(plugin, name)).or_else(|| self.fallback.get(plugin, name))
+    }
+
+    fn set(&self, plugin: &str, name: &str, value: Option<&str>) -> Result<(), String> {
+        let key = Self::key(plugin, name);
+        match value {
+            Some(v) => match self.store.set(&key, v) {
+                Ok(()) => self.forget_fallback(plugin, name),
+                Err(e) => {
+                    tracing::warn!("plugin secrets: {key} is kept in the plugin's data directory: {}", e.message);
+                    self.fallback.set(plugin, name, Some(v))
+                }
+            },
+            None => {
+                self.store.delete(&key);
+                self.forget_fallback(plugin, name)
+            }
+        }
     }
 }
 
@@ -675,6 +741,9 @@ pub(super) struct Shared {
     net_prompts: Mutex<HashMap<String, Option<Instant>>>,
     pub net_hosts_session_only: AtomicBool,
     session_net_hosts: Mutex<HashMap<String, BTreeSet<String>>>,
+    /// Setting-derived approvals kept for the session only (remote hosts),
+    /// plugin → `net:setting:` grant → its approved host.
+    pub(super) session_setting_hosts: Mutex<HashMap<String, BTreeMap<String, String>>>,
     pub(super) next_prompt: AtomicU64,
     pub(super) run_configurations: super::run_detectors::DynamicConfigurations,
     pub(super) run_targets: Mutex<super::run_targets::Targets>,
@@ -695,8 +764,11 @@ pub(super) struct Shared {
     pub(super) closed_clients: Mutex<BTreeSet<String>>,
     /// plugin → kinds subscribed at run time (kept across idle reclaim).
     pub subscriptions: Mutex<super::event_paths::Subscriptions>,
+    /// Paths outside their project that plugins watch (kept across idle reclaim).
+    pub(super) external_watches: super::external_watch::ExternalWatches,
     /// plugin → files it shows problems for, withdrawn when it stops.
     diagnostics: Mutex<HashMap<String, BTreeSet<PathBuf>>>,
+    project_generations: Mutex<HashMap<PathBuf, u64>>,
     pub secrets: RwLock<Arc<dyn SecretStore>>,
     /// (plugin, `process:` capability) → the approved program.
     pub pins: Arc<RwLock<HashMap<(String, String), ProgramPin>>>,
@@ -718,6 +790,29 @@ pub(super) struct Shared {
 
 /// A window's log tabs of one plugin: key → what it runs, oldest first.
 type LogTabs = Vec<(String, ide_plugin::ServiceLog)>;
+
+/// The settings key a `net:setting:` grant derives its host from.
+fn setting_key(cap: &Capability) -> String {
+    match cap {
+        Capability::NetSetting { key, .. } => key.clone(),
+        _ => String::new(),
+    }
+}
+
+/// The host a setting value names: a bare host, or a URL the user pasted
+/// (`https://jira.corp.example/`), checked with the manifest host rules — a `*`
+/// is refused. `Ok(None)` when the value is empty (the setting is cleared).
+pub(super) fn setting_host(value: &str) -> Result<Option<String>, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let host =
+        if value.contains("://") { ide_plugin::net_host(value)? } else { value.trim_end_matches('.').to_owned() };
+    ide_extension::manifest_host(&host)
+        .map(Some)
+        .map_err(|_| format!("{value:?} is not a host (example.com) or a URL (https://example.com/)"))
+}
 
 /// Log tabs a plugin's code may have open in one window; opening more forgets
 /// the oldest (that tab can no longer start its program).
@@ -757,6 +852,7 @@ impl Shared {
             net_prompts: Mutex::default(),
             net_hosts_session_only: AtomicBool::new(false),
             session_net_hosts: Mutex::default(),
+            session_setting_hosts: Mutex::default(),
             next_prompt: AtomicU64::new(1),
             run_configurations: Arc::default(),
             run_targets: Mutex::default(),
@@ -773,9 +869,33 @@ impl Shared {
             contexts: Mutex::default(),
             closed_clients: Mutex::default(),
             subscriptions: Mutex::default(),
+            external_watches: Default::default(),
             diagnostics: Mutex::default(),
+            project_generations: Mutex::default(),
             log_tabs: Mutex::default(),
         })
+    }
+
+    pub(super) fn project_generation(&self, root: &Path) -> Result<u64, HostError> {
+        let workspace = self.workspace().ok_or(HostError::Cancelled)?;
+        if !workspace.projects().iter().any(|r| r == root) {
+            return Err(HostError::NotFound("project is not open".into()));
+        }
+        let mut gens = self.project_generations.lock();
+        Ok(*gens.entry(root.to_path_buf()).or_insert(1))
+    }
+
+    pub(super) fn bump_project_generation(&self, root: &Path) -> u64 {
+        let mut gens = self.project_generations.lock();
+        let cur = gens.entry(root.to_path_buf()).or_insert(1);
+        *cur = cur.saturating_add(1);
+        *cur
+    }
+
+    /// Moves a closed project's generation on rather than forgetting it, so a handle
+    /// taken before the close stays stale if the project is opened again.
+    pub(super) fn close_project_generation(&self, root: &Path) {
+        self.bump_project_generation(root);
     }
 
     pub(super) fn workspace(&self) -> Option<Arc<dyn PluginWorkspace>> {
@@ -1000,6 +1120,7 @@ impl Shared {
         self.withdraw_prompts(plugin);
         self.net_prompts.lock().remove(plugin);
         self.session_net_hosts.lock().remove(plugin);
+        self.session_setting_hosts.lock().remove(plugin);
         let removed: Vec<(Option<String>, String)> = {
             let mut contexts = self.contexts.lock();
             let keys: Vec<_> = contexts.keys().filter(|(_, p, _)| p == plugin).cloned().collect();
@@ -1022,6 +1143,9 @@ impl Shared {
             for path in paths {
                 let _ = workspace.publish_diagnostics(plugin, &path, Vec::new());
             }
+        }
+        if subscriptions {
+            self.external_watches.remove_plugin(plugin);
         }
         if subscriptions && self.subscriptions.lock().remove(plugin) {
             self.sink.emit(None, PluginEvent::SubscriptionsChanged);
@@ -1493,6 +1617,73 @@ fn failed(e: impl std::fmt::Display) -> HostError {
     HostError::Failed(e.to_string())
 }
 
+/// `cwd` of `open-terminal-session-in`: a directory of the project, relative to `root`
+/// (`""` is the root), that exists and stays inside the project once symlinks are resolved.
+fn project_subdirectory(root: &Path, cwd: &str) -> Result<PathBuf, HostError> {
+    let invalid = |why: &str| HostError::Invalid(format!("terminal directory {cwd:?}: {why}"));
+    if cwd.len() > 4096 || cwd.contains('\0') {
+        return Err(invalid("not a path"));
+    }
+    let relative = Path::new(cwd);
+    if relative.is_absolute() || relative.has_root() {
+        return Err(invalid("must be relative to the project root"));
+    }
+    let base = dunce::canonicalize(root).map_err(|_| invalid("the project root is gone"))?;
+    let dir = dunce::canonicalize(base.join(relative)).map_err(|_| invalid("no such directory"))?;
+    if !dir.starts_with(&base) {
+        return Err(invalid("outside the project"));
+    }
+    if !dir.is_dir() {
+        return Err(invalid("not a directory"));
+    }
+    Ok(dir)
+}
+
+impl PluginApi {
+    /// The value of `key` the user set for this plugin, as a plain string
+    /// (`None` when unset or not a string).
+    pub(super) fn setting_value(&self, key: &str) -> Option<String> {
+        let raw = self.setting(None, key)?;
+        serde_json::from_str::<String>(&raw).ok()
+    }
+
+    /// The plugin's `net:setting:` grants with their hosts: the approved host
+    /// while the setting still holds it, and the pending one to approve
+    /// otherwise (`None` when the value is unset or not a host).
+    pub(super) fn net_setting_hosts(&self, subject: &Subject) -> Vec<(Capability, Option<String>, Option<String>)> {
+        let derived: Vec<Capability> = self
+            .pkg
+            .manifest
+            .capabilities
+            .all()
+            .filter(|c| matches!(c, Capability::NetSetting { .. }))
+            .cloned()
+            .collect();
+        if derived.is_empty() {
+            return Vec::new();
+        }
+        let ledger = self.shared.ledger.lock();
+        let grant = ledger.get(subject).filter(|g| g.confirmed);
+        let session = self.shared.session_setting_hosts.lock().get(self.id()).cloned().unwrap_or_default();
+        derived
+            .into_iter()
+            .map(|cap| {
+                let current = self.setting_value(&setting_key(&cap)).and_then(|v| setting_host(&v).ok()).flatten();
+                let record = grant.and_then(|g| g.setting_hosts.get(&cap.to_string())).map(String::as_str);
+                let session_host = session.get(&cap.to_string()).map(String::as_str);
+                // An approval covers requests only while the setting still holds it.
+                let approved = [record, session_host]
+                    .into_iter()
+                    .flatten()
+                    .find(|host| current.as_deref() == Some(host))
+                    .map(str::to_owned);
+                let pending = current.filter(|host| approved.as_deref() != Some(host));
+                (cap, approved, pending)
+            })
+            .collect()
+    }
+}
+
 impl HostApi for PluginApi {
     fn database_upsert(&self, root: &Path, source: ide_plugin::PluginDataSource) -> Result<(), HostError> {
         let (host, db) = self.database_host(root)?;
@@ -1561,8 +1752,13 @@ impl HostApi for PluginApi {
         }
     }
 
-    fn register_run_target(&self, root: &Path, target: ide_plugin::PluginRunTarget) -> Result<(), HostError> {
-        self.register_target(root, target)
+    fn register_run_target(
+        &self,
+        root: &Path,
+        target: ide_plugin::PluginRunTarget,
+        generation: Option<u64>,
+    ) -> Result<(), HostError> {
+        self.register_target(root, target, generation)
     }
     fn unregister_run_target(&self, root: &Path, id: &str) {
         self.unregister_target(root, id);
@@ -1573,7 +1769,7 @@ impl HostApi for PluginApi {
         client: &str,
         config: &str,
         args: Vec<String>,
-        debug: bool,
+        options: ide_plugin::PluginRunStartOptions,
         cancel: &CancellationToken,
         timeout: Duration,
     ) -> Result<String, HostError> {
@@ -1584,15 +1780,40 @@ impl HostApi for PluginApi {
         let mut run =
             self.shared.workspace().ok_or(HostError::Cancelled)?.run_configuration(client, self.id(), config)?;
         let binary = self.approved_program_in_project(&run.command, self.shared.project_of(client).as_deref())?;
+        let user_override = !run.detected;
+        let debug = options.debug;
         if debug && run.debug_adapter.is_none() {
             return Err(HostError::Invalid("this configuration has no debugger".into()));
         }
         let program = run.command.clone();
-        if debug && run.extras.target.as_ref().is_some_and(|t| !t.is_empty()) {
+        let has_target = run.extras.target.as_ref().is_some_and(|t| !t.is_empty());
+        if debug && has_target {
             return Err(HostError::Invalid("debugging this target is not supported".into()));
         }
+        if debug && options.output_mode == Some(ide_plugin::PluginOutputMode::Pty) {
+            return Err(HostError::Invalid("terminal emulation cannot be used when debugging".into()));
+        }
         if debug {
+            run.extras.emulate_terminal = false;
             run.command = binary.to_string_lossy().into_owned();
+        } else {
+            // Precedence: user-saved override > per-invocation override > plugin default.
+            if !user_override && let Some(mode) = options.output_mode {
+                run.extras.emulate_terminal = mode == ide_plugin::PluginOutputMode::Pty;
+            }
+            if run.extras.emulate_terminal {
+                if run.is_test {
+                    return Err(HostError::Invalid("terminal emulation cannot be used for test configurations".into()));
+                }
+                if run.extras.stdin_file.is_some() {
+                    return Err(HostError::Invalid(
+                        "input cannot be redirected from a file when emulating a terminal".into(),
+                    ));
+                }
+                if has_target {
+                    return Err(HostError::Invalid("terminal emulation on this target is not supported".into()));
+                }
+            }
         }
         run.args.extend(args);
         let id = self.new_operation(
@@ -1613,6 +1834,7 @@ impl HostApi for PluginApi {
         key: String,
         title: String,
         cmd: ProcessCommand,
+        cwd: Option<String>,
         cancel: &CancellationToken,
         timeout: Duration,
     ) -> Result<String, HostError> {
@@ -1623,6 +1845,11 @@ impl HostApi for PluginApi {
         if !self.shared.workspace().is_some_and(|w| w.trusted(&root)) {
             return Err(HostError::Denied("project is not trusted".into()));
         }
+        // Trust and the program pin stay the project's; the directory only moves the shell.
+        let dir = match &cwd {
+            Some(cwd) => project_subdirectory(&root, cwd)?,
+            None => root.clone(),
+        };
         let binary = self.approved_program_in_project(&cmd.program, Some(&root))?;
         let mut command = StdCommand::new(&binary);
         append_process_env(&mut command, &cmd.env)?;
@@ -1654,7 +1881,7 @@ impl HostApi for PluginApi {
             program: binary.into(),
             args: cmd.args,
             env: cmd.env.into_iter().collect(),
-            cwd: root.into(),
+            cwd: dir.into(),
         };
         if let Err(error) = self.window_request(client, request, cancel, timeout) {
             self.shared.operations.lock().remove(&id);
@@ -1829,6 +2056,12 @@ impl HostApi for PluginApi {
     }
     fn file_icon_decorations(&self, set: &str, items: Vec<(PathBuf, String)>) -> Result<(), HostError> {
         self.set_file_icon_decorations(set, items)
+    }
+    fn fork_agent_session(&self, client: &str, agent: &str, session_id: &str, cwd: &Path) -> Result<String, HostError> {
+        self.shared
+            .workspace()
+            .ok_or_else(|| HostError::NotFound("window project".into()))?
+            .fork_agent_session(client, agent, session_id, cwd)
     }
     fn console_rules(&self, rules: Vec<ide_plugin::ConsoleRule>) -> Result<(), HostError> {
         let rules = super::console_rules::normalize(rules).map_err(HostError::Invalid)?;
@@ -2196,7 +2429,10 @@ impl HostApi for PluginApi {
 
     fn reveal_view(&self, client: Option<&str>, view: &str) -> Result<(), HostError> {
         let client = from_window(client, "reveal a view")?;
-        let declared = self.shared.ui.items(super::ui_points::VIEWS, Some(self.id())).iter().any(|i| i.key == view);
+        // A tool window comes to the front; a dialog (API 1.18) opens.
+        let declared = [super::ui_points::VIEWS, super::ui_points::DIALOGS]
+            .into_iter()
+            .any(|point| self.shared.ui.items(point, Some(self.id())).iter().any(|i| i.key == view));
         if !declared {
             return Err(HostError::NotFound(format!("the plugin declares no view {view:?}")));
         }
@@ -2690,6 +2926,16 @@ impl HostApi for PluginApi {
             return Ok(None);
         }
         let host = host.trim_end_matches('.').to_ascii_lowercase();
+        // A host the plugin derives from a setting is approved in Settings,
+        // not asked about here: pending or revoked, it stays denied without a
+        // dialog (#3809).
+        if self.pkg.manifest.capabilities.all().any(|cap| {
+            matches!(cap, Capability::NetSetting { http: false, key: _ })
+                && self.setting_value(&setting_key(cap)).and_then(|v| setting_host(&v).ok()).flatten().as_deref()
+                    == Some(host.as_str())
+        }) {
+            return Ok(None);
+        }
         {
             let ledger = self.shared.ledger.lock();
             if let Some(grant) = ledger.get(subject)
@@ -2932,12 +3178,34 @@ impl HostApi for PluginApi {
         }
     }
 
-    fn subscribe_paths(&self, kind: &str, globs: Vec<String>) -> Result<(), HostError> {
-        let filter = super::event_paths::PathFilter::new(kind, globs)?;
+    fn subscribe_paths_with_options(
+        &self,
+        kind: &str,
+        globs: Vec<String>,
+        debounce_ms: Option<u32>,
+    ) -> Result<(), HostError> {
+        let debounce = match debounce_ms {
+            Some(ms) if ms > 60_000 => return Err(HostError::Invalid("debounce must not exceed 60000 ms".into())),
+            Some(ms) => Some(Duration::from_millis(ms as u64)),
+            None => None,
+        };
+        let filter = super::event_paths::PathFilter::with_debounce(kind, globs, debounce)?;
         if self.shared.subscriptions.lock().set_paths(self.id(), kind, filter) {
             self.shared.sink.emit(None, PluginEvent::SubscriptionsChanged);
         }
         Ok(())
+    }
+
+    fn subscribe_paths(&self, kind: &str, globs: Vec<String>) -> Result<(), HostError> {
+        self.subscribe_paths_with_options(kind, globs, None)
+    }
+
+    fn project_generation(&self, root: &Path) -> Result<u64, HostError> {
+        self.shared.project_generation(root)
+    }
+
+    fn watch_paths(&self, client: &str, project: &Path, paths: Vec<PathBuf>) -> Result<(), HostError> {
+        self.shared.external_watches.set(self.id(), client, project, paths)
     }
 
     fn unsubscribe(&self, kind: &str) {
@@ -3489,6 +3757,14 @@ impl PluginWorkspace for HostWorkspace {
         Ok(config)
     }
 
+    fn fork_agent_session(&self, client: &str, agent: &str, session_id: &str, cwd: &Path) -> Result<String, HostError> {
+        let host = self.0.upgrade().ok_or(HostError::Cancelled)?;
+        let project = host.project(client).map_err(failed)?;
+        project.require_trust().map_err(failed)?;
+        // Scans the recorded transcripts on disk; plugin calls already run off the UI thread.
+        Ok(project.agents.fork_session(agent, session_id, cwd).map_err(failed)?.id)
+    }
+
     fn buffer_text_in(&self, client: Option<&str>, path: &Path) -> Option<String> {
         client
             .and_then(|w| self.0.upgrade()?.project(w).ok()?.documents.text_of(path))
@@ -3850,6 +4126,29 @@ impl PluginWorkspace for HostWorkspace {
 mod tests {
     use super::*;
 
+    #[test]
+    fn terminal_directories_stay_inside_the_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap().join("project");
+        std::fs::create_dir_all(root.join("sub/deeper")).unwrap();
+        std::fs::write(root.join("file.txt"), "").unwrap();
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        assert_eq!(project_subdirectory(&root, "").unwrap(), root);
+        assert_eq!(project_subdirectory(&root, "sub/deeper").unwrap(), root.join("sub/deeper"));
+        assert_eq!(project_subdirectory(&root, "sub/../sub").unwrap(), root.join("sub"));
+        for bad in ["/tmp", "../outside", "sub/../../outside", "missing", "file.txt", "a\0b"] {
+            assert!(matches!(project_subdirectory(&root, bad), Err(HostError::Invalid(_))), "{bad:?}");
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
+            assert!(project_subdirectory(&root, "escape").is_err(), "a link out of the project");
+            std::os::unix::fs::symlink(root.join("sub"), root.join("inside")).unwrap();
+            assert_eq!(project_subdirectory(&root, "inside").unwrap(), root.join("sub"));
+        }
+    }
+
     fn api(dir: &Path, pins: Arc<RwLock<HashMap<(String, String), ProgramPin>>>) -> PluginApi {
         let manifest = ide_extension::Manifest::parse(
             "id = \"acme.lint\"\nname = \"Lint\"\nversion = \"1.0.0\"\nengines.openidea = \"^1.0\"\n",
@@ -3964,6 +4263,67 @@ mod tests {
         secrets.set("acme.lint", "key", Some("after")).unwrap();
         assert_eq!(secrets.get("acme.lint", "key").as_deref(), Some("after"));
         assert_eq!(std::fs::read_to_string(&outside).unwrap(), "unchanged");
+    }
+
+    /// Plugin secrets go to the credential store; a value an older version left in
+    /// the owner-only file keeps working until it is set again, and then leaves the file.
+    #[test]
+    fn plugin_secrets_go_to_the_credential_store() {
+        ide_ssh::secrets::testing::use_memory_store();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("plugins");
+        FileSecretStore { dir: dir.clone() }.set("acme.lint", "old", Some("legacy-3f9a")).unwrap();
+        let secrets = CredentialSecretStore::new(dir.clone());
+        assert_eq!(secrets.get("acme.lint", "old").as_deref(), Some("legacy-3f9a"));
+
+        secrets.set("acme.lint", "token", Some("value-7c1e")).unwrap();
+        secrets.set("acme.lint", "old", Some("moved-5d2b")).unwrap();
+        let on_disk = ide_ssh::secrets::testing::files_containing(tmp.path(), "value-7c1e");
+        assert_eq!(on_disk, Vec::<PathBuf>::new());
+        assert_eq!(ide_ssh::secrets::testing::files_containing(tmp.path(), "legacy-3f9a"), Vec::<PathBuf>::new());
+        let again = CredentialSecretStore::new(dir);
+        assert_eq!(again.get("acme.lint", "token").as_deref(), Some("value-7c1e"));
+        assert_eq!(again.get("acme.lint", "old").as_deref(), Some("moved-5d2b"));
+        assert_eq!(again.get("other.plugin", "token"), None);
+
+        again.set("acme.lint", "token", None).unwrap();
+        assert_eq!(again.get("acme.lint", "token"), None);
+    }
+
+    /// Without a credential store a value stays in the owner-only file.
+    #[test]
+    fn plugin_secrets_without_a_credential_store_stay_in_the_file() {
+        struct NoStore;
+        impl ide_ssh::secrets::Vault for NoStore {
+            fn available(&self) -> bool {
+                false
+            }
+            fn get(&self, _: &str, _: &str) -> ide_ssh::secrets::StoreResult<String> {
+                Err(ide_ssh::secrets::StoreError::NoDefaultStore)
+            }
+            fn set(&self, _: &str, _: &str, _: &str) -> ide_ssh::secrets::StoreResult<()> {
+                Err(ide_ssh::secrets::StoreError::NoDefaultStore)
+            }
+            fn delete(&self, _: &str, _: &str) -> ide_ssh::secrets::StoreResult<()> {
+                Err(ide_ssh::secrets::StoreError::NoDefaultStore)
+            }
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("plugins");
+        let store = ide_ssh::secrets::SecretFile::with_vault(
+            dir.join("plugin-secrets.json"),
+            |v| serde_json::from_value(v).ok(),
+            Arc::new(NoStore),
+        );
+        let secrets = CredentialSecretStore::with_store(store, dir.clone());
+        secrets.set("acme.lint", "token", Some("value-7c1e")).unwrap();
+        assert_eq!(
+            ide_ssh::secrets::testing::files_containing(tmp.path(), "value-7c1e"),
+            [dir.join("acme.lint").join("secrets.json")]
+        );
+        assert_eq!(secrets.get("acme.lint", "token").as_deref(), Some("value-7c1e"));
+        secrets.set("acme.lint", "token", None).unwrap();
+        assert_eq!(secrets.get("acme.lint", "token"), None);
     }
 
     #[cfg(unix)]

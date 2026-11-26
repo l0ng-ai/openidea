@@ -258,4 +258,23 @@ mod tests {
         served.sort_unstable();
         assert_eq!(super::routed(), served);
     }
+
+    /// `openidea-server --web` serves the desktop's shell commands itself: each must be one the
+    /// desktop declares, with the same trust class, so a browser window is gated like a desktop one.
+    #[test]
+    fn web_shell_commands_match_the_desktop_declarations() {
+        let home = tempfile::tempdir().unwrap();
+        let standard = ide_host::rpc::Dispatcher::standard();
+        let mut web = ide_host::rpc::Dispatcher::standard();
+        let shell = ide_host::web_server::commands::WebShellState::new(home.path(), None, false);
+        ide_host::web_server::commands::register(&mut web, std::sync::Arc::new(shell));
+        let mismatched: Vec<_> = web
+            .commands()
+            .into_iter()
+            .filter(|name| standard.trust(name).is_none())
+            .filter(|name| super::trust_of(name) != web.trust(name))
+            .map(|name| (name, web.trust(name), super::trust_of(name)))
+            .collect();
+        assert!(mismatched.is_empty(), "(command, web, desktop): {mismatched:?}");
+    }
 }

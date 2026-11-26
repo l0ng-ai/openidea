@@ -57,8 +57,17 @@ import { TeamcityOutput } from "./testing/teamcity";
 import type { TestStdout } from "./testing/types";
 import { flutterMachineOutput, isFlutterMachineRun } from "./flutterMachine";
 import { recordTestStates } from "./testing/states";
+import { packageScript, watchLaunch } from "./testing/watch";
 import { failedTestPaths, leafTestPaths, rerunFailedConfigs, testsConfigs } from "./testing/rerun";
 import { testsBySubproject } from "./testing/gradleSubprojects";
+import {
+  snapshotFailures,
+  snapshotRunner,
+  snapshotTestConfigs,
+  snapshotUpdateArgs,
+  targetNodes,
+} from "./testing/snapshots";
+import type { StateQuery } from "./testing/states";
 import { buildCMake, isCMakeBuild } from "./cmake";
 import { compoundChildren } from "./configs";
 import { remoteLabel, startWithRemedies } from "./remote";
@@ -105,6 +114,8 @@ export interface RunSession {
   pinned?: boolean;
   /** Commit checks own these tabs so their output stays available for review. */
   backgroundCheck?: boolean;
+  /** Jest / Vitest watch mode: the process reruns the tests after each edit. */
+  watching?: boolean;
 }
 
 interface SessionRuntime {
@@ -784,20 +795,25 @@ function newRuntime(config: RunConfig): SessionRuntime {
         })
       : null;
   const parser = pluginTests ? null : builtIn;
+  // A watch cycle's end records the test states like a finished run (gutter icons).
+  const applyTests = (events: TestEvent[]) => {
+    tests!.apply(events);
+    if (events.some((e) => e.type === "end")) recordTestStates(tests!);
+  };
   const feed = (line: string) => {
-    if (tests && parser) tests.apply(parser.feed(line));
+    if (tests && parser) applyTests(parser.feed(line));
   };
   const framework = tests && parser ? frameworkFor(config) : null;
   // PHPUnit `--teamcity` and Gradle's test init script report through service messages, Minitest,
-  // node:test and Mocha through the IDE's own reporters (RSpec has none: its progress dots must show as they come).
+  // node:test, Mocha and Jasmine through the IDE's own reporters (RSpec has none: its progress dots must show as they come).
   const stdout =
     framework === "go"
       ? new GoTestOutput(feed)
-      : framework === "phpunit" || framework === "jvm"
-        ? new TeamcityOutput(feed, framework === "jvm")
+      : framework === "phpunit" || framework === "jvm" || framework === "cypress" // Cypress: its `teamcity` reporter
+        ? new TeamcityOutput(feed, framework !== "phpunit")
         : framework === "ruby" && config.kind !== "rspec"
           ? new RubyTestOutput(feed)
-          : framework === "node-test" || framework === "mocha"
+          : framework === "node-test" || framework === "mocha" || framework === "jasmine"
             ? new RecordsOutput(feed)
             : null;
   const runtime: SessionRuntime = {
@@ -809,7 +825,7 @@ function newRuntime(config: RunConfig): SessionRuntime {
       maxChars: consoleCharLimit(),
       onLine: (text, kind) => {
         if (pluginTests && kind !== "system") pluginTests.feed(text);
-        if (parser && tests && kind !== "system" && !(kind === "stdout" && stdout)) tests.apply(parser.feed(text));
+        if (parser && tests && kind !== "system" && !(kind === "stdout" && stdout)) applyTests(parser.feed(text));
         if (kind !== "system") for (const l of runtime.lineListeners) l(text);
         if (kind !== "system") runtime.dotnetReports?.feed(text);
       },
@@ -1036,6 +1052,7 @@ async function startRunIn(
       stopped: false,
       httpPort: undefined,
       backgroundCheck: undefined,
+      watching: undefined,
     };
     const updated = session;
     useRun.setState((s) => ({
@@ -1112,6 +1129,20 @@ async function startRunIn(
   };
   try {
     let launch = options.launch ?? config;
+    // Jest / Vitest "Watch for changes". Debug and derived runs (Rerun Failed, selected tests,
+    // Update Snapshot) run the tests once.
+    if (!options.launch && !baseConfig && launch.watch && launch.isTest && frameworkFor(launch) === "js") {
+      const watched = watchLaunch(launch, await packageScript(launch));
+      if (runtimes.get(sessionId)?.generation !== generation) return getSession(sessionId) ?? null;
+      if (watched) {
+        launch = watched;
+        patchSession(sessionId, { watching: true });
+      } else
+        enqueue(sessionId, {
+          kind: "system",
+          text: tx`Watch mode needs a command or script that ends with Jest or Vitest: the tests run once.\n`,
+        });
+    }
     // A Maven/Gradle configuration's own command is its build; Rebuild adds clean.
     if (!options.launch) launch = applyBuildPolicyToCommand(launch);
     // "Build and run using: Gradle": the module's Gradle build compiles and launches it.
@@ -1130,7 +1161,10 @@ async function startRunIn(
       }
       launch = resolved;
     }
-    const prepare = typeFor(launch.kind)?.prepareLaunch;
+    // `npm run` scripts running Cypress pass the test selection the way the installed Cypress takes it, too.
+    const prepare =
+      typeFor(launch.kind)?.prepareLaunch ??
+      (frameworkFor(launch) === "cypress" ? typeFor("cypress")?.prepareLaunch : undefined);
     if (prepare) {
       launch = await prepare(launch);
       if (!check && launch.kind === "tomcat") useRun.setState({ activeSession: sessionId });
@@ -1644,6 +1678,14 @@ export function configRemoved(id: string): boolean {
   return listedConfigIds.has(id) && !useRun.getState().configs.some((c) => c.id === id);
 }
 
+/** "Rerun Automatically": a Jest / Vitest run in watch mode in the same tab; off stops the watcher. */
+export function toggleRerunAutomatically(sessionId: string) {
+  const session = getSession(sessionId);
+  if (!session) return;
+  if (session.watching && isLive(session)) void stopSession(sessionId);
+  else void startRun({ ...baseConfigOf(session), watch: true }, sessionId);
+}
+
 export function rerunSession(sessionId: string) {
   const session = getSession(sessionId);
   if (session) void startRun(rerunConfig(session), sessionId, session.baseConfig && baseConfigOf(session));
@@ -1732,6 +1774,68 @@ export function canRunSelectedTests(sessionId: string, nodeIds: readonly string[
   const nodes = nodeIds.map((id) => tests.get(id)).filter((n) => !!n);
   const selection = testsConfigs(baseConfigOf(session), leafTestPaths(nodes), "");
   return selection instanceof Promise ? selection.then((configs) => configs.length > 0) : selection.length > 0;
+}
+
+/** The snapshot mismatches among (or under) a session's test-tree nodes that its configuration can update. */
+function snapshotSelection(sessionId: string, nodeIds: readonly string[]) {
+  const session = getSession(sessionId);
+  const tests = runtimes.get(sessionId)?.tests;
+  if (!session || !tests || isLive(session)) return null;
+  const nodes = snapshotFailures(nodeIds.map((id) => tests.get(id)).filter((n) => !!n));
+  const paths = nodes.map((n) => n.path);
+  const base = baseConfigOf(session);
+  const name = nodes.length === 1 ? nodes[0]!.name : `${nodes.length} tests`;
+  const configs = snapshotTestConfigs(base, paths, name);
+  if (!configs.length) return null;
+  const update = snapshotUpdateArgs(
+    base,
+    paths,
+    nodes.some((n) => snapshotRunner(n) === "jest"),
+  );
+  return { session, base, paths, configs, update };
+}
+
+/** Whether Update Snapshot applies to this test-tree selection (Jest / Vitest snapshot mismatches). */
+export function canUpdateSnapshots(sessionId: string, nodeIds: readonly string[]): boolean {
+  return snapshotSelection(sessionId, nodeIds) !== null;
+}
+
+/** "Update Snapshot": reruns the selection's snapshot mismatches with `-u` in the same tab. */
+export async function updateSnapshots(sessionId: string, nodeIds: readonly string[]): Promise<boolean> {
+  const selection = snapshotSelection(sessionId, nodeIds);
+  if (!selection) return false;
+  const { session, base, paths, configs, update } = selection;
+  const derived = await Promise.all(configs.map((c) => testsBySubproject(c, paths)));
+  if (getSession(sessionId) !== session || isLive(session)) return false;
+  derived.forEach(
+    (config, index) => void startSnapshotUpdate(config, update, index === 0 ? sessionId : undefined, base),
+  );
+  return true;
+}
+
+/** Runs `config` with `update`, then keeps the tab's configuration without it: its Rerun runs the tests, not another update. */
+async function startSnapshotUpdate(config: RunConfig, update: string[], reuse: string | undefined, base: RunConfig) {
+  const started = await startRun({ ...config, args: [...config.args, ...update] }, reuse, base);
+  const current = started && getSession(started.id);
+  if (!current || current.startedAt !== started.startedAt) return;
+  const args = current.config.args;
+  if (args.slice(-update.length).join("\0") === update.join("\0"))
+    patchSession(current.id, { config: { ...current.config, args: args.slice(0, -update.length) } });
+}
+
+/** The snapshot mismatches of a gutter target in the newest finished session with a result for it. */
+export function snapshotFailuresAt(query: StateQuery): { sessionId: string; nodeIds: string[] } | null {
+  const sessions = [...useRun.getState().sessions].sort((a, b) => b.startedAt - a.startedAt);
+  for (const session of sessions) {
+    const tests = runtimes.get(session.id)?.tests;
+    const matched = tests ? targetNodes(tests.roots, query) : [];
+    if (!matched.length) continue;
+    const nodeIds = snapshotFailures(matched).map((n) => n.id);
+    return !isLive(session) && nodeIds.length && canUpdateSnapshots(session.id, nodeIds)
+      ? { sessionId: session.id, nodeIds }
+      : null;
+  }
+  return null;
 }
 
 /** Whether the console takes typed input: the process runs and its stdin is open. */

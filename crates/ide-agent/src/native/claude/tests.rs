@@ -464,6 +464,7 @@ async fn replay_simple() {
     let args = r.cli.launched.lock()[0].clone();
     assert!(args.windows(2).any(|w| w == ["--session-id", r.session.as_str()]), "{args:?}");
     assert!(args.contains(&"--permission-prompt-tool".to_owned()));
+    assert!(!args.contains(&"--no-session-persistence".to_owned()));
     let user = r.sent(0).into_iter().find(|m| m["type"] == "user").unwrap();
     assert_eq!(user["message"]["content"][0]["text"], "Reply with exactly: hello there");
 }
@@ -650,6 +651,84 @@ async fn replay_resume() {
     assert!(r.h.text(&r.session, "agent_message_chunk").contains("MANGO"));
     let args = r.cli.launched.lock()[1].clone();
     assert!(args.windows(2).any(|w| w == ["--resume", r.session.as_str()]), "{args:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fork_session_can_start_a_recorded_session_under_the_hosts_id() {
+    /// Registering a fork must not start a process: its first prompt does.
+    struct NoLaunch;
+    impl Cli for NoLaunch {
+        fn launch(&self, _: &Launch, _: OnStderr) -> std::io::Result<cli::CliIo> {
+            panic!("session/fork must not launch the CLI")
+        }
+    }
+
+    let config = tempfile::tempdir().unwrap();
+    let pending = tempfile::tempdir().unwrap();
+    let h = Harness::connect(
+        Arc::new(NoLaunch),
+        config.path().to_path_buf(),
+        pending.path().to_path_buf(),
+        std::env::temp_dir(),
+        Vec::new(),
+    )
+    .await;
+    let source = "11111111-1111-4111-8111-111111111111";
+    let target = "22222222-2222-4222-8222-222222222222";
+    let reply = h
+        .request(
+            "session/fork",
+            json!({
+                "sessionId": source,
+                "cwd": h.cwd,
+                "mcpServers": [],
+                "_meta": { "openidea": { "forkSessionId": target } }
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reply["sessionId"], target);
+    // The host chose this id for the fork: the next process must fork the recorded
+    // session under exactly it.
+    let saved: Value =
+        serde_json::from_slice(&std::fs::read(pending.path().join(format!("{target}.json"))).unwrap()).unwrap();
+    assert_eq!(saved, json!({ "fork": source, "id": target, "at": null }));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fork_session_rejects_a_requested_id_that_is_not_canonical() {
+    struct NoLaunch;
+    impl Cli for NoLaunch {
+        fn launch(&self, _: &Launch, _: OnStderr) -> std::io::Result<cli::CliIo> {
+            panic!("no process")
+        }
+    }
+
+    let config = tempfile::tempdir().unwrap();
+    let pending = tempfile::tempdir().unwrap();
+    let h = Harness::connect(
+        Arc::new(NoLaunch),
+        config.path().to_path_buf(),
+        pending.path().to_path_buf(),
+        std::env::temp_dir(),
+        Vec::new(),
+    )
+    .await;
+    for rejected in ["../../x", "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA", ""] {
+        let error = h
+            .request(
+                "session/fork",
+                json!({
+                    "sessionId": "11111111-1111-4111-8111-111111111111",
+                    "cwd": h.cwd,
+                    "mcpServers": [],
+                    "_meta": { "openidea": { "forkSessionId": rejected } }
+                }),
+            )
+            .await
+            .expect_err("only a canonical id may name the fork");
+        assert!(error.to_string().contains("canonical"), "{rejected}: {error}");
+    }
 }
 
 // ---------- recording ----------
@@ -1349,4 +1428,17 @@ fn additional_directories_are_read_from_the_session_params() {
     let params = json!({ "cwd": "/w/api", "additionalDirectories": ["/w/web", 3, "/w/docs"] });
     assert_eq!(additional_dirs(&params), ["/w/web", "/w/docs"]);
     assert!(additional_dirs(&json!({ "cwd": "/w/api" })).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ephemeral_session_is_not_saved() {
+    let cli = replay_cli(load_fixture("simple"));
+    let (config, cwd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let cwd_path = std::fs::canonicalize(cwd.path()).unwrap();
+    let h =
+        Harness::connect(cli.clone(), config.path().into(), config.path().join("pending"), cwd_path, Vec::new()).await;
+    let params = json!({ "cwd": h.cwd, "mcpServers": [], "_meta": { "openidea": { "ephemeral": true } } });
+    h.request("session/new", params).await.unwrap();
+    let args = cli.launched.lock()[0].clone();
+    assert!(args.contains(&"--no-session-persistence".to_owned()), "{args:?}");
 }

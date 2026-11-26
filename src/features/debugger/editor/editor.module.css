@@ -222,7 +222,6 @@
   border-radius: var(--radius-small);
   background: transparent;
   color: var(--fg-muted);
-  cursor: pointer;
 }
 .valueExpand:hover {
   background: var(--bg-hover, transparent);
@@ -262,7 +261,6 @@
   background: var(--bg-popup);
   box-shadow: var(--shadow-tooltip);
   color: var(--fg);
-  cursor: pointer;
 }
 
 .runToCursor:hover {

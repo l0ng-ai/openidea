@@ -55,6 +55,10 @@ id = "insert"
 title = "insert"
 
 [[contributes.commands]]
+id = "fork-session"
+title = "fork-session"
+
+[[contributes.commands]]
 id = "cancel"
 title = "cancel"
 

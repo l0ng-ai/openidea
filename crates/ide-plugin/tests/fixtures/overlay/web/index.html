@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; }
+  .card {
+    box-sizing: border-box;
+    height: 100%;
+    padding: 12px;
+    border-radius: 10px;
+    background: var(--openidea-bg-elevated);
+    border: 1px solid var(--openidea-border);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    font: var(--openidea-font-size) var(--openidea-font-ui);
+    color: var(--openidea-fg);
+  }
+  button { font: inherit; margin: 8px 6px 0 0; }
+</style>
+</head>
+<body>
+<div class="card">
+  <strong>Overlay probe</strong>
+  <div id="where"></div>
+  <button id="move" type="button">Next anchor</button>
+  <button id="grow" type="button">Toggle size</button>
+</div>
+<script>
+  const anchors = ["top-left", "top-center", "top-right", "middle-right", "bottom-right", "bottom-center", "bottom-left", "middle-left", "center"];
+  let at = anchors.indexOf("bottom-right");
+  let big = false;
+  const show = (p) => { document.getElementById("where").textContent = `${p.anchor}, ${p.width}×${p.height}`; };
+  openidea.overlay.get().then(show);
+  document.getElementById("move").onclick = () => {
+    at = (at + 1) % anchors.length;
+    openidea.overlay.place({ anchor: anchors[at] }).then(show);
+  };
+  document.getElementById("grow").onclick = () => {
+    big = !big;
+    openidea.overlay.place(big ? { width: 360, height: 220 } : { width: 260, height: 140 }).then(show);
+  };
+</script>
+</body>
+</html>

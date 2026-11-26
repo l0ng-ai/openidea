@@ -25,6 +25,7 @@ import {
 } from "@/ui";
 import { useRowHeight } from "@/ui/density";
 import type { PopupAnchor } from "@/ui/Popup";
+import { isSubmenuAim, type MenuPointer } from "@/ui/menuAim";
 import { useActiveRepository, useWidgetBranch } from "./activeRepository";
 import {
   buildBranchRows,
@@ -737,6 +738,14 @@ function MultiRepoPanel({
   const { menuFor, setMenuFor, openTagMenu } = useBranchSubmenu();
   const [repoMenu, setRepoMenu] = useState<{ root: string; el: HTMLElement; focus: boolean } | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const aim = useRef<{
+    previous: MenuPointer | null;
+    pointer: MenuPointer | null;
+    moved: boolean;
+    pending: number | null;
+    timer?: ReturnType<typeof setTimeout>;
+  }>({ previous: null, pointer: null, moved: false, pending: null });
+  const repoMenuLabel = repoMenu ? tx`Branches of ${repoName(repoMenu.root)}` : "";
   const searchRef = useRef<HTMLInputElement>(null);
   /** Back from a repository's submenu to the search field. */
   const closeRepoMenu = () => {
@@ -867,11 +876,52 @@ function MultiRepoPanel({
     }
   };
   // The pointer on a repository opens its branches right away; elsewhere it closes them.
-  const hover = (i: number) => {
+  const applyHover = (i: number) => {
+    clearTimeout(aim.current.timer);
+    aim.current.pending = null;
     setActive(i);
     if (rows[i]?.type === "repo") openSub(i, false);
     else setRepoMenu(null);
   };
+  /** While the pointer heads for the open branch list, the rows it crosses wait (like submenus of a menu). */
+  const aiming = () => {
+    const { previous, pointer } = aim.current;
+    const popup = repoMenu && document.querySelector(`[data-popup][aria-label="${CSS.escape(repoMenuLabel)}"]`);
+    return !!popup && !!pointer && isSubmenuAim(previous, pointer, popup.getBoundingClientRect());
+  };
+  const deferHover = (i: number) => {
+    clearTimeout(aim.current.timer);
+    aim.current.pending = i;
+    aim.current.timer = setTimeout(() => applyHover(i), 300);
+  };
+  const hover = (i: number) => {
+    const fromPointer = aim.current.moved;
+    aim.current.moved = false;
+    const row = rows[i];
+    const openRepo = row?.type === "repo" && row.repo.root === repoMenu?.root;
+    if (fromPointer && repoMenu && !openRepo && aiming()) deferHover(i);
+    else applyHover(i);
+  };
+  // Pointer positions for the aim check, recorded before the rows see the move (capture phase).
+  useEffect(() => {
+    if (!repoMenu) return;
+    const onMove = (e: PointerEvent) => {
+      const a = aim.current;
+      if (a.pointer?.x === e.clientX && a.pointer.y === e.clientY) return;
+      a.previous = a.pointer;
+      a.pointer = { x: e.clientX, y: e.clientY };
+      a.moved = true;
+      if (a.pending === null) return;
+      const popup = document.querySelector(`[data-popup][aria-label="${CSS.escape(repoMenuLabel)}"]`);
+      if (popup?.contains(e.target as Node)) {
+        clearTimeout(a.timer);
+        a.pending = null;
+      } else if (!aiming()) applyHover(a.pending);
+    };
+    document.addEventListener("pointermove", onMove, true);
+    return () => document.removeEventListener("pointermove", onMove, true);
+  });
+  useEffect(() => () => clearTimeout(aim.current.timer), []);
 
   const onKeyDown = (e: KeyboardEvent) => {
     if (isNewBranchStroke(strokeOf(e))) {
@@ -984,7 +1034,7 @@ function MultiRepoPanel({
           placement="right-start"
           offset={2}
           autoFocus={repoMenu.focus}
-          aria-label={tx`Branches of ${repoName(repoMenu.root)}`}
+          aria-label={repoMenuLabel}
           onClose={closeRepoMenu}
           className={styles.popup}
         >

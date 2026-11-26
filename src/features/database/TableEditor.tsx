@@ -440,6 +440,16 @@ export function TableEditor({ input }: { input: EditorInput }) {
             panel={panel}
             onPanelChange={setPanel}
             copyFormat={copyFormatOf(extractor)}
+            extractor={{
+              value: extractor,
+              onChange: setExtractor,
+              table: () => ({
+                columns: gridColumns,
+                rows: page.result.rows,
+                table: ref.table,
+                driver: sourceById(ref.id)?.driver ?? "sqlite",
+              }),
+            }}
             searchOpen={searchOpen}
             onSearchOpenChange={setSearchOpen}
             firstRowNumber={offset + 1}

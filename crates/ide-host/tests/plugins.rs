@@ -1391,6 +1391,65 @@ fn ungranted_capabilities_are_denied_not_trapped() {
     assert_eq!(f.workspace.text("src/notes.txt"), "one two three\nfour five\n");
 }
 
+/// A missing `agents` grant is an error the plugin can handle, not a trap.
+#[test]
+fn ungranted_agents_fork_is_denied_not_trapped() {
+    let f = fixture(Limits::default());
+    f.install(&misbehave_pkg());
+    let err = f
+        .host
+        .run_command("misbehave", "fork-session", Some("claude 11111111-2222-3333-4444-555555555555 /tmp"), f.inv())
+        .unwrap_err();
+    assert_eq!(err.kind, ErrorKind::PermissionDenied, "{err:?}");
+    assert!(err.message.contains("agents"), "{err:?}");
+    let info = f.host.info_of("misbehave").unwrap();
+    assert_eq!((info.status, info.stats.crashes), (PluginStatus::Active, 0), "the instance lives on");
+    assert_eq!(info.stats.errors, 0, "a missing grant is not the plugin failing");
+}
+
+/// With the `agents` grant the call reaches the core fork over a real project:
+/// an unknown session is the core's `not-found`, not a denial or a host stub.
+#[tokio::test]
+async fn granted_agents_fork_reaches_the_core() {
+    let f = fixture(Limits::default());
+    // Hermetic: the core scans the home transcript folders; a real ~/.codex with
+    // thousands of rollouts would time the command out.
+    // SAFETY: set before the Host reads HOME; nextest isolates this test's process.
+    unsafe { std::env::set_var("HOME", f._tmp.path().join("home")) };
+    let host = Arc::new(Host::new(HostConfig {
+        config_dir: f._tmp.path().join("config"),
+        data_dir: f._tmp.path().join("data"),
+        local_data_dir: f._tmp.path().join("local"),
+        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+        syntax: Arc::default(),
+        sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
+        owner: |w| w,
+        runtime: tokio::runtime::Handle::current(),
+        project_environment: false,
+    }));
+    host.trust.decide(&f.project, true, false).unwrap();
+    host.open_project("main", &f.project).unwrap();
+    f.host.set_workspace(Some(Arc::new(HostWorkspace(Arc::downgrade(&host)))));
+
+    // `misbehave` with the `agents` grant, which needs API 1.18.
+    let pkg = f._tmp.path().join("misbehave-agents");
+    copy_dir(&misbehave_pkg(), &pkg);
+    let manifest = pkg.join("plugin.toml");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    let text = text
+        .replace("required = [\"project.read\"]", "required = [\"project.read\", \"agents\"]")
+        .replace("engines.openidea = \"^1.0\"", "engines.openidea = \"^1.18\"");
+    std::fs::write(&manifest, text).unwrap();
+    f.install(&pkg);
+
+    let session = "11111111-2222-3333-4444-555555555555";
+    let arg = format!("claude {session} {}", f.project.to_str().unwrap());
+    let err = f.run("misbehave", "fork-session", Some(&arg)).unwrap_err();
+    assert!(err.contains("unknown claude session"), "{err}");
+    // Detached: the blocking close joins the LSP/index workers, which can stall under nextest.
+    host.close_project_detached("main");
+}
+
 /// A trap drops the instance, which restarts on next use after a
 /// backoff that doubles; only consecutive crashes stop the plugin.
 #[test]
@@ -1652,7 +1711,7 @@ fn idle_instances_are_reclaimed_and_schedules_reactivate() {
     assert_eq!(f.host.instances(), 0);
     let info = f.host.info_of("misbehave").unwrap();
     assert_eq!((info.status, info.stats.reclaims), (PluginStatus::Inactive, 1));
-    assert_eq!(f.command_titles("misbehave").len(), 24, "contributions stay");
+    assert_eq!(f.command_titles("misbehave").len(), 25, "contributions stay");
     assert_eq!(f.run("misbehave", "echo", Some("y")).unwrap().as_deref(), Some("y"));
     assert_eq!(f.host.info_of("misbehave").unwrap().stats.activations, 2);
 
@@ -2272,6 +2331,45 @@ fn java_agent_loads_only_while_granted_and_unchanged() {
     f.host.set_capability("java-agent", "java.agent", true).unwrap();
     f.host.set_enabled("java-agent", false).unwrap();
     assert_eq!(launch(), (plain, vec![]));
+}
+
+/// A Java agent bound to an executor (`executor = "Hot Reload"`, API 1.18): the plugin's
+/// "Run/Debug with Hot Reload" launches get it, plain launches don't, and the same grant
+/// and jar pin apply.
+#[test]
+fn an_executor_bound_java_agent_loads_only_through_its_executor() {
+    let f = fixture(Limits::default());
+    let tmp = tempfile::tempdir().unwrap();
+    let pkg = tmp.path().join("java-agent");
+    copy_dir(&sample("java-agent"), &pkg);
+    let manifest = std::fs::read_to_string(pkg.join("plugin.toml")).unwrap();
+    let manifest = manifest
+        .replace("^1.10", "^1.18")
+        .replace("args = \"mode=test\"", "args = \"mode=test\"\nexecutor = \"Hot Reload\"");
+    std::fs::write(pkg.join("plugin.toml"), manifest).unwrap();
+
+    let info = f.host.install_from_dir(&pkg, &Consent::default()).unwrap();
+    assert!(info.contributions.iter().any(|c| c.label == "fixture agent.jar=mode=test (Run with Hot Reload)"));
+    let agent = info.java_agent.expect("agent metadata");
+    assert_eq!(agent.executor.as_deref(), Some("Hot Reload"));
+    assert!(!agent.approved);
+    let source = f.host.java_agents();
+    let ungranted = ide_run::java_agent::for_executor(&source.agents(), None, Some("java-agent"));
+    assert!(ungranted.options.is_empty());
+    assert!(ungranted.notes[0].contains("needs the java.agent permission"), "{:?}", ungranted.notes);
+
+    f.host.set_capability("java-agent", "java.agent", true).unwrap();
+    let jar = dunce::canonicalize(f.installed("java-agent").join("agent/fixture agent.jar")).unwrap();
+    let option = format!("-javaagent:{}=mode=test", jar.display());
+    let plain = ide_run::java_agent::for_executor(&source.agents(), None, None);
+    assert_eq!(plain, ide_run::java_agent::Agents::default(), "a plain Run leaves it out");
+    let through = ide_run::java_agent::for_executor(&source.agents(), None, Some("java-agent"));
+    assert_eq!(through.options, [option]);
+    assert!(through.notes.is_empty());
+
+    f.host.set_enabled("java-agent", false).unwrap();
+    let gone = ide_run::java_agent::for_executor(&source.agents(), None, Some("java-agent"));
+    assert!(gone.options.is_empty() && gone.notes.len() == 1);
 }
 
 /// Compiled components are cached across runs (keyed by module and
@@ -6125,6 +6223,7 @@ fn files_changed_wakes_idle_once_and_keeps_every_delta() {
                 created: vec![to_ipc(&f.project.join(format!("新建😀-{i}.rs")))],
                 modified: vec![to_ipc(&f.project.join("shared.rs"))],
                 removed: vec![to_ipc(&f.project.join("gone.rs"))],
+                ..Default::default()
             })],
         );
     }
@@ -6262,6 +6361,7 @@ fn files_changed_filters_each_category_before_waking_idle_plugins() {
             created: vec![path("src/unrelated.rs")],
             modified: vec![path("notes.txt")],
             removed: vec![path("elsewhere/a.yaml")],
+            ..Default::default()
         })],
     );
     f.host.flush_events();
@@ -6272,6 +6372,7 @@ fn files_changed_filters_each_category_before_waking_idle_plugins() {
             created: vec![path("config/new.yaml"), path("src/unrelated.rs")],
             modified: vec![path("config/changed.yaml"), path("notes.txt")],
             removed: vec![path("config/gone.yaml"), path("elsewhere/a.yaml")],
+            ..Default::default()
         })],
     );
     f.host.flush_events();
@@ -6284,6 +6385,7 @@ fn files_changed_filters_each_category_before_waking_idle_plugins() {
             created: vec![path("config/new.yaml")],
             modified: vec![path("config/changed.yaml")],
             removed: vec![path("config/gone.yaml")],
+            ..Default::default()
         }]
     );
 }
@@ -6527,6 +6629,272 @@ fn net_ask_session_hosts_are_ephemeral_and_cleared_with_plugin_grants() {
     let err = f.host.run_command("api14", "fetch", Some(&url), Invocation::default()).unwrap_err();
     assert!(err.message.contains("not granted"), "{err:?}");
     assert_eq!(seen.lock().len(), 9);
+}
+
+/// Sets a plugin's global setting value in the test workspace.
+fn set_setting(f: &Fixture, plugin: &str, value: &str) {
+    let mut map = serde_json::Map::new();
+    map.insert("server".into(), serde_json::Value::String(value.into()));
+    f.workspace.global_settings.lock().insert(plugin.to_owned(), map);
+}
+
+fn net_setting_of<'a>(info: &'a PluginInfo, setting: &str) -> Option<&'a PluginNetSetting> {
+    info.net_settings.iter().find(|s| s.setting == setting && !s.http)
+}
+
+fn http_setting_of<'a>(info: &'a PluginInfo, setting: &str) -> Option<&'a PluginNetSetting> {
+    info.net_settings.iter().find(|s| s.setting == setting && s.http)
+}
+
+/// `net:setting:` grants: the host is approved in Settings, materializes while
+/// the setting holds it, replaces and clears with it, and never asks at
+/// request time — a pending host stays denied without a dialog (#3809).
+#[test]
+fn net_setting_grants_approve_replace_and_clear_with_the_setting() {
+    use ide_extension::ledger::{Ledger, Subject};
+    let f = fixture(Limits::default());
+    f.install(&sample("net-setting"));
+    let subject = Subject::Installed("netsetting".into());
+    let (port, seen) = http_server("relay ok", |_| Duration::ZERO);
+    let url = format!("http://127.0.0.1:{port}/");
+
+    // Unset: denied exactly as today, unattended and attended, no dialog.
+    let err = f.run("netsetting", "fetch", Some(&url)).unwrap_err();
+    assert!(err.contains("net:127.0.0.1") && err.contains("not granted"), "{err}");
+    let err = f.host.run_command("netsetting", "fetch", Some(&url), Invocation::default()).unwrap_err();
+    assert!(err.message.contains("not granted"), "{err:?}");
+    assert!(!f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })));
+    assert_eq!(seen.lock().len(), 0);
+
+    // Approved when the value is applied in Settings: the host materializes.
+    set_setting(&f, "netsetting", &url);
+    // The host the user was shown must still be the setting's value: a value
+    // the plugin wrote after the dialog opened is not approved in its place.
+    let err = f.host.approve_net_setting("netsetting", "server", false, "jira.corp.example").unwrap_err();
+    assert!(err.message.contains("now holds 127.0.0.1"), "{err:?}");
+    assert_eq!(net_setting_of(&f.host.info_of("netsetting").unwrap(), "server").unwrap().host, None);
+    f.host.approve_net_setting("netsetting", "server", false, "127.0.0.1").unwrap();
+    let info = f.host.info_of("netsetting").unwrap();
+    let entry = net_setting_of(&info, "server").unwrap();
+    assert_eq!(entry.host.as_deref(), Some("127.0.0.1"));
+    assert_eq!(entry.pending, None);
+    assert_eq!(seen.lock().len(), 0);
+    for invocation in [f.inv(), Invocation::default()] {
+        let result = f.host.run_command("netsetting", "fetch", Some(&url), invocation).unwrap();
+        assert_eq!(result.as_deref(), Some("relay ok"));
+    }
+    assert_eq!(seen.lock().len(), 2);
+    assert!(!f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })));
+    assert_eq!(
+        Ledger::load(&f.plugins_dir).get(&subject).unwrap().setting_hosts.get("net:setting:server").map(String::as_str),
+        Some("127.0.0.1")
+    );
+
+    // A value that changed anywhere else is not approved: pending, and a call
+    // to it is denied without a dialog — unattended and from a window.
+    set_setting(&f, "netsetting", "jira.corp.example");
+    let info = f.host.info_of("netsetting").unwrap();
+    let entry = net_setting_of(&info, "server").unwrap();
+    assert_eq!(entry.host, None);
+    assert_eq!(entry.pending.as_deref(), Some("jira.corp.example"));
+    let err = f.run("netsetting", "fetch", Some("http://jira.corp.example/")).unwrap_err();
+    assert!(err.contains("not granted"), "{err}");
+    let err = f
+        .host
+        .run_command("netsetting", "fetch", Some("http://jira.corp.example/"), Invocation::default())
+        .unwrap_err();
+    assert!(err.message.contains("not granted"), "{err:?}");
+    assert!(!f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })));
+    assert_eq!(seen.lock().len(), 2);
+
+    // The old host no longer materializes either: it is not the setting's value.
+    f.host.set_enabled("netsetting", false).unwrap();
+    f.host.set_enabled("netsetting", true).unwrap();
+    let err = f.run("netsetting", "fetch", Some(&url)).unwrap_err();
+    assert!(err.contains("not granted"), "{err}");
+    assert_eq!(seen.lock().len(), 2);
+
+    // The Approve action replaces the approval only after the user confirms it.
+    f.host.approve_net_setting("netsetting", "server", false, "jira.corp.example").unwrap();
+    let info = f.host.info_of("netsetting").unwrap();
+    let entry = net_setting_of(&info, "server").unwrap();
+    assert_eq!(entry.host.as_deref(), Some("jira.corp.example"));
+    assert_eq!(entry.pending, None);
+    assert_eq!(
+        Ledger::load(&f.plugins_dir).get(&subject).unwrap().setting_hosts.get("net:setting:server").map(String::as_str),
+        Some("jira.corp.example")
+    );
+    // And the old loopback host stays denied now.
+    let err = f.run("netsetting", "fetch", Some(&url)).unwrap_err();
+    assert!(err.contains("not granted"), "{err}");
+    assert_eq!(seen.lock().len(), 2);
+
+    // Revoking the manifest grant drops the record; granting it back asks for
+    // a fresh approval.
+    f.host.set_capability("netsetting", "net:setting:server", false).unwrap();
+    assert!(Ledger::load(&f.plugins_dir).get(&subject).unwrap().setting_hosts.is_empty());
+    f.host.set_capability("netsetting", "net:setting:server", true).unwrap();
+    let info = f.host.info_of("netsetting").unwrap();
+    let entry = net_setting_of(&info, "server").unwrap();
+    assert_eq!(entry.host, None);
+    assert_eq!(entry.pending.as_deref(), Some("jira.corp.example"));
+
+    // Clearing the setting removes the grant.
+    f.host.approve_net_setting("netsetting", "server", false, "jira.corp.example").unwrap();
+    set_setting(&f, "netsetting", "");
+    f.host.forget_net_setting("netsetting", "server", false).unwrap();
+    assert!(Ledger::load(&f.plugins_dir).get(&subject).unwrap().setting_hosts.is_empty());
+    let info = f.host.info_of("netsetting").unwrap();
+    let entry = net_setting_of(&info, "server").unwrap();
+    assert_eq!(entry.host, None);
+    assert_eq!(entry.pending, None);
+    let err = f
+        .host
+        .run_command("netsetting", "fetch", Some("http://jira.corp.example/"), Invocation::default())
+        .unwrap_err();
+    assert!(err.message.contains("not granted"), "{err:?}");
+    assert_eq!(seen.lock().len(), 2);
+}
+
+/// `net.http:setting:` reaches plain HTTP on a non-loopback address; its
+/// record is kept per transport, next to the HTTPS one.
+#[test]
+fn net_http_setting_grants_reach_plain_http_per_transport() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let f = fixture(Limits::default());
+    f.install(&sample("net-setting"));
+    // 127.0.0.2 is this machine's loopback too, but not in the loopback list
+    // of `net_capability`: its plain HTTP needs the `net.http:` grant.
+    // macOS only configures 127.0.0.1 on lo0 by default.
+    let Ok(listener) = std::net::TcpListener::bind("127.0.0.2:0") else {
+        eprintln!("skipped: 127.0.0.2 is not bound to a loopback interface here");
+        return;
+    };
+    let port = listener.local_addr().unwrap().port();
+    let url = format!("http://127.0.0.2:{port}/");
+    let seen: Arc<Mutex<Vec<String>>> = Arc::default();
+    {
+        let seen = seen.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut writer = stream;
+                let mut line = String::new();
+                let mut len = 0;
+                loop {
+                    let read = reader.read_line(&mut line).unwrap_or(0);
+                    if read == 0 || line == "\r\n" {
+                        break;
+                    }
+                    if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        len = v.trim().parse().unwrap_or(0);
+                    }
+                    line.clear();
+                }
+                let mut req = vec![0; len];
+                let _ = reader.read_exact(&mut req);
+                let body = "plain ok";
+                let _ = writer.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: {}\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
+                seen.lock().push("served".into());
+            }
+        });
+    }
+
+    // Plain HTTP elsewhere stays out of the ask flow entirely, unattended and attended.
+    let err = f.run("netsetting", "fetch", Some(&url)).unwrap_err();
+    assert!(err.contains("net.http:127.0.0.2") && err.contains("not granted"), "{err}");
+    assert!(!f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })));
+
+    // Approved for the `net.http:` transport only: the record is its own.
+    set_setting(&f, "netsetting", &url);
+    f.host.approve_net_setting("netsetting", "server", true, "127.0.0.2").unwrap();
+    let info = f.host.info_of("netsetting").unwrap();
+    let entry = http_setting_of(&info, "server").unwrap();
+    assert_eq!(entry.host.as_deref(), Some("127.0.0.2"));
+    assert!(entry.http);
+    // The HTTPS transport has no approval of its own: the setting's host is pending there.
+    let https = net_setting_of(&info, "server").unwrap();
+    assert_eq!(https.host, None);
+    assert_eq!(https.pending.as_deref(), Some("127.0.0.2"));
+    for invocation in [f.inv(), Invocation::default()] {
+        let result = f.host.run_command("netsetting", "fetch", Some(&url), invocation).unwrap();
+        assert_eq!(result.as_deref(), Some("plain ok"));
+    }
+    assert_eq!(seen.lock().len(), 2);
+    assert!(!f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })));
+
+    // A `net:` grant for the same host would not cover plain HTTP; without the
+    // `net.http:` approval the request stays denied (redirect rules unchanged).
+    f.host.forget_net_setting("netsetting", "server", true).unwrap();
+    let err = f.host.run_command("netsetting", "fetch", Some(&url), Invocation::default()).unwrap_err();
+    assert!(err.message.contains("net.http:127.0.0.2") && err.message.contains("not granted"), "{err:?}");
+    assert_eq!(seen.lock().len(), 2);
+}
+
+/// On a remote host, a setting-derived approval is kept for the session only,
+/// like the `net:ask` answers (#3809).
+#[test]
+fn net_setting_approvals_are_session_only_on_remote_hosts() {
+    use ide_extension::ledger::{Ledger, Subject};
+    let f = fixture(Limits::default());
+    f.host.set_net_hosts_session_only();
+    f.install(&sample("net-setting"));
+    let subject = Subject::Installed("netsetting".into());
+    let (port, seen) = http_server("session ok", |_| Duration::ZERO);
+    let url = format!("http://127.0.0.1:{port}/");
+
+    set_setting(&f, "netsetting", &url);
+    f.host.approve_net_setting("netsetting", "server", false, "127.0.0.1").unwrap();
+    for invocation in [f.inv(), Invocation::default()] {
+        let result = f.host.run_command("netsetting", "fetch", Some(&url), invocation).unwrap();
+        assert_eq!(result.as_deref(), Some("session ok"));
+    }
+    assert_eq!(seen.lock().len(), 2);
+    assert!(Ledger::load(&f.plugins_dir).get(&subject).unwrap().setting_hosts.is_empty());
+
+    // Nothing was written: the approval dies with the session (disable/enable).
+    f.host.set_enabled("netsetting", false).unwrap();
+    f.host.set_enabled("netsetting", true).unwrap();
+    let err = f.host.run_command("netsetting", "fetch", Some(&url), Invocation::default()).unwrap_err();
+    assert!(err.message.contains("not granted"), "{err:?}");
+    assert!(!f.take_events().iter().any(|(_, e)| matches!(e, PluginEvent::PromptRequested { .. })));
+    assert_eq!(seen.lock().len(), 2);
+}
+
+/// A `net:setting:` grant must name a `string` setting in the plugin's own
+/// schema; checked at install like the other manifest checks (#3809).
+#[test]
+fn a_setting_grant_needs_a_string_setting_in_the_own_schema() {
+    let f = fixture(Limits::default());
+    let dir = tempfile::tempdir().unwrap();
+    let pkg = dir.path().join("net-setting-bad");
+    copy_dir(&sample("net-setting"), &pkg);
+    let manifest = pkg.join("plugin.toml");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(&manifest, text.replace("net:setting:server", "net:setting:missing")).unwrap();
+    let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
+    assert!(err.message.contains("`net:setting:missing`") && err.message.contains("string"), "{err:?}");
+
+    let pkg = dir.path().join("net-setting-number");
+    copy_dir(&sample("net-setting"), &pkg);
+    let schema = pkg.join("settings.json");
+    let text = std::fs::read_to_string(&schema).unwrap();
+    std::fs::write(
+        &schema,
+        text.replace(
+            "\"type\":\"string\",\"title\":\"Server\",\"default\":\"\"",
+            "\"type\":\"number\",\"title\":\"Server\",\"default\":0",
+        ),
+    )
+    .unwrap();
+    let err = f.host.install_from_dir(&pkg, &Consent::all()).unwrap_err();
+    assert!(err.message.contains("net:setting:server") && err.message.contains("string"), "{err:?}");
 }
 
 /// Runs api14's `fetch` in its window; once the `net:ask` question arrives,
@@ -7626,7 +7994,7 @@ fn contributes_skills_needs_api_1_15_and_warns_without_failing_plugin_on_bad_ent
         "id = \"acme.mixed-skills\"\n\
          name = \"Mixed Skills\"\n\
          version = \"1.0.0\"\n\
-         engines.openidea = \"^1.15\"\n\n\
+         engines.openidea = \"^1.18\"\n\n\
          [[contributes.skills]]\npath = \"skills/good-skill/SKILL.md\"\n\
          [[contributes.skills]]\npath = \"../outside/SKILL.md\"\n\
          [[contributes.skills]]\npath = \"skills/not-skill-md/README.md\"\n\
