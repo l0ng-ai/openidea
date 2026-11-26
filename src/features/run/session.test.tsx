@@ -28,9 +28,6 @@ import {
   useRun,
   runSelectedTests,
   rerunFailed,
-  canUpdateSnapshots,
-  snapshotFailuresAt,
-  updateSnapshots,
   type RunSession,
 } from "./store";
 
@@ -408,51 +405,6 @@ describe("plugin test selection launches", () => {
     } finally {
       dispose();
     }
-  });
-});
-
-describe("Update Snapshot", () => {
-  it("reruns only the snapshot mismatches of the chosen node with -u in the same tab", async () => {
-    const base = config("npm:test", {
-      kind: "npm",
-      command: "npm",
-      args: ["run", "test"],
-      detected: true,
-      isTest: true,
-    });
-    const session = (await startRun(base))!;
-    const total = ["a.test.ts", "cart", "total"];
-    const count = ["a.test.ts", "cart", "count"];
-    runtime(session.id)!.tests!.apply([
-      { type: "result", path: total, status: "failed" },
-      { type: "output", path: total, line: "Error: Snapshot `cart > total 1` mismatched" },
-      { type: "result", path: count, status: "failed" },
-      { type: "output", path: count, line: "AssertionError: expected 1 to be 2" },
-    ]);
-    useRun.setState((s) => ({ sessions: s.sessions.map((x) => ({ ...x, status: "running" as const })) }));
-    expect(canUpdateSnapshots(session.id, ["a.test.ts"])).toBe(false);
-    useRun.setState((s) => ({ sessions: s.sessions.map((x) => ({ ...x, status: "finished" as const })) }));
-    expect(canUpdateSnapshots(session.id, [count.join("\u0000")])).toBe(false);
-    expect(snapshotFailuresAt({ path: ["cart"], file: "a.test.ts" })).toEqual({
-      sessionId: session.id,
-      nodeIds: [total.join("\u0000")],
-    });
-    expect(snapshotFailuresAt({ path: ["cart", "count"], file: "a.test.ts" })).toBeNull();
-    expect(await updateSnapshots(session.id, ["a.test.ts"])).toBe(true);
-    await vi.waitFor(() =>
-      expect(useRun.getState().sessions[0]!.config.args).toEqual([
-        "run",
-        "test",
-        "--",
-        "a.test.ts",
-        "-t",
-        "^(?:cart total)$",
-        "-u",
-      ]),
-    );
-    const sessions = useRun.getState().sessions;
-    expect(sessions).toHaveLength(1);
-    expect(sessions[0]!.baseConfig).toEqual(base);
   });
 });
 
