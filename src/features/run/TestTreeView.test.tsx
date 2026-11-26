@@ -35,6 +35,8 @@ function results() {
 function Host(props: {
   onRunTests?: (ids: string[], debug: boolean) => void;
   canRunTests?: (ids: string[]) => boolean | Promise<boolean>;
+  onUpdateSnapshots?: (ids: string[]) => void;
+  canUpdateSnapshots?: (ids: string[]) => boolean;
 }) {
   return (
     <>
@@ -98,6 +100,21 @@ describe("TestTreeView", () => {
       "diff.compareTexts",
       expect.objectContaining({ left: { text: "1", label: "Expected" }, right: { text: "2", label: "Actual" } }),
     );
+  });
+
+  it("context menu: Update Snapshot on a snapshot mismatch and its suite, not on other failures", () => {
+    const onUpdateSnapshots = vi.fn();
+    const canUpdateSnapshots = vi.fn((ids: string[]) => ids[0] !== "other");
+    render(<Host onUpdateSnapshots={onUpdateSnapshots} canUpdateSnapshots={canUpdateSnapshots} />);
+    fireEvent.contextMenu(screen.getByText("MathTest"));
+    fireEvent.click(screen.getByText("Update Snapshot"));
+    expect(onUpdateSnapshots).toHaveBeenCalledWith(["MathTest"]);
+    fireEvent.contextMenu(screen.getByText("subs()"));
+    fireEvent.click(screen.getByText("Update Snapshot"));
+    expect(onUpdateSnapshots).toHaveBeenLastCalledWith(["MathTest\u0000subs()"]);
+    canUpdateSnapshots.mockReturnValue(false);
+    fireEvent.contextMenu(screen.getByText("subs()"));
+    expect(screen.queryByText("Update Snapshot")).toBeNull();
   });
 
   it("context menu: Diagnose with Agent passes the selected failure to the agents action (#4716)", async () => {

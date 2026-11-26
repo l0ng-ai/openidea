@@ -779,3 +779,40 @@ async fn table_grants_expand_the_acl_per_grantee() -> IdeResult<()> {
     }
     Ok(())
 }
+
+/// Completion reads the default schema in full: 52,000 columns there passed the cap shared with
+/// the other schemas, and the tables sorting last lost theirs (#6118).
+#[tokio::test]
+async fn completion_reads_every_column_of_a_wide_default_schema() -> IdeResult<()> {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(db) = manager(&tmp).await else { return Ok(()) };
+    let c = CancellationToken::new();
+    let schema = format!("oi_wide_{}", uuid::Uuid::new_v4().simple());
+    let mut sources = db.sources()?;
+    let mut source = sources[0].clone();
+    source.id = "wide".into();
+    source.options.startup_script = format!("SET search_path = {schema}");
+    sources.push(source);
+    let password = server().map(|(.., password)| password);
+    db.save_sources(sources).await?;
+    db.set_password("wide", password, false).await?;
+    db.execute("p", &format!("CREATE SCHEMA {schema}"), 1, &c).await?;
+    let fill = format!(
+        "DO $$ DECLARE cols text; BEGIN \
+         SELECT string_agg('c' || g || ' int', ', ') INTO cols FROM generate_series(1, 200) g; \
+         FOR i IN 1..260 LOOP EXECUTE format('CREATE TABLE {schema}.t%s (%s)', lpad(i::text, 3, '0'), cols); \
+         END LOOP; END $$"
+    );
+    let result = async {
+        db.execute("p", &fill, 1, &c).await?;
+        let completion = db.completion("wide").await?;
+        assert_eq!(completion.default_schema, schema);
+        let wide: Vec<_> = completion.tables.iter().filter(|t| t.schema == schema).collect();
+        assert_eq!(wide.len(), 260);
+        assert!(wide.iter().all(|t| t.columns.len() == 200), "a table lost columns");
+        Ok(())
+    }
+    .await;
+    db.execute("p", &format!("DROP SCHEMA {schema} CASCADE"), 1, &c).await?;
+    result
+}

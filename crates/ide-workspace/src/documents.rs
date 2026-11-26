@@ -29,8 +29,8 @@ pub struct DocumentInfo {
     /// (archive entries, JDT sources with an editable attachment encoding,
     /// Git revisions); false for server-generated content (decompiled code).
     pub can_reload_encoding: bool,
-    /// Larger than `ide_vfs::LARGE_FILE_THRESHOLD`: language servers, syntax
-    /// structure and folding are disabled; the editor should drop heavy features.
+    /// Marks files above `ide_vfs::LARGE_FILE_THRESHOLD` for reduced editor
+    /// features such as disabling language servers and folding.
     #[specta(optional)]
     pub large: bool,
     /// Effective `.editorconfig` properties, when any section applies.

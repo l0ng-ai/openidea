@@ -29,6 +29,7 @@ import {
   acceptsInput,
   baseConfigOf,
   canRunSelectedTests,
+  canUpdateSnapshots,
   clearConsole,
   closeStdin,
   debugSession,
@@ -42,6 +43,7 @@ import {
   sendStdin,
   setPendingInput,
   stopSession,
+  updateSnapshots,
   useRun,
   writeTerminal,
   type RunSession,
@@ -220,6 +222,15 @@ export function SessionPanel({
           <button type="button" className={styles.noticeLink} onClick={() => setSelectedTest(null)}>
             <T>Show all output</T>
           </button>
+          {selectedTest && canUpdateSnapshots(session.id, [selectedTest]) && (
+            <button
+              type="button"
+              className={styles.noticeLink}
+              onClick={() => void updateSnapshots(session.id, [selectedTest])}
+            >
+              <T>Update Snapshot</T>
+            </button>
+          )}
         </div>
       )}
       {rt.terminal && !testModel ? (
@@ -406,6 +417,8 @@ export function SessionPanel({
                 name={session.config.name}
                 selected={selectedTest}
                 onSelect={setSelectedTest}
+                canUpdateSnapshots={(ids) => canUpdateSnapshots(session.id, ids)}
+                onUpdateSnapshots={(ids) => void updateSnapshots(session.id, ids)}
                 canRunTests={(ids) => canRunSelectedTests(session.id, ids)}
                 onRunTests={(ids, debug) => void runSelectedTests(session.id, ids, debug)}
                 rerunAutomatically={
@@ -447,6 +460,7 @@ function sessionItems(sessions: readonly RunSession[], targets: readonly RunTarg
       id: s.id,
       label,
       text: label,
+      verbatim: true,
       icon: sessionIcon(s),
       color: failed(s) ? "var(--danger)" : undefined,
       // An agent's command that ended, however it ended.

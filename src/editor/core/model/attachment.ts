@@ -24,7 +24,7 @@ import {
   type DocumentAttachmentOptions,
   type TextEditorHandle,
 } from "@/editor/api";
-import { useDocMeta, type DocAttachmentTarget, type DocumentManager } from "./document";
+import { restoresVcsText, useDocMeta, type DocAttachmentTarget, type DocumentManager } from "./document";
 import { saveOnBlur } from "../saveOnBlur";
 import { editorHistoryKeymap } from "../cm/baseKeymap";
 
@@ -205,7 +205,7 @@ export async function attachDocument(
         if (released || model.closed || target.forwarding) return;
         for (const tr of u.transactions)
           if (tr.docChanged && !isExternalChange(tr) && !tr.annotation(transientChange))
-            model.onLocal(tr.changes, target);
+            model.onLocal(tr.changes, target, restoresVcsText(tr));
       }),
     ],
     save: (options) => model.save(options?.exact ? "exact" : "explicit"),
@@ -223,7 +223,7 @@ export async function attachDocument(
         const edit = ChangeSet.of(changes, model.sync.localText.length);
         if (edit.empty) return;
         target.applyExternal(edit, [Transaction.userEvent.of(userEvent)]);
-        model.onLocal(edit, target);
+        model.onLocal(edit, target, restoresVcsText(userEvent));
       }
     },
     release: () => {

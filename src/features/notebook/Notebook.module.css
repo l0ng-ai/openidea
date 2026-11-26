@@ -120,7 +120,6 @@
   background: none;
   color: var(--fg-muted);
   text-align: left;
-  cursor: pointer;
 }
 .collapsedCell {
   padding: 6px 12px;

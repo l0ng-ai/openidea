@@ -7,7 +7,7 @@
  * placeholders, typeset by the preview (`renderMath`). YAML front matter is shown
  * as a table of its top-level fields.
  */
-import { Marked, type Token, type TokensList } from "marked";
+import { Marked, Renderer, type Token, type TokensList } from "marked";
 import DOMPurify from "dompurify";
 import { mathExtension } from "@/editor/lsp/markdownMath";
 import { opensOtherShare } from "@/platform/paths";
@@ -18,13 +18,23 @@ export const ANCHOR_PREFIX = "user-content-";
 const escapeHtml = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
+const FENCE_ATTR = "data-markdown-fence";
+const fenceMarker = Array.from(crypto.getRandomValues(new Uint32Array(4)), (value) => value.toString(36)).join("-");
+const fenceStart = `<pre ${FENCE_ATTR}="${fenceMarker}">`;
+const defaultRenderer = new Renderer();
+
+export const isRenderedFence = (pre: HTMLElement): boolean => pre.hasAttribute(FENCE_ATTR);
+
 const marked = new Marked({
   gfm: true,
   breaks: false,
   renderer: {
-    code({ text, lang }) {
-      if (lang?.trim().split(/\s+/)[0]?.toLowerCase() !== "mermaid") return false;
-      return `<div data-mermaid=""><pre><code class="language-mermaid">${escapeHtml(text)}</code></pre></div>\n`;
+    code(token) {
+      const { text, lang, codeBlockStyle } = token;
+      if (lang?.trim().split(/\s+/)[0]?.toLowerCase() === "mermaid")
+        return `<div data-mermaid="">${fenceStart}<code class="language-mermaid">${escapeHtml(text)}</code></pre></div>\n`;
+      if (codeBlockStyle === "indented") return false;
+      return defaultRenderer.code(token).replace("<pre>", fenceStart);
     },
   },
 }).use(mathExtension(), footnoteExtension(ANCHOR_PREFIX));
@@ -42,6 +52,12 @@ function purify(): ReturnType<typeof DOMPurify> {
   // The preview loads nothing from other hosts. Only a link, opened on a click, names one;
   // an image keeps its source for the preview to refuse.
   p.addHook("uponSanitizeAttribute", (node, data) => {
+    if (data.attrName === FENCE_ATTR) {
+      // Keep provenance without exposing the marker in the preview DOM
+      data.keepAttr = node.tagName === "PRE" && data.attrValue === fenceMarker;
+      if (data.keepAttr) data.attrValue = "";
+      return;
+    }
     if (data.attrName === "alt" || data.attrName === "title") return;
     if (data.attrName === "href" && node.tagName === "A") return;
     if (data.attrName === "src" && node.tagName === "IMG") return;

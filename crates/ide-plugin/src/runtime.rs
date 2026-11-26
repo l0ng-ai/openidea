@@ -20,6 +20,8 @@ use crate::wit_host::completion_list_bindings::exports::openidea::plugin::comple
 use crate::wit_host::hover_actions_bindings::exports::openidea::plugin::hover_actions as wit_hia;
 use crate::wit_host::injections_bindings::exports::openidea::plugin::injections as wit_inj;
 use crate::wit_host::language_features_bindings::exports::openidea::plugin::language_features as wit_lf;
+use crate::wit_host::run_anything_bindings::exports::openidea::plugin::run_anything_provider as wit_ra;
+use crate::wit_host::run_config_completion_bindings::exports::openidea::plugin::run_configuration_completion as wit_rcc;
 use crate::wit_host::run_target_validation_bindings::exports::openidea::plugin::run_target_validation as wit_rtv;
 use crate::wit_host::search_bindings::exports::openidea::plugin::search_provider as wit_search;
 use crate::wit_host::{
@@ -39,10 +41,13 @@ use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder, UpdateDea
 use wasmtime_wasi::p2::pipe::MemoryOutputPipe;
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
+use crate::wit_host::execution_configurations_bindings::exports::openidea::plugin::execution_configurations as wit_exec;
+use crate::wit_host::execution_configurations_bindings::openidea::plugin::launch_configurations as wit_exec_launch;
 use crate::wit_host::launch_configurations_bindings::exports::openidea::plugin::launch_configurations as wit_launch;
 use crate::wit_host::run_configurations_bindings::exports::openidea::plugin::run_configurations as wit_configs;
 use crate::wit_host::test_results_bindings::exports::openidea::plugin::test_results as wit_tests;
 use bindings::openidea::plugin::events as wit_events;
+use bindings::openidea::plugin::run as wit_run;
 use bindings::openidea::plugin::types as wit_types;
 use commit_checks_bindings::exports::openidea::plugin::commit_checker as wit_cc;
 use details_bindings::exports::openidea::plugin::detail_provider as wit_detail;
@@ -59,7 +64,7 @@ use views_bindings::exports::openidea::plugin::view_provider as wit_view;
 use views_bindings::openidea::plugin::view_types as wit_vt;
 
 /// The API version of the world above, `major.minor` of [`host_api`].
-pub const API_VERSION: &str = "1.17";
+pub const API_VERSION: &str = "1.18";
 const EPOCH_TICK: Duration = Duration::from_millis(10);
 pub(crate) const MAX_TEXT: usize = 1 << 20;
 /// The most text, and the most PNG bytes, `ui.read-clipboard` returns.
@@ -115,7 +120,12 @@ pub trait HostApi: Send + Sync {
     fn extension_contributions(&self, point: &str) -> Result<Vec<(String, String)>, HostError>;
 
     /// Registers a project-scoped wrapper after validating its process grant and pin.
-    fn register_run_target(&self, root: &Path, target: crate::PluginRunTarget) -> Result<(), HostError>;
+    fn register_run_target(
+        &self,
+        root: &Path,
+        target: crate::PluginRunTarget,
+        generation: Option<u64>,
+    ) -> Result<(), HostError>;
     /// Withdraws this plugin's target, preserving the user's remembered prompt answer.
     fn unregister_run_target(&self, root: &Path, id: &str);
 
@@ -125,17 +135,20 @@ pub trait HostApi: Send + Sync {
         client: &str,
         config: &str,
         args: Vec<String>,
-        debug: bool,
+        options: crate::PluginRunStartOptions,
         cancel: &CancellationToken,
         timeout: Duration,
     ) -> Result<String, HostError>;
-    /// Opens/reuses a keyed terminal, retained across idle instance reclamation.
+    /// Opens/reuses a keyed terminal, retained across idle instance reclamation; `cwd`
+    /// (API 1.18) is a directory relative to the window's project root.
+    #[allow(clippy::too_many_arguments)]
     fn open_terminal_session(
         &self,
         client: &str,
         key: String,
         title: String,
         cmd: ProcessCommand,
+        cwd: Option<String>,
         cancel: &CancellationToken,
         timeout: Duration,
     ) -> Result<String, HostError>;
@@ -195,6 +208,9 @@ pub trait HostApi: Send + Sync {
     ) -> Result<(), HostError>;
     /// Replace all `(path, icon)` entries of a tree decoration set at once (API 1.8).
     fn file_icon_decorations(&self, set: &str, items: Vec<(PathBuf, String)>) -> Result<(), HostError>;
+    /// Fork a recorded native agent session into a new task in the invoking
+    /// window's project, returning the new task id (API 1.18).
+    fn fork_agent_session(&self, client: &str, agent: &str, session_id: &str, cwd: &Path) -> Result<String, HostError>;
     /// Trusted repository history.
     fn vcs_log(
         &self,
@@ -417,7 +433,24 @@ pub trait HostApi: Send + Sync {
     /// Delivers every event of `kind`, dropping its path filter.
     fn subscribe(&self, kind: EventKind);
     /// Delivers `kind` (`file-opened`, `file-saved`, `files-changed`) only for matching paths.
-    fn subscribe_paths(&self, kind: &str, globs: Vec<String>) -> Result<(), HostError>;
+    fn subscribe_paths(&self, kind: &str, globs: Vec<String>) -> Result<(), HostError> {
+        self.subscribe_paths_with_options(kind, globs, None)
+    }
+    /// Delivers `kind` with optional debounce window in milliseconds (API 1.18).
+    fn subscribe_paths_with_options(
+        &self,
+        kind: &str,
+        globs: Vec<String>,
+        debounce_ms: Option<u32>,
+    ) -> Result<(), HostError>;
+    /// Monotonically increasing project generation (API 1.18).
+    fn project_generation(&self, root: &Path) -> Result<u64, HostError>;
+    /// Replaces what this plugin watches outside `project` for the window `client`
+    /// (API 1.18): `paths` are real paths an `fs.read` grant covers, already checked.
+    /// Empty stops watching.
+    fn watch_paths(&self, _client: &str, _project: &Path, _paths: Vec<PathBuf>) -> Result<(), HostError> {
+        Err(HostError::Failed("watching paths is unavailable here".into()))
+    }
     fn unsubscribe(&self, kind: &str);
     /// Starts `cmd` and returns the handle to it without waiting.
     fn start_process(&self, cmd: ProcessCommand, cwd: Option<&Path>, client: Option<&str>) -> Result<u64, HostError>;
@@ -878,6 +911,8 @@ pub struct Runtime {
 /// What the component exports: the `plugin` world, plus optional interfaces.
 struct Exports {
     run_target_validation: Option<wit_rtv::Guest>,
+    run_anything: Option<wit_ra::Guest>,
+    run_config_completion: Option<wit_rcc::Guest>,
     language_features: Option<wit_lf::Guest>,
     injections: Option<wit_inj::Guest>,
     plugin: bindings::Plugin,
@@ -898,6 +933,7 @@ struct Exports {
     completion_list: Option<wit_cl::Guest>,
     run_configurations: Option<wit_configs::Guest>,
     launch_configurations: Option<wit_launch::Guest>,
+    execution_configurations: Option<wit_exec::Guest>,
     test_results: Option<wit_tests::Guest>,
     mcp: Option<crate::wit_host::mcp_bindings::exports::openidea::plugin::mcp_provider::Guest>,
 }
@@ -961,11 +997,19 @@ fn event_to_wit(e: WorkbenchEvent) -> wit_events::Event {
             kind: "files-changed".into(),
             data: serde_json::to_string(&batch).expect("file paths serialize"),
         }),
+        WorkbenchEvent::WatchedFilesChanged(batch) => wit_events::Event::Other(wit_types::Extension {
+            kind: "watched-files-changed".into(),
+            data: serde_json::to_string(&batch).expect("file paths serialize"),
+        }),
         WorkbenchEvent::EditorFocused(p) => wit_events::Event::EditorFocused(p),
         WorkbenchEvent::VcsChanged(p) => wit_events::Event::VcsChanged(p),
         WorkbenchEvent::ProblemsChanged => {
             wit_events::Event::Other(wit_types::Extension { kind: "problems-changed".into(), data: "{}".into() })
         }
+        WorkbenchEvent::ProjectClosed(p) => wit_events::Event::Other(wit_types::Extension {
+            kind: "project-closed".into(),
+            data: serde_json::to_string(&p).expect("path serializes"),
+        }),
         WorkbenchEvent::Scheduled => wit_events::Event::Scheduled,
         WorkbenchEvent::ActionPerformed(a) => wit_events::Event::ActionPerformed(wit_events::ActionPerformed {
             action: a.action,
@@ -1051,8 +1095,11 @@ impl Runtime {
         let completion_list_indices = wit_cl::GuestIndices::new(&pre).ok();
         let configs_indices = wit_configs::GuestIndices::new(&pre).ok();
         let launch_indices = wit_launch::GuestIndices::new(&pre).ok();
+        let exec_indices = wit_exec::GuestIndices::new(&pre).ok();
         let tests_indices = wit_tests::GuestIndices::new(&pre).ok();
         let validation_indices = wit_rtv::GuestIndices::new(&pre).ok();
+        let run_anything_indices = wit_ra::GuestIndices::new(&pre).ok();
+        let run_config_completion_indices = wit_rcc::GuestIndices::new(&pre).ok();
         let lf_indices = wit_lf::GuestIndices::new(&pre).ok();
         let inj_indices = wit_inj::GuestIndices::new(&pre).ok();
         let mcp_indices =
@@ -1063,11 +1110,16 @@ impl Runtime {
             configs_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let launch_configurations =
             launch_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
+        let execution_configurations =
+            exec_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let test_results = tests_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let language_features = lf_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let injections = inj_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let run_target_validation =
             validation_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
+        let run_anything = run_anything_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
+        let run_config_completion =
+            run_config_completion_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let plugin = plugin_indices.load(&mut store, &instance).map_err(api_hint)?;
         let syntax = match syntax_indices {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
@@ -1126,6 +1178,8 @@ impl Runtime {
             store,
             exports: Exports {
                 run_target_validation,
+                run_anything,
+                run_config_completion,
                 language_features,
                 injections,
                 plugin,
@@ -1145,6 +1199,7 @@ impl Runtime {
                 completion_list,
                 run_configurations,
                 launch_configurations,
+                execution_configurations,
                 test_results,
                 mcp,
                 file_actions,
@@ -1152,6 +1207,84 @@ impl Runtime {
             limits: setup.limits,
             version: setup.version,
         })
+    }
+
+    pub fn has_run_anything(&self) -> bool {
+        self.exports.run_anything.is_some()
+    }
+
+    /// Run Anything entries for `text` (API 1.18); none without the export.
+    pub fn run_anything_suggest(
+        &mut self,
+        prefix: &str,
+        text: &str,
+        invocation: Invocation,
+        timeout: Duration,
+    ) -> Result<Vec<crate::RunAnythingItem>, CallError> {
+        if self.exports.run_anything.is_none() {
+            return Ok(Vec::new());
+        }
+        let root = invocation.workspace_root.as_deref().map(to_ipc).unwrap_or_default();
+        let items = self.call(invocation, timeout, |e, store| {
+            e.run_anything.as_ref().unwrap().call_suggest(store, &root, prefix, text)
+        })?;
+        Ok(items
+            .into_iter()
+            .take(crate::MAX_RUN_ANYTHING_ITEMS)
+            .map(|i| crate::RunAnythingItem {
+                label: clip(i.label, MAX_TITLE),
+                detail: i.detail.map(|d| clip(d, MAX_TITLE)),
+                line: i.line.map(|l| clip(l, 4096)),
+            })
+            .collect())
+    }
+
+    /// Runs a Run Anything line (API 1.18): whether the plugin claimed it.
+    pub fn run_anything_run(
+        &mut self,
+        prefix: &str,
+        line: &str,
+        invocation: Invocation,
+        timeout: Duration,
+    ) -> Result<bool, CallError> {
+        if self.exports.run_anything.is_none() {
+            return Ok(false);
+        }
+        let root = invocation.workspace_root.as_deref().map(to_ipc).unwrap_or_default();
+        self.call(invocation, timeout, |e, store| e.run_anything.as_ref().unwrap().call_run(store, &root, prefix, line))
+    }
+
+    /// Completions for `field` of this plugin's configuration `config` (API 1.18); none
+    /// without the export. Items whose range falls outside `text` are dropped.
+    pub fn run_configuration_complete(
+        &mut self,
+        config: &str,
+        field: &str,
+        text: &str,
+        caret: u32,
+        invocation: Invocation,
+        timeout: Duration,
+    ) -> Result<Vec<crate::RunConfigCompletion>, CallError> {
+        if self.exports.run_config_completion.is_none() {
+            return Ok(Vec::new());
+        }
+        let root = invocation.workspace_root.as_deref().map(to_ipc).unwrap_or_default();
+        let items = self.call(invocation, timeout, |e, store| {
+            e.run_config_completion.as_ref().unwrap().call_complete(store, &root, config, field, text, caret)
+        })?;
+        let len = text.encode_utf16().count() as u32;
+        Ok(items
+            .into_iter()
+            .filter(|i| i.replace_start <= i.replace_end && i.replace_end <= len)
+            .take(crate::MAX_RUN_CONFIG_COMPLETIONS)
+            .map(|i| crate::RunConfigCompletion {
+                insert: clip(i.insert.unwrap_or_else(|| i.label.clone()), 4096),
+                label: clip(i.label, MAX_TITLE),
+                detail: i.detail.map(|d| clip(d, MAX_TITLE)),
+                replace_start: i.replace_start,
+                replace_end: i.replace_end,
+            })
+            .collect())
     }
 
     pub fn has_run_target_validation(&self) -> bool {
@@ -1184,14 +1317,48 @@ impl Runtime {
         .map(|r| r.map_err(|message| clip(message, 4096)))
     }
 
-    /// Complete configurations from the optional API 1.9 export, else the API 1.4 one.
+    /// Complete configurations from the optional API 1.18 export, else API 1.9, else API 1.4.
     pub fn run_configurations(
         &mut self,
         root: String,
         timeout: Duration,
     ) -> Result<Vec<crate::PluginRunConfiguration>, CallError> {
         let invocation = Invocation { workspace_root: Some(root.clone().into()), ..Default::default() };
-        let items: Vec<crate::PluginRunConfiguration> = if self.exports.launch_configurations.is_some() {
+        let items: Vec<crate::PluginRunConfiguration> = if self.exports.execution_configurations.is_some() {
+            let items = self.call(invocation, timeout, |e, store| {
+                e.execution_configurations.as_ref().unwrap().call_configurations(store, &root)
+            })?;
+            if items.len() > 1000 {
+                return Err(CallError::Guest(GuestError::Invalid("too many run configurations".into())));
+            }
+            items
+                .into_iter()
+                .map(|c| crate::PluginRunConfiguration {
+                    id: c.id,
+                    name: c.name,
+                    program: c.program,
+                    args: c.args,
+                    cwd: c.cwd,
+                    test: c.test,
+                    framework: c.framework,
+                    env: c.env,
+                    debugger: match c.debugger {
+                        Some(wit_exec_launch::Debugger::Launch(language)) => {
+                            Some(crate::PluginDebugger::Launch { language })
+                        }
+                        Some(wit_exec_launch::Debugger::AttachChild(a)) => Some(crate::PluginDebugger::AttachChild {
+                            kind: a.kind,
+                            command_contains: a.command_contains,
+                        }),
+                        Some(wit_exec_launch::Debugger::Other(_)) | None => None,
+                    },
+                    output_mode: match c.output_mode {
+                        wit_run::OutputMode::Pipes => crate::PluginOutputMode::Pipes,
+                        wit_run::OutputMode::Pty => crate::PluginOutputMode::Pty,
+                    },
+                })
+                .collect()
+        } else if self.exports.launch_configurations.is_some() {
             let items = self.call(invocation, timeout, |e, store| {
                 e.launch_configurations.as_ref().unwrap().call_configurations(store, &root)
             })?;
@@ -1219,6 +1386,7 @@ impl Runtime {
                         }),
                         Some(wit_launch::Debugger::Other(_)) | None => None,
                     },
+                    output_mode: crate::PluginOutputMode::Pipes,
                 })
                 .collect()
         } else if self.exports.run_configurations.is_some() {
@@ -2391,6 +2559,7 @@ fn event_to_wit_view(e: ViewEvent) -> wit_vt::ViewEvent {
             kind: "sort".into(),
             data: format!(r#"{{"column":{column},"descending":{descending}}}"#),
         }),
+        ViewEvent::Closed => W::Other(wit_types::Extension { kind: "closed".into(), data: "{}".into() }),
     }
 }
 
@@ -2525,10 +2694,21 @@ impl Runtime {
         timeout: Duration,
         f: impl FnOnce(&wit_lf::Guest, &mut Store<StoreData>) -> wasmtime::Result<R>,
     ) -> Result<R, CallError> {
+        self.language_feature_call_in(None, timeout, f)
+    }
+    /// [`Self::language_feature_call`] for an editor of the project at `project`, which the
+    /// call has as its invocation's project (`workspace.project-of` prefers it).
+    fn language_feature_call_in<R>(
+        &mut self,
+        project: Option<&Path>,
+        timeout: Duration,
+        f: impl FnOnce(&wit_lf::Guest, &mut Store<StoreData>) -> wasmtime::Result<R>,
+    ) -> Result<R, CallError> {
         if self.exports.language_features.is_none() {
             return Err(CallError::missing_export("language-features"));
         }
-        self.call(Invocation::default(), timeout, |e, s| f(e.language_features.as_ref().expect("checked"), s))
+        let invocation = Invocation { workspace_root: project.map(Path::to_path_buf), ..Default::default() };
+        self.call(invocation, timeout, |e, s| f(e.language_features.as_ref().expect("checked"), s))
     }
     pub fn language_format(
         &mut self,
@@ -2726,9 +2906,11 @@ impl Runtime {
         let result = self.language_feature_call(timeout, |p, s| p.call_type_definition(s, &d, pos_to_wit(at)))?;
         Ok(result.into_iter().take(10000).map(location_from_wit).collect())
     }
+    /// Gutter actions of `doc`, open in an editor of the project at `project`.
     pub fn language_gutter_actions(
         &mut self,
         doc: &ProviderDocument,
+        project: Option<&Path>,
         timeout: Duration,
     ) -> Result<Vec<crate::language_features::GutterAction>, CallError> {
         let d = wit_lf::Document {
@@ -2737,13 +2919,15 @@ impl Runtime {
             version: doc.version,
             text: doc.text.clone(),
         };
-        let result = self.language_feature_call(timeout, |p, s| p.call_gutter_actions(s, &d))?;
+        let result = self.language_feature_call_in(project, timeout, |p, s| p.call_gutter_actions(s, &d))?;
         Ok(result.into_iter().take(10000).map(gutter_action_from).collect())
     }
 
+    /// Hover actions of `doc`, open in an editor of the project at `project`.
     pub fn language_hover_actions(
         &mut self,
         doc: &ProviderDocument,
+        project: Option<&Path>,
         timeout: Duration,
     ) -> Result<Vec<crate::language_features::HoverAction>, CallError> {
         if self.exports.hover_actions.is_none() {
@@ -2755,7 +2939,8 @@ impl Runtime {
             version: doc.version,
             text: doc.text.clone(),
         };
-        let result = self.call(Invocation::default(), timeout, |exports, store| {
+        let invocation = Invocation { workspace_root: project.map(Path::to_path_buf), ..Default::default() };
+        let result = self.call(invocation, timeout, |exports, store| {
             exports.hover_actions.as_ref().expect("checked").call_hover_actions(store, &d)
         })?;
         Ok(result.into_iter().take(10_000).map(hover_action_from).collect())
@@ -2842,6 +3027,12 @@ mod tests {
         assert_eq!(fields[0].value, FieldValue::Label("Title \"quoted\"".into()));
         assert_eq!(fields[1].value, FieldValue::ReadonlyText { text: "one\ntwo".into(), multiline: true });
         assert_eq!(fields[2].value, FieldValue::ReadonlyText { text: "author".into(), multiline: false });
+    }
+
+    #[test]
+    fn a_closed_dialog_leaves_as_an_other_event() {
+        let wit_vt::ViewEvent::Other(extension) = event_to_wit_view(ViewEvent::Closed) else { panic!("other") };
+        assert_eq!((extension.kind.as_str(), extension.data.as_str()), ("closed", "{}"));
     }
 
     #[test]

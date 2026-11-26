@@ -1,6 +1,8 @@
 import { auxiliaryWindow } from "./platform/auxWindow";
+import { initWebRuntime } from "./platform/webBridge";
 import { installCommonWindowBoot } from "./windowBoot";
 
+await initWebRuntime();
 await installCommonWindowBoot();
 
 // Auxiliary windows (`settings-<parent>`, `comparison-<parent>-<n>`, `diff-<parent>-<n>`,

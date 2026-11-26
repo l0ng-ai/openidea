@@ -74,6 +74,7 @@ export function ProfilerTabs() {
         return {
           id: s.id,
           label: mode ? `${s.name} · ${mode}` : s.name,
+          verbatim: true,
           closable: true,
           tooltip: `${s.profile.profiler}, ${mode ? `${mode}, ` : ""}${new Date(s.createdAt).toLocaleTimeString()}`,
         };

@@ -12,7 +12,10 @@
  *
  * Editor panels (`[[contributes.editorPanels]]`) load their page with
  * `?openidea=editor-panel`; only there is `openidea.editor`. The workbench answers
- * its requests only from the frames of editor panels.
+ * its requests only from the frames of editor panels. Overlays
+ * (`[[contributes.overlays]]`) load theirs with `?openidea=overlay` and get
+ * `openidea.overlay` the same way, and dialogs (`[[contributes.dialogs]]`,
+ * `?openidea=dialog`) `openidea.dialog`.
  */
 (initialTheme) => {
   const TAG = "openidea-view";
@@ -29,6 +32,8 @@
     changes: [],
   };
   const editorPanel = /(?:^|[?&])openidea=editor-panel(?:&|$)/.test(location.search.slice(1));
+  const overlayFrame = /(?:^|[?&])openidea=overlay(?:&|$)/.test(location.search.slice(1));
+  const dialogFrame = /(?:^|[?&])openidea=dialog(?:&|$)/.test(location.search.slice(1));
   const pending = new Map();
   const root = document.documentElement;
   let theme = null;
@@ -89,7 +94,9 @@
   window.addEventListener("keydown", (e) => {
     const fn = /^F\d{1,2}$/.test(e.key);
     const mod = (e.metaKey || e.ctrlKey || e.altKey) && !EDITING_KEYS.has(e.key.toLowerCase());
-    if (e.isComposing || (!fn && !mod)) return;
+    // In a dialog, Escape the page leaves alone closes it, as in the IDE's own dialogs.
+    const esc = dialogFrame && e.key === "Escape";
+    if (e.isComposing || (!fn && !mod && !esc)) return;
     // After every handler of the page has seen it.
     setTimeout(() => {
       if (e.defaultPrevented) return;
@@ -182,6 +189,14 @@
     onChanges: listen(editorListeners.changes),
   });
 
+  /** Where the overlay floats over the window. */
+  const overlayApi = Object.freeze({
+    /** `{ anchor, width, height }`: one of nine anchors (`top-left` … `bottom-right`) and the size in pixels. */
+    get: () => call("overlay.get"),
+    /** Moves or resizes the overlay (any of `anchor`, `width`, `height`; sizes 40–800, within the window); resolves with `get()`. */
+    place: ({ anchor, width, height } = {}) => call("overlay.place", { anchor, width, height }),
+  });
+
   window.openidea = Object.freeze({
     /** To the plugin's code (`ViewEvent::Message`). */
     postMessage: (text) => window.parent.postMessage({ tag: TAG, text: String(text) }, "*"),
@@ -208,5 +223,7 @@
     /** Asks the user for a file; resolves with `{ name, data }` (bytes), or null when cancelled. */
     openFile: ({ filters } = {}) => call("openFile", { filters }),
     ...(editorPanel ? { editor: editorApi } : {}),
+    ...(overlayFrame ? { overlay: overlayApi } : {}),
+    ...(dialogFrame ? { dialog: Object.freeze({ close: () => call("dialog.close") }) } : {}),
   });
 };

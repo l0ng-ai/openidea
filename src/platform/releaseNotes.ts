@@ -38,22 +38,36 @@ function read(): Stored | null {
   }
 }
 
-/** Called once an update installed, with the notes its manifest carried. */
+/**
+ * Called before an update installs, with the notes its manifest carried: on
+ * Windows the installer ends the app inside the install, so nothing after it runs.
+ * Returns an undo that restores what was stored, for an install that fails or is cancelled.
+ */
 export function recordInstalledUpdate(
   version: string,
   notes: string | null,
   translations: Record<string, string> | null = null,
-): void {
+): () => void {
   const text = notes?.trim();
   const texts = Object.fromEntries(
     Object.entries(translations ?? {}).filter(([lang, t]) => lang && lang !== DEFAULT_LOCALE && t.trim()),
   );
+  let previous: string | null = null;
   try {
+    previous = globalThis.localStorage?.getItem(KEY) ?? null;
     if (text) globalThis.localStorage?.setItem(KEY, JSON.stringify({ version, text, texts }));
     else globalThis.localStorage?.removeItem(KEY);
   } catch {
     /* storage unavailable: the page reads the manifest instead */
   }
+  return () => {
+    try {
+      if (previous === null) globalThis.localStorage?.removeItem(KEY);
+      else globalThis.localStorage?.setItem(KEY, previous);
+    } catch {
+      /* storage unavailable */
+    }
+  };
 }
 
 /** Notes recorded when this version was installed, for the page to pick the UI's language from. */

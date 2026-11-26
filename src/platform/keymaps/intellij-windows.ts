@@ -205,6 +205,7 @@ export const intellijWindows: Record<string, string[]> = {
   "refactor.move": ["F6"],
   "refactor.safeDelete": ["Alt+Delete"],
   "refactor.extractInterface": [],
+  "refactor.extractTypeAlias": [],
   "refactor.pullMembersUp": [],
   "refactor.pushMembersDown": [],
 

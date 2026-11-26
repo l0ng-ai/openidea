@@ -65,6 +65,11 @@ describe("configSource", () => {
   });
 
   it("opens scripts and build files relative to the working directory", async () => {
+    files.set(`${ROOT}/srv/main.js`, "console.log(1)\n");
+    expect(await configSource(config({ kind: "node", cwd: `${ROOT}/srv`, params: { file: "main.js" } }))).toEqual({
+      path: `${ROOT}/srv/main.js`,
+      line: 0,
+    });
     files.set(`${ROOT}/tools/run.py`, "print(1)\n");
     files.set(`${ROOT}/svc/pom.xml`, "<project/>\n");
     files.set(`${ROOT}/build.gradle.kts`, "plugins {}\n");

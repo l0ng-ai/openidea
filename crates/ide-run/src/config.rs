@@ -189,6 +189,7 @@ fn convert(configs: Vec<FileConfig>, local: bool) -> Vec<RunConfig> {
                 target: non_empty(c.target),
                 test_runner: non_empty(c.test_runner),
                 watch: c.watch,
+                executor: None,
             },
         });
     }

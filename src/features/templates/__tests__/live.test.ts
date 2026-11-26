@@ -158,6 +158,44 @@ describe("expansion", () => {
     expect(has("java", "fore")).toBe(false);
   });
 
+  it("offers React component templates only in JSX / TSX, named after the file", () => {
+    const abbrevs = ["rfc", "rfce", "rafce", "rcc"];
+    const pick = (lang: string) =>
+      applicableTemplates(BUILTIN_TEMPLATES, lang).filter((t) => abbrevs.includes(t.abbrev));
+    for (const lang of ["javascript", "typescript"]) expect(pick(lang)).toEqual([]);
+    for (const lang of ["javascriptreact", "typescriptreact"]) expect(pick(lang).map((t) => t.abbrev)).toEqual(abbrevs);
+    // Listed in Settings with the useState / useEffect templates.
+    expect(new Set(pick("typescriptreact").map((t) => t.group))).toEqual(new Set(["JavaScript / TypeScript"]));
+
+    const fns = { fileNameWithoutExtension: () => "user-card" };
+    const expand = (lang: string, abbrev: string) => {
+      const t = pick(lang).find((x) => x.abbrev === abbrev)!;
+      const r = apply("", expandTemplate(t, { fns }).snippet, 0);
+      const [[from, to]] = r.sel as [[number, number]];
+      return `${r.text.slice(0, from)}|${r.text.slice(to)}`;
+    };
+    expect(expand("javascriptreact", "rfc")).toBe(
+      "export default function UserCard() {\n  return (\n    <div>\n      |\n    </div>\n  );\n}",
+    );
+    expect(expand("typescriptreact", "rafce")).toBe(
+      "type Props = {};\n\nconst UserCard = ({}: Props) => {\n  return (\n    <div>\n      |\n    </div>\n  );\n};\n\nexport default UserCard;",
+    );
+    expect(expand("typescriptreact", "rfce")).toContain("function UserCard({}: Props) {");
+    expect(expand("javascriptreact", "rcc")).toBe(
+      'import React from "react";\n\nexport default class UserCard extends React.Component {\n  render() {\n    return (\n      <div>\n        |\n      </div>\n    );\n  }\n}',
+    );
+    expect(expand("typescriptreact", "rcc")).toContain("class UserCard extends React.Component<Props> {");
+
+    const nameFrom = (file: string) =>
+      evaluateExpression("componentName(fileNameWithoutExtension())", { fileNameWithoutExtension: () => file });
+    expect(nameFrom("APIClient")).toBe("APIClient");
+    expect(nameFrom("UIButton")).toBe("UIButton");
+    expect(nameFrom("user_card")).toBe("UserCard");
+    expect(nameFrom("404")).toBe("Component404");
+    expect(nameFrom("2fa-form")).toBe("Component2faForm");
+    expect(nameFrom("")).toBe("");
+  });
+
   it("writes PHP variables with their $", () => {
     const php = (abbrev: string) => BUILTIN_TEMPLATES.find((t) => t.id === `php.${abbrev}`)!;
     const fore = apply("", expandTemplate(php("fore")).snippet, 0);

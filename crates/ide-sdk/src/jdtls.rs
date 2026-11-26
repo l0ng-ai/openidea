@@ -228,6 +228,45 @@ pub fn java_args(install: &JdtlsInstall, java_major: u32, script_args: &[String]
     args
 }
 
+/// Whether `script` is a hand-written `jdtls` that starts the Equinox launcher with `java -jar`
+/// itself, like the one opencode puts into a JDK's `bin` (#6062). It knows none of the release
+/// script's options: each `--jvm-arg=` (the Lombok agent, heap, proxy) reaches jdtls as an
+/// application argument instead of a JVM option, and its own `-data` comes before the IDE's.
+fn is_plain_launcher_wrapper(script: &Path) -> bool {
+    if std::fs::metadata(script).map_or(true, |m| m.len() > 64 * 1024) {
+        return false;
+    }
+    let Ok(bytes) = std::fs::read(script) else { return false };
+    let text = String::from_utf8_lossy(&bytes);
+    text.contains("org.eclipse.equinox.launcher") && !text.contains("--jvm-arg")
+}
+
+/// Picks the `jdtls` to start when the first one on `PATH` is a [plain launcher
+/// wrapper](is_plain_launcher_wrapper): the next one there that isn't, else the IDE's own
+/// install (`managed`, `<tools>/jdtls/bin/jdtls`), which is offered for install while missing.
+/// A command naming a path is the user's choice and kept.
+pub fn skip_plain_launcher_wrappers(cfg: &mut LanguageServerConfig, managed: &Path) {
+    if cfg.name != "jdtls" || Path::new(&cfg.command).components().count() != 1 {
+        return;
+    }
+    let search = cfg.env.get("PATH").map(std::ffi::OsString::from).unwrap_or_else(ide_core::tool_path::search_path);
+    let mut candidates = std::env::split_paths(&search)
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .filter_map(|dir| ide_core::process::find_executable(&cfg.command, dir.as_os_str()));
+    let Some(first) = candidates.next() else { return };
+    if !is_plain_launcher_wrapper(&first) {
+        return;
+    }
+    let chosen = candidates.find(|c| !is_plain_launcher_wrapper(c)).unwrap_or_else(|| managed.to_path_buf());
+    tracing::warn!(
+        "{} starts jdtls with `java -jar` itself and ignores the IDE's JVM arguments (Lombok agent, \
+         workspace); using {} instead",
+        first.display(),
+        chosen.display()
+    );
+    cfg.command = chosen.to_string_lossy().into_owned();
+}
+
 /// The release script a `jdtls` command on `PATH` resolves to: itself when it
 /// already is one, or the script its Scoop shim launches. `None` for a command
 /// that is neither a release script nor a jdtls Scoop shim.
@@ -558,6 +597,57 @@ mod tests {
         assert_eq!(win.config, home.join("config_win"));
         assert_eq!(find_install(home, "windows", "aarch64").unwrap().config, home.join("config_win"));
         assert_eq!(find_install(home, "macos", "aarch64").unwrap().config, home.join("config_mac_arm"));
+    }
+
+    #[test]
+    fn a_plain_java_jar_wrapper_first_on_path_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = |dir: &Path, text: &str| {
+            std::fs::create_dir_all(dir).unwrap();
+            let name = if cfg!(windows) { "jdtls.cmd" } else { "jdtls" };
+            std::fs::write(dir.join(name), text).unwrap();
+            #[cfg(unix)]
+            std::fs::set_permissions(dir.join(name), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+            dir.join(name)
+        };
+        // opencode's wrapper (#6062), then a release script.
+        let wrapper = exe(
+            &dir.path().join("jdk/bin"),
+            "\"%JAVA_HOME%\\bin\\java\" -jar \"%JDTLS_HOME%\\plugins\\org.eclipse.equinox.launcher_1.7.100.jar\" -data \"%DATA_DIR%\" %*\n",
+        );
+        let release = exe(
+            &dir.path().join("jdtls/bin"),
+            "parser.add_argument('--jvm-arg', action='append')\nlauncher = 'org.eclipse.equinox.launcher_*.jar'\n",
+        );
+        let managed = dir.path().join("tools/jdtls/bin/jdtls");
+        let cfg = |dirs: &[&Path]| -> LanguageServerConfig {
+            let mut cfg: LanguageServerConfig = toml::from_str("name = \"jdtls\"\ncommand = \"jdtls\"").unwrap();
+            let path = std::env::join_paths(dirs.iter().map(|d| d.parent().unwrap())).unwrap();
+            cfg.env.insert("PATH".into(), path.to_string_lossy().into_owned());
+            cfg
+        };
+
+        let mut next = cfg(&[&wrapper, &release]);
+        skip_plain_launcher_wrappers(&mut next, &managed);
+        assert_eq!(Path::new(&next.command), release);
+
+        let mut only = cfg(&[&wrapper]);
+        skip_plain_launcher_wrappers(&mut only, &managed);
+        assert_eq!(Path::new(&only.command), managed, "the IDE's install, offered while missing");
+
+        let mut release_first = cfg(&[&release, &wrapper]);
+        skip_plain_launcher_wrappers(&mut release_first, &managed);
+        assert_eq!(release_first.command, "jdtls");
+
+        // Wrappers that delegate (Homebrew's, a Scoop shim) and named commands are kept.
+        let brew = exe(&dir.path().join("brew/bin"), "#!/bin/bash\nexec \"/opt/jdtls/libexec/bin/jdtls\" \"$@\"\n");
+        let mut delegating = cfg(&[&brew, &release]);
+        skip_plain_launcher_wrappers(&mut delegating, &managed);
+        assert_eq!(delegating.command, "jdtls");
+        let mut named = cfg(&[&wrapper]);
+        named.command = wrapper.to_string_lossy().into_owned();
+        skip_plain_launcher_wrappers(&mut named, &managed);
+        assert_eq!(Path::new(&named.command), wrapper);
     }
 
     #[cfg(unix)]
