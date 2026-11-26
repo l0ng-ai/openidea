@@ -6,9 +6,9 @@ use crate::agent_secrets::{AgentSecrets, Kept};
 use ide_agent::registry::{AgentRegistry, RegistryPaths};
 use ide_agent::{
     AcpImportOutcome, AgentAcceptOutcome, AgentChange, AgentChanges, AgentChangesView, AgentCliOffer,
-    AgentCliUpdateResult, AgentCommand, AgentContextUsage, AgentEntry, AgentEvent, AgentModelCatalog, AgentProbe,
-    AgentPrompt, AgentProvider, AgentQueued, AgentSkillMode, AgentSkillPolicy, AgentSkillState, AgentTask,
-    CustomAgentInput, ExternalSession, InstallRemoteSkillRequest, McpExternalSource, McpImportSelection,
+    AgentCliUpdateResult, AgentCommand, AgentContextUsage, AgentEntry, AgentEvent, AgentLoginEvent, AgentModelCatalog,
+    AgentProbe, AgentPrompt, AgentProvider, AgentQueued, AgentSkillMode, AgentSkillPolicy, AgentSkillState, AgentTask,
+    CustomAgentInput, ExternalSession, InstallRemoteSkillRequest, LoginLaunch, McpExternalSource, McpImportSelection,
     McpProbeResult, McpScope, McpServer, McpServerInput, McpTransport, NewAgentTask, RemoteSkillBrowseResult,
     RemoteSkillPreview, SkillsPolicy,
 };
@@ -106,6 +106,73 @@ pub fn agent_set_env(
 ) -> IdeResult<()> {
     host.require_trust(window)?;
     host.project(window)?.agents.set_builtin_env(&id, env)
+}
+
+pub(crate) fn spawn_login_pty(
+    host: &Host,
+    window: &str,
+    cwd: std::path::PathBuf,
+    launch: LoginLaunch,
+    cols: u16,
+    rows: u16,
+    on_event: Channel<AgentLoginEvent>,
+) -> IdeResult<ide_terminal::TerminalInfo> {
+    crate::ops::term::apply_output_rate(host, window);
+    let cwd = if cwd.is_dir() { cwd } else { dirs::home_dir().unwrap_or_else(std::env::temp_dir) };
+    let options = ide_terminal::TerminalOptions {
+        cwd: cwd.into(),
+        shell: Some(launch.program.to_string_lossy().into_owned()),
+        args: launch.args,
+        env: launch.env,
+        cols: if cols == 0 { 80 } else { cols },
+        rows: if rows == 0 { 20 } else { rows },
+        shell_integration: false,
+    };
+    let exit_channel = on_event.clone();
+    host.terminals.spawn_program(
+        options,
+        format!("agent-login:{window}"),
+        host.window_sink(window),
+        Box::new(move |data| {
+            let _ = on_event.send(AgentLoginEvent::Output { data });
+        }),
+        Some(std::sync::Arc::new(move |code| {
+            let _ = exit_channel.send(AgentLoginEvent::Exited { code });
+        })),
+    )
+}
+
+/// Starts agent `id`'s interactive sign-in flow in an IDE-managed PTY and streams its output and exit code.
+#[command(trust = outside_restricted)]
+pub async fn agent_login_spawn(
+    host: &Host,
+    window: &str,
+    id: String,
+    cols: u16,
+    rows: u16,
+    on_event: Channel<AgentLoginEvent>,
+) -> IdeResult<ide_terminal::TerminalInfo> {
+    host.require_trust_if_project(window)?;
+    let (cwd, launch) = match host.project(window) {
+        Ok(project) => {
+            let root = project.root.clone();
+            let agents = project.agents.clone();
+            let launch = host.blocking(move || agents.login_launch(&id)).await?;
+            (root, launch)
+        }
+        Err(_) => {
+            let custom_dir = host.config_dir.join("agents");
+            let cwd = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
+            let cwd_for_lookup = cwd.clone();
+            let launch = host
+                .blocking(move || {
+                    ide_agent::login_launch_without_project(Some(&custom_dir), None, &cwd_for_lookup, &id)
+                })
+                .await?;
+            (cwd, launch)
+        }
+    };
+    spawn_login_pty(host, window, cwd, launch, cols, rows, on_event)
 }
 
 /// Saves a new custom ACP agent through its agent file.
@@ -1472,6 +1539,7 @@ ide_command::domain!(
     agent_grouped_changes,
     agent_hermes_profiles,
     agent_import_session,
+    agent_login_spawn,
     agent_mcp_discover_sources,
     agent_mcp_import,
     agent_mcp_import_selected,

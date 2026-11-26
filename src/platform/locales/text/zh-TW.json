@@ -611,7 +611,6 @@
   "Run `auggie login` in a terminal.": "在終端機中執行 `auggie login`。",
   "Run `claude` in a terminal and sign in.": "在終端機中執行 `claude` 並登入。",
   "Run `codex login` in a terminal.": "在終端機中執行 `codex login`。",
-  "Run `copilot` in a terminal and sign in.": "在終端機中執行 `copilot` 並登入。",
   "Run `cursor-agent login` in a terminal.": "在終端機中執行 `cursor-agent login`。",
   "Run `gemini` in a terminal and sign in.": "在終端機中執行 `gemini` 並登入。",
   "Run `goose configure` in a terminal.": "在終端機中執行 `goose configure`。",

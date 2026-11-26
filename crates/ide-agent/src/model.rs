@@ -623,6 +623,9 @@ pub struct AgentProvider {
     pub command_read_only_reason: Option<AgentCommandReadOnlyReason>,
     /// Whether the command was found (on `PATH`).
     pub installed: bool,
+    /// Whether OpenIDEA can run this agent's sign-in flow directly in an embedded terminal.
+    #[serde(default)]
+    pub can_sign_in: bool,
     /// The built-in command can be owned by a global npm package.
     #[serde(default)]
     pub can_check_cli_update: bool,
@@ -645,6 +648,14 @@ pub enum AgentCommandReadOnlyReason {
     PackageRunner,
     Registry,
     CustomAgent,
+}
+
+/// Output and completion of an interactive sign-in PTY started by the IDE.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum AgentLoginEvent {
+    Output { data: String },
+    Exited { code: Option<i32> },
 }
 
 /// Where an agent comes from.

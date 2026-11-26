@@ -25,7 +25,6 @@
   "Run `auggie login` in a terminal.": "Execute `auggie login` em um terminal.",
   "Run `claude` in a terminal and sign in.": "Execute `claude` em um terminal e entre.",
   "Run `codex login` in a terminal.": "Execute `codex login` em um terminal.",
-  "Run `copilot` in a terminal and sign in.": "Execute `copilot` em um terminal e entre.",
   "Run `cursor-agent login` in a terminal.": "Execute `cursor-agent login` em um terminal.",
   "Run `gemini` in a terminal and sign in.": "Execute `gemini` em um terminal e entre.",
   "Run `goose configure` in a terminal.": "Execute `goose configure` em um terminal.",

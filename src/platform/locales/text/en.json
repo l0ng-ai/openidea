@@ -4178,5 +4178,10 @@
   "SQL DELETE": "SQL DELETE",
   "SVG editor layout": "SVG editor layout",
   "Resize SVG preview": "Resize SVG preview",
-  "The SVG source is not valid.": "The SVG source is not valid."
+  "The SVG source is not valid.": "The SVG source is not valid.",
+  "Sign In…": "Sign In…",
+  "Copy command": "Copy command",
+  "Sign In to {name}": "Sign In to {name}",
+  "Complete sign-in in your browser or the terminal above…": "Complete sign-in in your browser or the terminal above…",
+  "Sign-in exited with code {exitCode}.": "Sign-in exited with code {exitCode}."
 }

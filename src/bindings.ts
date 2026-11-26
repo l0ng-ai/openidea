@@ -75,6 +75,8 @@ export const commands = {
 	agentHermesProfiles: () => typedError<HermesProfile[], IdeError>(__TAURI_INVOKE("agent_hermes_profiles")),
 	/**  Imports an external session as a task: its first turn loads and replays it. */
 	agentImportSession: (provider: string, sessionId: string) => typedError<AgentTask_Serialize, IdeError>(__TAURI_INVOKE("agent_import_session", { provider, sessionId })),
+	/**  Starts agent `id`'s interactive sign-in flow in an IDE-managed PTY and streams its output and exit code. */
+	agentLoginSpawn: (id: string, cols: number, rows: number, onEvent: Channel<AgentLoginEvent>) => typedError<TerminalInfo, IdeError>(__TAURI_INVOKE("agent_login_spawn", { id, cols, rows, onEvent })),
 	/**  Discovers external MCP configuration files on disk (CLI user configs + workspace `.mcp.json`). */
 	agentMcpDiscoverSources: () => typedError<McpExternalSource[], IdeError>(__TAURI_INVOKE("agent_mcp_discover_sources")),
 	/**  Copies MCP servers from `.mcp.json` and `.vscode/mcp.json` into the workspace settings once. */
@@ -2899,6 +2901,9 @@ export type AgentLimit = {
 	resetsMs: number | null,
 };
 
+/**  Output and completion of an interactive sign-in PTY started by the IDE. */
+export type AgentLoginEvent = { type: "output"; data: string } | { type: "exited"; code: number | null };
+
 /**  An MCP server passed to coding agents in `session/new`, `session/load` and `session/fork`. */
 export type AgentMcpServer = AgentMcpServer_Serialize | AgentMcpServer_Deserialize;
 
@@ -3013,6 +3018,8 @@ export type AgentProvider_Deserialize = {
 	commandReadOnlyReason: AgentCommandReadOnlyReason | null,
 	/**  Whether the command was found (on `PATH`). */
 	installed: boolean,
+	/**  Whether OpenIDEA can run this agent's sign-in flow directly in an embedded terminal. */
+	canSignIn?: boolean,
 	/**  The built-in command can be owned by a global npm package. */
 	canCheckCliUpdate?: boolean,
 	/**  Environment variables it starts with (from its agent file). */
@@ -3044,6 +3051,8 @@ export type AgentProvider_Serialize = {
 	commandReadOnlyReason: AgentCommandReadOnlyReason | null,
 	/**  Whether the command was found (on `PATH`). */
 	installed: boolean,
+	/**  Whether OpenIDEA can run this agent's sign-in flow directly in an embedded terminal. */
+	canSignIn: boolean,
 	/**  The built-in command can be owned by a global npm package. */
 	canCheckCliUpdate: boolean,
 	/**  Environment variables it starts with (from its agent file). */
