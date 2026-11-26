@@ -4157,5 +4157,11 @@
   "Keys": "Keys",
   "Triggers": "Triggers",
   "Filter by name or type": "Filter by name or type",
-  "Filter columns": "Filter columns"
+  "Filter columns": "Filter columns",
+  "SQL Updates": "SQL Updates",
+  "SQL Deletes": "SQL Deletes",
+  "Where Clause": "Where Clause",
+  "SQL INSERT": "SQL INSERT",
+  "SQL UPDATE": "SQL UPDATE",
+  "SQL DELETE": "SQL DELETE"
 }

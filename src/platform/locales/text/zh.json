@@ -10601,5 +10601,11 @@
   "Keys": "键",
   "Triggers": "触发器",
   "Filter by name or type": "按名称或类型过滤",
-  "Filter columns": "过滤列"
+  "Filter columns": "过滤列",
+  "SQL Updates": "SQL Update 语句",
+  "SQL Deletes": "SQL Delete 语句",
+  "Where Clause": "Where 子句",
+  "SQL INSERT": "SQL INSERT 语句",
+  "SQL UPDATE": "SQL UPDATE 语句",
+  "SQL DELETE": "SQL DELETE 语句"
 }

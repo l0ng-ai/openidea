@@ -8833,5 +8833,11 @@
   "Keys": "Anahtarlar",
   "Triggers": "Tetikleyiciler",
   "Filter by name or type": "Ada veya türe göre filtrele",
-  "Filter columns": "Sütunları filtrele"
+  "Filter columns": "Sütunları filtrele",
+  "SQL Updates": "SQL Güncelleme İfadeleri",
+  "SQL Deletes": "SQL Silme İfadeleri",
+  "Where Clause": "WHERE Koşulu",
+  "SQL INSERT": "SQL INSERT",
+  "SQL UPDATE": "SQL UPDATE",
+  "SQL DELETE": "SQL DELETE"
 }

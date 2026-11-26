@@ -10172,5 +10172,11 @@
   "Keys": "Ключи",
   "Triggers": "Триггеры",
   "Filter by name or type": "Фильтр по имени или типу",
-  "Filter columns": "Фильтр столбцов"
+  "Filter columns": "Фильтр столбцов",
+  "SQL Updates": "SQL-обновления",
+  "SQL Deletes": "SQL-удаления",
+  "Where Clause": "Условие WHERE",
+  "SQL INSERT": "SQL INSERT",
+  "SQL UPDATE": "SQL UPDATE",
+  "SQL DELETE": "SQL DELETE"
 }
