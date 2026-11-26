@@ -2362,8 +2362,8 @@ argument, JSON text:
 
 `host::start_run` still starts only the plugin's own configurations. To launch
 the user's configuration with the plugin's Java agent, bind the agent to an
-executor (_Java agents_): **Run '<name>' with <title>** and **Debug '<name>'
-with <title>** then appear in this menu for Application, Spring Boot and JAR
+executor (_Java agents_): **Run '`<name>`' with `<title>`** and **Debug '`<name>`'
+with `<title>`** then appear in this menu for Application, Spring Boot and JAR
 Application configurations, and go through the normal launch (build,
 classpath, JDK, debugger, Stop).
 
@@ -2891,11 +2891,11 @@ jdk = "jetbrains"                          # optional: only those VM options on 
   shortened command line moves only the classpath into its argument file.
 - **Executors** (API 1.18). With `executor = "<title>"` (1–40 characters) the
   agent no longer loads into every launch. The plugin gets an executor beside
-  Run and Debug instead, as IDEA's "Run with JRebel" or "Profile": **Run '<name>'
-  with <title>** and **Debug '<name>' with <title>** in the run widget's ⋮ menu,
+  Run and Debug instead, as IDEA's "Run with JRebel" or "Profile": **Run '`<name>`'
+  with `<title>`** and **Debug '`<name>`' with `<title>`** in the run widget's ⋮ menu,
   the gutter's ▶ menu, the context menus' run entries and the Services context
-  menu of those configurations, plus the actions **Run with <title>** and
-  **Debug with <title>** (Find Action, Keymap). Only launches through them get
+  menu of those configurations, plus the actions **Run with `<title>`** and
+  **Debug with `<title>`** (Find Action, Keymap). Only launches through them get
   the agent and its `vmOptions`; the grant and jar pin are the same. Without
   `java.agent` the IDE says so instead of launching, and a configuration on a
   run target is refused the same way.
@@ -3776,7 +3776,7 @@ no generic env-forwarding flags are added. Container env is forwarded only if
 the wrapper's own conventions allow it.
 
 Registration never changes a selection. The first registration prompts the
-project's windows: “Use <name> for running PHP / Node / Composer in this project?”
+project's windows: “Use `<name>` for running PHP / Node / Composer in this project?”
 with **Use** / **Not now**. The first answer is remembered on the host per
 project + plugin + target id. Use sets the project's default run target and its
 PHP and Node run-target choices; Not now leaves settings alone. Interpreters
