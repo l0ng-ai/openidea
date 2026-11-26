@@ -438,7 +438,7 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
 const JS = "JavaScript and TypeScript";
 const SCHEME_LANGUAGES = {
   csharp: "C#",
-  cpp: "C++",
+  cpp: "C/C++",
   go: "Go",
   java: "Java",
   javascript: JS,
@@ -451,6 +451,7 @@ const SCHEME_LANGUAGE_SCOPES = { ...SCHEME_LANGUAGES, python: "Python" } as cons
 /** `data-language` of the editors a page styles, where they are not the page's own name. */
 const SCHEME_EDITORS: Record<string, readonly string[]> = {
   [JS]: ["JavaScript", "JSX", "TypeScript", "TSX", "Angular TypeScript"],
+  "C/C++": ["C", "C++"],
 };
 
 export const ATTRIBUTES: readonly AttributeDef[] = [

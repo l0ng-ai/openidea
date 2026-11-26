@@ -5,8 +5,8 @@ export const LANGUAGES = [...new Set(ATTRIBUTES.map((a) => a.path[0]!))].filter(
 );
 
 /**
- * A sub-page id: `C#` → `csharp`, `C++` → `cpp`, `Diff & Merge` → `diff-and-merge` (`#`/`&` end a
- * settings link, `+` reads as a space in one).
+ * A sub-page id: `C#` → `csharp`, `C/C++` → `c-cpp`, `Diff & Merge` → `diff-and-merge` (`#`/`&` end a
+ * settings link, `+` reads as a space in one, `/` splits it).
  */
 export const languagePageId = (language: string) =>
   `editor.colorScheme.${language
@@ -14,6 +14,7 @@ export const languagePageId = (language: string) =>
     .replace(/#/g, "sharp")
     .replace(/\+/g, "p")
     .replace(/&/g, "and")
+    .replace(/\//g, "-")
     .replace(/\s+/g, "-")
     .replace(/-+/g, "-")}`;
 

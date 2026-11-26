@@ -1130,7 +1130,7 @@ const SAMPLES: Record<string, CodeSample> = {
       [["}", "csharp.operator"]],
     ],
   },
-  "C++": {
+  "C/C++": {
     code: [
       [
         ["#include ", "cpp.keyword"],

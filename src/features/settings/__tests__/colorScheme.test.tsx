@@ -198,10 +198,10 @@ describe("Julia scheme attributes", () => {
   });
 });
 
-describe("C++ scheme attributes", () => {
+describe("C/C++ scheme attributes", () => {
   it("previews C++ namespaces and standard-library symbols on their own page", () => {
-    expect(languagePageId("C++")).toBe("editor.colorScheme.cpp");
-    schemePage("editor.colorScheme.cpp");
+    expect(languagePageId("C/C++")).toBe("editor.colorScheme.c-cpp");
+    schemePage("editor.colorScheme.c-cpp");
     const preview = screen.getByLabelText("Color scheme preview");
     act(() => fireEvent.click(within(preview).getByText("app")));
     expect(screen.getByRole("treeitem", { name: "Package reference", selected: true })).toBeInTheDocument();
