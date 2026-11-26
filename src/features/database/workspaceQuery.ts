@@ -1,5 +1,6 @@
 import { tx } from "@/platform/i18n";
 import type { DbCompletion } from "@/platform/ipc";
+import { statementTokenRange } from "./sql/analyze";
 import { quoteIdent } from "./sql/complete";
 import { identName, inLiteral, lex, type Lexed, type Token } from "./sql/lexer";
 
@@ -15,7 +16,7 @@ const sides = ["left", "right"] as const;
 type Side = (typeof sides)[number];
 type SourceNames = Record<Side, string>;
 const defaultNames: SourceNames = { left: "left", right: "right" };
-const SQL_LIMIT = 65_536;
+export const WORKSPACE_SQL_LIMIT = 65_536;
 
 export function workspaceSourceNames(left: string, right: string): SourceNames {
   const unique = left.toLowerCase() !== right.toLowerCase();
@@ -114,9 +115,19 @@ export function workspaceJoinQuery(
   sql: string,
   names: SourceNames = defaultNames,
   aliases: Partial<SourceNames> = {},
+  caret?: number,
 ): [WorkspaceRelation, WorkspaceRelation] {
-  if (sql.length > SQL_LIMIT) throw new Error(tx("Workspace SQL exceeds 65,536 characters."));
-  const { tokens } = lex(sql, "postgres");
+  if (sql.length > WORKSPACE_SQL_LIMIT) throw new Error(tx("Workspace SQL exceeds 65,536 characters."));
+  let { tokens } = lex(sql, "postgres");
+  if (caret !== undefined) {
+    // Run the preceding JOIN immediately after its delimiter, including trailing whitespace at EOF.
+    const last = tokens.at(-1);
+    let at = caret;
+    if (sql[at - 1] === ";") at--;
+    else if (last?.text === ";" && at >= last.to && !sql.slice(last.to).trim()) at = last.from;
+    const { start, end } = statementTokenRange(tokens, at);
+    tokens = tokens.slice(start, end);
+  }
   const query = parseWorkspaceJoin(tokens, names, aliases);
   query.column();
   query.need("=");
@@ -142,9 +153,10 @@ export function workspaceJoinColumnTarget(
   aliases: Partial<SourceNames> = {},
   lexed?: Lexed,
 ): WorkspaceJoinColumnTarget | null {
-  if (sql.length > SQL_LIMIT) return null;
+  if (sql.length > WORKSPACE_SQL_LIMIT) return null;
   const parsed = lexed ?? lex(sql, "postgres");
-  const { tokens } = parsed;
+  const { start } = statementTokenRange(parsed.tokens, sql.length);
+  const tokens = parsed.tokens.slice(start);
   const last = tokens.at(-1);
   const partial = last?.to === sql.length && (last.kind === "word" || last.kind === "quoted") ? last : undefined;
   if (tokens.at(partial ? -2 : -1)?.text !== ".") return null;

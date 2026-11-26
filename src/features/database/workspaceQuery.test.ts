@@ -10,6 +10,31 @@ import {
 } from "./workspaceQuery";
 
 describe("workspace table references", () => {
+  it("runs the JOIN at the caret across quoted semicolons and nested comments", () => {
+    const first = 'SELECT * FROM #left.public."odd;name" a JOIN #right.db.t b ON a.id=b.id';
+    const second = "SELECT * FROM #left.public.other a /* outer /* ; */ still ; */ JOIN #right.db.t b ON a.id=b.id";
+    const text = first + ";\n" + second + ";\n";
+    for (const [caret, table] of [
+      [first.indexOf("odd"), "odd;name"],
+      [text.indexOf("outer"), "other"],
+      [text.length, "other"],
+    ] as const) {
+      expect(workspaceJoinQuery(text, undefined, undefined, caret)[0].table).toBe(table);
+    }
+    expect(() => workspaceJoinQuery(text)).toThrow(/one direct equality JOIN/);
+  });
+
+  it("completes the current JOIN after another statement", () => {
+    const prefix = "SELECT * FROM #left.public.t a JOIN #right.db.t b ON a.id=b.id;\n";
+    const sql = prefix + "SELECT * FROM #right.events.orders AS o JOIN #left.public.users AS u ON u.";
+    expect(workspaceJoinColumnTarget(sql)).toMatchObject({
+      source: "left",
+      schema: "public",
+      table: "users",
+      from: sql.length,
+    });
+  });
+
   it("keeps quoted dots, embedded quotes and reversed join keys", () => {
     const result = workspaceJoinQuery(
       'SELECT * FROM #left."odd.schema"."a""b" AS a JOIN #right.events.lookup b ON b."Key" = a.id;',

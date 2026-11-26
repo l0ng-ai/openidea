@@ -267,6 +267,42 @@ test("completes preferred aliases and pages the same workspace result", async ({
   await page.screenshot({ path: info.outputPath("workspace-join.png"), animations: "disabled" });
 });
 
+test("runs the selected JOIN or the one at the caret from a multi-statement draft", async ({ workbench: page }) => {
+  await setupWorkspace(page);
+  const workspace = await openWorkspace(page);
+  const settings = await settingsFor(page, workspace);
+  await selectSources(page, settings);
+  await settings.getByRole("button", { name: "OK", exact: true }).click();
+  const editor = workspace.getByLabel("Workspace SQL");
+  const second = SQL.replace("public.customers", "legacy.customers");
+  await editor.click();
+  await page.keyboard.insertText(SQL + ";\n" + second + ";");
+  await editor.press("Meta+Enter");
+  await expect.poll(async () => (await ipcCalls(page, "db_workspace_join")).length).toBe(1);
+  expect((await ipcCalls(page, "db_workspace_join"))[0]).toMatchObject({ left: { schema: "legacy" } });
+
+  await editor.press("Meta+Home");
+  await editor.press("Shift+End");
+  const selected = await page.evaluate(() => window.getSelection()?.toString());
+  expect(selected).toBe(SQL + ";");
+  await workspace.getByRole("button", { name: "Run", exact: true }).click();
+  await expect.poll(async () => (await ipcCalls(page, "db_workspace_join")).length).toBe(2);
+  expect((await ipcCalls(page, "db_workspace_join"))[1]).toMatchObject({ left: { schema: "public" } });
+
+  await editor.press("Meta+A");
+  await editor.press("Meta+Enter");
+  await expect(workspace.getByRole("alert")).toHaveText("The workspace supports one direct equality JOIN per run.");
+  expect(await ipcCalls(page, "db_workspace_join")).toHaveLength(2);
+  expect(await ipcCalls(page, "db_execute")).toHaveLength(0);
+
+  await editor.press("Backspace");
+  await workspace.getByRole("button", { name: "Insert JOIN" }).click();
+  expect(await page.evaluate(() => window.getSelection()?.toString())).toBe("public");
+  await editor.press("Meta+Enter");
+  await expect.poll(async () => (await ipcCalls(page, "db_workspace_join")).length).toBe(3);
+  expect((await ipcCalls(page, "db_workspace_join"))[2]).toMatchObject({ left: { table: "customers" } });
+});
+
 test("cancels the active request and surfaces parser, source and limit errors", async ({ workbench: page }) => {
   await setupWorkspace(page);
   const workspace = await openWorkspace(page);

@@ -190,6 +190,8 @@ JOIN #events.events.purchases AS p ON c.id = p.customer_id
 
 Use the PostgreSQL schema in the saved database or the ClickHouse database name. Integer join columns can have different sizes and signs. Other join columns must have the same type, including precision and scale for decimals. **Run** reads each table through an independent read-only connection and joins the rows on the project host. You can cancel a running query.
 
+You can keep several JOINs in the editor. Place the caret in one JOIN or select its SQL, then press **⌘Enter** (macOS) or **Ctrl+Enter** (Windows and Linux) to run it. A selection must contain one complete JOIN.
+
 Each run opens a fresh DuckDB in memory on the project host and stages the two inputs in temporary files. The files are removed when the engine closes. The editor keeps the result for paging. To keep temporary tables across SQL statements, create a [DuckDB data source](#duckdb) and select **In memory**. That database lasts until you disconnect.
 
 The workspace accepts one inner equality join between two tables. Each input is limited to 100,000 rows, 128 columns and a 16 MiB budget, with at most 1 MiB per value. Results are limited to 100,000 rows and the JDBC bridge's 16 MiB reply. Exceeding a limit ends the query with an error. Source profiles with startup scripts cannot be used.

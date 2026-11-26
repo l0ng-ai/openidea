@@ -1,4 +1,11 @@
-import { autocompletion, completionKeymap, snippet, type CompletionSource } from "@codemirror/autocomplete";
+import {
+  autocompletion,
+  completionKeymap,
+  hasNextSnippetField,
+  hasPrevSnippetField,
+  snippet,
+  type CompletionSource,
+} from "@codemirror/autocomplete";
 import { EditorState, Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -28,6 +35,7 @@ import { identName, inLiteral, lex } from "./sql/lexer";
 import { loadCompletion, loadSources, useDatabase } from "./store";
 import { DUCKDB_JDBC_CLASS, vendorOf } from "./vendors";
 import {
+  WORKSPACE_SQL_LIMIT,
   workspaceJoinColumnOptions,
   workspaceJoinColumnTarget,
   workspaceJoinQuery,
@@ -95,6 +103,7 @@ function eligible(source: DataSource): source is DataSource & { id: string } {
 
 function complete(bindings: () => { config: Configuration; references: SourceReferences }): CompletionSource {
   return async (context) => {
+    if (context.pos > WORKSPACE_SQL_LIMIT) return null;
     const sql = context.state.sliceDoc(0, context.pos);
     const parsed = lex(sql, "postgres");
     const state = inLiteral(parsed, context.pos);
@@ -260,7 +269,15 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
       setSettings(config);
       return;
     }
-    const sql = view.current.state.doc.toString();
+    const state = view.current.state;
+    const range = state.selection.main;
+    // Tab fields in Insert JOIN are selections for editing the template.
+    const selected = !range.empty && !hasNextSnippetField(state) && !hasPrevSnippetField(state);
+    if ((selected ? range.to - range.from : state.doc.length) > WORKSPACE_SQL_LIMIT) {
+      setError(tx("Workspace SQL exceeds 65,536 characters."));
+      return;
+    }
+    const sql = selected ? state.sliceDoc(range.from, range.to) : state.doc.toString();
     if (!sql.trim()) {
       view.current.focus();
       return;
@@ -273,7 +290,7 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
     setPage(0);
     setBusy(true);
     try {
-      const [a, b] = workspaceJoinQuery(sql, references.names, references.aliases);
+      const [a, b] = workspaceJoinQuery(sql, references.names, references.aliases, selected ? undefined : range.head);
       const table = (ref: typeof a) => {
         const source = sourceFor(config[ref.source])!;
         return {
