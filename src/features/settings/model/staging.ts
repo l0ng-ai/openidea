@@ -4,7 +4,7 @@
  * IDEA's Configurable `isModified` / `apply` / `reset` cycle.
  */
 import { create } from "zustand";
-import { getAction, registerActions } from "@/platform/actions";
+import { overrideActions } from "@/platform/actions";
 import { call, commands, isTauri, type Settings } from "@/platform/ipc";
 import { loadSettings, useProject } from "@/platform/project";
 import { lastSettingsPage, rememberSettingsPage } from "./lastPage";
@@ -227,7 +227,6 @@ export function closeSettings() {
 }
 
 let disposePageHistoryActions: (() => void) | null = null;
-let restorePageHistoryActions: (() => void) | null = null;
 
 /**
  * While Settings is open, its page history takes over the workbench keymap's
@@ -238,26 +237,23 @@ let restorePageHistoryActions: (() => void) | null = null;
  */
 export function trackPageHistoryActions(): () => void {
   const take = () => {
-    if (disposePageHistoryActions) return;
-    const previous = ["navigate.back", "navigate.forward"]
-      .map((id) => getAction(id))
-      .filter((a): a is NonNullable<typeof a> => !!a);
-    disposePageHistoryActions = registerActions([
+    disposePageHistoryActions ??= overrideActions([
       { id: "navigate.back", title: "Back", category: "Navigate", run: () => void selectPreviousPage() },
       { id: "navigate.forward", title: "Forward", category: "Navigate", run: () => void selectNextPage() },
     ]);
-    restorePageHistoryActions = previous.length ? () => registerActions(previous) : null;
   };
   const give = () => {
-    restorePageHistoryActions?.();
-    restorePageHistoryActions = null;
     disposePageHistoryActions?.();
     disposePageHistoryActions = null;
   };
   if (useSettingsDialog.getState().open) take();
-  return useSettingsDialog.subscribe((s, prev) => {
+  const unsubscribe = useSettingsDialog.subscribe((s, prev) => {
     if (s.open !== prev.open) (s.open ? take : give)();
   });
+  return () => {
+    unsubscribe();
+    give();
+  };
 }
 
 /** Shows `pageId` (`page#focus` also selects `focus` on it). */
