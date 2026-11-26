@@ -5256,6 +5256,8 @@ export type DbColumnInfo = {
 	nullable: boolean,
 	default: string | null,
 	primaryKey: boolean,
+	/**  `None` when it has none, or the engine keeps no comments. */
+	comment?: string | null,
 };
 
 /**  The schema model SQL completion and resolution work from. */
@@ -5678,6 +5680,8 @@ export type DbStatementOutcome = {
 };
 
 export type DbTableDetails = {
+	/**  The table's comment; `None` when it has none, or the engine keeps no comments. */
+	comment?: string | null,
 	columns: DbColumnInfo[],
 	indexes: DbIndexInfo[],
 	foreignKeys: DbForeignKey[],
