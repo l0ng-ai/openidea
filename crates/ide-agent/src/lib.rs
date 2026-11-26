@@ -454,6 +454,31 @@ struct TaskFile {
     /// agent not to save their history.
     #[serde(default, skip_serializing_if = "is_false")]
     ephemeral: bool,
+    /// Start the first session as a fork of a recorded native one (once).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending_native_fork: Option<ForkStart>,
+}
+
+/// A session to start as a fork of the recorded one: its source, and the id the host
+/// chooses for the fork (claude); codex assigns its own.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ForkStart {
+    source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target: Option<String>,
+}
+
+/// A canonical lowercase UUID, the only session id shape either native agent writes.
+fn canonical_uuid(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+            }
+        })
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -508,6 +533,8 @@ struct TaskState {
     title_renamed: bool,
     /// [`NewAgentTask::ephemeral`].
     ephemeral: bool,
+    /// See `TaskFile::pending_native_fork`: cleared once a session is established.
+    pending_native_fork: Option<ForkStart>,
     /// A turn is running or about to (prompts arriving now are queued).
     busy: bool,
     /// Background tasks the agent reported as running (`run_in_background` commands and
@@ -1030,6 +1057,93 @@ impl AgentManager {
             pending_rollback: 0,
             title_renamed: true,
             ephemeral: false,
+            pending_native_fork: None,
+        };
+        let handle = Task::restore(file, self.shared.clone());
+        self.tasks.write().insert(task.id.clone(), handle.clone());
+        handle.emit_task();
+        handle.persist();
+        Ok(task)
+    }
+
+    /// Forks a recorded external session into a new task: its first turn continues the
+    /// recording as the agent's own fork, under an id the host chooses. The session must
+    /// belong to this project and have been recorded in `cwd`.
+    pub fn fork_session(&self, provider: &str, session_id: &str, cwd: &Path) -> IdeResult<AgentTask> {
+        if !matches!(provider, "claude" | "codex") {
+            return Err(IdeError::invalid(format!("cannot fork {provider} sessions")));
+        }
+        if !canonical_uuid(session_id) {
+            return Err(IdeError::invalid("the recorded session has no canonical id"));
+        }
+        let spec = self.shared.spec(provider).ok_or_else(|| IdeError::invalid(format!("unknown agent {provider}")))?;
+        if self.imported_session_ids().contains(session_id) {
+            return Err(IdeError::invalid("that session is already a task"));
+        }
+        let found = self
+            .external_sessions()
+            .into_iter()
+            .find(|s| s.provider == provider && s.session_id == session_id)
+            .ok_or_else(|| IdeError::not_found(format!("unknown {provider} session {session_id}")))?;
+        let recorded = found
+            .cwd
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .ok_or_else(|| IdeError::invalid("the recorded session has no working directory"))?;
+        let canonical = |p: &Path| dunce::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        if canonical(cwd) != canonical(&recorded) {
+            return Err(IdeError::invalid("the session was recorded in another directory"));
+        }
+        let root = self.shared.paths.project_root.clone();
+        let config = self.shared.known_config(&spec.id);
+        let now = now_ms();
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        // The host names the fork's session id for claude; codex assigns its own.
+        let target = (provider == "claude").then(|| uuid::Uuid::new_v4().to_string());
+        let task = AgentTask {
+            project_root: Some(IpcPath(root)),
+            id,
+            title: found.title,
+            provider: spec.id.clone(),
+            model: model_of(&config),
+            status: AgentStatus::Ready,
+            isolation: Isolation::Local,
+            cwd: IpcPath(recorded),
+            branch: None,
+            base: None,
+            base_commit: None,
+            error: None,
+            created_ms: now,
+            updated_ms: now,
+            config,
+            commands: self.shared.known_commands(&spec.id),
+            usage: None,
+            queue: Vec::new(),
+            capabilities: self.shared.probes.lock().get(&spec.id).map(|p| p.capabilities).unwrap_or_default(),
+            resets_ms: None,
+            retry: None,
+            background: Box::default(),
+            mcp_overrides: BTreeMap::new(),
+            skill_overrides: BTreeMap::new(),
+            stats: Box::default(),
+        };
+        let file = TaskFile {
+            task: task.clone(),
+            session_id: target.clone(),
+            entries: Vec::new(),
+            wanted: Vec::new(),
+            pending_model: None,
+            pending_switch: None,
+            before: BTreeMap::new(),
+            saved: None,
+            touched: Some(BTreeSet::new()),
+            turn: None,
+            turns: Vec::new(),
+            subagents: Vec::new(),
+            pending_rollback: 0,
+            title_renamed: true,
+            ephemeral: false,
+            pending_native_fork: Some(ForkStart { source: session_id.to_owned(), target }),
         };
         let handle = Task::restore(file, self.shared.clone());
         self.tasks.write().insert(task.id.clone(), handle.clone());
@@ -1159,6 +1273,7 @@ impl AgentManager {
             pending_rollback: 0,
             title_renamed: false,
             ephemeral: req.ephemeral,
+            pending_native_fork: None,
         };
         let handle = Task::restore(file, self.shared.clone());
         handle.state.lock().busy = !req.idle;
@@ -1525,6 +1640,7 @@ impl AgentManager {
                 pending_rollback: total - keep,
                 title_renamed: s.title_renamed,
                 ephemeral: s.ephemeral,
+                pending_native_fork: None,
             }
         };
         // Copying may have started the source's agent: it stops again once idle.
@@ -2430,6 +2546,7 @@ impl Task {
                 pending_rollback: file.pending_rollback,
                 title_renamed: file.title_renamed,
                 ephemeral: file.ephemeral,
+                pending_native_fork: file.pending_native_fork,
                 busy: false,
                 background_tasks: Vec::new(),
                 shell_context: Vec::new(),
@@ -2708,6 +2825,7 @@ impl Task {
                 pending_rollback: s.pending_rollback,
                 title_renamed: s.title_renamed,
                 ephemeral: s.ephemeral,
+                pending_native_fork: s.pending_native_fork.clone(),
             }
         };
         let bytes = serde_json::to_vec(&copy);
@@ -3370,66 +3488,101 @@ impl Task {
         let skills_delivery = self.stage_skills(stage_key(spec.driver), cwd).await;
         // Agents that compare canonical paths fail in a symlinked directory (macOS `/tmp`).
         let cwd_s = dunce::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf()).to_string_lossy().into_owned();
+        let pending_native_fork = self.state.lock().pending_native_fork.clone();
 
         let mut tried_auth = false;
         let mut session = None;
-        let start_fresh = self.start_fresh.load(Ordering::Acquire);
-        if pending_model.is_some() && (saved.is_none() || !can_load || start_fresh) {
-            return Err(SessionOpenError {
-                message: "The agent does not support resuming this session.".into(),
-                allow_acp_fallback: false,
-            });
-        }
-        if let (Some(id), true, false) = (saved, can_load, start_fresh) {
-            // The replay goes before what this turn already showed (the user's message).
-            let shown = self.adopts_replay().then(|| self.take_entries());
-            self.replaying.store(true, Ordering::Release);
+        if let Some(fork) = pending_native_fork {
+            if !capabilities.fork {
+                return Err(SessionOpenError {
+                    message: "the agent can't continue a recorded session".into(),
+                    allow_acp_fallback: false,
+                });
+            }
             let mut params = session_params(&cwd_s, &mcp_servers, skills_delivery.as_ref(), &roots);
-            params["sessionId"] = json!(&id);
-            let loaded = self.request_with_auth(&peer, &init, &mut tried_auth, "session/load", params).await;
-            tokio::time::sleep(REPLAY_GRACE).await;
-            self.replaying.store(false, Ordering::Release);
-            if let Some(shown) = shown {
-                if loaded.is_ok() {
-                    self.adopting_replay.store(false, Ordering::Release);
-                    let changed = self.state.lock().conversation.end_turn(None);
-                    self.mark_dirty(changed);
-                } else {
-                    // A failed load may still have replayed part of it.
-                    self.take_entries();
-                }
-                for entry in shown {
-                    self.push_entry(entry);
+            params["sessionId"] = json!(&fork.source);
+            if let Some(target) = &fork.target {
+                match params["_meta"].as_object_mut() {
+                    Some(meta) => {
+                        if let Some(openidea) = meta.entry("openidea").or_insert_with(|| json!({})).as_object_mut() {
+                            openidea.insert("forkSessionId".into(), json!(target));
+                        }
+                    }
+                    None => params["_meta"] = json!({ "openidea": { "forkSessionId": target } }),
                 }
             }
-            match loaded {
-                Ok(v) => session = Some((id, v)),
-                // Not silently: a new session would lose the conversation and replace the saved id.
-                Err(e) => {
-                    tracing::info!("agent task {}: session/load failed: {e}", self.id);
-                    if let Some(message) = self.sign_in_error(&e, Some(&sign_in_message)) {
-                        return Err(SessionOpenError { message, allow_acp_fallback: false });
+            let reply = self
+                .request_with_auth(&peer, &init, &mut tried_auth, "session/fork", params)
+                .await
+                .map_err(|e| SessionOpenError { message: self.describe(e), allow_acp_fallback: false })?;
+            let id = reply
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| SessionOpenError {
+                    message: "the agent returned no session".into(),
+                    allow_acp_fallback: false,
+                })?
+                .to_owned();
+            session = Some((id, reply));
+        } else {
+            let start_fresh = self.start_fresh.load(Ordering::Acquire);
+            if pending_model.is_some() && (saved.is_none() || !can_load || start_fresh) {
+                return Err(SessionOpenError {
+                    message: "The agent does not support resuming this session.".into(),
+                    allow_acp_fallback: false,
+                });
+            }
+            if let (Some(id), true, false) = (saved, can_load, start_fresh) {
+                // The replay goes before what this turn already showed (the user's message).
+                let shown = self.adopts_replay().then(|| self.take_entries());
+                self.replaying.store(true, Ordering::Release);
+                let mut params = session_params(&cwd_s, &mcp_servers, skills_delivery.as_ref(), &roots);
+                params["sessionId"] = json!(&id);
+                let loaded = self.request_with_auth(&peer, &init, &mut tried_auth, "session/load", params).await;
+                tokio::time::sleep(REPLAY_GRACE).await;
+                self.replaying.store(false, Ordering::Release);
+                if let Some(shown) = shown {
+                    if loaded.is_ok() {
+                        self.adopting_replay.store(false, Ordering::Release);
+                        let changed = self.state.lock().conversation.end_turn(None);
+                        self.mark_dirty(changed);
+                    } else {
+                        // A failed load may still have replayed part of it.
+                        self.take_entries();
                     }
-                    if pending_model.is_some() {
+                    for entry in shown {
+                        self.push_entry(entry);
+                    }
+                }
+                match loaded {
+                    Ok(v) => session = Some((id, v)),
+                    // Not silently: a new session would lose the conversation and replace the saved id.
+                    Err(e) => {
+                        tracing::info!("agent task {}: session/load failed: {e}", self.id);
+                        if let Some(message) = self.sign_in_error(&e, Some(&sign_in_message)) {
+                            return Err(SessionOpenError { message, allow_acp_fallback: false });
+                        }
+                        if pending_model.is_some() {
+                            return Err(SessionOpenError {
+                                message: format!(
+                                    "Couldn't reopen this conversation's {} session: {}",
+                                    spec.name,
+                                    self.describe(e)
+                                ),
+                                allow_acp_fallback: false,
+                            });
+                        }
+                        self.start_fresh.store(true, Ordering::Release);
                         return Err(SessionOpenError {
                             message: format!(
-                                "Couldn't reopen this conversation's {} session: {}",
+                                "Couldn't reopen this conversation's {} session: {}\n\nSend the message again to \
+                                 continue in a new session. The agent won't see the earlier conversation.",
                                 spec.name,
                                 self.describe(e)
                             ),
                             allow_acp_fallback: false,
                         });
                     }
-                    self.start_fresh.store(true, Ordering::Release);
-                    return Err(SessionOpenError {
-                        message: format!(
-                            "Couldn't reopen this conversation's {} session: {}\n\nSend the message again to \
-                             continue in a new session. The agent won't see the earlier conversation.",
-                            spec.name,
-                            self.describe(e)
-                        ),
-                        allow_acp_fallback: false,
-                    });
                 }
             }
         }
@@ -3620,6 +3773,8 @@ impl Task {
             s.pending_model = None;
             s.task.capabilities = capabilities;
             s.session_id = Some(session_id.clone());
+            // The recorded session is forked (or the fork resumed): the one-shot intent is spent.
+            s.pending_native_fork = None;
             self.start_fresh.store(false, Ordering::Release);
             // The (re)started process runs nothing yet: whatever it reports next is all of it.
             s.background_tasks = Vec::new();

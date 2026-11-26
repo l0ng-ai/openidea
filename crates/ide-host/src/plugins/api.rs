@@ -68,6 +68,17 @@ pub trait PluginWorkspace: Send + Sync {
     fn problems(&self, _client: &str, _path: Option<&Path>) -> Result<Vec<ide_plugin::FileProblems>, HostError> {
         Ok(Vec::new())
     }
+    /// Fork a recorded native agent session into a new task in the invoking
+    /// window's project, returning the new task id (API 1.18).
+    fn fork_agent_session(
+        &self,
+        _client: &str,
+        _agent: &str,
+        _session_id: &str,
+        _cwd: &Path,
+    ) -> Result<String, HostError> {
+        Err(HostError::Failed("agent fork unavailable".into()))
+    }
 
     /// Roots of the open projects.
     fn projects(&self) -> Vec<PathBuf>;
@@ -695,6 +706,8 @@ pub(super) struct Shared {
     pub(super) closed_clients: Mutex<BTreeSet<String>>,
     /// plugin → kinds subscribed at run time (kept across idle reclaim).
     pub subscriptions: Mutex<super::event_paths::Subscriptions>,
+    /// Paths outside their project that plugins watch (kept across idle reclaim).
+    pub(super) external_watches: super::external_watch::ExternalWatches,
     /// plugin → files it shows problems for, withdrawn when it stops.
     diagnostics: Mutex<HashMap<String, BTreeSet<PathBuf>>>,
     project_generations: Mutex<HashMap<PathBuf, u64>>,
@@ -774,6 +787,7 @@ impl Shared {
             contexts: Mutex::default(),
             closed_clients: Mutex::default(),
             subscriptions: Mutex::default(),
+            external_watches: Default::default(),
             diagnostics: Mutex::default(),
             project_generations: Mutex::default(),
             log_tabs: Mutex::default(),
@@ -1046,6 +1060,9 @@ impl Shared {
             for path in paths {
                 let _ = workspace.publish_diagnostics(plugin, &path, Vec::new());
             }
+        }
+        if subscriptions {
+            self.external_watches.remove_plugin(plugin);
         }
         if subscriptions && self.subscriptions.lock().remove(plugin) {
             self.sink.emit(None, PluginEvent::SubscriptionsChanged);
@@ -1911,6 +1928,12 @@ impl HostApi for PluginApi {
     }
     fn file_icon_decorations(&self, set: &str, items: Vec<(PathBuf, String)>) -> Result<(), HostError> {
         self.set_file_icon_decorations(set, items)
+    }
+    fn fork_agent_session(&self, client: &str, agent: &str, session_id: &str, cwd: &Path) -> Result<String, HostError> {
+        self.shared
+            .workspace()
+            .ok_or_else(|| HostError::NotFound("window project".into()))?
+            .fork_agent_session(client, agent, session_id, cwd)
     }
     fn console_rules(&self, rules: Vec<ide_plugin::ConsoleRule>) -> Result<(), HostError> {
         let rules = super::console_rules::normalize(rules).map_err(HostError::Invalid)?;
@@ -3043,6 +3066,10 @@ impl HostApi for PluginApi {
         self.shared.project_generation(root)
     }
 
+    fn watch_paths(&self, client: &str, project: &Path, paths: Vec<PathBuf>) -> Result<(), HostError> {
+        self.shared.external_watches.set(self.id(), client, project, paths)
+    }
+
     fn unsubscribe(&self, kind: &str) {
         if self.shared.subscriptions.lock().unsubscribe(self.id(), kind) {
             self.shared.sink.emit(None, PluginEvent::SubscriptionsChanged);
@@ -3590,6 +3617,14 @@ impl PluginWorkspace for HostWorkspace {
                 });
         }
         Ok(config)
+    }
+
+    fn fork_agent_session(&self, client: &str, agent: &str, session_id: &str, cwd: &Path) -> Result<String, HostError> {
+        let host = self.0.upgrade().ok_or(HostError::Cancelled)?;
+        let project = host.project(client).map_err(failed)?;
+        project.require_trust().map_err(failed)?;
+        // Scans the recorded transcripts on disk; plugin calls already run off the UI thread.
+        Ok(project.agents.fork_session(agent, session_id, cwd).map_err(failed)?.id)
     }
 
     fn buffer_text_in(&self, client: Option<&str>, path: &Path) -> Option<String> {

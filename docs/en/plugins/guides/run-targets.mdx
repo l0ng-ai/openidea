@@ -13,6 +13,7 @@ every start. On top of that, a plugin can:
 | Compute the project's configurations in code                           | `[[contributes.runConfigurations]]` + `run-configurations` export | 1.4        |
 | Give configurations an environment and a debugger                      | `launch-configurations` export                                    | 1.9        |
 | Set a default PTY or piped output mode on configurations               | `execution-configurations` export / `runDetectors.outputMode`     | 1.18       |
+| Complete the Arguments field of its configurations                     | `run-configuration-completion` export                             | 1.18       |
 | Turn test output into the IDE's test tree                              | `test-results` export, `framework = "plugin"`                     | 1.4        |
 | Start one of its configurations from a command                         | `host::start_run` / `host::start_run_with_options` (`run` WIT)    | 1.4 / 1.18 |
 | Make every run of the project go through a wrapper (DDEV, a container) | `host::register_run_target` (WIT `run-targets`)                   | 1.4        |
@@ -205,10 +206,20 @@ per-invocation `output_mode`, which wins over the plugin's configured default. D
 combinations (`test` configurations, `debug` launches requesting `Pty`, remote run targets,
 and `stdin` file redirection) are rejected with `Invalid`.
 
+## Completing arguments
+
+Export `run-configuration-completion` (`RunConfigurationCompletion`, registered as
+`run_configuration_completion`) to complete the Arguments field of your configurations in
+**Run | Edit Configurations…**, such as task names for a task runner. The IDE passes the
+configuration's id, `field = "arguments"`, the text and a UTF-16 caret offset while the user
+types (or presses Ctrl+Space). Each item replaces the UTF-16 range it names, so the other
+options, quoted values and arguments after `--` stay as typed. Answer from what the plugin
+already knows: the IDE keeps 200 items and drops answers slower than 300 ms or for text that
+has changed since.
+
 <Note>
-  Ordinary pseudo-terminals (PTYs) combine `stdout` and `stderr` into a single output stream
-  and can change buffering, input handling, and terminal behavior (line endings, echo, and
-  ANSI control sequences).
+  Ordinary pseudo-terminals (PTYs) combine `stdout` and `stderr` into a single output stream and can change buffering,
+  input handling, and terminal behavior (line endings, echo, and ANSI control sequences).
 </Note>
 
 ## Run targets

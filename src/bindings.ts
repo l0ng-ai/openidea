@@ -64,6 +64,11 @@ export const commands = {
 	agentExternalSessions: () => typedError<ExternalSession[], IdeError>(__TAURI_INVOKE("agent_external_sessions")),
 	/**  Copies the task's conversation into a new task, up to its first `turns` turns (all when `None`). */
 	agentFork: (task: string, turns: number | null) => typedError<AgentTask_Serialize, IdeError>(__TAURI_INVOKE("agent_fork", { task, turns })),
+	/**
+	 *  Forks a recorded external session into a new task: its first turn continues the recording
+	 *  as the agent's own fork, under an id the host chooses. `cwd` must be where it was recorded.
+	 */
+	agentForkSession: (provider: string, sessionId: string, cwd: string) => typedError<AgentTask_Serialize, IdeError>(__TAURI_INVOKE("agent_fork_session", { provider, sessionId, cwd })),
 	/**  The task's uncommitted changes and the commits made since it started. */
 	agentGroupedChanges: (task: string) => typedError<AgentChanges, IdeError>(__TAURI_INVOKE("agent_grouped_changes", { task })),
 	/**  Hermes Agent profiles on this machine (`default` first); empty without Hermes. */
@@ -1325,6 +1330,8 @@ export const commands = {
 	language: string,
 	selections: Range[],
 } | null, paths: string[] | null, settingsScope: "global" | "project" | null, commandChain: string[] | null, request: number | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("plugin_run_command", { pluginId, commandId, arg, editor, paths, settingsScope, commandChain, request })),
+	/**  Completions for a field of a plugin's own run configuration (API 1.18). */
+	pluginRunConfigurationComplete: (configId: string, field: string, text: string, caret: number) => typedError<RunConfigCompletion[], IdeError>(__TAURI_INVOKE("plugin_run_configuration_complete", { configId, field, text, caret })),
 	pluginRunTargets: () => typedError<RegisteredRunTarget[], IdeError>(__TAURI_INVOKE("plugin_run_targets")),
 	/**
 	 *  One page of `plugin_id`'s results for its search `category`. Cancellable with
@@ -6881,7 +6888,9 @@ export type EventKind = "document-changed" | "websocket-ready" | "file-closed" |
 /**  Problems of the window's files changed (a language server or a report). */
 "problems-changed" | 
 /**  A project was closed (or its window closed): the project root path. */
-"project-closed" | "scheduled";
+"project-closed" | 
+/**  Paths outside the project watched with `events.watch-paths` changed (API 1.18). */
+"watched-files-changed" | "scheduled";
 
 export type ExceptionClassBreakpoint = {
 	id: string,
@@ -11042,6 +11051,11 @@ export type PluginJavaAgent = {
 	jdk: string | null,
 	/**  The jar still has the hash recorded when `java.agent` was granted. */
 	approved: boolean,
+	/**
+	 *  The title of the executor the agent is bound to (API 1.18): "Run with <title>" and
+	 *  "Debug with <title>" launch with it; other launches leave it out.
+	 */
+	executor?: string | null,
 };
 
 /**
@@ -12428,6 +12442,16 @@ export type RunAttach_Serialize = {
 
 export type RunConfig = RunConfig_Serialize | RunConfig_Deserialize;
 
+/**  A completion for a field of a plugin's own run configuration (API 1.18). */
+export type RunConfigCompletion = {
+	label: string,
+	detail: string | null,
+	/**  Replaces the UTF-16 range `[replace_start, replace_end)` of the field's text. */
+	insert: string,
+	replaceStart: number,
+	replaceEnd: number,
+};
+
 export type RunConfig_Deserialize = {
 	/**  Stable id, e.g. `npm:dev`, `cargo:run:app`, or a uuid for user-defined. */
 	id: string,
@@ -12526,6 +12550,11 @@ export type RunExtras_Deserialize = {
 	 *  test output parser and how a single test is selected.
 	 */
 	testRunner?: string | null,
+	/**
+	 *  The plugin executor a launch goes through ("Run with <title>"): the plugin's id. Set
+	 *  on the launched copy, not saved; the plugin's executor-bound Java agent loads only then.
+	 */
+	executor?: string | null,
 };
 
 export type RunExtras_Serialize = {
@@ -12576,6 +12605,11 @@ export type RunExtras_Serialize = {
 	 *  test output parser and how a single test is selected.
 	 */
 	testRunner?: string | null,
+	/**
+	 *  The plugin executor a launch goes through ("Run with <title>"): the plugin's id. Set
+	 *  on the launched copy, not saved; the plugin's executor-bound Java agent loads only then.
+	 */
+	executor?: string | null,
 };
 
 /**  A process started from a run configuration. */
@@ -14575,7 +14609,12 @@ export type WorkbenchEvent = { kind: "documentChanged"; value: DocumentChanged }
 /**  Problems of the window's files changed; plugins re-read `problems`. */
 { kind: "problemsChanged" } | 
 /**  A project closed (API 1.18); payload is the canonical absolute root path. */
-{ kind: "projectClosed"; value: string } | { kind: "scheduled" };
+{ kind: "projectClosed"; value: string } | 
+/**
+ *  Changes to paths outside the project watched with `events.watch-paths` (API 1.18);
+ *  `project` is the project the watch belongs to, `generation` is unset.
+ */
+{ kind: "watchedFilesChanged"; value: FilesChanged } | { kind: "scheduled" };
 
 export type WorkingTreeChange = {
 	path: string,

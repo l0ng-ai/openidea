@@ -204,6 +204,7 @@ export const intellijMacos: Record<string, string[]> = {
   "refactor.move": ["F6"],
   "refactor.safeDelete": ["Meta+Delete"],
   "refactor.extractInterface": [],
+  "refactor.extractTypeAlias": [],
   "refactor.pullMembersUp": [],
   "refactor.pushMembersDown": [],
 

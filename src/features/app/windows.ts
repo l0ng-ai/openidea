@@ -10,6 +10,7 @@
 import { executeAction, type Action } from "@/platform/actions";
 import { t, tx } from "@/platform/i18n";
 import { call, commands, isCancelled, isTauri } from "@/platform/ipc";
+import { isWebMode } from "@/platform/webBridge";
 import {
   basename,
   confirmLeaveProject,
@@ -159,6 +160,13 @@ export async function openProjectInWindow(path: string, newWindow: boolean, file
   if (desktopOnly()) return;
   const s = useProject.getState();
   const inNew = newWindow || s.project !== null || s.lightEdit;
+  if (inNew && isWebMode()) {
+    const url = new URL(window.location.href);
+    url.searchParams.set("project", path);
+    url.searchParams.set("newWindow", "1");
+    const opened = window.open(url.toString(), "_blank", "noopener");
+    if (opened) return;
+  }
   try {
     const outcome = await openProjectWindow(path, inNew, files);
     if (outcome.kind === "current" && (await openHere(path))) await openInEditor(files);
