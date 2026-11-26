@@ -1,5 +1,5 @@
-/** IDEA caret commands that CodeMirror has no equivalent for: Split Line, Scroll to Center, code block and brace navigation. */
-import { EditorSelection, type EditorState, type Transaction } from "@codemirror/state";
+/** IDEA caret commands that CodeMirror has no equivalent for: Split Line, Scroll to Center / Up / Down / Top / Bottom, Page Top / Bottom, code block, brace and paragraph navigation. */
+import { countColumn, EditorSelection, findColumn, type EditorState, type Transaction } from "@codemirror/state";
 import { EditorView, type Command } from "@codemirror/view";
 import { insertNewlineAndIndent } from "@codemirror/commands";
 import { matchBrackets, syntaxTree } from "@codemirror/language";
@@ -25,6 +25,70 @@ export const scrollToCenter: Command = (view) => {
   view.dispatch({ effects: EditorView.scrollIntoView(view.state.selection.main.head, { y: "center" }) });
   return true;
 };
+
+/** Scroll Up / Scroll Down: move the viewport by one line, leaving the caret where it is even when it scrolls out of view. */
+const scrollByLine =
+  (lines: number): Command =>
+  (view) => {
+    view.scrollDOM.scrollTop += lines * view.defaultLineHeight;
+    return true;
+  };
+export const scrollUp = scrollByLine(-1);
+export const scrollDown = scrollByLine(1);
+
+/** Scroll to Top / Scroll to Bottom (as IDEA): show the start of the file at the top, or bring its end toward the middle, without moving the caret. */
+export const scrollToTop: Command = (view) => {
+  view.scrollDOM.scrollTop = 0;
+  return true;
+};
+export const scrollToBottom: Command = (view) => {
+  view.dispatch({ effects: EditorView.scrollIntoView(view.state.doc.length, { y: "center" }) });
+  return true;
+};
+
+/**
+ * The line Move Caret to Page Top / Bottom goes to (as IDEA): the first / last line
+ * the scroller shows whole; a partly hidden edge line only when there is no other.
+ */
+function pageEdgeLine(view: EditorView, edge: "top" | "bottom"): number {
+  // In document coordinates, as sticky lines measure it.
+  const top = view.scrollDOM.getBoundingClientRect().top - view.documentTop;
+  const bottom = top + view.scrollDOM.clientHeight;
+  const { doc } = view.state;
+  if (edge === "top") {
+    const block = view.lineBlockAtHeight(top);
+    const next = top > block.top && block.bottom < bottom && block.to < doc.length;
+    return next ? view.lineBlockAt(block.to + 1).from : block.from;
+  }
+  const block = view.lineBlockAtHeight(bottom);
+  if (block.from === 0) return 0;
+  const previous = view.lineBlockAt(block.from - 1);
+  return block.top >= bottom || (block.bottom > bottom && previous.top >= top) ? previous.from : block.from;
+}
+
+/** Move Caret to Page Top / Bottom (with Selection): every caret to that line, keeping its column. */
+function moveToPageEdge(edge: "top" | "bottom", extend = false): Command {
+  return (view) => {
+    const { state } = view;
+    const target = state.doc.lineAt(pageEdgeLine(view, edge));
+    const ranges = state.selection.ranges.map((r) => {
+      const line = state.doc.lineAt(r.head);
+      const column = countColumn(line.text, state.tabSize, r.head - line.from);
+      const head = target.from + findColumn(target.text, column, state.tabSize);
+      return extend ? EditorSelection.range(r.anchor, head) : EditorSelection.cursor(head);
+    });
+    view.dispatch({
+      selection: EditorSelection.create(ranges, state.selection.mainIndex),
+      userEvent: extend ? "select" : "select.navigate",
+    });
+    return true;
+  };
+}
+
+export const cursorPageTop = moveToPageEdge("top");
+export const cursorPageBottom = moveToPageEdge("bottom");
+export const selectPageTop = moveToPageEdge("top", true);
+export const selectPageBottom = moveToPageEdge("bottom", true);
 
 const NOT_CODE = /String|Comment|Regexp|Char|Template/;
 
@@ -97,6 +161,63 @@ export const cursorCodeBlockStart = moveToBlock(codeBlockStart);
 export const cursorCodeBlockEnd = moveToBlock(codeBlockEnd);
 export const selectCodeBlockStart = moveToBlock(codeBlockStart, true);
 export const selectCodeBlockEnd = moveToBlock(codeBlockEnd, true);
+
+/** A line with nothing but whitespace, which separates paragraphs. */
+const isBlankLine = (text: string) => !/\S/.test(text);
+
+/**
+ * Where Move Caret Forward a Paragraph goes from `pos` (as IDEA, after Emacs
+ * `forward-paragraph`): past any blank lines at the caret, then to the start of
+ * the next blank line, or the end of the text.
+ */
+export function nextParagraphBoundary(state: EditorState, pos: number): number {
+  const { doc } = state;
+  let line = doc.lineAt(pos).number;
+  if (isBlankLine(doc.line(line).text)) while (++line <= doc.lines && isBlankLine(doc.line(line).text));
+  while (++line <= doc.lines) {
+    if (isBlankLine(doc.line(line).text)) return doc.line(line).from;
+  }
+  return doc.length;
+}
+
+/**
+ * Where Move Caret Backward a Paragraph goes from `pos`: back over the
+ * paragraph (from a blank line or a line start, past the blank lines above
+ * first) to the empty line before it, or the start of the line after a
+ * whitespace-only one; the start of the text when there is none.
+ */
+export function previousParagraphBoundary(state: EditorState, pos: number): number {
+  const { doc } = state;
+  const at = doc.lineAt(pos);
+  let line = at.number;
+  if (pos === at.from || isBlankLine(at.text)) while (--line >= 1 && isBlankLine(doc.line(line).text));
+  while (--line >= 1 && !isBlankLine(doc.line(line).text));
+  if (line < 1) return 0;
+  const target = doc.line(line);
+  return target.length === 0 ? target.from : doc.line(line + 1).from;
+}
+
+/** Move Caret Forward / Backward a Paragraph (with Selection), for every caret. */
+function moveByParagraph(find: (state: EditorState, pos: number) => number, extend = false): Command {
+  return (view) => {
+    const { state } = view;
+    const ranges = state.selection.ranges.map((r) => {
+      const head = find(state, r.head);
+      return extend ? EditorSelection.range(r.anchor, head) : EditorSelection.cursor(head);
+    });
+    view.dispatch({
+      selection: EditorSelection.create(ranges, state.selection.mainIndex),
+      scrollIntoView: true,
+      userEvent: extend ? "select" : "select.navigate",
+    });
+    return true;
+  };
+}
+
+export const cursorParagraphForward = moveByParagraph(nextParagraphBoundary);
+export const cursorParagraphBackward = moveByParagraph(previousParagraphBoundary);
+export const selectParagraphForward = moveByParagraph(nextParagraphBoundary, true);
+export const selectParagraphBackward = moveByParagraph(previousParagraphBoundary, true);
 
 /**
  * The inside of the `{…}` block around `pos` (between the braces) for Collapse Block;

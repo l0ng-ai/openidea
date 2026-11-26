@@ -119,6 +119,13 @@ pub struct PickItem {
     pub description: Option<String>,
 }
 
+/// A group of file extensions in a plugin's native chooser.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct PluginFileFilter {
+    pub name: String,
+    pub extensions: Vec<String>,
+}
+
 /// What a plugin asks the user (`ui.pick`, `ui.pick-many`, `ui.input`,
 /// `ui.input-multiline`, `ui.confirm`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -132,6 +139,8 @@ pub enum Prompt {
     Confirm { title: String, message: String },
     #[serde(rename_all = "camelCase")]
     PickDirectory { title: String, initial: Option<String> },
+    #[serde(rename_all = "camelCase")]
+    PickFile { title: String, save: bool, name: Option<String>, filters: Vec<PluginFileFilter> },
     /// The host's own question under `net:ask` (never plugin-initiated): the
     /// plugin reached an HTTPS host its manifest does not list.
     #[serde(rename_all = "camelCase")]
@@ -155,15 +164,20 @@ pub enum EventKind {
     FileSaved,
     FilesChanged,
     EditorFocused,
+    CaretMoved,
     ActionPerformed,
     VcsChanged,
     /// Problems of the window's files changed (a language server or a report).
     ProblemsChanged,
+    /// A project was closed (or its window closed): the project root path.
+    ProjectClosed,
+    /// Paths outside the project watched with `events.watch-paths` changed (API 1.18).
+    WatchedFilesChanged,
     Scheduled,
 }
 
 impl EventKind {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 20] = [
         Self::DocumentChanged,
         Self::WebsocketReady,
         Self::FileClosed,
@@ -177,9 +191,12 @@ impl EventKind {
         Self::FileSaved,
         Self::FilesChanged,
         Self::EditorFocused,
+        Self::CaretMoved,
         Self::ActionPerformed,
         Self::VcsChanged,
         Self::ProblemsChanged,
+        Self::ProjectClosed,
+        Self::WatchedFilesChanged,
         Self::Scheduled,
     ];
 
@@ -198,9 +215,12 @@ impl EventKind {
             Self::FileSaved => "file-saved",
             Self::FilesChanged => "files-changed",
             Self::EditorFocused => "editor-focused",
+            Self::CaretMoved => "caret-moved",
             Self::ActionPerformed => "action-performed",
             Self::VcsChanged => "vcs-changed",
             Self::ProblemsChanged => "problems-changed",
+            Self::ProjectClosed => "project-closed",
+            Self::WatchedFilesChanged => "watched-files-changed",
             Self::Scheduled => "scheduled",
         }
     }
@@ -262,6 +282,12 @@ pub struct ActionPerformed {
 /// Debounced worktree changes. Paths use the same absolute form as `file-saved`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct FilesChanged {
+    /// Canonical absolute root of the project where changes occurred (API 1.18).
+    #[serde(default)]
+    pub project: Option<String>,
+    /// Project state generation at the time this batch was emitted (API 1.18).
+    #[serde(default)]
+    pub generation: Option<u64>,
     pub created: Vec<String>,
     pub modified: Vec<String>,
     pub removed: Vec<String>,
@@ -273,6 +299,19 @@ pub struct InputMode {
     pub path: String,
     pub mode: String,
     pub sub: Option<String>,
+}
+
+/// The caret moved in the focused editor. Positions are 0-based; `col` counts
+/// UTF-16 code units, as everywhere in the plugin API.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CaretMoved {
+    pub path: String,
+    pub line: u32,
+    pub col: u32,
+    /// The caret came to rest at this position; plugins may load what a hover needs.
+    #[serde(default)]
+    pub settled: bool,
 }
 
 /// One UTF-16 replacement in a locally edited editor document.
@@ -337,10 +376,16 @@ pub enum WorkbenchEvent {
     FileSaved(String),
     FilesChanged(FilesChanged),
     EditorFocused(Option<String>),
+    CaretMoved(CaretMoved),
     ActionPerformed(ActionPerformed),
     VcsChanged(String),
     /// Problems of the window's files changed; plugins re-read `problems`.
     ProblemsChanged,
+    /// A project closed (API 1.18); payload is the canonical absolute root path.
+    ProjectClosed(String),
+    /// Changes to paths outside the project watched with `events.watch-paths` (API 1.18);
+    /// `project` is the project the watch belongs to, `generation` is unset.
+    WatchedFilesChanged(FilesChanged),
     Scheduled,
 }
 
@@ -360,9 +405,12 @@ impl WorkbenchEvent {
             Self::FileSaved(_) => EventKind::FileSaved,
             Self::FilesChanged(_) => EventKind::FilesChanged,
             Self::EditorFocused(_) => EventKind::EditorFocused,
+            Self::CaretMoved(_) => EventKind::CaretMoved,
             Self::ActionPerformed(_) => EventKind::ActionPerformed,
             Self::VcsChanged(_) => EventKind::VcsChanged,
             Self::ProblemsChanged => EventKind::ProblemsChanged,
+            Self::ProjectClosed(_) => EventKind::ProjectClosed,
+            Self::WatchedFilesChanged(_) => EventKind::WatchedFilesChanged,
             Self::Scheduled => EventKind::Scheduled,
         }
     }
@@ -379,6 +427,18 @@ pub struct RepositoryStatus {
     pub behind: u32,
     pub operation: Option<String>,
     pub changed_files: u32,
+}
+
+/// Reference and remotes of a path's mapped worktree (WIT `vcs.repository-info`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RepositoryInfo {
+    pub root: String,
+    pub relative_path: String,
+    pub branch: Option<String>,
+    pub commit: Option<String>,
+    pub upstream: Option<String>,
+    pub ahead: u32,
+    pub remotes: Vec<(String, String)>,
 }
 
 /// A file a pending commit changes (WIT `commit.commit-change`).
@@ -540,6 +600,15 @@ pub struct ProcessChunk {
     pub stdout: String,
     pub stderr: String,
     pub status: Option<i32>,
+}
+
+/// Options for process execution and streaming (API 1.15; WIT `process.process-options`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ProcessOptions {
+    /// Maximum bytes captured per stream before returning an error (up to 128 MiB; default 16 MiB).
+    pub max_output_bytes: Option<u32>,
+    /// In-flight buffer size per stream for streaming backpressure (default 256 KiB, max 4 MiB).
+    pub buffer_bytes: Option<u32>,
 }
 
 /// Where `net:` requests may go: the URL's host when it is `https`, or
@@ -895,6 +964,9 @@ pub enum ViewEvent {
     Sort { column: u32, descending: bool },
     TableSelect { row: u32 },
     TableActivate { row: u32 },
+    // A plugin dialog closed (API 1.18): its close button, Escape or its page.
+    // Leaves as an `other` view-event, kind `closed`.
+    Closed,
 }
 
 /// A plugin's HTTP route declaration in a project.
@@ -966,11 +1038,24 @@ pub struct FileProblems {
 }
 /// An editor decoration.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct Decoration {
     pub range: ide_core::Range,
     pub style: String,
     pub hover: Option<String>,
     pub after: Option<String>,
+    /// Markdown rendered in the editor's hover card (API 1.16); `hover` is the
+    /// plain-text fallback shown when this is absent.
+    pub markdown_hover: Option<String>,
+    /// The item's own colors (API 1.17 `set-styled`), validated `#rrggbb` / `#rrggbbaa`.
+    #[serde(default)]
+    pub colors: Option<DecorationColors>,
+}
+/// Colors of a styled editor decoration (API 1.17).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+pub struct DecorationColors {
+    pub foreground: Option<String>,
+    pub background: Option<String>,
 }
 /// A tree decoration.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
@@ -1043,4 +1128,32 @@ pub struct PluginDataSource {
     pub user: Option<String>,
     pub url: Option<String>,
     pub options: Vec<(String, String)>,
+}
+
+/// Most Run Anything entries kept from one `run-anything-provider.suggest` answer.
+pub const MAX_RUN_ANYTHING_ITEMS: usize = 100;
+
+/// A Run Anything entry from a plugin's `run-anything-provider` export (API 1.18).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RunAnythingItem {
+    pub label: String,
+    pub detail: Option<String>,
+    /// The line Tab completes and Enter runs; `label` when absent.
+    pub line: Option<String>,
+}
+
+/// Most completions kept from one `run-configuration-completion.complete` answer.
+pub const MAX_RUN_CONFIG_COMPLETIONS: usize = 200;
+
+/// A completion for a field of a plugin's own run configuration (API 1.18).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RunConfigCompletion {
+    pub label: String,
+    pub detail: Option<String>,
+    /// Replaces the UTF-16 range `[replace_start, replace_end)` of the field's text.
+    pub insert: String,
+    pub replace_start: u32,
+    pub replace_end: u32,
 }

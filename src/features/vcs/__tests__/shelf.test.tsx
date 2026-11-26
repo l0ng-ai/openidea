@@ -86,6 +86,22 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("shelf scope and diffs", () => {
+  it("keeps identical file names from different repositories in the same shelf", () => {
+    const paths = ["repoA/src/same.txt", "repoB/src/same.txt"];
+    const combined: ShelvedChangeList = {
+      ...entry,
+      repo: "/project",
+      files: paths.map((path) => ({ path, kind: "modified", oldPath: null })),
+    };
+    useVcs.setState({ root: "/project", roots: ["/project/repoA", "/project/repoB"], repo: "/project/repoA" });
+    useShelf.setState({
+      shelves: [combined],
+      diffs: { work: paths.map((path) => ({ path, before: path, after: path, patch: "" })) },
+    });
+    expect(shelfDiffs({ id: entry.id }).map((diff) => diff.path)).toEqual(paths.map((path) => `/project/${path}`));
+    expect(shelfDiffs({ id: entry.id, path: paths[1] })[0]?.path).toBe("/project/repoB/src/same.txt");
+  });
+
   it("keeps file scope from selection and explicit targets; rejects stale files", () => {
     expect(shelfTarget()).toEqual({ entry, path: "a.txt" });
     expect(shelfTarget({ id: "work", path: "b.txt" })).toEqual({ entry, path: "b.txt" });
@@ -211,7 +227,7 @@ describe("shelf scope and diffs", () => {
     mocks.ipc.mockReset().mockResolvedValue("selected file patch");
     try {
       await copyShelfPatch(entry, "a.txt");
-      expect(mocks.patch).toHaveBeenCalledWith("work", "a.txt");
+      expect(mocks.patch).toHaveBeenCalledWith("work", "a.txt", null);
       expect(writeText).toHaveBeenCalledWith("selected file patch");
     } finally {
       if (previous) Object.defineProperty(navigator, "clipboard", previous);

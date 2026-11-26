@@ -9,6 +9,7 @@
  *  - after the edit the introduced name is renamed in place, with name
  *    suggestions from the expression (↑ / ↓).
  */
+import { beginHistoryGroup, endHistoryGroup } from "@/editor/lsp/historyGroup";
 import { EditorSelection } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import type { CodeAction, SyntaxNode } from "@/bindings";
@@ -24,7 +25,8 @@ import { applyCodeAction } from "@/editor/lsp/intentions";
 import { putSuggestion, startInplaceRename, type Span } from "@/editor/lsp/inplaceRename";
 import { clearTemporaryHighlight, highlightRanges } from "@/editor/lsp/tempHighlight";
 import type { RefactoringId } from "./catalog";
-import { expressionCandidates, expressionPreview } from "./introduce";
+import { expressionCandidates } from "./introduce";
+import { showExpressionChooser } from "./expressionChooser";
 import { findTextOccurrences } from "./occurrences";
 import { isIdentifier, isKeyword, suggestNames, uniqueNames } from "./names";
 import { tx } from "@/platform/i18n";
@@ -38,7 +40,12 @@ export const EXPRESSION_REFACTORINGS: ReadonlySet<RefactoringId> = new Set([
 ]);
 
 /** Refactorings whose result is a new name renamed in place afterwards. */
-const NAMING_REFACTORINGS: ReadonlySet<RefactoringId> = new Set([...EXPRESSION_REFACTORINGS, "extractMethod"]);
+const NAMING_REFACTORINGS: ReadonlySet<RefactoringId> = new Set([
+  ...EXPRESSION_REFACTORINGS,
+  "extractMethod",
+  "extractInterface",
+  "extractTypeAlias",
+]);
 
 export function introducesName(id: RefactoringId | null): boolean {
   return !!id && NAMING_REFACTORINGS.has(id);
@@ -84,18 +91,7 @@ export async function chooseExpressionFirst(view: EditorView, then: () => unknow
     select(candidates[0]!);
     return true;
   }
-  openPopup({
-    kind: "list",
-    anchor: caretAnchor(view, sel.head),
-    title: "Expressions",
-    items: candidates.map((c, i) => ({
-      id: `${i}`,
-      label: expressionPreview(doc.sliceString(rangeToOffsets(doc, c.range).from, rangeToOffsets(doc, c.range).to)),
-      onActive: () => highlightRanges(view, [rangeToOffsets(doc, c.range)]),
-      run: () => select(c),
-    })),
-    onClose: () => clearTemporaryHighlight(view),
-  });
+  showExpressionChooser(view, doc, sel.head, candidates, select);
   return true;
 }
 
@@ -193,7 +189,8 @@ function insertedTokens(before: Token[], after: Token[]): Token[] {
 }
 
 /** Names servers give new declarations before the user names them. */
-const SERVER_DEFAULT = /^(new[A-Z_]\w*|newLocal\w*|var_name\d*|fun_name\d*|extracted\w*|new_\w+|value\d*)$/;
+const SERVER_DEFAULT =
+  /^(new[A-Z_]\w*|NewType(?:_\d+)?|newLocal\w*|var_name\d*|fun_name\d*|extracted\w*|new_\w+|value\d*)$/;
 
 /**
  * The name a refactoring introduced, and every place the edit wrote it, from
@@ -272,6 +269,7 @@ async function expressionInfo(view: EditorView): Promise<{ kind: string; text: s
 
 async function docChange(view: EditorView, before: EditorView["state"]["doc"], ms = 1500): Promise<boolean> {
   for (let waited = 0; waited < ms && view.state.doc === before; waited += 20)
+    // oxlint-disable-next-line no-await-in-loop -- polling with early exit once the document changes
     await new Promise((r) => setTimeout(r, 20));
   return view.state.doc !== before;
 }
@@ -282,16 +280,33 @@ async function docChange(view: EditorView, before: EditorView["state"]["doc"], m
  */
 export async function applyIntroduceAction(view: EditorView, action: CodeAction, id: RefactoringId): Promise<void> {
   const expression = await expressionInfo(view);
+  // The server's edit, its reformatting and the rename undo as one step, as in IDEA.
+  beginHistoryGroup(view);
+  let renaming = false;
+  try {
+    renaming = await introduce(view, action, id, expression);
+  } finally {
+    if (!renaming) endHistoryGroup(view, "refactor.introduce");
+  }
+}
+
+/** True when an in-place rename of the introduced name started (it closes the history group). */
+async function introduce(
+  view: EditorView,
+  action: CodeAction,
+  id: RefactoringId,
+  expression: Awaited<ReturnType<typeof expressionInfo>>,
+): Promise<boolean> {
   const before = view.state.doc;
   await applyCodeAction(view, action);
-  if (!(await docChange(view, before))) return;
+  if (!(await docChange(view, before))) return false;
   // The server's edit may arrive in more than one transaction.
   await new Promise((r) => setTimeout(r, 30));
   const doc = view.state.doc;
   const found = introducedName(before.toString(), doc.toString());
-  if (!found) return;
+  if (!found) return false;
   const suggestions = await nameSuggestions(view, id, expression).catch(() => [] as string[]);
-  if (view.state.doc !== doc) return;
+  if (view.state.doc !== doc) return false;
   const caret = view.state.selection.main.head;
   // The occurrence at the caret (where the expression was), else the declaration.
   const primary = found.spans.find((s) => s.from <= caret && caret <= s.to) ?? found.spans[0]!;
@@ -314,9 +329,11 @@ export async function applyIntroduceAction(view: EditorView, action: CodeAction,
         suggestions: names,
         onSubmit: (name) => renameIntroduced(view, [primary, ...others], found.name, name),
       }),
+    onEnd: () => endHistoryGroup(view, "refactor.introduce"),
   });
   // As in IDEA the best suggestion replaces the server's placeholder name right away.
   if (suggestions[0] && suggestions[0] !== found.name) putSuggestion(view, suggestions[0]);
+  return true;
 }
 
 /** Writes `name` over the introduced name's occurrences (the session restored `current` there). */

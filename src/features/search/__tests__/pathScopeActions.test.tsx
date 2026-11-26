@@ -93,6 +93,7 @@ describe.each([false, true])("path scope, replace=%s", (replace) => {
     ] as const) {
       fireEvent.keyDown(tree, { key });
       expect(getContext().focusedDirectory).toBe(directory);
+      // oxlint-disable-next-line no-await-in-loop -- key presses navigate in order; each action is asserted before the next key
       await act(() => executeAction(id));
       expect(useFindPopup.getState().directory).toBe(directory ?? "ideaIssues");
       act(() => hideFindPopup());

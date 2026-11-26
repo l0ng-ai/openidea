@@ -8,6 +8,8 @@
 //! pinned versions and runs one language per job:
 //! `cargo test -p ide-host --test language_smoke -- --ignored --exact <language>`.
 
+mod common;
+
 use ide_core::{ChangeSet, DocId, IdeEvent, Pos, Range, RequestId, TextChange};
 use ide_host::{Host, HostConfig, ops};
 use ide_lsp::types::{FormatOptions, GotoKind};
@@ -126,7 +128,9 @@ struct Smoke {
 }
 
 fn fixture_dir(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures").join(name)
+    let manifest_dir =
+        std::env::var_os("CARGO_MANIFEST_DIR").map_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")), PathBuf::from);
+    manifest_dir.join("../../fixtures").join(name)
 }
 
 fn copy_dir(from: &Path, to: &Path) {
@@ -182,11 +186,6 @@ impl Smoke {
         let events: Events = Arc::default();
         let app = tmp.path().join("app");
         let host = Arc::new(Host::new(HostConfig {
-            config_dir: app.join("config"),
-            data_dir: app.join("data"),
-            local_data_dir: app.join("data"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
             sink_for: Box::new({
                 let events = events.clone();
                 move |_| {
@@ -194,9 +193,7 @@ impl Smoke {
                     Arc::new(move |e: IdeEvent| events.lock().unwrap().push(e))
                 }
             }),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
+            ..common::host_config(&app)
         }));
         host.trust.decide(&root, true, false).unwrap();
         host.open_project(WINDOW, &root).unwrap();
@@ -742,8 +739,8 @@ const PYTHON: Checks = Checks {
         typed("src/tasks/models.py", "from enum import IntEnum", "import abc"),
         Imports::Before("import os"),
     )),
-    // basedpyright has no `workspace/willRenameFiles`.
-    file_move: None,
+    // basedpyright has no `workspace/willRenameFiles`: the IDE rewrites the imports.
+    file_move: Some(("src/tasks/models.py", "src/tasks/domain.py", "src/tasks/cli.py", "from .domain import")),
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

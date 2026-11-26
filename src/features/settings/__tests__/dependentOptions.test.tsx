@@ -48,6 +48,8 @@ const PAGE: PageSpec = {
   ],
 };
 
+const TEST_PAGE_CONTEXT = { pageId: PAGE.id, scope: "global" } as const;
+
 function renderPage(parent: boolean) {
   const settings = structuredClone(DEFAULT_SETTINGS);
   settings.editor.inlayHints = parent;
@@ -55,7 +57,7 @@ function renderPage(parent: boolean) {
   useProject.setState({ settings, project: null });
   openSettings(PAGE.id);
   render(
-    <PageContext.Provider value={{ pageId: PAGE.id, scope: "global" }}>
+    <PageContext.Provider value={TEST_PAGE_CONTEXT}>
       <OptionsPage spec={PAGE} />
     </PageContext.Provider>,
   );
@@ -84,7 +86,7 @@ describe("dependent options of a checkbox", () => {
   });
 
   it("put the fixed MCP port under its checkbox and keep it in both search indexes", () => {
-    const fixedPort = MCP_SERVER_PAGE.sections![0]!.options.find((o) => o.label === "Use a fixed port");
+    const fixedPort = MCP_SERVER_PAGE.sections!.flatMap((s) => s.options).find((o) => o.label === "Use a fixed port");
     expect(fixedPort).toMatchObject({ kind: "toggle", children: [{ key: "mcpServer.port", label: "Port" }] });
     expect(pageLabels(MCP_SERVER_PAGE.id)).toContain("Port");
     expect(optionLabels(MCP_SERVER_PAGE.id)).toContain("Port");

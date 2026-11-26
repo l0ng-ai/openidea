@@ -3,10 +3,13 @@ import { sendKeyAction } from "./Composer";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { EditorView } from "@codemirror/view";
-import type { AgentCommand, AgentProvider } from "@/bindings";
+import type { AgentCommand, AgentProvider, AgentSkillState } from "@/bindings";
 
 const agentCommands = vi.fn();
 const agentCreate = vi.fn();
+const agentMcpList = vi.fn();
+const agentMcpDiscoverSources = vi.fn();
+const agentSkillsList = vi.fn();
 const vcsBranches = vi.fn();
 const vcsBranchInfo = vi.fn();
 const clipboardImage = vi.fn();
@@ -20,6 +23,9 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       ...real.commands,
       agentCommands: (provider: string, task: string | null) => agentCommands(provider, task),
       agentCreate: (request: unknown) => agentCreate(request),
+      agentMcpList: () => agentMcpList(),
+      agentMcpDiscoverSources: () => agentMcpDiscoverSources(),
+      agentSkillsList: () => agentSkillsList(),
       agentRefreshModels: async (provider: string) => ({
         status: "ok",
         data: {
@@ -67,7 +73,8 @@ import { defaultTaskProject } from "./project";
 import { HomeEditor } from "./HomeEditor";
 import chipStyles from "./ReferenceChip.module.css";
 import { setCaret, textOf, typeIn } from "./composerTesting";
-import { composerDraft, HOME, updateComposer, useAgents } from "./store";
+import { composerDraft, HOME, setDraftSkillOverrides, updateComposer, useAgents } from "./store";
+import { useSkillsCatalog } from "./skillsModel";
 import { emptyDraft } from "./composerModel";
 
 const command = (name: string, description: string, source: "command" | "skill" = "command"): AgentCommand => ({
@@ -107,6 +114,9 @@ beforeEach(() => {
     }),
   );
   agentCommands.mockReset();
+  for (const request of [agentMcpList, agentMcpDiscoverSources, agentSkillsList]) {
+    request.mockReset().mockResolvedValue({ status: "ok", data: [] });
+  }
   clipboardImage.mockReset().mockResolvedValue({
     status: "ok",
     data: "data:image/png;base64,iVBORw0KGgo=",
@@ -173,6 +183,8 @@ describe("New Task composer commands", () => {
   it("opens the per-session MCP picker when /mcp is completed in the composer", async () => {
     agentCommands.mockResolvedValue({ status: "ok", data: [] });
     render(<HomeEditor />);
+    expect(agentMcpList).not.toHaveBeenCalled();
+    expect(agentMcpDiscoverSources).not.toHaveBeenCalled();
     const box = screen.getByRole("textbox");
     typeIn(box, "/mc");
     const list = await screen.findByRole("listbox", { name: "Commands" });
@@ -180,11 +192,14 @@ describe("New Task composer commands", () => {
     fireEvent.keyDown(box, { key: "Enter" });
     expect(textOf(box)).toBe("");
     expect(await screen.findByText("Session MCP Servers")).toBeInTheDocument();
+    expect(agentMcpList).toHaveBeenCalledOnce();
+    expect(agentMcpDiscoverSources).toHaveBeenCalledOnce();
   });
 
   it("opens the per-session skills picker when /skills is completed in the composer", async () => {
     agentCommands.mockResolvedValue({ status: "ok", data: [] });
     render(<HomeEditor />);
+    expect(agentSkillsList).not.toHaveBeenCalled();
     const box = screen.getByRole("textbox");
     typeIn(box, "/sk");
     const list = await screen.findByRole("listbox", { name: "Commands" });
@@ -192,6 +207,7 @@ describe("New Task composer commands", () => {
     fireEvent.keyDown(box, { key: "Enter" });
     expect(textOf(box)).toBe("");
     expect(await screen.findByText("Session Skills")).toBeInTheDocument();
+    expect(agentSkillsList).toHaveBeenCalledOnce();
   });
 
   it("names the icon-only Start action and disables it while starting", async () => {
@@ -328,6 +344,46 @@ describe("New Task composer commands", () => {
     fireEvent.keyDown(box, { key: "Enter" });
     await waitFor(() => expect(agentCreate).toHaveBeenCalled());
     expect(agentCreate.mock.calls[0]![0]).toMatchObject({ idle: true, prompt: { text: "!gi" } });
+  });
+
+  it.each(["saved", "edited"])("reflects %s draft skill overrides in / completion", async (source) => {
+    agentCommands.mockResolvedValue({
+      status: "ok",
+      data: [command("triage", "Triage issues", "skill"), command("compact", "Compact")],
+    });
+    const skills: AgentSkillState[] = [
+      {
+        skill: {
+          name: "impeccable",
+          description: "Muted globally, enabled for this draft",
+          path: "/skills/impeccable",
+          source: "user",
+          valid: true,
+          warnings: [],
+        },
+        mode: "off",
+        origin: "user",
+      },
+    ];
+    const overrides = { triage: "off", impeccable: "auto" } as const;
+    agentSkillsList.mockResolvedValue({ status: "ok", data: skills });
+    useSkillsCatalog.setState({ loaded: source === "edited", skills: source === "edited" ? skills : [] });
+    if (source === "saved") setDraftSkillOverrides(overrides);
+    render(<HomeEditor />);
+    await waitFor(() => expect(agentCommands).toHaveBeenCalled());
+    if (source === "edited") act(() => setDraftSkillOverrides(overrides));
+
+    const box = screen.getByRole("textbox");
+    typeIn(box, "/");
+    const list = await screen.findByRole("listbox", { name: "Commands" });
+    await waitFor(() => {
+      const options = within(list)
+        .getAllByRole("option")
+        .map((o) => o.textContent);
+      expect(options.some((t) => t?.startsWith("/impeccable"))).toBe(true);
+      expect(options.some((t) => t?.startsWith("/triage"))).toBe(false);
+    });
+    useSkillsCatalog.setState({ skills: [], loaded: false });
   });
 });
 

@@ -107,8 +107,12 @@ Double-click a table to edit its data, a data source to open its console, and a 
 | Duplicate (data source)                    | `⌘D`             | `Ctrl+D`           |
 | Generate DDL to Clipboard                  | `⌘⌥⇧G`           | `Ctrl+Alt+Shift+G` |
 | Generate DDL to Query Console              | `⌘⌥⇧B`           | `Ctrl+Alt+Shift+B` |
+| Diagrams › Show Diagram                    | `⌘⌥⇧U`           | `Ctrl+Alt+Shift+U` |
+| Diagrams › Show Diagram Popup              | `⌘⌥U`            | `Ctrl+Alt+U`       |
 
 These keys work while the Database tree has focus. The context menu also has **Truncate…**, **Run SQL Script…** (runs every statement of a `.sql` file), **Import Data from File…**, **Go to Referenced Table** (on foreign keys), SQL templates (select, insert, update, delete) and **Remove Data Source…**.
+
+**Diagrams › Show Diagram** opens an ER diagram of the selected tables, or of every table of a selected schema (up to 50), in an editor tab; **Show Diagram Popup** shows it over the window. Columns carry key icons and `UK` (unique key) / `IX` (index) markers, and the foreign keys between the shown tables are drawn as links (dashed when the column is nullable). Drag tables to arrange them (`⌘`/`Ctrl`/`Shift`-click selects several), drag the background or scroll to pan, and zoom with `⌘`/`Ctrl`+wheel or the toolbar. A table's chevron collapses it to its header; its context menu hides it or jumps to it in the Database tree (also double-click, `Enter` or `F4`). The arrangement, hidden and collapsed tables are remembered for that set of tables; **Apply Layout** lays them out again, and **Export to Image…** saves a PNG or SVG.
 
 **Modify Table…** and **New › Table** open a dialog to add, drop or change columns (name, data type, not null, primary key, default) with a live SQL preview. SQLite can only rename or drop existing columns. ClickHouse tables can't be modified this way.
 
@@ -150,7 +154,8 @@ With focus on a result tab or inside a result, use `⇧⌘]` / `⇧⌘[` in the 
 Closing a selected result activates its left neighbor, or its right neighbor if there is no result on the left. When no results remain, **Output** is selected. Closing an inactive result keeps the current selection.
 
 - **Table** or **Chart** view (bar or line, with X/Y columns and an aggregation).
-- Paging with page sizes 10 to 1,000; click the row count to count all rows.
+- Paging with page sizes 10 to 1,000; click the row count to count all rows. Paging forward continues the running query instead of reading the earlier rows again; a result you stop paging for 30 seconds, or close, releases it.
+- A cell longer than 8,192 characters of a read-only query shows its start with a **truncated** tag. Copying it, editing it, opening it in the side panel (**Load whole value**) or exporting the page reads the whole value first. Local filter, search and sort see only the start.
 - **Search in results** and a per-column local filter on the loaded rows.
 - A side panel with **Record**, **Value** and **Aggregates** (count, distinct, nulls, sum, average, median, min, max).
 - JSON values get a JSON editor with **Reformat** and **Open in Window**.

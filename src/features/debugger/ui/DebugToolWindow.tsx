@@ -3,14 +3,21 @@ import { writeClipboardText } from "@/platform/clipboard";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import clsx from "clsx";
 import { executeAction } from "@/platform/actions";
+import { editorPrefs } from "@/platform/editorSettings";
+import { monoFontFamily } from "@/platform/fonts";
+import { isImeKey } from "@/platform/ime";
+import { formatBinding, hostBinding } from "@/platform/keymap";
 import { basename, useProject } from "@/platform/project";
 import { call, commands, isTauri, type Scope, type Variable } from "@/platform/ipc";
 import {
+  Button,
   EmptyState,
   Icon,
   IconButton,
   Kbd,
   Menu,
+  MenuList,
+  Popup,
   Select,
   SplitGroup,
   SplitHandle,
@@ -32,6 +39,7 @@ import {
   addWatch,
   closeSessionTab,
   evaluate,
+  frameLocals,
   isLive,
   isThreadSuspended,
   selectFrame,
@@ -54,9 +62,11 @@ import { MemoryView } from "../memory/MemoryView";
 import { DebugConsole } from "./DebugConsole";
 import { VariablesView, type VarRoot } from "./VariablesView";
 import { useExpressionCompletion } from "./ExpressionCompletion";
+import { pushHistory, readHistory } from "./expressionHistory";
 import { sortVariables } from "../values";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { useToolWindowShown } from "@/workbench/contributions";
+import { useToolWindowLayout } from "@/workbench/toolwindows/store";
 import styles from "./DebugToolWindow.module.css";
 import { tx, useTx } from "@/platform/i18n";
 
@@ -88,6 +98,8 @@ const MORE_ITEMS: MenuItem[] = [
   { kind: "separator" },
   { kind: "action", action: "debug.evaluate", icon: "evaluate-expression" },
   { kind: "action", action: "debug.resetFrame", icon: "reset-frame" },
+  { kind: "separator" },
+  { kind: "action", action: "debug.dumpThreads", icon: "thread-dump" },
 ];
 
 function MoreActions() {
@@ -148,6 +160,7 @@ export function DebugTabs() {
     id: String(s.id),
     label: child ? tx`${s.name} (child)` : s.name,
     text: s.name,
+    verbatim: true,
     icon: "debug",
     italic: s.status === "terminated",
     closable: true,
@@ -200,10 +213,11 @@ export function DebugServiceView({ sessionId, console: consolePane }: { sessionI
 }
 
 export function DebugToolWindow() {
-  return <DebugView />;
+  const sideDocked = useToolWindowLayout((s) => (s.placements.debug?.anchor ?? "bottom") !== "bottom");
+  return <DebugView sideDocked={sideDocked} />;
 }
 
-function DebugView({ consolePane }: { consolePane?: ReactNode }) {
+function DebugView({ consolePane, sideDocked = false }: { consolePane?: ReactNode; sideDocked?: boolean }) {
   const tx = useTx();
   const active = useDebug((s) => (s.active != null ? s.sessions[s.active] : undefined));
   const muted = useBreakpoints((s) => s.muted);
@@ -330,7 +344,7 @@ function DebugView({ consolePane }: { consolePane?: ReactNode }) {
       </div>
       <div role="tabpanel" id={`debug-panel-${tab}`} aria-labelledby={`debug-tab-${tab}`} className={styles.panel}>
         {tab === "variables" ? (
-          <ThreadsAndVariables session={active} />
+          <ThreadsAndVariables session={active} sideDocked={sideDocked} />
         ) : tab === "memory" ? (
           memoryPending ? (
             <div className={styles.emptyWrap}>
@@ -356,19 +370,26 @@ const JVM_ADAPTERS = new Set(["java-debug", "kotlin-debug-adapter", "kotlin-lsp"
 
 // --- threads & frames ----------------------------------------------------------
 
-function ThreadsAndVariables({ session }: { session: DebugSession }) {
+const DEFAULT_THREADS_VARIABLES_LAYOUT = { frames: 34, variables: 66 };
+
+function ThreadsAndVariables({ session, sideDocked }: { session: DebugSession; sideDocked: boolean }) {
   return (
     <SplitGroup
-      orientation="horizontal"
+      orientation={sideDocked ? "vertical" : "horizontal"}
       id="debug-threads-variables"
-      storageKey="openidea.debug.threadsVariables"
+      storageKey={sideDocked ? "openidea.debug.threadsVariables.vertical" : "openidea.debug.threadsVariables"}
+      defaultLayout={DEFAULT_THREADS_VARIABLES_LAYOUT}
       className={styles.split}
     >
-      <SplitPanel id="frames" defaultSize="34%" minSize="160px">
+      <SplitPanel
+        id="frames"
+        defaultSize={`${DEFAULT_THREADS_VARIABLES_LAYOUT.frames}%`}
+        minSize={sideDocked ? "25%" : "160px"}
+      >
         <FramesPane session={session} />
       </SplitPanel>
       <SplitHandle />
-      <SplitPanel id="variables" minSize="200px">
+      <SplitPanel id="variables" minSize={sideDocked ? "25%" : "200px"}>
         <VariablesPane session={session} />
       </SplitPanel>
     </SplitGroup>
@@ -458,6 +479,14 @@ function FramesPane({ session }: { session: DebugSession }) {
           </div>
         )}
         {stopNote(session) && <div className={styles.note}>{stopNote(session)}</div>}
+        {paused && session.framesError && session.selectedThread != null && (
+          <div className={clsx(styles.note, styles.framesError)} role="alert">
+            <span>{tx`Could not load the frames: ${session.framesError}`}</span>
+            <Button size="small" onClick={() => void selectThread(session.id, session.selectedThread!)}>
+              Retry
+            </Button>
+          </div>
+        )}
         {items.map((item) =>
           item.kind === "hidden" ? (
             <button
@@ -546,21 +575,30 @@ function VariablesPane({ session }: { session: DebugSession }) {
   const watches = useDebug((s) => s.watches);
   const stopSeq = useDebug((s) => s.stopSeq);
   const variablesEpoch = useDebug((s) => s.variablesEpoch);
+  const settings = useProject((s) => s.settings);
   const [expression, setExpression] = useState("");
   const evalField = useRef<HTMLInputElement>(null);
+  const evalRow = useRef<HTMLDivElement>(null);
   const completion = useExpressionCompletion(evalField, expression, setExpression, session);
+  const [history, setHistory] = useState<{ sessionId: number; stopSeq: number; entries: string[] } | null>(null);
   const [lastEval, setLastEval] = useState<EvalRow | null>(null);
-  const [scopeData, setScopeData] = useState<{ frame: number | null; scopes: Scope[]; locals: Variable[] }>({
-    frame: null,
+  // Each carries the generation it was fetched in. Adapters reuse frame ids across stops, so matching the
+  // frame alone would show the last stop's variables, and the tree would expand them by references the
+  // adapter has dropped or recomputes (#6170).
+  const [scopeData, setScopeData] = useState<{ generation: number; scopes: Scope[]; locals: Variable[] }>({
+    generation: -1,
     scopes: [],
     locals: [],
   });
-  const [watchData, setWatchData] = useState<{ frame: number | null; seq: number; rows: EvalRow[] }>({
-    frame: null,
-    seq: -1,
+  const [watchData, setWatchData] = useState<{ generation: number; rows: EvalRow[] }>({
+    generation: -1,
     rows: [],
   });
   const frame = session.status === "paused" ? session.selectedFrame : null;
+  // The stop, refresh and frame the variables are shown for. Variable references are only valid within it.
+  const generation = (stopSeq * 1000 + (variablesEpoch % 1000)) * 100000 + (frame ?? 0);
+  const historyOpen = frame != null && history?.sessionId === session.id && history.stopSeq === stopSeq;
+  const editor = settings?.editor;
   const live = liveWatchesApply(session);
   // A hidden tool window stays mounted: its watches must not go on running in the page.
   const liveWatches = useLiveWatches(session, watches, useToolWindowShown());
@@ -571,31 +609,30 @@ function VariablesPane({ session }: { session: DebugSession }) {
   useEffect(() => {
     if (frame == null) return;
     let cancelled = false;
+    const fetched = generation;
     void (async () => {
       let scopes: Scope[] = [];
       let locals: Variable[] = [];
       try {
-        scopes = await call(commands.debugScopes(session.id, frame));
-        const first = scopes.find((s) => !s.expensive);
-        if (first) {
-          const vars = await call(commands.debugVariables(session.id, first.variablesReference));
-          locals = workflowSettings().debugger.sortValues ? sortVariables(vars) : vars;
-        }
+        const data = await frameLocals(session.id, frame);
+        scopes = data.scopes;
+        locals = workflowSettings().debugger.sortValues ? sortVariables(data.locals) : data.locals;
       } catch {
         // Frame went away (resumed).
       }
-      if (!cancelled) setScopeData({ frame, scopes, locals });
+      if (!cancelled) setScopeData({ generation: fetched, scopes, locals });
     })();
     return () => {
       cancelled = true;
     };
-  }, [session.id, frame, stopSeq, variablesEpoch]);
+  }, [session.id, frame, generation]);
 
   // Watches are re-evaluated on every stop / frame change, and when the adapter has new values (kotlin-lsp first
   // answers "Collecting data…").
   useEffect(() => {
     if (frame == null || !watches.length) return;
     let cancelled = false;
+    const fetched = generation;
     void (async () => {
       const rows = await Promise.all(
         watches.map(async (w): Promise<EvalRow> => {
@@ -606,7 +643,7 @@ function VariablesPane({ session }: { session: DebugSession }) {
           }
         }),
       );
-      if (!cancelled) setWatchData({ frame, seq: stopSeq, rows });
+      if (!cancelled) setWatchData({ generation: fetched, rows });
     })();
     return () => {
       cancelled = true;
@@ -626,7 +663,7 @@ function VariablesPane({ session }: { session: DebugSession }) {
         error: lastEval.error,
       });
     // While the program runs, a debugger that evaluates without suspending gives the values.
-    const watchRows = frame == null ? liveWatches : watchData.frame === frame ? watchData.rows : [];
+    const watchRows = frame == null ? liveWatches : watchData.generation === generation ? watchData.rows : [];
     for (const w of watches) {
       const r = watchRows.find((x) => x.expression === w);
       out.push({
@@ -637,7 +674,7 @@ function VariablesPane({ session }: { session: DebugSession }) {
         error: frame == null && !live ? "Not suspended" : (r?.error ?? null),
       });
     }
-    if (frame != null && scopeData.frame === frame) {
+    if (frame != null && scopeData.generation === generation) {
       const firstScope = scopeData.scopes.find((s) => !s.expensive);
       const seen = new Map<string, number>();
       for (const v of scopeData.locals) {
@@ -662,11 +699,12 @@ function VariablesPane({ session }: { session: DebugSession }) {
       }
     }
     return out;
-  }, [lastEval, watches, watchData, scopeData, frame, live, liveWatches]);
+  }, [lastEval, watches, watchData, scopeData, frame, generation, live, liveWatches]);
 
   const run = async () => {
     const e = expression.trim();
     if (!e) return;
+    pushHistory("evaluate", e);
     try {
       setLastEval({
         expression: e,
@@ -678,12 +716,32 @@ function VariablesPane({ session }: { session: DebugSession }) {
     }
   };
 
+  const addExpressionWatch = () => {
+    const e = expression.trim();
+    if (!e) return;
+    pushHistory("evaluate", e);
+    addWatch(e);
+    setExpression("");
+  };
+
+  const recall = (text: string) => {
+    setExpression(text);
+    requestAnimationFrame(() => {
+      evalField.current?.focus();
+      evalField.current?.setSelectionRange(text.length, text.length);
+    });
+  };
+
   return (
     <div className={styles.variables}>
-      <div className={styles.evalField}>
+      <div ref={evalRow} className={styles.evalField}>
         <input
           ref={evalField}
           className={styles.evalInput}
+          style={{
+            fontFamily: monoFontFamily(editor?.fontFamily, editorPrefs(settings).fallbackFont, "var(--font-mono)"),
+            fontSize: editor?.fontSize ? `min(var(--fs-ui), ${editor.fontSize}px)` : undefined,
+          }}
           value={expression}
           onChange={(e) => {
             setExpression(e.target.value);
@@ -691,17 +749,16 @@ function VariablesPane({ session }: { session: DebugSession }) {
           }}
           onBlur={completion.close}
           onKeyDown={(e) => {
-            if (completion.onKeyDown(e)) return;
+            if (isImeKey(e.nativeEvent) || completion.onKeyDown(e)) return;
             if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && e.shiftKey) {
               e.preventDefault();
-              addWatch(expression);
-              setExpression("");
+              addExpressionWatch();
             } else if (e.key === "Enter") {
               e.preventDefault();
               void run();
             }
           }}
-          placeholder={frame != null ? "Evaluate expression (↩) or add a watch (⇧⌘↩)" : "Evaluate expression"}
+          placeholder={tx("Evaluate expression")}
           aria-label={tx("Evaluate expression")}
           spellCheck={false}
           autoComplete="off"
@@ -711,16 +768,55 @@ function VariablesPane({ session }: { session: DebugSession }) {
         <IconButton
           icon="plus"
           title="Add to Watches"
-          shortcut="⇧⌘↩"
+          shortcut={formatBinding(hostBinding("Meta+Shift+Enter"))}
           size="small"
           iconSize={16}
           disabled={!expression.trim()}
-          onClick={() => {
-            addWatch(expression);
-            setExpression("");
-          }}
+          onClick={addExpressionWatch}
+        />
+        <IconButton
+          icon="chevron-down"
+          title="History"
+          size="small"
+          aria-haspopup="menu"
+          aria-expanded={historyOpen}
+          disabled={frame == null}
+          onClick={() =>
+            setHistory(
+              historyOpen
+                ? null
+                : {
+                    sessionId: session.id,
+                    stopSeq,
+                    entries: readHistory("evaluate")
+                      .filter((entry) => !/[\r\n]/.test(entry))
+                      .slice(0, 20),
+                  },
+            )
+          }
         />
       </div>
+      <Popup
+        open={historyOpen}
+        onClose={() => setHistory(null)}
+        anchor={evalRow}
+        placement="bottom-start"
+        matchWidth
+        role="presentation"
+        autoFocus={false}
+        className={styles.evalHistory}
+      >
+        <MenuList
+          aria-label={tx("Expression history")}
+          iconColumn={false}
+          onDone={() => setHistory(null)}
+          items={
+            history?.entries.length
+              ? history.entries.map((entry) => ({ label: entry, verbatim: true, run: () => recall(entry) }))
+              : [{ label: "No history", disabled: true }]
+          }
+        />
+      </Popup>
       {frame == null && !watches.length && !lastEval ? (
         <div className={styles.note}>
           {session.status === "terminated"
@@ -731,7 +827,7 @@ function VariablesPane({ session }: { session: DebugSession }) {
         <VariablesView
           roots={roots}
           session={session.id}
-          generation={(stopSeq * 1000 + (variablesEpoch % 1000)) * 100000 + (frame ?? 0)}
+          generation={generation}
           changes={{ epoch: stopSeq, scope: changeScope }}
           aria-label="Variables"
         />

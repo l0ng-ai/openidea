@@ -27,18 +27,21 @@ import { auxiliaryWindow, windowLabel } from "@/platform/auxWindow";
 import { routeToWindow, taskWindowDraft, taskWindowFocused, updateTaskWindowDraft } from "./taskWindowRouting";
 import { clearAgentTaskFontZoom, resetAllAgentFontZoom } from "./fontZoom";
 import { clearDismissedAssets } from "./sessionAssetsModel";
+import { useSkillsCatalog, useSkillsCatalogSync } from "./skillsModel";
 import { basename, useProject } from "@/platform/project";
+import { projectLocation } from "@/platform/remote";
 import { defaultTaskProject } from "./project";
 import { call, commands, isTauri, nextRequestId } from "@/platform/ipc";
 import { editorService, notifications, notifyTabTitlesChanged, toolWindowService } from "@/workbench/contributions";
 import { tx } from "@/platform/i18n";
 import { confirm, showError } from "@/workbench/messages";
 import {
-  bypassDefaults,
+  approvalDefaults,
   canSend,
   shellCommand,
   cursorModelDefaults,
   emptyDraft,
+  hasMention,
   isMentioned,
   isPerModelOption,
   mentionOf,
@@ -52,13 +55,20 @@ import {
 import { withQuote } from "./conversation";
 import {
   EMPTY_ORGANIZE,
+  PINNED_SECTION,
+  compactOrder,
+  customSection,
   loadOrganize,
   pruneOrganize,
+  removeFromOrder,
+  reorderGroupsInOrganize,
+  reorderTaskInOrganize,
   saveOrganize,
   type OrganizeGroup,
   type TaskOrganize,
 } from "./organize";
 import {
+  CHANGES_KIND,
   HOME_KEY,
   HOME_KIND,
   SESSION_KIND,
@@ -134,7 +144,7 @@ interface AgentsState {
   external: ExternalSession[];
   /** Why the external sessions could not be listed. */
   externalError: string | null;
-  /** The Import Sessions from Other Apps dialog is open. */
+  /** The Import Sessions dialog is open. */
   importOpen: boolean;
   /** External sessions being imported (`provider:sessionId`), so none is imported twice. */
   importing: ReadonlySet<string>;
@@ -257,6 +267,7 @@ export function draftConfig(
   provider: AgentProvider | undefined,
   draft: Draft,
   defaults: Record<string, string> = providerDefaults(provider?.id),
+  newTaskApprovals: "bypass" | "ask" = useProject.getState().settings?.agents?.newTaskApprovals ?? "bypass",
 ): AgentConfigOption[] {
   const catalog = provider && useAgents.getState().modelCatalogs.get(provider.id);
   const offered = catalog?.config ?? provider?.config ?? [];
@@ -265,27 +276,31 @@ export function draftConfig(
     priorModel && draft.config[priorModel.id] !== undefined && !offered.some((o) => o.category === "model")
       ? [...offered, { ...priorModel, values: [] }]
       : offered;
-  const config = source
-    .filter((o) => !isPerModelOption(o))
-    .map((o) => {
-      const explicit = draft.config[o.id];
-      const choice = explicit ?? defaults[o.id];
-      return {
-        ...o,
-        defaultValue: o.defaultValue ?? o.current,
-        current:
-          o.category === "model" && explicit !== undefined
-            ? explicit
-            : choice !== undefined && o.values.some((v) => v.value === choice)
-              ? choice
-              : o.current,
-      };
-    });
+  const base = source.filter((o) => !isPerModelOption(o));
+  const approvals = approvalDefaults(base, newTaskApprovals);
+  const config = base.map((o) => {
+    const explicit = draft.config[o.id];
+    const choice = explicit ?? defaults[o.id] ?? approvals[o.id];
+    return {
+      ...o,
+      defaultValue: o.defaultValue ?? o.current,
+      current:
+        o.category === "model" && explicit !== undefined
+          ? explicit
+          : choice !== undefined && o.values.some((v) => v.value === choice)
+            ? choice
+            : o.current,
+    };
+  });
   const model = config.find((o) => o.category === "model")?.current;
   if (model) {
     config.push(
-      ...(draftModelSettings((catalog ?? provider)?.thoughtLevels?.[model], draft.thoughtLevels?.[model], defaults) ??
-        []),
+      ...(draftModelSettings(
+        (catalog ?? provider)?.thoughtLevels?.[model],
+        draft.thoughtLevels?.[model],
+        defaults,
+        provider?.id,
+      ) ?? []),
     );
   }
   return config;
@@ -295,9 +310,12 @@ export function draftModelSettings(
   options: AgentConfigOption[] | undefined,
   choices: Record<string, string> | undefined,
   defaults: Record<string, string>,
+  providerId?: string,
 ) {
-  return options?.map((o) => {
-    const choice = choices?.[o.id] ?? defaults[o.id];
+  if (!options) return undefined;
+  const modelDefaults = cursorModelDefaults(providerId, options);
+  return options.map((o) => {
+    const choice = choices?.[o.id] ?? defaults[o.id] ?? modelDefaults[o.id];
     return {
       ...o,
       defaultValue: o.defaultValue ?? o.current,
@@ -364,6 +382,11 @@ function setUnread(task: string, value: boolean) {
   if (value) unread.add(task);
   else unread.delete(task);
   useAgents.setState({ unread });
+}
+
+/** Marks tasks read or unread from the list's menu. */
+export function setTasksUnread(tasks: readonly string[], value: boolean) {
+  for (const task of tasks) setUnread(task, value);
 }
 
 function markUnread(task: string) {
@@ -530,6 +553,7 @@ async function refreshProviderModels(
 export async function connect(): Promise<void> {
   if (!isTauri()) return;
   const gen = ++generation;
+  clearChangeRefreshes();
   const channel = new Channel<AgentEvent>();
   channel.onmessage = (e) => {
     if (gen === generation) onEvent(e);
@@ -551,7 +575,7 @@ export async function connect(): Promise<void> {
     return;
   }
   if (gen !== generation) return;
-  const organizeRoot = useProject.getState().project?.root ?? null;
+  const organizeRoot = projectLocation(useProject.getState().project?.root);
   useAgents.setState({
     loaded: true,
     error: null,
@@ -570,12 +594,17 @@ export async function connect(): Promise<void> {
   const editors = editorService();
   for (const t of editors.openTabs?.() ?? []) {
     const task = (t.input.data as { task?: string } | undefined)?.task;
-    if (t.input.kind === SESSION_KIND && task && !useAgents.getState().tasks.has(task))
+    if (
+      (t.input.kind === SESSION_KIND || t.input.kind === CHANGES_KIND) &&
+      task &&
+      !useAgents.getState().tasks.has(task)
+    )
+      // oxlint-disable-next-line no-await-in-loop -- closeInput takes a tabs-state snapshot and may await guarded/busy closes; parallel closes could stack prompts/evictions
       await editors.closeInput?.(t.input.key);
   }
 }
 
-type EntryEvent = Extract<AgentEvent, { type: "entry" | "append" }>;
+type EntryEvent = Extract<AgentEvent, { type: "entry" | "append" | "toolOutput" }>;
 
 /** Entry events that arrived while their conversation loaded, applied on top of the copy it loads. */
 const arrivedWhileLoading = new Map<string, EntryEvent[]>();
@@ -584,7 +613,7 @@ const streamingReply = new Map<string, { index: number; reply: boolean }>();
 
 /** `entries` with the event applied; `null` when the copy can't take it. */
 function applyEntryEvent(entries: AgentEntry[], e: EntryEvent): AgentEntry[] | null {
-  if (e.type === "append") return appendEntry(entries, e.index, e.from, e.text);
+  if (e.type === "append" || e.type === "toolOutput") return appendEntry(entries, e.index, e.from, e.text);
   const have = entries[e.index];
   // Sent before the loaded copy was read: that copy already holds more of the message.
   if (
@@ -615,8 +644,6 @@ const CACHED_CLOSED_TASKS = 5;
 
 /** Recent closed-task ids kept in memory so reopening a just-closed tab avoids refetching. */
 const closedTaskMru: string[] = [];
-/** Bumped when a task's cache is dropped, so a fetch started before that doesn't refill it. */
-const cacheDrops = new Map<string, number>();
 
 function isTaskKey(key: string, taskId: string): boolean {
   return key === taskId || key.startsWith(`${taskId}/`);
@@ -638,11 +665,9 @@ function clearTaskMaps(taskId: string, clearStreaming = false) {
     if (isTaskKey(key, taskId)) positions.delete(key);
   }
   if (clearStreaming) streamingReply.delete(taskId);
-  const timer = pendingChanges.get(taskId);
-  if (timer !== undefined) {
-    clearTimeout(timer);
-    pendingChanges.delete(taskId);
-  }
+  cancelScheduledChanges(taskId);
+  const last = changeRefreshes.get(taskId);
+  if (last) last.cache.dropped = true;
 }
 
 function withoutTaskCache(s: AgentsState, taskId: string): Partial<AgentsState> | null {
@@ -681,15 +706,15 @@ function withoutTaskCache(s: AgentsState, taskId: string): Partial<AgentsState> 
 
 function dropTaskCache(taskId: string) {
   clearTaskMaps(taskId);
-  // A deleted task needs no marker: fetches already discard results for tasks that are gone.
-  if (useAgents.getState().tasks.has(taskId)) cacheDrops.set(taskId, (cacheDrops.get(taskId) ?? 0) + 1);
   useAgents.setState((s) => withoutTaskCache(s, taskId) ?? s);
 }
 
 function isTaskOpenInUi(taskId: string): boolean {
   if (useAgents.getState().docked === taskId) return true;
   return (editorService().openTabs?.() ?? []).some(
-    (t) => t.input.kind === SESSION_KIND && (t.input.data as { task?: string } | undefined)?.task === taskId,
+    (t) =>
+      (t.input.kind === SESSION_KIND || t.input.kind === CHANGES_KIND) &&
+      (t.input.data as { task?: string } | undefined)?.task === taskId,
   );
 }
 
@@ -725,9 +750,7 @@ export function disconnect() {
   streamingReply.clear();
   modelFlights.clear();
   closedTaskMru.length = 0;
-  cacheDrops.clear();
-  for (const timer of pendingChanges.values()) clearTimeout(timer);
-  pendingChanges.clear();
+  clearChangeRefreshes();
   resetAllAgentFontZoom();
   useAgents.setState({
     loaded: false,
@@ -779,7 +802,6 @@ function onEvent(e: AgentEvent) {
     }
     case "removed": {
       clearTaskMaps(e.id, true);
-      cacheDrops.delete(e.id);
       const tasks = new Map(s.tasks);
       tasks.delete(e.id);
       const composers = new Map(s.composers);
@@ -848,6 +870,10 @@ function onEvent(e: AgentEvent) {
         const streaming = streamingReply.get(e.task);
         if (shown ? shown.type === "agent" : streaming?.index === e.index && streaming.reply) markUnread(e.task);
       }
+      onEntryEvent(s, e);
+      break;
+    }
+    case "toolOutput": {
       onEntryEvent(s, e);
       break;
     }
@@ -920,17 +946,49 @@ export async function loadEntries(task: string, subagent: string | null = null):
   }
 }
 
-export async function refreshChanges(task: string): Promise<void> {
-  // Discard a result that arrives after a project switch, the task's deletion, or its cache being dropped.
+const pendingChanges = new Map<string, ReturnType<typeof setTimeout>>();
+/** Last pass for each task. The active and trailing pass share a cache lifetime until eviction. */
+const changeRefreshes = new Map<string, { done: Promise<void>; started: boolean; cache: { dropped: boolean } }>();
+
+function cancelScheduledChanges(task: string) {
+  clearTimeout(pendingChanges.get(task));
+  pendingChanges.delete(task);
+}
+
+function clearChangeRefreshes() {
+  for (const timer of pendingChanges.values()) clearTimeout(timer);
+  pendingChanges.clear();
+  changeRefreshes.clear();
+}
+
+/** Waits for the first read that starts after this request, not for the queue to go idle. */
+export function refreshChanges(task: string): Promise<void> {
+  if (!useAgents.getState().tasks.has(task)) return Promise.resolve();
+  const last = changeRefreshes.get(task);
+  const current = last && !last.cache.dropped ? last : undefined;
+  if (current && !current.started) return current.done;
+
   const gen = generation;
-  const drops = cacheDrops.get(task);
-  const stillWanted = () =>
-    gen === generation && useAgents.getState().tasks.has(task) && cacheDrops.get(task) === drops;
-  // The whole task's changes are read in either scope: the session's summary counts them.
-  await Promise.all([
-    refreshTaskChanges(task, stillWanted),
-    useChangesOptions.getState().scope === "turn" && refreshTurnChanges(task, stillWanted),
-  ]);
+  const pass = { done: Promise.resolve(), started: false, cache: current?.cache ?? { dropped: false } };
+  const stillWanted = () => gen === generation && !pass.cache.dropped && useAgents.getState().tasks.has(task);
+  const read = async () => {
+    pass.started = true;
+    try {
+      if (!stillWanted()) return;
+      cancelScheduledChanges(task); // This read covers notifications still waiting on the timer.
+      // The session summary needs the whole task even when the pane shows just its last turn.
+      await Promise.all([
+        refreshTaskChanges(task, stillWanted),
+        useChangesOptions.getState().scope === "turn" && refreshTurnChanges(task, stillWanted),
+      ]);
+    } finally {
+      if (changeRefreshes.get(task) === pass) changeRefreshes.delete(task);
+    }
+  };
+  changeRefreshes.set(task, pass);
+  // A reopened tab can't cancel the obsolete IPC either; wait for it before starting a fresh read.
+  pass.done = last ? last.done.then(read, read) : read();
+  return pass.done;
 }
 
 async function refreshTurnChanges(task: string, stillWanted: () => boolean): Promise<void> {
@@ -994,7 +1052,6 @@ export async function acceptChanges(task: string, relPaths: string[] | null): Pr
   }
 }
 
-const pendingChanges = new Map<string, ReturnType<typeof setTimeout>>();
 /** Reloads the task's changes after a short pause (tool diffs, commits landing). */
 export function scheduleChanges(task: string) {
   if (pendingChanges.has(task)) return;
@@ -1040,6 +1097,10 @@ export function useAgentCommands(
   task: string | null,
   offered: readonly AgentCommand[],
 ): readonly AgentCommand[] {
+  const skillOverrides = useAgents((s) => (task ? s.tasks.get(task)?.skillOverrides : s.draft.skillOverrides));
+  // The server's draft commands omit skills that only this draft has enabled.
+  useSkillsCatalogSync(task === null && Object.values(skillOverrides ?? {}).some((mode) => mode !== "off"));
+  const catalogSkills = useSkillsCatalog((s) => s.skills);
   const [found, setFound] = useState<{
     for: unknown[];
     list: readonly AgentCommand[];
@@ -1048,15 +1109,44 @@ export function useAgentCommands(
     if (!provider || !isTauri()) return;
     let alive = true;
     call(commands.agentCommands(provider, task))
-      .then((list) => alive && setFound({ for: [provider, task, offered], list }))
+      .then((list) => alive && setFound({ for: [provider, task, offered, skillOverrides, catalogSkills], list }))
       .catch(() => {});
     return () => {
       alive = false;
     };
-  }, [provider, task, offered]);
+  }, [provider, task, offered, skillOverrides, catalogSkills]);
   // Until the list for these arguments arrives, what the agent offered.
-  const current = found && found.for[0] === provider && found.for[1] === task && found.for[2] === offered;
-  return current ? found.list : offered;
+  const current =
+    found &&
+    found.for[0] === provider &&
+    found.for[1] === task &&
+    found.for[2] === offered &&
+    found.for[3] === skillOverrides &&
+    found.for[4] === catalogSkills;
+  const base = current ? found.list : offered;
+  if (task !== null || !skillOverrides || Object.keys(skillOverrides).length === 0) return base;
+  const off = new Set(
+    Object.entries(skillOverrides)
+      .filter(([, mode]) => mode === "off")
+      .map(([name]) => name.toLowerCase()),
+  );
+  const filtered = base.filter((c) => !off.has(c.name.replace(/^\$/, "").toLowerCase()));
+  const extra: AgentCommand[] = [];
+  for (const [name, mode] of Object.entries(skillOverrides)) {
+    if (mode === "off") continue;
+    const lower = name.toLowerCase();
+    if (filtered.some((c) => c.name.replace(/^\$/, "").toLowerCase() === lower)) continue;
+    const match = catalogSkills.find((s) => s.skill.name.toLowerCase() === lower && s.origin !== "trust");
+    if (match && match.skill.userInvocable !== false) {
+      extra.push({
+        name: match.skill.name,
+        description: match.skill.description,
+        hint: match.skill.hint ?? null,
+        source: "skill",
+      });
+    }
+  }
+  return extra.length > 0 ? [...filtered, ...extra] : filtered;
 }
 
 export function openTask(task: string) {
@@ -1210,21 +1300,14 @@ export async function startTask(
     )
   )
     return;
-  const askForApprovals = useProject.getState().settings?.agents?.newTaskApprovals === "ask";
-  const defaults = {
-    ...cursorModelDefaults(draft.provider, options),
-    ...(askForApprovals ? {} : bypassDefaults(options)),
-    ...providerDefaults(draft.provider),
-  };
-  const model = options.find((option) => option.category === "model")?.current;
+  const model = options.find((o) => o.category === "model")?.current;
+  const defaults = providerDefaults(draft.provider);
   const config = options.flatMap((o) => {
     // An untouched Codex tier inherits the runtime's default; explicit Off must still be sent.
     const value =
       o.id === "service_tier"
-        ? ((model && draft.thoughtLevels?.[model]?.[o.id]) ?? defaults[o.id] ?? null)
-        : o.category === "model" || isPerModelOption(o)
-          ? o.current
-          : (draft.config[o.id] ?? defaults[o.id] ?? null);
+        ? ((model ? draft.thoughtLevels?.[model]?.[o.id] : undefined) ?? defaults[o.id] ?? null)
+        : o.current;
     return value !== null && o.values.some((v) => v.value === value) ? [{ id: o.id, value }] : [];
   });
   try {
@@ -1289,10 +1372,8 @@ function markImporting(keys: readonly string[], on: boolean) {
   });
 }
 
-async function importOne(provider: string, sessionId: string, open: boolean) {
-  const started = generation;
-  const task = await call(commands.agentImportSession(provider, sessionId));
-  if (generation !== started) return task;
+/** Records the task an external session became and opens it when asked; shared by import and fork. */
+function adoptSessionTask(provider: string, sessionId: string, task: AgentTask, open: boolean) {
   useAgents.setState((s) => ({
     tasks: s.tasks.has(task.id) ? s.tasks : new Map(s.tasks).set(task.id, task),
     external: s.external.filter((e) => !(e.provider === provider && e.sessionId === sessionId)),
@@ -1301,26 +1382,52 @@ async function importOne(provider: string, sessionId: string, open: boolean) {
   return task;
 }
 
-/** Imports an external session as a task and opens it: its first turn loads it (#312). */
-export async function importExternalSession(provider: string, sessionId: string) {
+async function importOne(provider: string, sessionId: string, open: boolean) {
+  const started = generation;
+  const task = await call(commands.agentImportSession(provider, sessionId));
+  if (generation !== started) return task;
+  return adoptSessionTask(provider, sessionId, task, open);
+}
+
+async function forkOne(provider: string, sessionId: string, cwd: string, open: boolean) {
+  const started = generation;
+  const task = await call(commands.agentForkSession(provider, sessionId, cwd));
+  if (generation !== started) return task;
+  return adoptSessionTask(provider, sessionId, task, open);
+}
+
+/** Guards a single external-session operation against a concurrent one on the same session. */
+async function runExternalOne(provider: string, sessionId: string, run: () => Promise<AgentTask>) {
   const key = externalKey(provider, sessionId);
   if (useAgents.getState().importing.has(key)) throw new Error(tx("Already importing"));
   markImporting([key], true);
   try {
-    return await importOne(provider, sessionId, true);
+    return await run();
   } finally {
     markImporting([key], false);
   }
 }
 
+/** Imports an external session as a task and opens it: its first turn loads it (#312). */
+export async function importExternalSession(provider: string, sessionId: string) {
+  return runExternalOne(provider, sessionId, () => importOne(provider, sessionId, true));
+}
+
+/** Forks a recorded session into a new task and opens it: its first turn continues the recording. */
+export async function forkExternalSession(provider: string, sessionId: string, cwd: string) {
+  return runExternalOne(provider, sessionId, () => forkOne(provider, sessionId, cwd, true));
+}
+
 /**
- * Imports sessions one after another, all marked pending from the start; only a single one opens.
- * Sessions already being imported are skipped. Failures don't stop the rest and are reported
- * together at the end. A project switch ends the batch; an abort ends it after the import in
- * flight and frees the sessions it didn't reach.
+ * Runs external-session operations one after another, all marked pending from the start; only a
+ * single one opens. Sessions already pending are skipped. Failures don't stop the rest and are
+ * reported together at the end. A project switch ends the batch; an abort ends it after the
+ * operation in flight and frees the sessions it didn't reach. Shared by import and fork.
  */
-export async function importExternalSessions(
-  sessions: readonly { provider: string; sessionId: string; title: string }[],
+async function runExternalBatch<T extends { provider: string; sessionId: string; title: string }>(
+  sessions: readonly T[],
+  runOne: (session: T, open: boolean) => Promise<unknown>,
+  failed: { one: string; many: string },
   onProgress?: (done: number) => void,
   signal?: AbortSignal,
 ) {
@@ -1338,7 +1445,8 @@ export async function importExternalSessions(
       break;
     }
     try {
-      await importOne(s.provider, s.sessionId, batch.length === 1);
+      // oxlint-disable-next-line no-await-in-loop -- operations are documented sequential: abort, generation and progress are checked between sessions
+      await runOne(s, batch.length === 1);
     } catch (e) {
       failures.push(`${s.title}: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -1348,9 +1456,37 @@ export async function importExternalSessions(
   }
   if (generation !== started || !failures.length) return;
   // Not awaited, so the caller's dialog closes instead of waiting behind the message.
-  const title =
-    failures.length === 1 ? tx("A session could not be imported") : tx("Some sessions could not be imported");
-  void showError(title, failures.join("\n"));
+  void showError(failures.length === 1 ? failed.one : failed.many, failures.join("\n"));
+}
+
+/** Imports sessions one after another; the batch rules are {@link runExternalBatch}'s. */
+export async function importExternalSessions(
+  sessions: readonly { provider: string; sessionId: string; title: string }[],
+  onProgress?: (done: number) => void,
+  signal?: AbortSignal,
+) {
+  await runExternalBatch(
+    sessions,
+    (s, open) => importOne(s.provider, s.sessionId, open),
+    { one: tx("A session could not be imported"), many: tx("Some sessions could not be imported") },
+    onProgress,
+    signal,
+  );
+}
+
+/** Forks sessions one after another; the batch rules are {@link runExternalBatch}'s. */
+export async function forkExternalSessions(
+  sessions: readonly { provider: string; sessionId: string; cwd: string; title: string }[],
+  onProgress?: (done: number) => void,
+  signal?: AbortSignal,
+) {
+  await runExternalBatch(
+    sessions,
+    (s, open) => forkOne(s.provider, s.sessionId, s.cwd, open),
+    { one: tx("A session could not be forked"), many: tx("Some sessions could not be forked") },
+    onProgress,
+    signal,
+  );
 }
 
 export function setIdeContext(on: boolean) {
@@ -1489,24 +1625,44 @@ async function stopForEdit(task: string) {
 
 /**
  * Runs the conversation again from turn `turn` with `text` as its message: the agent is
- * stopped if it works, that turn and the later ones are dropped, then `text` is sent.
+ * stopped if it works, that turn and the later ones are dropped and the files they changed
+ * put back, then `text` is sent.
  * Whatever fails, the message is kept in the composer so it can be sent again.
  */
-export async function rerunFrom(task: string, turn: number, text: string, images: AgentImage[] = []): Promise<boolean> {
-  if (
-    turn === 0 &&
+export async function rerunFrom(
+  task: string,
+  turn: number,
+  text: string,
+  images: AgentImage[] = [],
+  confirmRewind?: { title: string; later?: boolean },
+): Promise<boolean> {
+  if (turn === 0) {
+    if (
+      !(await confirm({
+        title: "Start a Fresh Agent Session",
+        message:
+          "This clears the entire conversation, puts the files the agent changed back as they were when the task started, and starts a fresh agent session with this message.",
+        ok: "Start Fresh",
+        icon: "warning",
+      }))
+    )
+      return false;
+  } else if (
+    confirmRewind &&
     !(await confirm({
-      title: "Start a Fresh Agent Session",
-      message:
-        "This clears the entire conversation and starts a fresh agent session with this message. Files the agent changed stay as they are.",
-      ok: "Start Fresh",
+      title: confirmRewind.title,
+      message: confirmRewind.later
+        ? "The messages after this one are replaced, and the files the agent changed since go back to how they were before this message was sent."
+        : "The files the agent changed since go back to how they were before this message was sent.",
+      ok: "Roll Back",
       icon: "warning",
     }))
-  )
+  ) {
     return false;
+  }
   try {
     await stopForEdit(task);
-    await call(commands.agentRollback(task, turn));
+    await call(commands.agentRollback(task, turn, true));
     await call(commands.agentPrompt(task, { text, files: [], images }, false));
   } catch (e) {
     restoreComposer(task, text, images);
@@ -1515,11 +1671,14 @@ export async function rerunFrom(task: string, turn: number, text: string, images
   return true;
 }
 
-/** Drops `turn` and the later turns, and puts the message back in the composer to edit. */
-export async function retractFrom(task: string, turn: number, text: string, images: AgentImage[] = []): Promise<void> {
+/**
+ * Rolls back to before `turn`: drops it and the later turns, puts back the files they changed,
+ * and puts the message back in the composer to edit.
+ */
+export async function rollBackTo(task: string, turn: number, text: string, images: AgentImage[] = []): Promise<void> {
   try {
     await stopForEdit(task);
-    const prompt = await call(commands.agentRollback(task, turn));
+    const prompt = await call(commands.agentRollback(task, turn, true));
     // The agent only hands back the text; the images come from the message itself.
     restoreComposer(task, prompt?.text ?? text, images);
   } catch (e) {
@@ -1641,6 +1800,20 @@ export interface ReferenceTarget {
   lines?: { from: number; to: number };
 }
 
+/** The active composer's task and path roots for agent references. */
+export function composerReferenceContext() {
+  const key = activeComposerKey();
+  const task = key === HOME ? null : (useAgents.getState().tasks.get(key) ?? null);
+  const project = useProject.getState().project;
+  const root = (task ? task.cwd : homeProjectRoot()) ?? "";
+  const roots = {
+    root,
+    projectRoot: (task ? (task.projectRoot ?? project?.root) : null) ?? root,
+    members: project?.workspace?.projects,
+  };
+  return { key, task, roots };
+}
+
 /**
  * Adds `@file` references (with an optional line range) to the composer on show (else the one
  * typed in last) and shows it: IDEA-style "send this to the chat". Paths resolve like the
@@ -1648,33 +1821,28 @@ export interface ReferenceTarget {
  * how many were added; a path outside every project shows a notice.
  */
 export function addReferences(targets: readonly ReferenceTarget[]): number {
-  return appendToComposer((mentions) => mentions.join(" "), targets);
+  // A reference the message already holds (same file, same lines) is not added a second time.
+  return appendToComposer(
+    (mentions, text) => mentions.filter((m, i) => !hasMention(text, m) && mentions.indexOf(m) === i).join(" "),
+    targets,
+  );
 }
 
 /**
  * Appends text to the agent message typed last (a task's or New Task's) and opens it; nothing is
  * sent. `compose` gets the `@` mentions of `targets` (those inside this window's projects, which
- * also become chips). Returns how many targets were referenced.
+ * also become chips) and the message's current text. Returns how many targets were referenced.
  */
 export function appendToComposer(
-  compose: (mentions: readonly string[]) => string,
+  compose: (mentions: readonly string[], text: string) => string,
   targets: readonly ReferenceTarget[] = [],
 ): number {
-  const s = useAgents.getState();
-  const key = activeComposerKey();
-  const task = key === HOME ? null : s.tasks.get(key)!;
-  const project = useProject.getState().project;
-  const root = task ? task.cwd : homeProjectRoot();
-  const roots = {
-    root: root ?? "",
-    projectRoot: (task ? (task.projectRoot ?? project?.root) : null) ?? root ?? "",
-    members: project?.workspace?.projects,
-  };
+  const { key, task, roots } = composerReferenceContext();
   const current = composerDraft(key);
   const files: FileRef[] = [];
   const mentions: string[] = [];
   for (const { path, lines } of targets) {
-    const ref = root ? referenceOf(roots, path) : null;
+    const ref = roots.root ? referenceOf(roots, path) : null;
     if (!ref) continue;
     // A folder keeps its trailing slash, so its chip is a folder reference.
     const rel = /[\\/]$/.test(path) && ref.rel !== "." ? `${ref.rel}/` : ref.rel;
@@ -1683,15 +1851,26 @@ export function appendToComposer(
   }
   if (files.length < targets.length)
     notifications().notify({ level: "info", title: tx("Only files of this window's projects can be referenced") });
-  const joined = compose(mentions);
-  if (!joined) return 0;
+  const joined = compose(mentions, current.text);
+  if (!joined) {
+    // Every reference is already in the message: show it rather than doing nothing.
+    if (!files.length) return 0;
+    if (task) openTask(task.id);
+    else openHome();
+    return files.length;
+  }
   // A block of several lines (a test failure) goes in a paragraph of its own.
   const text = joined.includes("\n")
     ? `${current.text.trimEnd() ? `${current.text.trimEnd()}\n\n` : ""}${joined}\n`
     : current.text && !/\s$/.test(current.text)
       ? `${current.text} ${joined} `
       : `${current.text}${joined} `;
-  updateComposer(key, { text, files: [...current.files, ...files] });
+  const added = files.filter(
+    (f, i) =>
+      !current.files.some((c) => c.path === f.path && c.rel === f.rel) &&
+      files.findIndex((o) => o.path === f.path && o.rel === f.rel) === i,
+  );
+  updateComposer(key, { text, files: [...current.files, ...added] });
   if (task) openTask(task.id);
   else openHome();
   return files.length;
@@ -1710,10 +1889,15 @@ export const renameTask = (task: string, title: string) => call(commands.agentRe
 export const archiveTask = (task: string) => call(commands.agentArchive(task));
 export const deleteTask = (task: string, removeWorktree: boolean) => call(commands.agentDelete(task, removeWorktree));
 
+function withOrder(base: Omit<TaskOrganize, "order">, order: Record<string, string[]> | undefined): TaskOrganize {
+  return order ? { ...base, order } : base;
+}
+
 /** Applies `change` to the saved arrange state of the project the tasks belong to. */
 function changeOrganize(change: (organize: TaskOrganize) => TaskOrganize) {
   const s = useAgents.getState();
   const organize = change(s.organize);
+  if (organize === s.organize) return;
   useAgents.setState({ organize });
   saveOrganize(s.organizeRoot, organize);
 }
@@ -1726,7 +1910,8 @@ export function pinTasks(tasks: readonly string[], pinned: boolean) {
       if (pinned) next.add(task);
       else next.delete(task);
     }
-    return { ...organize, pinned: [...next] };
+    const order = pinned ? organize.order : removeFromOrder(organize.order, [PINNED_SECTION], new Set(tasks));
+    return withOrder({ groups: organize.groups, groupOf: organize.groupOf, pinned: [...next] }, order);
   });
 }
 
@@ -1758,22 +1943,80 @@ export function renameTaskGroup(group: string, name: string) {
 
 /** Removes a group; its tasks go back to the status groups. */
 export function deleteTaskGroup(group: string) {
-  changeOrganize((organize) => ({
-    ...organize,
-    groups: organize.groups.filter((g) => g.id !== group),
-    groupOf: Object.fromEntries(Object.entries(organize.groupOf).filter(([, g]) => g !== group)),
-  }));
+  changeOrganize((organize) => {
+    const section = customSection(group);
+    let order = organize.order;
+    if (order && section in order) {
+      const rest = { ...order };
+      delete rest[section];
+      order = compactOrder(rest);
+    }
+    return withOrder(
+      {
+        groups: organize.groups.filter((g) => g.id !== group),
+        groupOf: Object.fromEntries(Object.entries(organize.groupOf).filter(([, g]) => g !== group)),
+        pinned: organize.pinned,
+      },
+      order,
+    );
+  });
 }
 
 /** Moves the tasks into `group`, out of the pinned section; `null` puts them back among the status groups. */
 export function moveTasksToGroup(tasks: readonly string[], group: string | null) {
   changeOrganize((organize) => {
     const groupOf = { ...organize.groupOf };
+    const leftSections = new Set<string>();
     for (const task of tasks) {
+      const prev = organize.groupOf[task];
+      if (prev && prev !== group) leftSections.add(customSection(prev));
       if (group) groupOf[task] = group;
       else delete groupOf[task];
     }
+    if (group) leftSections.add(PINNED_SECTION);
     const moved = new Set(tasks);
-    return { ...organize, groupOf, pinned: group ? organize.pinned.filter((id) => !moved.has(id)) : organize.pinned };
+    const order = removeFromOrder(organize.order, leftSections, moved);
+    return withOrder(
+      {
+        groups: organize.groups,
+        groupOf,
+        pinned: group ? organize.pinned.filter((id) => !moved.has(id)) : organize.pinned,
+      },
+      order,
+    );
   });
+}
+
+/** Returns tasks to their status group (unpinned and out of any custom group). */
+export function moveTasksToStatusGroup(tasks: readonly string[]) {
+  changeOrganize((organize) => {
+    const moved = new Set(tasks);
+    const groupOf = { ...organize.groupOf };
+    const leftSections = new Set<string>([PINNED_SECTION]);
+    for (const task of tasks) {
+      const prev = organize.groupOf[task];
+      if (prev) leftSections.add(customSection(prev));
+      delete groupOf[task];
+    }
+    const order = removeFromOrder(organize.order, leftSections, moved);
+    return withOrder(
+      {
+        groups: organize.groups,
+        groupOf,
+        pinned: organize.pinned.filter((id) => !moved.has(id)),
+      },
+      order,
+    );
+  });
+}
+
+/** Places `sourceId` before or after `targetId` (moving it into the target's section when needed). */
+export function reorderTask(sourceId: string, targetId: string, position: "before" | "after") {
+  const tasks = useAgents.getState().tasks.values();
+  changeOrganize((organize) => reorderTaskInOrganize(organize, tasks, sourceId, targetId, position));
+}
+
+/** Reorders a custom group before or after another custom group. */
+export function reorderTaskGroup(sourceId: string, targetId: string, position: "before" | "after") {
+  changeOrganize((organize) => reorderGroupsInOrganize(organize, sourceId, targetId, position));
 }

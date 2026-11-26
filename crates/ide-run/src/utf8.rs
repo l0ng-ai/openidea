@@ -1,136 +1,7 @@
-//! Incremental UTF-8 decoding for byte streams that may split code points
-//! across reads.
+//! Console output decoding: the configured encoding, and on Windows a per-line
+//! UTF-8 / code-page / UTF-16LE mix.
 
-/// Mirrors `ide-terminal`'s decoder; kept local so the crates stay independent.
-/// Decodes a byte stream chunk by chunk. Incomplete trailing sequences are held
-/// back until the next chunk; invalid bytes become U+FFFD.
-#[derive(Debug, Default)]
-pub struct Utf8Decoder {
-    pending: Vec<u8>,
-}
-
-impl Utf8Decoder {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Decodes `bytes`, appending the complete text to `out`.
-    pub fn decode_into(&mut self, bytes: &[u8], out: &mut String) {
-        let owned;
-        let mut input: &[u8] = if self.pending.is_empty() {
-            bytes
-        } else {
-            self.pending.extend_from_slice(bytes);
-            owned = std::mem::take(&mut self.pending);
-            &owned
-        };
-        loop {
-            match std::str::from_utf8(input) {
-                Ok(s) => {
-                    out.push_str(s);
-                    return;
-                }
-                Err(e) => {
-                    let (valid, rest) = input.split_at(e.valid_up_to());
-                    // `valid` is UTF-8 by construction.
-                    out.push_str(std::str::from_utf8(valid).unwrap_or_default());
-                    match e.error_len() {
-                        Some(len) => {
-                            out.push(char::REPLACEMENT_CHARACTER);
-                            input = &rest[len..];
-                        }
-                        None => {
-                            self.pending.extend_from_slice(rest);
-                            return;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    #[cfg(test)]
-    /// Convenience wrapper around [`Self::decode_into`].
-    pub fn decode(&mut self, bytes: &[u8]) -> String {
-        let mut out = String::new();
-        self.decode_into(bytes, &mut out);
-        out
-    }
-
-    /// Flushes held-back bytes at end of stream (a truncated sequence → U+FFFD).
-    pub fn finish(&mut self) -> String {
-        if self.pending.is_empty() {
-            String::new()
-        } else {
-            self.pending.clear();
-            char::REPLACEMENT_CHARACTER.to_string()
-        }
-    }
-
-    #[cfg(test)]
-    pub fn has_pending(&self) -> bool {
-        !self.pending.is_empty()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ascii_passthrough() {
-        let mut d = Utf8Decoder::new();
-        assert_eq!(d.decode(b"hello"), "hello");
-        assert_eq!(d.finish(), "");
-    }
-
-    #[test]
-    fn multibyte_split_at_every_position() {
-        let text = "aé中😀z";
-        let bytes = text.as_bytes();
-        for split in 0..=bytes.len() {
-            let mut d = Utf8Decoder::new();
-            let mut out = d.decode(&bytes[..split]);
-            out.push_str(&d.decode(&bytes[split..]));
-            out.push_str(&d.finish());
-            assert_eq!(out, text, "split at {split}");
-        }
-    }
-
-    #[test]
-    fn byte_by_byte() {
-        let text = "😀中é";
-        let mut d = Utf8Decoder::new();
-        let mut out = String::new();
-        for b in text.as_bytes() {
-            d.decode_into(std::slice::from_ref(b), &mut out);
-        }
-        assert!(!d.has_pending());
-        assert_eq!(out, text);
-    }
-
-    #[test]
-    fn invalid_bytes_are_replaced() {
-        let mut d = Utf8Decoder::new();
-        assert_eq!(d.decode(b"a\xffb\xc3(c"), "a\u{FFFD}b\u{FFFD}(c");
-    }
-
-    #[test]
-    fn truncated_sequence_at_end_of_stream() {
-        let mut d = Utf8Decoder::new();
-        assert_eq!(d.decode(b"ok\xe4\xb8"), "ok");
-        assert!(d.has_pending());
-        assert_eq!(d.finish(), "\u{FFFD}");
-        assert_eq!(d.decode(b"x"), "x");
-    }
-
-    #[test]
-    fn invalid_continuation_after_pending() {
-        let mut d = Utf8Decoder::new();
-        assert_eq!(d.decode(b"\xe4"), "");
-        assert_eq!(d.decode(b"A"), "\u{FFFD}A");
-    }
-}
+use ide_core::utf8::Utf8Decoder;
 
 /// Output decoder for the console's configured encoding (Settings › Console).
 pub enum OutputDecoder {
@@ -243,7 +114,8 @@ enum Line {
 ///
 /// A read with NUL bytes, which text in the others never has, is UTF-16LE (ASCII characters
 /// and line ends in it have them); UTF-16 goes on until one of its lines has ended and a read
-/// without NUL bytes comes.
+/// without NUL bytes comes, or at once when a read without NUL bytes is text in UTF-8 again:
+/// a program that writes a buffer whose tail is NULs leaves a UTF-16 line that never ends.
 pub struct MixedDecoder {
     utf8: Utf8Decoder,
     native: Option<NativeDecoder>,
@@ -262,22 +134,25 @@ impl MixedDecoder {
             return;
         }
         let nul = bytes.contains(&0);
-        match self.utf16.as_ref().map(|u| u.open || nul) {
-            Some(true) => {
-                if let Some(u) = &mut self.utf16 {
-                    u.decode(bytes, out);
-                }
-                return;
+        if let Some(u) = &self.utf16 {
+            // UTF-16 text has a NUL byte in every ASCII character and in every line end: a read
+            // without one that reads as UTF-8 is the console's own text again. It ends UTF-16
+            // even mid-line, which a buffer written with a NUL tail never leaves.
+            let text = !nul && !u.odd && reads_as_utf8(bytes);
+            if text || !(u.open || nul) {
+                self.utf16 = None;
             }
-            Some(false) => self.utf16 = None,
-            None if nul => {
-                self.end_line(out);
-                let mut u = Utf16::new();
-                u.decode(utf16_aligned(bytes), out);
-                self.utf16 = Some(u);
-                return;
-            }
-            None => {}
+        }
+        if let Some(u) = &mut self.utf16 {
+            u.decode(bytes, out);
+            return;
+        }
+        if nul {
+            self.end_line(out);
+            let mut u = Utf16::new();
+            u.decode(utf16_aligned(bytes), out);
+            self.utf16 = Some(u);
+            return;
         }
         for piece in bytes.split_inclusive(|b| *b == b'\n') {
             let ends = piece.last() == Some(&b'\n');
@@ -399,6 +274,12 @@ fn utf16_aligned(bytes: &[u8]) -> &[u8] {
         }
     }
     if even > odd { &bytes[1..] } else { bytes }
+}
+
+/// Whether `bytes` is text in UTF-8: two code units or more, and valid. A shorter read could be
+/// one UTF-16 character that happens to be valid UTF-8 on its own.
+fn reads_as_utf8(bytes: &[u8]) -> bool {
+    bytes.len() >= 4 && std::str::from_utf8(bytes).is_ok()
 }
 
 fn decode_with(d: &mut encoding_rs::Decoder, bytes: &[u8], out: &mut String, last: bool) {
@@ -568,6 +449,37 @@ mod encoding_tests {
         d.decode_into(&utf16("中文 OK\r\n"), &mut out);
         out.push_str(&d.finish());
         assert_eq!(out, "한국어 OK\r\n中文 OK\r\n");
+    }
+
+    /// A program that writes a fixed-size buffer filled only in part, the rest NUL: the UTF-16
+    /// line it looks like never ends, and what it writes after must not stay UTF-16LE.
+    #[test]
+    fn utf16_ends_at_the_text_after_a_line_that_never_ends() {
+        let mut d = mixed(936);
+        let mut out = String::new();
+        d.decode_into("[10:45:00] before 正常输出\n".as_bytes(), &mut out);
+        let mut buffer = b"abc".to_vec();
+        buffer.resize(1024, 0);
+        d.decode_into(&buffer, &mut out);
+        d.decode_into("after-0: hello 正常输出\n".as_bytes(), &mut out);
+        d.decode_into("after-1: hello 正常输出\n".as_bytes(), &mut out);
+        out.push_str(&d.finish());
+        assert!(out.starts_with("[10:45:00] before 正常输出\n"), "{out:?}");
+        assert!(out.ends_with("after-0: hello 正常输出\nafter-1: hello 正常输出\n"), "{out:?}");
+    }
+
+    /// `水` is `34 6C` in UTF-16LE, which reads as `4l` in UTF-8: a read that short is not
+    /// taken for text again.
+    #[test]
+    fn a_short_read_that_is_a_utf16_character_stays_utf16() {
+        let mut d = mixed(936);
+        let mut out = String::new();
+        d.decode_into(&utf16("OK "), &mut out);
+        d.decode_into(&[0x34, 0x6C], &mut out);
+        d.decode_into(&utf16("\r\n"), &mut out);
+        d.decode_into("done ✓\n".as_bytes(), &mut out);
+        out.push_str(&d.finish());
+        assert_eq!(out, "OK 水\r\ndone ✓\n");
     }
 
     #[test]

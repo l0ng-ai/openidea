@@ -14,7 +14,7 @@ use tauri::{State, Window};
 #[tauri::command]
 #[specta::specta]
 pub async fn db_export_file(path: std::path::PathBuf, text: String) -> IdeResult<()> {
-    ide_host::ops::doc::blocking(move || {
+    ide_host::ops::blocking(move || {
         std::fs::write(&path, text)?;
         Ok(())
     })
@@ -26,7 +26,7 @@ pub async fn db_export_file(path: std::path::PathBuf, text: String) -> IdeResult
 #[tauri::command]
 #[specta::specta]
 pub async fn db_tool_installs(tool: DbTool) -> IdeResult<Vec<ToolInstall>> {
-    ide_host::ops::doc::blocking(move || Ok(ide_db::tools::find_installs(tool))).await
+    ide_host::ops::blocking(move || Ok(ide_db::tools::find_installs(tool))).await
 }
 
 /// The version line of the executable at `path`.
@@ -34,7 +34,7 @@ pub async fn db_tool_installs(tool: DbTool) -> IdeResult<Vec<ToolInstall>> {
 #[tauri::command]
 #[specta::specta]
 pub async fn db_tool_version(path: std::path::PathBuf) -> IdeResult<String> {
-    ide_host::ops::doc::blocking(move || ide_db::tools::version_of(&path)).await
+    ide_host::ops::blocking(move || ide_db::tools::version_of(&path)).await
 }
 
 /// The long options the executable at `path` lists in its `--help` (`masking-policies`…).
@@ -42,7 +42,7 @@ pub async fn db_tool_version(path: std::path::PathBuf) -> IdeResult<String> {
 #[tauri::command]
 #[specta::specta]
 pub async fn db_tool_options(path: std::path::PathBuf) -> IdeResult<Vec<String>> {
-    ide_host::ops::doc::blocking(move || ide_db::tools::options_of(&path)).await
+    ide_host::ops::blocking(move || ide_db::tools::options_of(&path)).await
 }
 
 /// What made the dump at `path` and whether it creates its own database (from its first bytes).
@@ -50,7 +50,7 @@ pub async fn db_tool_options(path: std::path::PathBuf) -> IdeResult<Vec<String>>
 #[tauri::command]
 #[specta::specta]
 pub async fn db_dump_info(path: std::path::PathBuf) -> IdeResult<DumpInfo> {
-    ide_host::ops::doc::blocking(move || ide_db::tools::dump_info(&path)).await
+    ide_host::ops::blocking(move || ide_db::tools::dump_info(&path)).await
 }
 
 /// The command line `db_run_tool` would run, without the password.
@@ -95,7 +95,43 @@ pub async fn db_server_version(window: Window, state: State<'_, AppState>, id: S
     ide_host::ops::db::server_version(&state.host, window.label(), &id).await
 }
 
+/// Records the exact helper and destination reviewed in the local data-source dialog.
+#[desktop_command(trust = trusted)]
+#[tauri::command]
+#[specta::specta]
+pub async fn db_approve_external_tunnel(
+    window: Window,
+    state: State<'_, AppState>,
+    source: ide_db::DataSource,
+) -> IdeResult<()> {
+    state.host.project(window.label())?.db.approve_external_tunnel(&source).await
+}
+
+/// Tests the reviewed helper once, without persisting approval for subsequent connections.
+#[desktop_command(trust = trusted)]
+#[tauri::command]
+#[specta::specta]
+pub async fn db_test_external_tunnel(
+    window: Window,
+    state: State<'_, AppState>,
+    request: RequestId,
+    source: ide_db::DataSource,
+    password: Option<String>,
+) -> IdeResult<String> {
+    let db = state.host.project(window.label())?.db.clone();
+    let cancel = state.host.begin_project_request(window.label(), request);
+    let result = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => Err(ide_core::IdeError::cancelled()),
+        result = db.test_external_tunnel(&source, password) => result,
+    };
+    state.host.end_request(request);
+    result
+}
+
 ide_command::desktop_domain!(
+    db_approve_external_tunnel,
+    db_test_external_tunnel,
     db_dump_info,
     db_export_file,
     db_run_tool,

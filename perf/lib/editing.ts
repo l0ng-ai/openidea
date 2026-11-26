@@ -113,6 +113,7 @@ export async function openFileMeasured({ path, text, timeoutMs }: { path: string
   }
   if (result === false) throw new Error(`open action failed for ${path}`);
   while (performance.now() - t0 <= timeoutMs) {
+    // oxlint-disable-next-line no-await-in-loop -- frame-by-frame poll of editor paint; re-check state after each animation frame and return at the first match
     await new Promise(requestAnimationFrame);
     const state = w.__openideaPerf.editorState();
     const content = w.__openideaPerf.editorText();

@@ -1,0 +1,41 @@
+id = "test.execution-output"
+name = "Execution output mode fixture"
+version = "0.1.0"
+engines.openidea = "^1.18"
+wasm = "dist/plugin.wasm"
+activation = ["on-command:*"]
+
+[capabilities]
+required = ["storage", "project.read"]
+optional = ["process:execution-tool"]
+
+[[contributes.runDetectors]]
+id = "detector-pty"
+name = "Detector PTY"
+files = ["execution-output.marker"]
+command = "execution-tool"
+args = ["pty-detector"]
+outputMode = "pty"
+
+[[contributes.runDetectors]]
+id = "detector-pipes"
+name = "Detector Pipes"
+files = ["execution-output.marker"]
+command = "execution-tool"
+args = ["pipes-detector"]
+outputMode = "pipes"
+
+[[contributes.runConfigurations]]
+files = ["execution-output.marker"]
+
+[[contributes.commands]]
+id = "start"
+title = "Start with options"
+
+[[contributes.commands]]
+id = "start-legacy"
+title = "Start legacy"
+
+[[contributes.commands]]
+id = "events"
+title = "Events"

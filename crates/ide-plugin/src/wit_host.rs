@@ -112,6 +112,46 @@ pub(crate) mod hover_actions_bindings {
     });
 }
 
+/// The optional `completion-list-provider` export (API 1.16), bound on its own when present.
+pub(crate) mod completion_list_bindings {
+    wasmtime::component::bindgen!({
+        world: "plugin-completion-list",
+        path: "../../wit",
+        imports: { default: trappable },
+        with: {
+            "openidea:plugin/types": super::bindings::openidea::plugin::types,
+            "openidea:plugin/log": super::bindings::openidea::plugin::log,
+            "openidea:plugin/ui": super::bindings::openidea::plugin::ui,
+            "openidea:plugin/storage": super::bindings::openidea::plugin::storage,
+            "openidea:plugin/workspace": super::bindings::openidea::plugin::workspace,
+            "openidea:plugin/editor": super::bindings::openidea::plugin::editor,
+            "openidea:plugin/decorations": super::bindings::openidea::plugin::decorations,
+            "openidea:plugin/invocation": super::bindings::openidea::plugin::invocation,
+            "openidea:plugin/vcs": super::bindings::openidea::plugin::vcs,
+            "openidea:plugin/build": super::bindings::openidea::plugin::build,
+            "openidea:plugin/commit": super::bindings::openidea::plugin::commit,
+            "openidea:plugin/events": super::bindings::openidea::plugin::events,
+            "openidea:plugin/tasks": super::bindings::openidea::plugin::tasks,
+            "openidea:plugin/diagnostics": super::bindings::openidea::plugin::diagnostics,
+            "openidea:plugin/net": super::bindings::openidea::plugin::net,
+            "openidea:plugin/secrets": super::bindings::openidea::plugin::secrets,
+            "openidea:plugin/run": super::bindings::openidea::plugin::run,
+            "openidea:plugin/process": super::bindings::openidea::plugin::process,
+            "openidea:plugin/output": super::bindings::openidea::plugin::output,
+            "openidea:plugin/auth": super::bindings::openidea::plugin::auth,
+            "openidea:plugin/command-runner": super::bindings::openidea::plugin::command_runner,
+            "openidea:plugin/language-servers": super::bindings::openidea::plugin::language_servers,
+            "openidea:plugin/ipc": super::bindings::openidea::plugin::ipc,
+            "openidea:plugin/fs": super::bindings::openidea::plugin::fs,
+            "openidea:plugin/views": super::bindings::openidea::plugin::views,
+            "openidea:plugin/settings": super::bindings::openidea::plugin::settings,
+            "openidea:plugin/database": super::bindings::openidea::plugin::database,
+            "openidea:plugin/mcp": super::bindings::openidea::plugin::mcp,
+            "openidea:plugin/extensions": super::bindings::openidea::plugin::extensions,
+        },
+    });
+}
+
 /// The optional `providers` export.
 pub(crate) mod providers_bindings {
     wasmtime::component::bindgen!({
@@ -197,9 +237,10 @@ use bindings::openidea::plugin::{
     settings, storage, tasks, types as wit, ui, vcs, views, workspace,
 };
 
-/// A project handle: its root.
+/// A project handle: its root and generation when borrowed.
 pub struct ProjectRes {
-    root: PathBuf,
+    pub(crate) root: PathBuf,
+    pub(crate) generation: u64,
 }
 
 /// A program a plugin started behind a handle (`process.start`); dropping the
@@ -249,6 +290,8 @@ const MAX_FIND: u32 = 10_000;
 const MAX_STATUS_TEXT: usize = 128;
 const MAX_PICK_ITEMS: usize = 5000;
 const MAX_PICK_KEY: usize = 256;
+/// Filters of a `ui.pick-file` dialog, and extensions of each.
+const MAX_FILE_FILTERS: usize = 32;
 const MAX_ARGS: usize = 256;
 const MAX_ARG_BYTES: usize = 4096;
 const MAX_ENV: usize = 64;
@@ -379,6 +422,17 @@ impl log::Host for StoreData {
 }
 
 impl StoreData {
+    fn pick_path(&mut self, prompt: Prompt) -> Fallible<Option<String>> {
+        let answer = self.ask(prompt);
+        Ok(answer.and_then(|answer| {
+            let path = answer.and_then(|items| items.into_iter().next());
+            if let Some(path) = &path {
+                validate_ui_path(path)?;
+            }
+            Ok(path)
+        }))
+    }
+
     /// Asks the user and waits; the wait doesn't count against the call's
     /// wall-clock budget.
     fn ask(&mut self, prompt: Prompt) -> Result<Option<Vec<String>>, wit::Error> {
@@ -754,14 +808,27 @@ impl ui::Host for StoreData {
         {
             return Ok(Err(error));
         }
-        let answer = self.ask(Prompt::PickDirectory { title: clip(title, MAX_TITLE), initial });
-        Ok(answer.and_then(|answer| {
-            let path = answer.and_then(|items| items.into_iter().next());
-            if let Some(path) = &path {
-                validate_ui_path(path)?;
-            }
-            Ok(path)
-        }))
+        self.pick_path(Prompt::PickDirectory { title: clip(title, MAX_TITLE), initial })
+    }
+
+    fn pick_file(&mut self, title: String, dialog: ui::FileDialog) -> Fallible<Option<String>> {
+        let filters = dialog
+            .filters
+            .into_iter()
+            .take(MAX_FILE_FILTERS)
+            .map(|f| crate::PluginFileFilter {
+                name: clip(f.name, MAX_TITLE),
+                extensions: f.extensions.into_iter().take(MAX_FILE_FILTERS).map(|e| clip(e, MAX_PICK_KEY)).collect(),
+            })
+            .collect();
+        // A suggested file name only: the dialog starts where the user last was, never at a
+        // directory the plugin names.
+        let name = dialog
+            .name
+            .and_then(|n| n.rsplit(['/', '\\']).next().map(str::to_owned))
+            .filter(|n| !n.is_empty() && n != "." && n != "..")
+            .map(|n| clip(n, MAX_TITLE));
+        self.pick_path(Prompt::PickFile { title: clip(title, MAX_TITLE), save: dialog.save, name, filters })
     }
 
     fn pick_many(&mut self, title: String, items: Vec<ui::PickItem>) -> Fallible<Option<Vec<String>>> {
@@ -830,7 +897,23 @@ impl workspace::Host for StoreData {
     }
 
     fn project_of(&mut self, path: String) -> wasmtime::Result<Option<Resource<ProjectRes>>> {
-        self.host.project_of(Path::new(&path)).map(|root| self.push(ProjectRes { root })).transpose()
+        self.host
+            .project_of(Path::new(&path))
+            .map(|root| {
+                let generation = self.host.project_generation(&root).unwrap_or(0);
+                self.push(ProjectRes { root, generation })
+            })
+            .transpose()
+    }
+
+    fn invoking_project(&mut self) -> wasmtime::Result<Option<Resource<ProjectRes>>> {
+        // Only a project that is still open: a closed window's root is no project any more.
+        let root = self.invocation.workspace_root.clone().filter(|root| self.host.projects().contains(root));
+        root.map(|root| {
+            let generation = self.host.project_generation(&root).unwrap_or(0);
+            self.push(ProjectRes { root, generation })
+        })
+        .transpose()
     }
 
     fn projects(&mut self) -> Fallible<Vec<Resource<ProjectRes>>> {
@@ -839,7 +922,8 @@ impl workspace::Host for StoreData {
         }
         let mut out = Vec::new();
         for root in self.host.projects() {
-            out.push(self.push(ProjectRes { root })?);
+            let generation = self.host.project_generation(&root).unwrap_or(0);
+            out.push(self.push(ProjectRes { root, generation })?);
         }
         Ok(Ok(out))
     }
@@ -1024,6 +1108,17 @@ impl workspace::HostProject for StoreData {
             return Ok(Err(wit::Error::Failed(format!("{path}: {e}"))));
         }
         Ok(self.host.write_text_file(&real, &text).map_err(to_wit))
+    }
+
+    fn generation(&mut self, this: Resource<ProjectRes>) -> Fallible<u64> {
+        if let Err(e) = self.require(Capability::ProjectRead) {
+            return Ok(Err(e));
+        }
+        if let Err(e) = self.host.require_api("project.generation", 18) {
+            return Ok(Err(to_wit(e)));
+        }
+        let root = self.table.get(&this)?.root.clone();
+        Ok(self.host.project_generation(&root).map_err(to_wit))
     }
 
     fn drop(&mut self, rep: Resource<ProjectRes>) -> wasmtime::Result<()> {
@@ -1254,7 +1349,10 @@ impl invocation::Host for StoreData {}
 impl invocation::HostInvocation for StoreData {
     fn project(&mut self, _this: Resource<InvocationRes>) -> wasmtime::Result<Option<Resource<ProjectRes>>> {
         match self.invocation.workspace_root.clone() {
-            Some(root) => Ok(Some(self.push(ProjectRes { root })?)),
+            Some(root) => {
+                let generation = self.host.project_generation(&root).unwrap_or(0);
+                Ok(Some(self.push(ProjectRes { root, generation })?))
+            }
             None => Ok(None),
         }
     }
@@ -1380,6 +1478,34 @@ impl vcs::Host for StoreData {
         let root = self.table.get(&project)?.root.clone();
         Ok(self.host.vcs_remotes(&root).map_err(to_wit))
     }
+
+    fn roots(&mut self, project: Resource<ProjectRes>) -> Fallible<Vec<String>> {
+        if let Err(e) = self.require(Capability::VcsRead) {
+            return Ok(Err(e));
+        }
+        Ok(self.host.vcs_roots(&self.table.get(&project)?.root).map_err(to_wit))
+    }
+
+    fn repository_at(&mut self, project: Resource<ProjectRes>, path: String) -> Fallible<Option<vcs::RepositoryInfo>> {
+        if let Err(e) = self.require(Capability::VcsRead) {
+            return Ok(Err(e));
+        }
+        Ok(self
+            .host
+            .vcs_repository_at(&self.table.get(&project)?.root, &path)
+            .map(|r| {
+                r.map(|r| vcs::RepositoryInfo {
+                    root: r.root,
+                    relative_path: r.relative_path,
+                    branch: r.branch,
+                    commit: r.commit,
+                    upstream: r.upstream,
+                    ahead: r.ahead,
+                    remotes: r.remotes,
+                })
+            })
+            .map_err(to_wit))
+    }
 }
 
 impl build::Host for StoreData {
@@ -1498,6 +1624,11 @@ impl events::Host for StoreData {
         {
             return Ok(Err(to_wit(e)));
         }
+        if kind == EventKind::ProjectClosed
+            && let Err(e) = self.host.require_api(kind.name(), 18)
+        {
+            return Ok(Err(to_wit(e)));
+        }
         if kind == EventKind::DocumentChanged {
             return Ok(Err(wit::Error::Invalid(
                 "document-changed is delivered only for paths named with subscribe-paths".into(),
@@ -1527,11 +1658,72 @@ impl events::Host for StoreData {
         Ok(self.host.subscribe_paths(&kind, globs).map_err(to_wit))
     }
 
+    fn subscribe_paths_with_options(
+        &mut self,
+        kind: String,
+        options: bindings::openidea::plugin::events::SubscriptionOptions,
+    ) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::Events) {
+            return Ok(Err(e));
+        }
+        if let Err(e) = self.host.require_api("subscribe-paths-with-options", 18) {
+            return Ok(Err(to_wit(e)));
+        }
+        if kind == EventKind::DocumentChanged.name() {
+            if let Err(e) = self.host.require_api(&kind, 6) {
+                return Ok(Err(to_wit(e)));
+            }
+            if let Err(e) = self.require(Capability::ProjectRead).and_then(|_| self.require(Capability::EditorRead)) {
+                return Ok(Err(e));
+            }
+        }
+        Ok(self.host.subscribe_paths_with_options(&kind, options.globs, options.debounce_ms).map_err(to_wit))
+    }
+
     fn unsubscribe(&mut self, kind: String) -> wasmtime::Result<()> {
         self.host.unsubscribe(&kind);
         Ok(())
     }
+
+    fn watch_paths(&mut self, paths: Vec<String>) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::Events) {
+            return Ok(Err(e));
+        }
+        if let Err(e) = self.host.require_api("watch-paths", 18) {
+            return Ok(Err(to_wit(e)));
+        }
+        let project = self.invocation.workspace_root.clone().filter(|root| self.host.projects().contains(root));
+        let (Some(client), Some(project)) = (self.client().map(str::to_owned), project) else {
+            return Ok(Err(wit::Error::Invalid("watch-paths needs a call that serves a window's project".into())));
+        };
+        if paths.len() > MAX_WATCHED_PATHS {
+            return Ok(Err(wit::Error::Invalid(format!("at most {MAX_WATCHED_PATHS} watched paths"))));
+        }
+        let real_project = dunce::canonicalize(&project).unwrap_or_else(|_| project.clone());
+        let mut resolved = Vec::with_capacity(paths.len());
+        for path in &paths {
+            let real = match self.granted_file(path) {
+                Ok(real) => real,
+                Err(e) => return Ok(Err(e)),
+            };
+            if real.starts_with(&real_project) {
+                return Ok(Err(wit::Error::Invalid(format!(
+                    "{path} is inside the project: subscribe to files-changed for it"
+                ))));
+            }
+            if !resolved.contains(&real) {
+                resolved.push(real);
+            }
+        }
+        if !resolved.is_empty() {
+            self.host.subscribe(EventKind::WatchedFilesChanged);
+        }
+        Ok(self.host.watch_paths(&client, &project, resolved).map_err(to_wit))
+    }
 }
+
+/// The most paths one plugin watches outside one project (`events.watch-paths`).
+const MAX_WATCHED_PATHS: usize = 32;
 
 impl tasks::Host for StoreData {
     fn begin(&mut self, title: String, cancellable: bool) -> wasmtime::Result<Resource<TaskRes>> {
@@ -1862,6 +2054,10 @@ fn to_output(output: crate::types::ProcessOutput) -> process::Output {
     process::Output { status: output.status, stdout: output.stdout, stderr: output.stderr }
 }
 
+fn to_process_options(opts: process::ProcessOptions) -> crate::types::ProcessOptions {
+    crate::types::ProcessOptions { max_output_bytes: opts.max_output_bytes, buffer_bytes: opts.buffer_bytes }
+}
+
 impl process::Host for StoreData {
     fn run(
         &mut self,
@@ -1916,6 +2112,47 @@ impl process::Host for StoreData {
         };
         self.push(ChildRes { id, host: self.host.clone() }).map(Ok)
     }
+
+    fn run_captured(
+        &mut self,
+        cmd: process::Command,
+        cwd: Option<Resource<ProjectRes>>,
+        stdin: Option<String>,
+        options: Option<process::ProcessOptions>,
+    ) -> Fallible<process::Output> {
+        let cmd = match self.command(cmd) {
+            Ok(cmd) => cmd,
+            Err(e) => return Ok(Err(e)),
+        };
+        let cwd = self.cwd_of(cwd)?;
+        let token = self.cancel.token();
+        let timeout = self.io_timeout();
+        let opts = options.map(to_process_options);
+        let outcome = self.host.run_process_with_options(cmd, cwd.as_deref(), stdin, &token, timeout, opts);
+        if outcome.is_err() {
+            self.grant_io_error_grace();
+        }
+        Ok(outcome.map(to_output).map_err(to_wit))
+    }
+
+    fn start_stream(
+        &mut self,
+        cmd: process::Command,
+        cwd: Option<Resource<ProjectRes>>,
+        options: Option<process::ProcessOptions>,
+    ) -> Fallible<Resource<ChildRes>> {
+        let cmd = match self.command(cmd) {
+            Ok(cmd) => cmd,
+            Err(e) => return Ok(Err(e)),
+        };
+        let cwd = self.cwd_of(cwd)?;
+        let opts = options.map(to_process_options);
+        let id = match self.host.start_process_stream(cmd, cwd.as_deref(), self.invocation.client.as_deref(), opts) {
+            Ok(id) => id,
+            Err(e) => return Ok(Err(to_wit(e))),
+        };
+        self.push(ChildRes { id, host: self.host.clone() }).map(Ok)
+    }
 }
 
 impl process::HostChild for StoreData {
@@ -1956,8 +2193,14 @@ impl process::HostChild for StoreData {
     }
 }
 
-impl views::Host for StoreData {
-    fn open_terminal_session(&mut self, key: String, title: String, cmd: process::Command) -> Fallible<String> {
+impl StoreData {
+    fn open_keyed_terminal(
+        &mut self,
+        key: String,
+        title: String,
+        cmd: process::Command,
+        cwd: Option<String>,
+    ) -> Fallible<String> {
         if let Err(e) = self.require_window() {
             return Ok(Err(e));
         }
@@ -1972,10 +2215,29 @@ impl views::Host for StoreData {
                 key,
                 title,
                 cmd,
+                cwd,
                 &self.cancel.token(),
                 self.remaining(),
             )
             .map_err(to_wit))
+    }
+}
+
+impl views::Host for StoreData {
+    fn open_terminal_session(&mut self, key: String, title: String, cmd: process::Command) -> Fallible<String> {
+        self.open_keyed_terminal(key, title, cmd, None)
+    }
+    fn open_terminal_session_in(
+        &mut self,
+        key: String,
+        title: String,
+        cmd: process::Command,
+        cwd: String,
+    ) -> Fallible<String> {
+        if let Err(e) = self.host.require_api("views.open-terminal-session-in", 18) {
+            return Ok(Err(to_wit(e)));
+        }
+        self.open_keyed_terminal(key, title, cmd, Some(cwd))
     }
     fn write_terminal(&mut self, key: String, text: String) -> Fallible<()> {
         if let Err(e) = self.require_window() {
@@ -2419,8 +2681,12 @@ impl StoreData {
         if let Err(e) = self.require(Capability::Process(target.program.clone())) {
             return Ok(Err(e));
         }
-        let root = self.table.get(&project)?.root.clone();
-        Ok(self.host.register_run_target(&root, target).map_err(to_wit))
+        let res = self.table.get(&project)?;
+        let root = res.root.clone();
+        // Components built for API 1.18 or later have a registration from an outdated
+        // handle refused; older ones keep registering whatever the generation.
+        let generation = self.host.require_api("project.generation", 18).is_ok().then_some(res.generation);
+        Ok(self.host.register_run_target(&root, target, generation).map_err(to_wit))
     }
 }
 
@@ -2486,19 +2752,40 @@ impl bindings::openidea::plugin::run_targets::Host for StoreData {
 
 impl bindings::openidea::plugin::run::Host for StoreData {
     fn start(&mut self, config: String, args: Vec<String>, debug: bool) -> Fallible<String> {
+        self.start_with_options(
+            config,
+            args,
+            bindings::openidea::plugin::run::StartOptions { debug, output_mode: None },
+        )
+    }
+
+    fn start_with_options(
+        &mut self,
+        config: String,
+        args: Vec<String>,
+        options: bindings::openidea::plugin::run::StartOptions,
+    ) -> Fallible<String> {
+        use bindings::openidea::plugin::run::OutputMode as WitOutputMode;
         if let Err(e) = self.require_window() {
             return Ok(Err(e));
         }
         if args.len() > MAX_ARGS || args.iter().any(|a| a.len() > MAX_ARG_BYTES || a.contains('\0')) {
             return Ok(Err(wit::Error::Invalid("invalid run arguments".into())));
         }
+        let options = crate::PluginRunStartOptions {
+            debug: options.debug,
+            output_mode: options.output_mode.map(|m| match m {
+                WitOutputMode::Pipes => crate::PluginOutputMode::Pipes,
+                WitOutputMode::Pty => crate::PluginOutputMode::Pty,
+            }),
+        };
         Ok(self
             .host
             .start_run(
                 self.invocation.client.as_deref().unwrap(),
                 &config,
                 args,
-                debug,
+                options,
                 &self.cancel.token(),
                 self.remaining(),
             )
@@ -2511,6 +2798,14 @@ pub(crate) mod run_configurations_bindings {
 pub(crate) mod launch_configurations_bindings {
     wasmtime::component::bindgen!({ world: "launch-configurations-provider", path: "../../wit",
         with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
+    });
+}
+pub(crate) mod execution_configurations_bindings {
+    wasmtime::component::bindgen!({ world: "execution-configurations-provider", path: "../../wit",
+        with: {
+            "openidea:plugin/types": super::bindings::openidea::plugin::types,
+            "openidea:plugin/run": super::bindings::openidea::plugin::run,
+        },
     });
 }
 pub(crate) mod test_results_bindings {
@@ -2717,6 +3012,23 @@ fn diagnostic_to_wit(d: ide_core::Diagnostic) -> diagnostics::Diagnostic {
         related: Vec::new(),
     }
 }
+impl StoreData {
+    /// Shared by `set` and `set-markdown`: both replace the same set-id namespace.
+    fn replace_decorations(&mut self, path: String, set_id: String, items: Vec<crate::Decoration>) -> Fallible<()> {
+        if let Err(e) = self.require(Capability::ProjectRead) {
+            return Ok(Err(e));
+        }
+        if items.len() > 10_000 {
+            return Ok(Err(wit::Error::Invalid("at most 10000 decorations per file".into())));
+        }
+        let real = match self.decoration_path(&path) {
+            Ok(real) => real,
+            Err(e) => return Ok(Err(e)),
+        };
+        Ok(self.host.decorations(Some(&real), &set_id, items).map_err(to_wit))
+    }
+}
+
 impl bindings::openidea::plugin::decorations::Host for StoreData {
     fn set(
         &mut self,
@@ -2724,21 +3036,58 @@ impl bindings::openidea::plugin::decorations::Host for StoreData {
         set_id: String,
         items: Vec<bindings::openidea::plugin::decorations::Decoration>,
     ) -> Fallible<()> {
-        if let Err(e) = self.require(Capability::ProjectRead) {
-            return Ok(Err(e));
-        }
-        if items.len() > 10_000 {
-            return Ok(Err(wit::Error::Invalid("at most 10000 decorations per file".into())));
-        }
         let items = items
             .into_iter()
-            .map(|d| crate::Decoration { range: core_range(d.range), style: d.style, hover: d.hover, after: d.after })
+            .map(|d| crate::Decoration {
+                range: core_range(d.range),
+                style: d.style,
+                hover: d.hover,
+                after: d.after,
+                markdown_hover: None,
+                colors: None,
+            })
             .collect();
-        let real = match self.decoration_path(&path) {
-            Ok(real) => real,
-            Err(e) => return Ok(Err(e)),
-        };
-        Ok(self.host.decorations(Some(&real), &set_id, items).map_err(to_wit))
+        self.replace_decorations(path, set_id, items)
+    }
+    fn set_markdown(
+        &mut self,
+        path: String,
+        set_id: String,
+        items: Vec<bindings::openidea::plugin::decorations::MarkdownDecoration>,
+    ) -> Fallible<()> {
+        let items = items
+            .into_iter()
+            .map(|d| crate::Decoration {
+                range: core_range(d.range),
+                style: d.style,
+                hover: d.hover,
+                after: d.after,
+                markdown_hover: d.markdown_hover,
+                colors: None,
+            })
+            .collect();
+        self.replace_decorations(path, set_id, items)
+    }
+    fn set_styled(
+        &mut self,
+        path: String,
+        set_id: String,
+        items: Vec<bindings::openidea::plugin::decorations::StyledDecoration>,
+    ) -> Fallible<()> {
+        let items = items
+            .into_iter()
+            .map(|d| crate::Decoration {
+                range: core_range(d.range),
+                style: d.style,
+                hover: d.hover,
+                after: d.after,
+                markdown_hover: d.markdown_hover,
+                colors: d
+                    .colors
+                    .map(|c| crate::DecorationColors { foreground: c.foreground, background: c.background }),
+            })
+            .collect();
+        self.replace_decorations(path, set_id, items)
     }
     fn clear(&mut self, set_id: String) -> Fallible<()> {
         if let Err(e) = self.require(Capability::ProjectRead) {
@@ -2972,6 +3321,19 @@ impl bindings::openidea::plugin::mcp::Host for StoreData {
     }
 }
 
+impl bindings::openidea::plugin::agents::Host for StoreData {
+    fn fork_session(&mut self, agent: String, session_id: String, cwd: String) -> Fallible<String> {
+        if let Err(e) = self.require(Capability::Agents) {
+            return Ok(Err(e));
+        }
+        if let Err(e) = self.require_window() {
+            return Ok(Err(e));
+        }
+        let client = self.invocation.client.clone().unwrap_or_default();
+        Ok(self.host.fork_agent_session(&client, &agent, &session_id, Path::new(&cwd)).map_err(to_wit))
+    }
+}
+
 pub(crate) mod mcp_bindings {
     wasmtime::component::bindgen!({ world: "mcp-tools", path: "../../wit",
         with: {
@@ -2982,6 +3344,16 @@ pub(crate) mod mcp_bindings {
 }
 
 /// Optional API 1.5 run-target launch validation.
+/// The optional `run-anything-provider` export (API 1.18), bound on its own when present.
+pub(crate) mod run_anything_bindings {
+    wasmtime::component::bindgen!({ world: "run-anything-exports", path: "../../wit" });
+}
+
+/// The optional `run-configuration-completion` export (API 1.18), bound on its own when present.
+pub(crate) mod run_config_completion_bindings {
+    wasmtime::component::bindgen!({ world: "run-configuration-completion-exports", path: "../../wit" });
+}
+
 pub(crate) mod run_target_validation_bindings {
     wasmtime::component::bindgen!({ world: "run-target-validator", path: "../../wit" });
 }

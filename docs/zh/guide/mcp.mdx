@@ -84,7 +84,7 @@ stdio 配置大致如下（路径以你机器上的为准）：
 
 | 类别        | 工具                                                                                              |
 | ----------- | ------------------------------------------------------------------------------------------------- |
-| 文件        | `read_file`、`list_directory_tree`、`create_new_file`、`apply_patch`                              |
+| 文件        | `get_workspace_roots`、`read_file`、`list_directory_tree`、`create_new_file`、`apply_patch`       |
 | 搜索        | `search_text`、`search_regex`、`search_symbol`、`search_file`                                     |
 | 编辑器      | `get_all_open_file_paths`、`get_current_file`、`open_file_in_editor`                              |
 | 代码        | `get_symbol_info`、`find_references`、`get_call_hierarchy`、`rename_refactoring`、`reformat_file` |
@@ -97,6 +97,7 @@ stdio 配置大致如下（路径以你机器上的为准）：
 
 几点说明：
 
+- `get_workspace_roots` 列出项目和附加到它的受信任项目，在其中一个项目里工作的 agent 也能知道工作区里的其他项目。
 - `read_file` 还能读取依赖的源代码，以及 jar 和 zip 压缩包中的文件。
 - `search_symbol` 和 `find_references` 使用 IDE 的索引和语言服务器；`get_symbol_info` 返回的内容与快速文档相同。
 - `get_call_hierarchy` 列出某个位置上函数或方法的调用方，`direction` 为 `outgoing` 时列出它调用的函数，每次一层。位置在函数体内时，指的就是这个函数。要再深入一层，用某一项的 `filePath`、`startLine` 和 `startColumn` 再调用一次。库中的项以 URI 作为 `filePath`，不能继续展开。

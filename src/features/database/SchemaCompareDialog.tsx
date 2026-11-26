@@ -6,7 +6,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 import { Button, Checkbox, Dialog, EmptyState, Icon, Select, Spinner, T, Tree, type SelectOption } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { CodePreview } from "./CodePreview";
@@ -59,27 +59,34 @@ function SidePicker({ label, side, onChange }: { label: string; side: Side; onCh
     .map((s) => ({
       value: s.id ?? "",
       label: s.name ?? "",
+      verbatim: true,
       icon: "database",
     }));
   if (side.id && !sourceOptions.some((o) => o.value === side.id))
     sourceOptions.push({ value: side.id, label: targetLabel(side.id), icon: "database" });
   const names = schemas?.status === "ok" ? schemas.value : [];
-  const schemaOptions: SelectOption[] = names.map((n) => ({ value: n, label: n, icon: "db-schema" }));
-  if (side.schema && !names.includes(side.schema)) schemaOptions.unshift({ value: side.schema, label: side.schema });
+  const schemaOptions: SelectOption[] = names.map((n) => ({
+    value: n,
+    label: n,
+    verbatim: true,
+    icon: "db-schema",
+  }));
+  if (side.schema && !names.includes(side.schema))
+    schemaOptions.unshift({ value: side.schema, label: side.schema, verbatim: true });
   return (
     <div className={styles.side}>
       <span className={styles.sideLabel}>
         <T>{label}</T>
       </span>
       <Select
-        aria-label={tx`${tx(label)} data source`}
+        aria-label={tx`${txPart(label)} data source`}
         value={side.id || null}
         placeholder="<data source>"
         options={sourceOptions}
         onChange={(id) => onChange({ id, schema: sourceById(id)?.driver === "sqlite" ? "main" : "" })}
       />
       <Select
-        aria-label={tx`${tx(label)} schema`}
+        aria-label={tx`${txPart(label)} schema`}
         value={side.schema || null}
         placeholder="<schema>"
         options={schemaOptions}
@@ -129,7 +136,7 @@ function migrates(source: Side, target: Side): string {
 }
 
 function includeLabel(r: Row): string {
-  const name = r.kind === "group" ? tx(r.label) : r.diff.name;
+  const name = r.kind === "group" ? txPart(r.label) : r.diff.name;
   return tx`Include ${name}`;
 }
 

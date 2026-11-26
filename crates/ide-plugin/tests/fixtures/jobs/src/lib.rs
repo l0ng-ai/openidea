@@ -35,6 +35,15 @@ impl Plugin for Jobs {
     fn run_command(&mut self, id: &str, ctx: &Invocation, arg: Option<&str>) -> Result<Option<String>, Error> {
         match id {
             "follow" => self.follow().map(|()| None),
+            "repository-at" => {
+                let project = ctx.project().ok_or("no project is open")?;
+                Ok(match arg {
+                    None => Some(project.vcs_roots()?.join("\n")),
+                    Some(path) => project.vcs_repository_at(path)?.map(|r| {
+                        format!("{}|{}|{}|{:?}", r.root, r.relative_path, r.branch.unwrap_or_default(), r.remotes)
+                    }),
+                })
+            }
             "remotes" => {
                 let project = ctx.project().ok_or("no project is open")?;
                 let remotes = project.vcs_remotes()?;
@@ -104,6 +113,17 @@ impl Plugin for Jobs {
             "open-url" => {
                 host::open_url(arg.unwrap_or_default())?;
                 Ok(None)
+            }
+            "pick-file" => {
+                let dialog = openidea_plugin::FileDialog {
+                    save: arg.is_some(),
+                    name: arg.map(str::to_owned),
+                    filters: vec![openidea_plugin::FileFilter {
+                        name: "Parquet".into(),
+                        extensions: vec!["parquet".into()],
+                    }],
+                };
+                Ok(host::pick_file("Data file", &dialog)?)
             }
             "pick-directory" => Ok(Some(host::pick_directory("Clone target", arg)?.unwrap_or_else(|| "none".into()))),
             "open-project" | "open-project-new" => {

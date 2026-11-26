@@ -1,6 +1,66 @@
 import type { Locator } from "@playwright/test";
 import { expect, stubDesktop, test } from "./fixtures";
 
+test("Find Usages places read and write filters with the other actions", async ({ workbench: page }) => {
+  await stubDesktop(page);
+  await page.evaluate(async () => {
+    const modulePath = "/src/features/code-insight/usages.ts";
+    const { useUsagesPopup } = await import(modulePath);
+    const path = "/dev/acme-api/src/SettlementService.ts";
+    const lines = ["const current = settlement;", "settlement = next;"];
+    window.__ipc.handlers.fs_read_text = () => lines.join("\n");
+    useUsagesPopup.setState({
+      open: true,
+      anchor: { x: 100, y: 150 },
+      symbol: "settlement",
+      loading: false,
+      scope: "project",
+      groups: [
+        {
+          path,
+          usages: lines.map((text, line) => ({
+            path,
+            line,
+            col: text.indexOf("settlement"),
+            endCol: text.indexOf("settlement") + "settlement".length,
+            text,
+            access: line === 0 ? "read" : "write",
+          })),
+        },
+      ],
+    });
+  });
+
+  const popup = page.getByRole("dialog", { name: "Usages", exact: true });
+  const read = { name: "Show read accesses", exact: true };
+  const write = { name: "Show write accesses", exact: true };
+  const actions = popup.getByRole("button", { name: "Show Preview", exact: true }).locator("..");
+  await expect(popup.getByRole("option")).toHaveCount(2);
+  for (const width of [1120, 540]) {
+    await page.setViewportSize({ width, height: 640 });
+    expect(await actions.getByRole("toolbar", { name: "Usage access filters", exact: true }).count()).toBe(1);
+    await expect(actions.getByRole("button", read)).toBeInViewport({ ratio: 1 });
+    await expect(actions.getByRole("button", write)).toBeInViewport({ ratio: 1 });
+  }
+  await actions.getByRole("button", write).click();
+  await expect(popup.getByRole("option")).toHaveCount(1);
+  await popup.getByRole("button", { name: /Open in Find Window/ }).click();
+
+  const view = page.getByRole("region", { name: "Find Usages", exact: true });
+  const toolbar = view.getByRole("toolbar", { name: "Usages actions", exact: true });
+  const readButton = toolbar.getByRole("button", read);
+  const writeButton = toolbar.getByRole("button", write);
+  await expect(readButton).toHaveAttribute("aria-pressed", "true");
+  await expect(writeButton).toHaveAttribute("aria-pressed", "false");
+  const a = (await readButton.boundingBox())!;
+  const b = (await writeButton.boundingBox())!;
+  expect(a.x).toBeCloseTo(b.x, 0);
+  expect(b.y).toBeGreaterThanOrEqual(a.y + a.height);
+  await expect(view.locator("mark")).toHaveCount(1);
+  await writeButton.click();
+  await expect(view.locator("mark")).toHaveCount(2);
+});
+
 async function checkSize(icon: Locator, size = 16) {
   const dimensions = await icon.evaluate((node) => {
     const style = getComputedStyle(node);
@@ -163,3 +223,68 @@ for (const theme of ["light", "dark"] as const) {
     await expect(popup).toBeHidden();
   });
 }
+
+test("Find Usages lines use the tree font and keep line numbers beside the snippet", async ({ workbench: page }) => {
+  await stubDesktop(page);
+  await page.evaluate(async () => {
+    const modulePath = "/src/features/code-insight/usages.ts";
+    const { useUsagesPopup } = await import(modulePath);
+    const path = "/dev/acme-api/src/TaskScheduler.ts";
+    const lines = Array<string>(1001).fill("");
+    const usageLines = [6, 97, 1001];
+    const text = "  scheduler.schedule(task);";
+    for (const line of usageLines) lines[line - 1] = text;
+    window.__ipc.handlers.fs_read_text = () => lines.join("\n");
+    useUsagesPopup.setState({
+      open: true,
+      anchor: { x: 100, y: 150 },
+      symbol: "scheduler",
+      loading: false,
+      groups: [
+        {
+          path,
+          usages: usageLines.map((line) => ({
+            path,
+            line: line - 1,
+            col: 2,
+            endCol: 11,
+            text,
+          })),
+        },
+      ],
+    });
+  });
+
+  const popup = page.getByRole("dialog", { name: "Usages", exact: true });
+  const popupMatch = popup.getByRole("option").first().locator("mark");
+  const popupFont = await popupMatch.evaluate((node) => getComputedStyle(node).fontFamily);
+  await popup.getByRole("button", { name: /Open in Find Window/ }).click();
+
+  const usages = page.getByRole("region", { name: "Find Usages", exact: true });
+  await expect(usages.locator("mark")).toHaveCount(3);
+  for (const width of [1200, 540]) {
+    await page.setViewportSize({ width, height: 740 });
+    for (const line of ["6", "97", "1001"]) {
+      const row = usages.getByRole("treeitem").filter({ has: page.getByText(line, { exact: true }) });
+      const mark = row.locator("mark");
+      await expect(mark).toHaveText("scheduler");
+      const number = await row.getByText(line, { exact: true }).evaluate((node) => {
+        const text = new Range();
+        text.selectNodeContents(node);
+        const { right } = text.getBoundingClientRect();
+        return { right, font: getComputedStyle(node).fontFamily, size: getComputedStyle(node).fontSize };
+      });
+      const snippet = await mark.evaluate((node) => ({
+        left: node.getBoundingClientRect().left,
+        font: getComputedStyle(node).fontFamily,
+        size: getComputedStyle(node).fontSize,
+      }));
+      const treeFont = await row.evaluate((node) => getComputedStyle(node).fontFamily);
+      expect(snippet.font).toBe(treeFont);
+      expect(number.font).toBe(treeFont);
+      expect(popupFont).not.toBe(treeFont);
+      expect(snippet.size).toBe(number.size);
+      expect(snippet.left - number.right).toBeCloseTo(4, 0);
+    }
+  }
+});

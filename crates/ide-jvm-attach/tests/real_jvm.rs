@@ -8,10 +8,49 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use ide_jvm_attach::{
-    AttachError, HeapDumpReply, agent_properties, find_jvm_by_jdwp_port, has_listener, heap_dump, heap_dump_command,
-    histogram_safe_while_suspended, java_version_of, jcmd, jdwp_port, parse_class_histogram, parse_heap_dump_reply,
-    parse_release, vm_flags,
+    AttachError, HeapDumpReply, LISTENER_START_TIMEOUT, THREAD_DUMP_TIMEOUT, agent_properties, ensure_listener,
+    find_jvm_by_jdwp_port, has_listener, heap_dump, heap_dump_command, histogram_safe_while_suspended, is_hotspot,
+    java_version_of, jcmd, jdwp_port, parse_class_histogram, parse_heap_dump_reply, parse_release, process_table,
+    select_run_jvm, temp_dir, thread_dump_json, thread_print, vm_flags,
 };
+
+/// Two threads that each hold one monitor and wait for the other's after 200 ms.
+const DEADLOCK_JAVA: &str = r#"
+public class Deadlock {
+    static final Object A = new Object(), B = new Object();
+
+    static void sleep(long ms) {
+        try { Thread.sleep(ms); } catch (InterruptedException e) { throw new RuntimeException(e); }
+    }
+
+    public static void main(String[] args) {
+        new Thread(() -> { synchronized (A) { sleep(200); synchronized (B) { } } }, "sync-1").start();
+        new Thread(() -> { synchronized (B) { sleep(200); synchronized (A) { } } }, "sync-2").start();
+        System.out.println("READY");
+        System.out.flush();
+        sleep(60_000);
+    }
+}
+"#;
+
+/// Two virtual threads in a monitor deadlock, which `Thread.print` does not list.
+const VIRTUAL_DEADLOCK_JAVA: &str = r#"
+public class VirtualDeadlock {
+    static final Object A = new Object(), B = new Object();
+
+    static void sleep(long ms) {
+        try { Thread.sleep(ms); } catch (InterruptedException e) { throw new RuntimeException(e); }
+    }
+
+    public static void main(String[] args) {
+        Thread.ofVirtual().name("v-sync-1").start(() -> { synchronized (A) { sleep(200); synchronized (B) { } } });
+        Thread.ofVirtual().name("v-sync-2").start(() -> { synchronized (B) { sleep(200); synchronized (A) { } } });
+        System.out.println("READY");
+        System.out.flush();
+        sleep(60_000);
+    }
+}
+"#;
 
 const MAIN_JAVA: &str = r#"
 import java.util.ArrayList;
@@ -168,15 +207,19 @@ fn finds_a_real_jvm_by_its_jdwp_port() {
 
 /// Compiles `MAIN_JAVA` with the `javac` next to `java`, since JDK 8 has no source launcher.
 fn launch_main(java: &Path, dir: &Path, jvm_args: &[&str]) -> JvmGuard {
-    let source = dir.join("Main.java");
-    std::fs::write(&source, MAIN_JAVA).unwrap();
+    launch_class(java, dir, "Main", MAIN_JAVA, jvm_args)
+}
+
+fn launch_class(java: &Path, dir: &Path, class: &str, source_text: &str, jvm_args: &[&str]) -> JvmGuard {
+    let source = dir.join(format!("{class}.java"));
+    std::fs::write(&source, source_text).unwrap();
     let status = Command::new(java.with_file_name("javac")).arg("-d").arg(dir).arg(&source).status().expect("javac");
     assert!(status.success(), "javac failed");
     let child = Command::new(java)
         .args(jvm_args)
         .arg("-cp")
         .arg(dir)
-        .arg("Main")
+        .arg(class)
         .current_dir(dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -309,4 +352,86 @@ fn dumps_while_suspended() {
     jdwp_command(&mut jdwp, 2, 1, 9); // VirtualMachine.Resume
     assert!(guard.0.try_wait().unwrap().is_none(), "the JVM exited after resume");
     vm_flags(pid, Duration::from_secs(10)).expect("the attach listener answers after resume");
+}
+
+#[test]
+#[ignore = "needs a real JDK >= 8: set OPENIDEA_TEST_JAVA to its bin/java"]
+fn ensure_listener_starts_a_listener_on_demand() {
+    let Some(java) = std::env::var_os("OPENIDEA_TEST_JAVA").map(PathBuf::from) else {
+        eprintln!("OPENIDEA_TEST_JAVA is not set; skipping");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mut guard = launch_main(&java, dir.path(), &[]);
+    let pid = guard.0.id();
+    wait_for_ready(&output_lines(&mut guard.0));
+    assert!(!has_listener(pid), "the JVM opened its listener without being asked");
+    assert!(is_hotspot(pid));
+
+    let started = Instant::now();
+    ensure_listener(pid, LISTENER_START_TIMEOUT).unwrap();
+    eprintln!("on-demand listener for pid {pid} in {:?}", started.elapsed());
+    assert!(has_listener(pid));
+    jcmd(pid, "VM.version", Duration::from_secs(10)).expect("the new listener answers");
+
+    let trigger = format!(".attach_pid{pid}");
+    for parent in [temp_dir(), dir.path().to_path_buf()] {
+        assert!(!parent.join(&trigger).exists(), "trigger file left in {parent:?}");
+    }
+    ensure_listener(pid, LISTENER_START_TIMEOUT).expect("an open listener is accepted as is");
+}
+
+#[test]
+#[ignore = "needs a real JDK >= 8: set OPENIDEA_TEST_JAVA to its bin/java"]
+fn thread_print_reports_a_deadlock() {
+    let Some(java) = std::env::var_os("OPENIDEA_TEST_JAVA").map(PathBuf::from) else {
+        eprintln!("OPENIDEA_TEST_JAVA is not set; skipping");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mut guard = launch_class(&java, dir.path(), "Deadlock", DEADLOCK_JAVA, &["-XX:+StartAttachListener"]);
+    let pid = guard.0.id();
+    wait_for_ready(&output_lines(&mut guard.0));
+    wait_for_listener(pid);
+    // The threads take their first monitor at once and the second after 200 ms.
+    std::thread::sleep(Duration::from_secs(1));
+
+    let dump = thread_print(pid, THREAD_DUMP_TIMEOUT).unwrap();
+    assert!(dump.contains("Found one Java-level deadlock"), "{dump}");
+    assert!(dump.contains("sync-1") && dump.contains("sync-2"), "{dump}");
+
+    // The run's JVM is found through the real process table, as the dump action does.
+    let table = process_table();
+    assert!(table.iter().any(|entry| entry.pid == pid && entry.command.contains("Deadlock")));
+    assert_eq!(select_run_jvm(&table, pid, None, is_hotspot), Some(pid));
+}
+
+#[test]
+#[ignore = "needs a real JDK >= 21: set OPENIDEA_TEST_JAVA to its bin/java"]
+fn thread_dump_json_lists_virtual_threads() {
+    let Some(java) = std::env::var_os("OPENIDEA_TEST_JAVA").map(PathBuf::from) else {
+        eprintln!("OPENIDEA_TEST_JAVA is not set; skipping");
+        return;
+    };
+    let major = reported_major(&java);
+    if major < 21 {
+        eprintln!("JDK {major} has no virtual threads; skipping");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mut guard =
+        launch_class(&java, dir.path(), "VirtualDeadlock", VIRTUAL_DEADLOCK_JAVA, &["-XX:+StartAttachListener"]);
+    let pid = guard.0.id();
+    wait_for_ready(&output_lines(&mut guard.0));
+    wait_for_listener(pid);
+    std::thread::sleep(Duration::from_secs(1));
+
+    let dumps = dir.path().join("a b");
+    std::fs::create_dir(&dumps).unwrap();
+    let started = Instant::now();
+    let json = thread_dump_json(pid, &dumps, THREAD_DUMP_TIMEOUT).unwrap();
+    eprintln!("JDK {major} JSON thread dump: {} bytes in {:?}", json.len(), started.elapsed());
+    assert!(json.contains("\"threadContainers\""), "{json}");
+    assert!(json.contains("\"v-sync-1\"") && json.contains("\"v-sync-2\""), "{json}");
+    assert!(std::fs::read_dir(&dumps).unwrap().next().is_none(), "dump file left in {dumps:?}");
 }

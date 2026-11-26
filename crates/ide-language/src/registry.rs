@@ -12,6 +12,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("arduino", include_str!("../../../languages/arduino.toml")),
     ("asciidoc", include_str!("../../../languages/asciidoc.toml")),
     ("astro", include_str!("../../../languages/astro.toml")),
+    ("axaml", include_str!("../../../languages/axaml.toml")),
     ("bat", include_str!("../../../languages/bat.toml")),
     ("c", include_str!("../../../languages/c.toml")),
     ("clojure", include_str!("../../../languages/clojure.toml")),
@@ -28,11 +29,13 @@ const BUILTIN: &[(&str, &str)] = &[
     ("elixir", include_str!("../../../languages/elixir.toml")),
     ("erb", include_str!("../../../languages/erb.toml")),
     ("erlang", include_str!("../../../languages/erlang.toml")),
+    ("freemarker", include_str!("../../../languages/freemarker.toml")),
     ("fsharp", include_str!("../../../languages/fsharp.toml")),
     ("gitattributes", include_str!("../../../languages/gitattributes.toml")),
     ("gdscript", include_str!("../../../languages/gdscript.toml")),
     ("gdshader", include_str!("../../../languages/gdshader.toml")),
     ("go", include_str!("../../../languages/go.toml")),
+    ("gotmpl", include_str!("../../../languages/gotmpl.toml")),
     ("gherkin", include_str!("../../../languages/gherkin.toml")),
     ("gomod", include_str!("../../../languages/gomod.toml")),
     ("gowork", include_str!("../../../languages/gowork.toml")),
@@ -406,7 +409,14 @@ impl LanguageRegistry {
         if let Some((_, i)) = t.name_globs.iter().find(|(p, _)| wildcard_match(p, file_name)) {
             return languages[*i].id.clone();
         }
-        if let Some(l) = languages.iter().find(|l| l.framework_files.iter().any(|f| is_framework_file(f, path))) {
+        let framework_language = |root_marker_in_parent| {
+            languages.iter().find(|l| {
+                l.framework_files
+                    .iter()
+                    .any(|f| f.root_marker_in_parent == root_marker_in_parent && is_framework_file(f, path))
+            })
+        };
+        if let Some(l) = framework_language(true).or_else(|| framework_language(false)) {
             return l.id.clone();
         }
         let lower = file_name.to_ascii_lowercase();
@@ -429,17 +439,21 @@ impl LanguageRegistry {
     }
 }
 
-/// `path` is one of `files`: its extension is listed, and the nearest folder above it named
-/// `files.folder` has a root marker in a directory above that folder.
+/// `path` has a listed extension and lies under a matching folder with a root marker.
 fn is_framework_file(files: &crate::FrameworkFiles, path: &Path) -> bool {
     let Some(ext) = path.extension().and_then(|e| e.to_str()) else { return false };
     if !files.extensions.iter().any(|e| e.eq_ignore_ascii_case(ext)) {
         return false;
     }
-    path.ancestors()
-        .skip(1)
-        .find(|dir| dir.file_name().is_some_and(|name| name == files.folder.as_str()))
-        .is_some_and(|folder| crate::marked_root(None, folder, &files.root_markers).is_some())
+    let mut folders =
+        path.ancestors().skip(1).filter(|dir| dir.file_name().is_some_and(|name| name == files.folder.as_str()));
+    if files.root_marker_in_parent {
+        folders
+            .filter_map(Path::parent)
+            .any(|parent| crate::marked_root(Some(parent), parent, &files.root_markers).is_some())
+    } else {
+        folders.next().is_some_and(|folder| crate::marked_root(None, folder, &files.root_markers).is_some())
+    }
 }
 
 /// `*` matches any (possibly empty) run of characters, `?` exactly one; everything else is literal.
@@ -486,6 +500,7 @@ mod tests {
         "CQL",
         "CSS",
         "Go",
+        "Go Template",
         "HTML",
         "Java",
         "JavaScript",
@@ -633,6 +648,7 @@ mod tests {
         "Thymeleaf",
         "ERB",
         "JSP",
+        "FreeMarker",
         "Astro",
         "GoMod",
     ];
@@ -715,9 +731,20 @@ mod tests {
         // it); before the HTML server (hover, rename and symbols take the first).
         assert_eq!(
             names("typescript"),
-            ["vtsls", "typescript-language-server", "angular-language-server", "oxlint", "eslint"]
+            [
+                "vtsls",
+                "typescript-language-server",
+                "angular-language-server",
+                "oxlint",
+                "eslint",
+                "biome",
+                "tailwindcss-language-server"
+            ]
         );
-        assert_eq!(names("html"), ["angular-language-server", "vscode-html-language-server"]);
+        assert_eq!(
+            names("html"),
+            ["angular-language-server", "vscode-html-language-server", "tailwindcss-language-server"]
+        );
         for lang in ["typescript", "html"] {
             let cfg = reg.get(&LanguageId::new(lang)).unwrap();
             let angular = cfg.language_servers.iter().find(|s| s.name == "angular-language-server").unwrap();
@@ -740,6 +767,34 @@ mod tests {
             assert!(oxlint.require_root_marker && !oxlint.fallback, "{lang}");
             let served = |file: &str| crate::marked_root(Some(root), &root.join(file), &oxlint.root_markers);
             assert_eq!(served("apps/web/src/main.ts"), Some(root.join("apps/web")), "{lang}");
+            assert_eq!(served("apps/api/main.ts"), None, "{lang}");
+        }
+    }
+
+    #[test]
+    fn biome_lints_files_below_its_config_or_installation() {
+        let reg = reg();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for dir in ["apps/web/src", "apps/admin/node_modules/@biomejs/biome", "apps/api"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        std::fs::write(root.join("apps/web/biome.jsonc"), "{}").unwrap();
+        for lang in
+            ["javascript", "javascriptreact", "typescript", "typescriptreact", "json", "jsonc", "css", "graphql"]
+        {
+            let cfg = reg.get(&LanguageId::new(lang)).unwrap();
+            let biome = cfg.language_servers.iter().find(|s| s.name == "biome").unwrap();
+            assert_eq!(
+                (biome.command.as_str(), biome.args.as_slice()),
+                ("biome", ["lsp-proxy".to_string()].as_slice())
+            );
+            assert!(biome.require_root_marker && !biome.fallback, "{lang}");
+            // Reformat Code runs `biome format`: the server's formatting would race the language's own.
+            assert_eq!(biome.features, ["code-action", "diagnostics"], "{lang}");
+            let served = |file: &str| crate::marked_root(Some(root), &root.join(file), &biome.root_markers);
+            assert_eq!(served("apps/web/src/main.ts"), Some(root.join("apps/web")), "{lang}");
+            assert_eq!(served("apps/admin/main.ts"), Some(root.join("apps/admin")), "{lang}");
             assert_eq!(served("apps/api/main.ts"), None, "{lang}");
         }
     }
@@ -772,15 +827,75 @@ mod tests {
     }
 
     #[test]
+    fn tailwind_serves_web_files_only_in_tailwind_projects() {
+        let reg = reg();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for dir in ["v3/src", "v4/src", "plain/src"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        std::fs::write(root.join("v3/tailwind.config.js"), "module.exports = {};").unwrap();
+        std::fs::write(root.join("v4/package.json"), r#"{"devDependencies": {"tailwindcss": "^4.1.0"}}"#).unwrap();
+        std::fs::write(root.join("plain/package.json"), r#"{"devDependencies": {"vite": "^7.0.0"}}"#).unwrap();
+        for lang in
+            ["html", "css", "javascript", "javascriptreact", "typescript", "typescriptreact", "vue", "svelte", "astro"]
+        {
+            let cfg = reg.get(&LanguageId::new(lang)).unwrap();
+            // Last: the language's own servers answer hover first.
+            let tailwind = cfg.language_servers.last().unwrap();
+            assert_eq!(tailwind.name, "tailwindcss-language-server", "{lang}");
+            assert_eq!(tailwind.args, ["--stdio"], "{lang}");
+            assert!(tailwind.require_root_marker && !tailwind.fallback, "{lang}");
+            let served = |file: &str| crate::marked_root(Some(root), &root.join(file), &tailwind.root_markers);
+            assert_eq!(served("v3/src/app.css"), Some(root.join("v3")), "{lang}");
+            assert_eq!(served("v4/src/app.css"), Some(root.join("v4")), "{lang}");
+            assert_eq!(served("plain/src/app.css"), None, "{lang}: package.json without tailwindcss");
+        }
+    }
+
+    #[test]
+    fn stylelint_serves_style_sheets_only_below_its_config() {
+        let reg = reg();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for dir in ["apps/web/src", "apps/admin/src", "apps/api"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        std::fs::write(root.join("apps/web/stylelint.config.mjs"), "export default {};").unwrap();
+        std::fs::write(root.join("apps/admin/package.json"), r#"{"stylelint": {"extends": []}}"#).unwrap();
+        std::fs::write(root.join("apps/api/package.json"), r#"{"name": "api"}"#).unwrap();
+        for lang in ["css", "scss", "less"] {
+            let cfg = reg.get(&LanguageId::new(lang)).unwrap();
+            let stylelint = cfg.language_servers.iter().find(|s| s.name == "stylelint").unwrap();
+            assert_eq!(stylelint.command, "stylelint-language-server", "{lang}");
+            assert!(stylelint.require_root_marker && !stylelint.fallback, "{lang}");
+            assert_eq!(stylelint.features, ["code-action", "diagnostics"], "{lang}");
+            // The server lints only the languages in `validate` (CSS alone by default).
+            let validate = stylelint.settings.as_ref().unwrap().get("validate").unwrap();
+            assert_eq!(validate, &serde_json::json!(["css", "scss", "less"]), "{lang}");
+            let served = |file: &str| crate::marked_root(Some(root), &root.join(file), &stylelint.root_markers);
+            assert_eq!(served("apps/web/src/app.css"), Some(root.join("apps/web")), "{lang}");
+            assert_eq!(served("apps/admin/src/app.css"), Some(root.join("apps/admin")), "{lang}");
+            assert_eq!(served("apps/api/app.css"), None, "{lang}: package.json without stylelint");
+        }
+    }
+
+    #[test]
     fn laravel_lsp_serves_php_files_only_below_artisan() {
         let reg = reg();
         let cfg = reg.get(&LanguageId::new("php")).unwrap();
         let names: Vec<&str> = cfg.language_servers.iter().map(|s| s.name.as_str()).collect();
         // After the fallback: hover, rename and symbols stay with Intelephense.
-        assert_eq!(names, ["intelephense", "phpactor", "phoxite", "laravel-lsp"]);
+        assert_eq!(names, ["intelephense", "phpactor", "phoxite", "devsense-php-ls", "laravel-lsp"]);
         // Phoxite answers the Laravel strings itself.
         let phoxite = cfg.language_servers.iter().find(|s| s.name == "phoxite").unwrap();
         assert!(phoxite.fallback && phoxite.replaces == ["laravel-lsp"]);
+        // DEVSENSE runs without Node or PHP of its own (the npm launcher needs Node) and
+        // answers the Laravel strings itself. https://docs.devsense.com/other/lsp/docs/
+        let devsense = cfg.language_servers.iter().find(|s| s.name == "devsense-php-ls").unwrap();
+        assert!(devsense.fallback && devsense.replaces == ["laravel-lsp"]);
+        assert_eq!(devsense.command.as_str(), "devsense-php-ls");
+        assert_eq!(devsense.install_hint.as_deref(), Some("npm i -g devsense-php-ls"));
         let lsp = cfg.language_servers.iter().find(|s| s.name == "laravel-lsp").unwrap();
         assert_eq!(lsp.command.as_str(), "laravel-lsp");
         // Its `lsp` command takes no options and speaks over stdio; `--stdio` stops it at startup.
@@ -904,19 +1019,50 @@ mod tests {
         std::fs::create_dir_all(root.join("charts/podinfo/templates/tests")).unwrap();
         std::fs::create_dir_all(root.join("k8s/templates")).unwrap();
         std::fs::write(root.join("charts/podinfo/Chart.yaml"), "apiVersion: v2\nname: podinfo\n").unwrap();
-        assert_eq!(detect("charts/podinfo/Chart.yaml"), "yaml");
-        assert_eq!(detect("charts/podinfo/values.yaml"), "yaml");
-        assert_eq!(detect("charts/podinfo/templates/deployment.yaml"), "helm-template");
-        assert_eq!(detect("charts/podinfo/templates/tests/connection.yml"), "helm-template");
-        assert_eq!(detect("charts/podinfo/templates/_helpers.tpl"), "helm-template");
-        assert_eq!(detect("charts/podinfo/templates/NOTES.txt"), "helm-template");
-        // No `Chart.yaml` / `Chart.yml` above this `templates` folder.
-        assert_eq!(detect("k8s/templates/deployment.yaml"), "yaml");
-        assert_eq!(detect("common.gotmpl"), "helm-template");
-        // Outside a chart, `.tpl` belongs to other template engines (Smarty, Terraform).
-        assert_ne!(detect("site/index.tpl"), "helm-template");
+        std::fs::write(root.join("manage.py"), "").unwrap();
+        for file in [
+            "deployment.yaml",
+            "tests/connection.yml",
+            "_helpers.tpl",
+            "NOTES.txt",
+            "dashboard.json",
+            "config.yaml.gotmpl",
+            "config.yaml.go.tmpl",
+            "tests/templates/check.YAML",
+        ] {
+            let path = format!("charts/podinfo/templates/{file}");
+            assert_eq!(detect(&path), "helm-template", "{path}");
+        }
+        for (path, language) in [
+            ("charts/podinfo/Chart.yaml", "yaml"),
+            ("charts/podinfo/values.yaml", "yaml"),
+            ("charts/podinfo/docs/templates/deployment.yaml", "yaml"),
+            ("charts/podinfo/docs/templates/_helpers.tpl", "plaintext"),
+            ("charts/podinfo/docs/templates/sample.tmpl", "gotmpl"),
+            ("charts/podinfo/docs/templates/notes.txt", "django-html"),
+            ("k8s/templates/deployment.yaml", "yaml"),
+            ("site/index.tpl", "plaintext"),
+        ] {
+            assert_eq!(detect(path), language, "{path}");
+        }
         assert!(reg.is_framework_marker(&root.join("charts/podinfo/Chart.yaml")));
         assert!(reg.is_framework_marker(&root.join("charts/podinfo/Chart.yml")));
+    }
+
+    #[test]
+    fn standalone_go_templates_are_detected_by_extension() {
+        let reg = reg();
+        for (path, language) in [
+            ("common.gotmpl", "gotmpl"),
+            ("email.tmpl", "gotmpl"),
+            ("config.go.tmpl", "gotmpl"),
+            ("config.GO.TMPL", "gotmpl"),
+            ("docker-stack.yaml.tmpl", "gotmpl"),
+            ("docker-stack.yaml", "yaml"),
+            ("main.go", "go"),
+        ] {
+            assert_eq!(reg.detect(Path::new(path), None).as_str(), language, "{path}");
+        }
     }
 
     #[test]
@@ -1096,6 +1242,8 @@ mod tests {
             ("a.rb", "ruby"),
             ("Gemfile", "ruby"),
             ("show.html.erb", "erb"),
+            ("index.ftl", "freemarker"),
+            ("page.ftlh", "freemarker"),
             ("index.php", "php"),
             ("init.lua", "lua"),
             ("main.dart", "dart"),
@@ -1130,6 +1278,8 @@ mod tests {
             ("Cargo.toml", "toml"),
             ("Cargo.lock", "toml"),
             ("pom.xml", "xml"),
+            ("Views/MainWindow.axaml", "axaml"),
+            ("MainWindow.xaml", "xml"),
             ("README.md", "markdown"),
             ("Dockerfile", "dockerfile"),
             ("Dockerfile.dev", "dockerfile"),
@@ -1149,6 +1299,7 @@ mod tests {
             (".env", "dotenv"),
             (".env.local", "dotenv"),
             (".gitignore", "ignore"),
+            (".worktreeinclude", "ignore"),
             (".gitattributes", "gitattributes"),
             ("server.log", "log"),
             ("player.gd", "gdscript"),
@@ -1164,6 +1315,16 @@ mod tests {
         for (path, id) in cases {
             assert_eq!(detect(&reg, path), id, "{path}");
         }
+    }
+
+    #[test]
+    fn avalonia_xaml_is_xml_with_its_own_server() {
+        let reg = reg();
+        let axaml = reg.get(&LanguageId::new("axaml")).unwrap();
+        assert_eq!(axaml.tree_sitter.as_deref(), Some("xml"));
+        assert_eq!(axaml.ui_mode.as_deref(), Some("XML"));
+        let servers: Vec<_> = axaml.language_servers.iter().map(|s| (s.name.as_str(), s.fallback)).collect();
+        assert_eq!(servers, [("axsg-lsp", false), ("lemminx", true)]);
     }
 
     #[test]

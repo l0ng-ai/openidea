@@ -39,9 +39,15 @@ test("Run Anything keeps its command field and shortcuts visible as its results 
 
   const popup = page.getByRole("dialog", { name: "Run Anything", exact: true });
   const field = popup.getByLabel("Command line", { exact: true });
+  const fieldSurface = field.locator("..");
+  const commandRow = fieldSurface.locator("..");
   const results = popup.getByRole("listbox", { name: "Run Anything entries" });
   const hint = popup.getByText(/Enter to run, Tab to complete|Tab to complete, Enter to run/);
   await expect(field).toBeFocused();
+  await expect(fieldSurface).toHaveCSS("box-shadow", "none");
+  await expect(commandRow).toHaveCSS("border-bottom-width", "1px");
+  await expect(commandRow).toHaveCSS("border-left-width", "0px");
+  const focusedDivider = await commandRow.evaluate((el) => getComputedStyle(el).borderBottomColor);
   await page.setViewportSize({ width: 560, height: 340 });
   await expect
     .poll(async () => {
@@ -69,6 +75,7 @@ test("Run Anything keeps its command field and shortcuts visible as its results 
   await field.press("Shift+Tab");
   const history = popup.getByRole("button", { name: "Clear History" });
   await expect(history).toBeFocused();
+  await expect(commandRow).not.toHaveCSS("border-bottom-color", focusedDivider);
   await history.press("Enter");
   await expect(history).toBeHidden();
   await expect(field).toBeFocused();
@@ -76,4 +83,33 @@ test("Run Anything keeps its command field and shortcuts visible as its results 
   await field.press("Enter");
   await expect(popup).toBeHidden();
   await expect(page.locator("body")).toHaveAttribute("data-run-anything-command", "npm run verify-1");
+});
+
+test("Run Anything shows entries a provider reads in the background without another keystroke", async ({
+  workbench: page,
+}) => {
+  await page.evaluate(async () => {
+    const contributionsModule = "/src/workbench/contributions.ts";
+    const { registerRunAnythingProvider } = await import(/* @vite-ignore */ contributionsModule);
+    let loaded = false;
+    registerRunAnythingProvider({
+      id: "test-background",
+      order: -100,
+      group: "Package Executables",
+      items: (line: string) =>
+        loaded && line.startsWith("npx") ? [{ key: "vite", label: "npx vite", completion: "npx vite ", run() {} }] : [],
+      subscribe(onChange: () => void) {
+        const timer = setTimeout(() => {
+          loaded = true;
+          onChange();
+        }, 300);
+        return () => clearTimeout(timer);
+      },
+    });
+  });
+  await page.keyboard.press("Control");
+  await page.keyboard.press("Control");
+  const popup = page.getByRole("dialog", { name: "Run Anything", exact: true });
+  await popup.getByLabel("Command line", { exact: true }).pressSequentially("npx ");
+  await expect(popup.getByRole("option", { name: /npx vite/ })).toBeVisible();
 });

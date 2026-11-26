@@ -66,6 +66,7 @@ describe("languages settings", () => {
       delegateBuild: false,
       downloadSources: false,
       updateSnapshots: false,
+      runTestsUsing: "ide",
     });
     expect(validateSettings({}).languages).toEqual(DEFAULT_LANGUAGES);
     expect(validateLanguages({ java: { maven: { threads: 4 } } }).java.maven.threads).toBe("");
@@ -79,6 +80,8 @@ describe("languages settings", () => {
     expect(validateLanguages({ java: { maven: { delegateBuild: "yes" } } }).java.maven.delegateBuild).toBe(false);
     expect(validateLanguages({ java: { maven: { downloadSources: true } } }).java.maven.downloadSources).toBe(true);
     expect(validateLanguages({ java: { maven: { updateSnapshots: true } } }).java.maven.updateSnapshots).toBe(true);
+    expect(validateLanguages({ java: { maven: { runTestsUsing: "maven" } } }).java.maven.runTestsUsing).toBe("maven");
+    expect(validateLanguages({ java: { maven: { runTestsUsing: "gradle" } } }).java.maven.runTestsUsing).toBe("ide");
     const settings = validateSettings({ languages: { java: { maven: { runnerJre: " ./jdks/21 " } } } });
     expect(validateSettings(settings).languages.java.maven.runnerJre).toBe("./jdks/21");
   });
@@ -115,6 +118,10 @@ describe("languages settings", () => {
   it("keeps the Zig toolchain through settings normalization and defaults to Auto", () => {
     expect(validateSettings({}).languages.zig.zig).toBe("");
     expect(validateLanguages({ zig: { zig: 42 } }).zig.zig).toBe("");
+    expect(validateLanguages({ flutter: { sdk: 42 } }).flutter.sdk).toBe("");
+    expect(validateLanguages({ flutter: { sdk: " ~/fvm/versions/3.44.9 " } }).flutter.sdk).toBe(
+      "~/fvm/versions/3.44.9",
+    );
     const settings = validateSettings({ languages: { zig: { zig: " /opt/zig " } } });
     expect(settings.languages.zig.zig).toBe("/opt/zig");
     expect(validateSettings(settings).languages.zig.zig).toBe("/opt/zig");
@@ -184,6 +191,16 @@ describe("languages settings", () => {
     expect(v.prettier).toMatchObject({ runOnSave: true, prefer: false, path: "" });
   });
 
+  it("gives Biome the opt-in settings for the languages it formats", () => {
+    expect(validateLanguages({}).biome).toEqual({
+      ...DEFAULT_LANGUAGES.prettier,
+      languages: ["css", "graphql", "javascript", "javascriptreact", "typescript", "typescriptreact", "json", "jsonc"],
+    });
+    const v = validateLanguages({ biome: { languages: ["json"], prefer: true, runOnSave: true } });
+    expect(v.biome).toMatchObject({ languages: ["json"], prefer: true, runOnSave: true });
+    expect(v.prettier).toMatchObject({ prefer: false, runOnSave: false });
+  });
+
   it("enables Ruff for Python by default and keeps its settings separate", () => {
     expect(validateLanguages({}).ruff).toMatchObject({
       path: "",
@@ -215,6 +232,12 @@ describe("languages settings", () => {
     expect(validateLanguages({}).markdown.previewFontSize).toBeNull();
     expect(validateLanguages({ markdown: { previewFontSize: 90 } }).markdown.previewFontSize).toBe(72);
     expect(validateLanguages({ markdown: { previewFontSize: "x" } }).markdown.previewFontSize).toBeNull();
+  });
+
+  it("defaults Markdown preview to side by side and accepts a stacked layout", () => {
+    expect(validateLanguages({}).markdown.previewLayout).toBe("sideBySide");
+    expect(validateLanguages({ markdown: { previewLayout: "stacked" } }).markdown.previewLayout).toBe("stacked");
+    expect(validateLanguages({ markdown: { previewLayout: "other" } }).markdown.previewLayout).toBe("sideBySide");
   });
 
   it("detects Markdown commands by default and asks for their folder until one is chosen", () => {
@@ -356,6 +379,7 @@ describe("language pages", () => {
     expect(tree.map((n) => n.title)).toEqual(["Languages & Frameworks"]);
     const langs = tree.find((n) => n.title === "Languages & Frameworks")!;
     expect(langs.children.map((n) => n.title)).toEqual([
+      "Flutter",
       "Go",
       "Java",
       "JavaScript Runtime",
@@ -364,6 +388,7 @@ describe("language pages", () => {
       "PHP",
       "Prettier",
       "oxfmt",
+      "Biome",
       "Ruby",
       "Rust",
       "TypeScript",
@@ -375,12 +400,19 @@ describe("language pages", () => {
     const tree = buildPageTree(LANGUAGE_PAGES.map((p) => ({ ...p, component: p.component! })));
     const langs = tree.find((n) => n.title === "Languages & Frameworks")!;
     const python = langs.children.find((n) => n.title === "Python")!;
-    expect(python.children.map((n) => n.title)).toEqual(["All Interpreters", "Dependencies", "Docstrings", "Ruff"]);
+    expect(python.children.map((n) => n.title)).toEqual([
+      "All Interpreters",
+      "Dependencies",
+      "Docstrings",
+      "Ruff",
+      "Black formatter",
+    ]);
     expect(python.children.map((n) => n.key)).toEqual([
       "python.interpreters",
       "python.interpreter",
       "python.docstrings",
       "python.ruff",
+      "python.black",
     ]);
     // The folder itself has no page body: it links to the pages below it.
     expect(python.page?.component).toBeUndefined();

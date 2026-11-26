@@ -4,23 +4,6 @@
   flex-direction: column;
   min-height: 0;
 }
-.toolbar {
-  height: 32px;
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: var(--space-0-5);
-  padding: 0 6px;
-}
-.sep {
-  width: 1px;
-  height: 16px;
-  margin: 0 4px;
-  background: var(--border);
-}
-.grow {
-  flex: 1;
-}
 .tree {
   flex: 1;
   min-height: 0;

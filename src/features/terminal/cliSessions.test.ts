@@ -13,6 +13,7 @@ import {
   cliSession,
   cliSessionForTerminalId,
   cliSessionFromElement,
+  detachCli,
   disposeAllClis,
   disposeCli,
   isCliSession,
@@ -138,6 +139,18 @@ describe("terminal editor sessions", () => {
     expect(ipc.commands.termKill).toHaveBeenCalledWith(42);
     expect(cliSession("cli:t6")).toBeUndefined();
     expect(useClis.getState().sessions["cli:t6"]).toBeUndefined();
+  });
+
+  it("detaches a running session without killing its PTY so closing the tab is a no-op", async () => {
+    const session = startCli("cli:t9", "/repo", "claude");
+    await start(session);
+    expect(detachCli("cli:t9")).toBe(session);
+    expect(cliSession("cli:t9")).toBeUndefined();
+    expect(useClis.getState().sessions["cli:t9"]).toBeUndefined();
+    expect(await cliBusy("cli:t9")).toBe(false);
+    disposeCli("cli:t9");
+    expect(ipc.commands.termKill).not.toHaveBeenCalled();
+    session.dispose();
   });
 
   it("ends every session when the project switches", async () => {

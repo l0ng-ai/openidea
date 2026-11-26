@@ -1,10 +1,12 @@
 import { useId } from "react";
+import type { MarkdownPreviewLayout } from "@/bindings";
 import { NumberInput, Row, Section, Select, SettingToggle } from "../components/Form";
 import { useSetting } from "../components/context";
 
 /** Languages & Frameworks › Markdown, after IDEA's: application-level, preview font size follows the editor font until set. */
 export function MarkdownPage() {
   const id = useId();
+  const [layout, setLayout] = useSetting<MarkdownPreviewLayout>("languages.markdown.previewLayout");
   const [size, setSize] = useSetting<number | null>("languages.markdown.previewFontSize");
   const [editorSize] = useSetting<number>("editor.fontSize");
   const [runCommands] = useSetting<boolean>("languages.markdown.runCommands");
@@ -12,6 +14,9 @@ export function MarkdownPage() {
   return (
     <>
       <Section title="Preview">
+        <Row label="Preview layout">
+          <Select value={layout} options={PREVIEW_LAYOUTS} onChange={setLayout} aria-label="Preview layout" />
+        </Row>
         <Row
           label="Preview font size"
           htmlFor={id}
@@ -47,6 +52,11 @@ export function MarkdownPage() {
     </>
   );
 }
+
+const PREVIEW_LAYOUTS = [
+  { value: "sideBySide", label: "Side by side" },
+  { value: "stacked", label: "Stacked" },
+] as const;
 
 const DIRECTORY_OPTIONS = [
   { value: "project", label: "Project directory" },

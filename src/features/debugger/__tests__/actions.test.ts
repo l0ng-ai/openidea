@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { EditorState } from "@codemirror/state";
+import { EditorSelection, EditorState } from "@codemirror/state";
 import { createElement } from "react";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
@@ -84,8 +84,14 @@ import type { DebugCapabilities, RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { provideNotificationService } from "@/workbench/contributions";
 import { registerDebugActions } from "../actions";
-import { breakpointsOf, loadBreakpoints, toggleBreakpoint } from "../breakpoints/store";
-import { loadSpecialBreakpoints, removeAllSpecial, useSpecialBreakpoints } from "../breakpoints/special";
+import { breakpointsOf, loadBreakpoints, toggleBreakpoint, updateBreakpoint } from "../breakpoints/store";
+import {
+  addFieldWatchpoint,
+  addMethodBreakpoint,
+  loadSpecialBreakpoints,
+  removeAllSpecial,
+  useSpecialBreakpoints,
+} from "../breakpoints/special";
 import { publishContext, updateExecutionPoint, useExecutionPoint, useDebug, type DebugSession } from "../state";
 import { useJsProfile, watchProfiledSessions } from "../js/profile";
 import { focusDebugView, blurDebugView } from "../ui/focusedView";
@@ -457,6 +463,7 @@ describe("debugger actions (IDEA parity)", () => {
     for (const action of ["debug.toggleBreakpoint", "debug.toggleTemporaryBreakpoint"]) {
       for (const line of [1, 2]) {
         caret("/p/a.py", "python", "x = 1\n\n   \ny = 2", line);
+        // oxlint-disable-next-line no-await-in-loop -- caret setup and the breakpoint assertion share editor/breakpoint state, so each action must run before the next caret change
         await executeAction(action);
       }
       expect(breakpointsOf("/p/a.py"), action).toHaveLength(0);
@@ -486,6 +493,103 @@ describe("debugger actions (IDEA parity)", () => {
     // ⌘F8 on a Java declaration toggles the watchpoint off again.
     await executeAction("debug.toggleBreakpoint");
     expect(useSpecialBreakpoints.getState().fields).toEqual([]);
+  });
+
+  it("Remove All Breakpoints In The Current File removes only the active file's breakpoints", async () => {
+    toggleBreakpoint("/p/a.py", 0);
+    toggleBreakpoint("/p/a.py", 2);
+    toggleBreakpoint("/p/b.py", 0);
+    addMethodBreakpoint("run", { path: "/p/a.py", line: 1 });
+    addMethodBreakpoint("main");
+    addFieldWatchpoint({ dataId: "a.A#count", label: "count" }, { path: "/p/A.java", line: 2 });
+    caret("/p/a.py", "python", "x = 1\ndef run():\n  pass", 2);
+
+    await executeAction("debug.removeAllBreakpointsInFile");
+    expect(breakpointsOf("/p/a.py")).toEqual([]);
+    expect(breakpointsOf("/p/b.py")).toHaveLength(1);
+    expect(useSpecialBreakpoints.getState().methods.map((m) => m.name)).toEqual(["main"]);
+    expect(useSpecialBreakpoints.getState().fields).toHaveLength(1);
+
+    // A watchpoint is removed with its file too; without an editor there is no file, so nothing goes.
+    caret("/p/A.java", "java", "package a;\nclass A {\n  private int count;\n}", 0);
+    await executeAction("debug.removeAllBreakpointsInFile");
+    expect(useSpecialBreakpoints.getState().fields).toEqual([]);
+    editor.current = null;
+    await executeAction("debug.removeAllBreakpointsInFile");
+    expect(breakpointsOf("/p/b.py")).toHaveLength(1);
+    expect(useSpecialBreakpoints.getState().methods).toHaveLength(1);
+  });
+
+  it("Toggle Breakpoint Enabled flips each breakpoint on the caret and selection lines", async () => {
+    const doc = "x = 1\ndef run():\n  pass\ny = 2\nz = 3\nw = 4";
+    for (const line of [0, 2, 3, 5]) toggleBreakpoint("/p/a.py", line);
+    toggleBreakpoint("/p/b.py", 2);
+    const first = breakpointsOf("/p/a.py")[0]!;
+    updateBreakpoint("/p/a.py", breakpointsOf("/p/a.py")[1]!.id, { enabled: false });
+    addMethodBreakpoint("run", { path: "/p/a.py", line: 1 });
+    addMethodBreakpoint("main");
+    // A selection over lines 1–2 and a second caret on line 5; lines 0 and 3 are outside.
+    const state = EditorState.create({
+      doc,
+      selection: EditorSelection.create([EditorSelection.range(8, 19), EditorSelection.cursor(doc.length)]),
+      extensions: EditorState.allowMultipleSelections.of(true),
+    });
+    editor.current = { ctx: { path: "/p/a.py", language: "python" }, view: { state } };
+    const action = getAction("debug.toggleBreakpointEnabled")!;
+    expect(isActionEnabled(action)).toBe(true);
+
+    await executeAction("debug.toggleBreakpointEnabled");
+    const enabled = () => breakpointsOf("/p/a.py").map((b) => [b.line, b.enabled]);
+    expect(enabled()).toEqual([
+      [0, true],
+      [2, true],
+      [3, true],
+      [5, false],
+    ]);
+    expect(breakpointsOf("/p/a.py")[0]).toBe(first);
+    expect(breakpointsOf("/p/b.py")[0]!.enabled).toBe(true);
+    expect(useSpecialBreakpoints.getState().methods.map((m) => [m.name, m.enabled])).toEqual([
+      ["run", false],
+      ["main", true],
+    ]);
+
+    await executeAction("debug.toggleBreakpointEnabled");
+    expect(enabled()).toEqual([
+      [0, true],
+      [2, false],
+      [3, true],
+      [5, true],
+    ]);
+    expect(useSpecialBreakpoints.getState().methods[0]!.enabled).toBe(true);
+
+    // Nothing on the caret line, or no editor: the action is unavailable and changes nothing.
+    caret("/p/a.py", "python", doc, 4);
+    expect(isActionEnabled(action)).toBe(false);
+    await executeAction("debug.toggleBreakpointEnabled");
+    editor.current = null;
+    expect(isActionEnabled(action)).toBe(false);
+    await executeAction("debug.toggleBreakpointEnabled");
+    expect(enabled()).toEqual([
+      [0, true],
+      [2, false],
+      [3, true],
+      [5, true],
+    ]);
+
+    // As in IDEA, a selection ending at the start of a line covers that line; watchpoints flip too.
+    addFieldWatchpoint({ dataId: "a.A#count", label: "count" }, { path: "/p/a.py", line: 4 });
+    editor.current = {
+      ctx: { path: "/p/a.py", language: "python" },
+      view: { state: EditorState.create({ doc, selection: { anchor: 24, head: 30 } }) },
+    };
+    await executeAction("debug.toggleBreakpointEnabled");
+    expect(enabled()).toEqual([
+      [0, true],
+      [2, false],
+      [3, false],
+      [5, true],
+    ]);
+    expect(useSpecialBreakpoints.getState().fields[0]!.enabled).toBe(false);
   });
 
   it("Attach to Process opens the popup and loads the process list", async () => {
@@ -607,6 +711,18 @@ describe("output class breakpoint restrictions", () => {
     expect(useSpecialBreakpoints.getState().fields).toHaveLength(0);
     expect(ipc.debugRunTo).not.toHaveBeenCalled();
   });
+});
+
+it("links an attach to the run it debugs, so the run's thread dumps go through the session", async () => {
+  useProject.setState({ project: { root: "/p" } as never });
+  const target = { name: "app", adapter: "debugpy", hostName: "127.0.0.1", port: 41234, remoteRoot: "/app" };
+  const extra = (call: number) => JSON.parse(ipc.debugStart.mock.calls[call]![0].extraJson!);
+  ipc.debugStart.mockClear();
+  await executeAction("debug.attach", { ...target, process: 31 });
+  await executeAction("debug.attach", target);
+  const { __openideaRun: run, ...linked } = extra(0);
+  expect(run).toBe(31);
+  expect(extra(1)).toEqual(linked);
 });
 
 it("stops the waiting Python container if attaching fails", async () => {

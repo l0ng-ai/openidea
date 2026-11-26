@@ -66,6 +66,7 @@ struct Transient {
     /// The user opened the file meanwhile: its `didOpen` replaced ours.
     taken: bool,
     closed_at: Option<Instant>,
+    diagnostics: Option<watch::Sender<Vec<lsp::Diagnostic>>>,
 }
 
 pub struct Progress {
@@ -726,10 +727,15 @@ impl Server {
     pub fn hold_transient(&self, path: &Path, generation: u64) -> bool {
         let mut map = self.transient.lock();
         map.retain(|_, t| t.holders > 0 || t.closed_at.is_some_and(|c| c.elapsed() < TRANSIENT_GRACE));
-        let t =
-            map.entry(path.to_owned()).or_insert(Transient { holders: 0, generation, taken: false, closed_at: None });
+        let t = map.entry(path.to_owned()).or_insert(Transient {
+            holders: 0,
+            generation,
+            taken: false,
+            closed_at: None,
+            diagnostics: None,
+        });
         if t.holders == 0 || t.generation != generation {
-            *t = Transient { holders: 1, generation, taken: false, closed_at: None };
+            *t = Transient { holders: 1, generation, taken: false, closed_at: None, diagnostics: None };
             return true;
         }
         t.holders += 1;
@@ -748,6 +754,7 @@ impl Server {
         if t.holders > 0 {
             return false;
         }
+        t.diagnostics = None;
         let close = !t.taken && t.generation == generation;
         if close {
             t.closed_at = Some(Instant::now());
@@ -765,6 +772,7 @@ impl Server {
         let open = t.holders > 0 && !t.taken && t.generation == generation;
         if t.holders > 0 {
             t.taken = true;
+            t.diagnostics = None;
         } else {
             map.remove(path);
         }
@@ -778,6 +786,34 @@ impl Server {
             .lock()
             .get(path)
             .is_some_and(|t| !t.taken && (t.holders > 0 || t.closed_at.is_some_and(|c| c.elapsed() < TRANSIENT_GRACE)))
+    }
+
+    pub(crate) fn watch_transient_diagnostics(&self, path: &Path) -> watch::Receiver<Vec<lsp::Diagnostic>> {
+        let (sender, receiver) = watch::channel(Vec::new());
+        if let Some(transient) = self.transient.lock().get_mut(path) {
+            transient.diagnostics = Some(sender);
+        }
+        receiver
+    }
+
+    /// Delivers a snapshot report privately. Other transient files discard their reports.
+    pub(crate) fn redirect_transient_diagnostics(
+        &self,
+        path: &Path,
+        generation: u64,
+        version: Option<i32>,
+        items: &mut Vec<lsp::Diagnostic>,
+    ) -> bool {
+        let transients = self.transient.lock();
+        let Some(t) = transients.get(path).filter(|t| !t.taken && t.generation == generation) else {
+            return false;
+        };
+        if let Some(sender) = &t.diagnostics
+            && version.is_none_or(|v| v == 0)
+        {
+            sender.send_replace(std::mem::take(items));
+        }
+        t.holders > 0 || t.closed_at.is_some_and(|c| c.elapsed() < TRANSIENT_GRACE)
     }
 
     // ---- bookkeeping ----

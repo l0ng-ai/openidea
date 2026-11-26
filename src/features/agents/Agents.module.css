@@ -49,6 +49,24 @@
   outline: 1px dashed var(--accent);
   outline-offset: -1px;
 }
+/* Drop insertion indicator on a tree row while dragging to reorder tasks or custom groups. */
+.dropBefore::before,
+.dropAfter::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--focus-ring);
+  pointer-events: none;
+  z-index: 1;
+}
+.dropBefore::before {
+  top: 0;
+}
+.dropAfter::after {
+  bottom: 0;
+}
 .title {
   flex: 0 1 auto;
   min-width: 0;
@@ -90,6 +108,65 @@
   color: var(--fg-subtle);
   font-size: var(--fs-small);
   font-variant-numeric: tabular-nums;
+  min-width: 3ch;
+  text-align: end;
+}
+/* Pin and Archive appear beside the age while the pointer is on the row. */
+.rowActions {
+  display: none;
+  flex: none;
+  margin-left: auto;
+  margin-right: var(--space-2);
+  gap: var(--space-0-5);
+}
+.row:hover .rowActions,
+.rowActions:focus-within {
+  display: flex;
+}
+.row:hover .age,
+.row:has(.rowActions:focus-within) .age {
+  margin-left: 0;
+}
+/* The status mark sits in a fixed slot just before the age, so marks form a column. */
+.status {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  margin-left: auto;
+}
+.row:has(.status) .age,
+.row:hover .status,
+.row:has(.rowActions:focus-within) .status {
+  margin-left: 0;
+}
+.rowAction {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--h-control-small);
+  height: var(--h-control-small);
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-small);
+  background: none;
+  color: var(--fg-subtle);
+  --icon-color: currentColor;
+  transition:
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+.rowAction:hover {
+  background: var(--bg-toolbar-hover);
+  color: var(--fg-strong);
+}
+.rowAction:active {
+  background: var(--bg-toolbar-pressed);
+}
+.rowAction:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
 }
 .ready {
   color: var(--success);
@@ -132,7 +209,6 @@
   background: none;
   color: inherit;
   font: inherit;
-  cursor: pointer;
 }
 .statusItem:hover {
   background: var(--bg-hover);
@@ -224,11 +300,12 @@
   flex: none;
 }
 
-/* Import Sessions from Other Apps: filter above a fixed-height list, so the dialog doesn't grow. */
+/* Keep the import list height stable while filtering. */
 .chooser {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+  padding: var(--space-3) var(--space-4) 0;
 }
 .chooserList {
   height: 312px;

@@ -111,6 +111,7 @@ test("completion lists the server's items and inserts the chosen one", async ({ 
   });
   await expect(editor.locator(".cm-content")).toHaveCSS("font-size", zoomedSize);
   await expect(method.locator(".cm-completionLabel")).toHaveCSS("font-size", zoomedSize);
+
   await page.keyboard.type("toD");
   await expect(popup.getByText("total", { exact: true })).toBeHidden();
   // Refreshing the results rebuilds the list; the hint bar must stay below it, not jump to the top.
@@ -124,6 +125,37 @@ test("completion lists the server's items and inserts the chosen one", async ({ 
   await expect(popup).toBeHidden();
   await expect(editor.locator(".cm-activeLine")).toHaveText(/^\s*order\.toDto\(\)$/);
   expect((await ipcCalls(page, "lsp_completion")).length).toBeGreaterThan(0);
+
+  await page.evaluate(async () => {
+    const path = "/src/platform/actions.ts";
+    await (await import(/* @vite-ignore */ path)).executeAction("editor.splitRight");
+  });
+  const panes = page.locator("[data-pane-id]");
+  await expect(panes).toHaveCount(2);
+  await page.setViewportSize({ width: 480, height: 760 });
+  await panes.last().locator(".cm-content").focus();
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("order.");
+  await page.keyboard.press("Control+Space");
+  const footer = popup.locator(".cm-lsp-completion-footer");
+  await expect
+    .poll(() =>
+      footer.evaluate((el) => {
+        const tip = el.querySelector("span")!;
+        const sort = el.querySelector("button")!;
+        const a = tip.getBoundingClientRect();
+        const b = sort.getBoundingClientRect();
+        return {
+          oneRow: Math.abs(a.y + a.height / 2 - b.y - b.height / 2) <= 1,
+          hintClipped: tip.scrollWidth > tip.clientWidth,
+          sortFits: sort.scrollWidth <= sort.clientWidth + 1 && b.right <= el.getBoundingClientRect().right,
+        };
+      }),
+    )
+    .toEqual({ oneRow: true, hintClipped: true, sortFits: true });
+  await expect(footer.getByTitle("Press ↵ to insert, ⇥ to replace")).toHaveCSS("font-size", "12px");
+  await expect(footer.getByRole("button", { name: "Sort by name" })).toBeInViewport({ ratio: 1 });
 });
 
 test("long completion signatures fit the editor when the workbench is narrowed", async ({ workbench: page }) => {
@@ -194,6 +226,69 @@ test("long completion signatures fit the editor when the workbench is narrowed",
   await page.keyboard.press("Enter");
   await expect(popup).toBeHidden();
   await expect(editor.locator(".cm-activeLine")).toContainText(`order.${label}()`);
+});
+
+test("completion clips long parameters before the suggestion name and return type", async ({ workbench: page }) => {
+  await page.setViewportSize({ width: 1120, height: 760 });
+  const editor = await openSample(page);
+  const label = "reconcilePendingOrdersByRegion";
+  const returnType = "RegionalSettlementResult";
+  await page.evaluate(
+    ({ label, returnType }) => {
+      const labelDetail =
+        "(pendingOrders: ReadonlyArray<PendingOrder>, reconciliationOptions: RegionalReconciliationOptions)";
+      const item: CompletionItem = {
+        label,
+        labelDetail,
+        labelDescription: returnType,
+        detail: null,
+        kind: "method",
+        documentation: null,
+        sortText: null,
+        filterText: null,
+        preselect: true,
+        deprecated: false,
+        insertText: `${label}()`,
+        isSnippet: false,
+        replaceRange: null,
+        replaceRangeTab: null,
+        additionalEdits: [],
+        commitCharacters: [],
+        command: null,
+        data: null,
+        server: 1,
+      };
+      window.__ipc.handlers.lsp_completion = () => ({ isIncomplete: false, items: [item] });
+    },
+    { label, returnType },
+  );
+  await editor.locator(".cm-line", { hasText: "return order.toDto()" }).click();
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("order.");
+  await page.keyboard.press("Control+Space");
+
+  const popup = page.locator(".cm-tooltip-autocomplete");
+  const row = popup.getByRole("option").filter({
+    has: page.locator(".cm-completionLabel", { hasText: label }),
+  });
+  await expect(row.locator(".cm-lsp-type")).toHaveText(returnType);
+  await page.setViewportSize({ width: 820, height: 760 });
+  await page.evaluate(() => document.fonts.ready);
+  await expect
+    .poll(() =>
+      row.evaluate((el) => {
+        const name = el.querySelector<HTMLElement>(".cm-completionLabel")!;
+        const parameters = el.querySelector<HTMLElement>(".cm-completionDetail")!;
+        const type = el.querySelector<HTMLElement>(".cm-lsp-type")!;
+        return {
+          nameFits: name.scrollWidth <= name.clientWidth + 1,
+          typeFits: type.scrollWidth <= type.clientWidth + 1,
+          parametersClipped: parameters.scrollWidth > parameters.clientWidth,
+        };
+      }),
+    )
+    .toEqual({ nameFits: true, typeFits: true, parametersClipped: true });
 });
 
 test("documentation shows beside the lookup instead of being clipped by it", async ({ workbench: page }, info) => {
@@ -651,6 +746,58 @@ test("rename keeps the typed name, uses the editor font and shows long preview n
   expect(await ipcCalls(page, "apply_workspace_edit")).toHaveLength(0);
   await preview.getByRole("button", { name: "Do Refactor" }).click();
   await expect.poll(() => ipcCalls(page, "apply_workspace_edit")).toHaveLength(1);
+});
+
+test("intentions separate quick fixes from other actions and navigate across the divider", async ({
+  workbench: page,
+}) => {
+  const editor = await openSample(page);
+  const fix = "Correct the Order type";
+  const refactor = "Extract the order value";
+  await page.evaluate(
+    ({ file, edit, fix, refactor }) => {
+      const action = (title: string, kind: string, newText: string) => ({
+        title,
+        kind,
+        isPreferred: false,
+        disabledReason: null,
+        edit: { files: [{ kind: "edit", path: file, edits: [{ range: edit, new_text: newText }] }] },
+        command: null,
+        data: null,
+        server: 1,
+      });
+      window.__ipc.handlers.lsp_code_actions = () => [
+        action(refactor, "refactor.extract", "ExtractedOrder"),
+        action(fix, "quickfix", "CorrectOrder"),
+      ];
+      window.__ipc.handlers.lsp_execute_code_action = () => [];
+    },
+    { file: FILE, edit: range(20, 19, 24), fix, refactor },
+  );
+  await caretAt(editor, page, "val order: Order", "Order ");
+  await page.keyboard.press("Alt+Enter");
+
+  const popup = page.getByRole("dialog", { name: "Intentions", exact: true });
+  const list = popup.getByRole("listbox", { name: "Intentions" });
+  const divider = list.locator("[class*=listDivider]");
+  const preview = popup.locator('[aria-label="Preview"] pre');
+  await expect(list.getByRole("option", { name: fix })).toBeVisible();
+  await page.keyboard.type("order");
+  await expect(list.getByRole("option")).toHaveText([fix, refactor]);
+  await expect(divider).toHaveCount(1);
+  await expect(list.getByRole("option", { name: fix })).toHaveAttribute("aria-selected", "true");
+  await expect(preview).toContainText("CorrectOrder");
+  await list.press("ArrowDown");
+  await expect(list.getByRole("option", { name: refactor })).toHaveAttribute("aria-selected", "true");
+  await expect(preview).toContainText("ExtractedOrder");
+
+  for (const _character of "order") await list.press("Backspace");
+  await page.keyboard.type("extract");
+  await expect(list.getByRole("option")).toHaveText([refactor]);
+  await expect(divider).toHaveCount(0);
+  await list.press("Enter");
+  await expect(popup).toBeHidden();
+  await expect.poll(() => ipcCalls(page, "lsp_execute_code_action")).toHaveLength(1);
 });
 
 test("intention previews fit narrow windows and wrap long code lines", async ({ workbench: page }) => {

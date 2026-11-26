@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   cargoParser,
   createTestParser,
+  formatDuration,
   frameworkFor,
   goParser,
   jsParser,
@@ -36,6 +37,22 @@ describe("parseDuration", () => {
     expect(parseDuration("0.05 sec")).toBe(50);
     expect(parseDuration(undefined)).toBeUndefined();
     expect(parseDuration("soon")).toBeUndefined();
+  });
+});
+
+describe("formatDuration", () => {
+  it("shows milliseconds, seconds and minutes", () => {
+    expect(formatDuration(undefined)).toBe("");
+    expect(formatDuration(850)).toBe("850 ms");
+    expect(formatDuration(1250)).toBe("1.25 s");
+    expect(formatDuration(59_400)).toBe("59.4 s");
+    expect(formatDuration(125_000)).toBe("2 m 5 s");
+  });
+
+  it("carries seconds that round up to 60 into the minutes", () => {
+    expect(formatDuration(119_400)).toBe("1 m 59 s");
+    expect(formatDuration(119_600)).toBe("2 m 0 s");
+    expect(formatDuration(3_599_700)).toBe("60 m 0 s");
   });
 });
 

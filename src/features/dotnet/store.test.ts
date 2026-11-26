@@ -3,6 +3,7 @@ import {
   buildDotnet,
   cancelDotnet,
   discoveredTests,
+  discoverTests,
   packageList,
   reloadDotnet,
   resetDotnet,
@@ -11,6 +12,7 @@ import {
 } from "./store";
 import * as platform from "@/platform/dotnet";
 import { useProject } from "@/platform/project";
+import { EditorService, provideEditorService, provideProjectViewSelection } from "@/workbench/contributions";
 
 afterEach(() => {
   resetDotnet();
@@ -190,5 +192,127 @@ describe("real dotnet discovery output", () => {
       { id: "Direct", version: "1.0", transitive: false, latest: undefined },
       { id: "Child", version: "2.0", transitive: true, latest: undefined },
     ]);
+  });
+});
+
+describe("acting on the context before the model was ever loaded (#5635)", () => {
+  const path = "/repo/src/App/App.csproj";
+  const project: platform.DotnetProject = {
+    path,
+    name: "App",
+    frameworks: ["net9.0"],
+    configurations: ["Debug"],
+    references: [],
+    packages: [],
+    test: true,
+    runner: "vstest",
+    adapter: "mstest",
+    trx: false,
+  };
+  let offSelection = () => {};
+  const selectInProjectView = (...paths: string[]) => {
+    offSelection();
+    offSelection = provideProjectViewSelection(() => paths);
+  };
+  const previousProject = useProject.getState().project;
+
+  beforeEach(() => {
+    useProject.setState({ project: { root: "/repo" } as NonNullable<typeof previousProject> });
+    // A fresh session: the Project view shows a source file, that file is open in the editor.
+    selectInProjectView("/repo/src/App/Program.cs");
+    provideEditorService({ activePath: () => "/repo/src/App/Program.cs" } as unknown as EditorService);
+  });
+
+  afterEach(() => {
+    offSelection();
+    provideEditorService(undefined as unknown as EditorService);
+    useProject.setState({ project: previousProject });
+  });
+
+  it("loads the workspace once, then builds the project of the active editor's file", async () => {
+    const scan = vi.spyOn(platform, "dotnetWorkspace").mockResolvedValue({ projects: [project], solutions: [] });
+    vi.spyOn(platform, "evaluateProject").mockResolvedValue(project);
+    const command = vi.spyOn(platform, "dotnet").mockResolvedValue("");
+
+    await buildDotnet("build");
+
+    expect(scan).toHaveBeenCalledTimes(1);
+    expect(command).toHaveBeenCalledWith(
+      ["build", path, "--configuration", "Debug", "--framework", "net9.0"],
+      "/repo/src/App",
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("shares one workspace load between concurrent context actions", async () => {
+    const scan = vi.spyOn(platform, "dotnetWorkspace").mockResolvedValue({ projects: [project], solutions: [] });
+    vi.spyOn(platform, "evaluateProject").mockResolvedValue(project);
+    vi.spyOn(platform, "dotnet").mockResolvedValue("");
+
+    await Promise.all([buildDotnet("build"), buildDotnet("build")]);
+
+    expect(scan).toHaveBeenCalledTimes(1);
+  });
+
+  it("discovers the tests of the context without a loaded model", async () => {
+    vi.spyOn(platform, "dotnetWorkspace").mockResolvedValue({ projects: [project], solutions: [] });
+    const command = vi.spyOn(platform, "dotnet").mockResolvedValue("");
+
+    await discoverTests();
+
+    expect(command).toHaveBeenCalledWith(
+      expect.arrayContaining(["--list-tests"]),
+      "/repo/src/App",
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("builds a project selected in the Project view without loading the model", async () => {
+    selectInProjectView(path);
+    const scan = vi.spyOn(platform, "dotnetWorkspace");
+    const command = vi.spyOn(platform, "dotnet").mockResolvedValue("");
+
+    await buildDotnet("build");
+
+    expect(scan).not.toHaveBeenCalled();
+    expect(command).toHaveBeenCalledWith(
+      ["build", path, "--configuration", "Debug"],
+      "/repo/src/App",
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("scans once and stays a no-op in a workspace without .NET projects", async () => {
+    const scan = vi.spyOn(platform, "dotnetWorkspace").mockResolvedValue({ projects: [], solutions: [] });
+    const command = vi.spyOn(platform, "dotnet").mockResolvedValue("");
+
+    await buildDotnet("build");
+    await buildDotnet("build");
+
+    expect(scan).toHaveBeenCalledTimes(1);
+    expect(command).not.toHaveBeenCalled();
+  });
+
+  it("retries the workspace load on the next action after a failed scan", async () => {
+    const scan = vi
+      .spyOn(platform, "dotnetWorkspace")
+      .mockRejectedValueOnce(new Error("scan failed"))
+      .mockResolvedValue({ projects: [project], solutions: [] });
+    vi.spyOn(platform, "evaluateProject").mockResolvedValue(project);
+    const command = vi.spyOn(platform, "dotnet").mockResolvedValue("");
+
+    await buildDotnet("build");
+    expect(useDotnet.getState().error).toContain("scan failed");
+    expect(scan).toHaveBeenCalledTimes(1);
+
+    await buildDotnet("build");
+
+    expect(scan).toHaveBeenCalledTimes(2);
+    expect(useDotnet.getState().error).toBe("");
+    expect(command).toHaveBeenCalledWith(
+      ["build", path, "--configuration", "Debug", "--framework", "net9.0"],
+      "/repo/src/App",
+      expect.any(AbortSignal),
+    );
   });
 });

@@ -38,7 +38,7 @@ afterEach(() => {
 
 describe("value hint", () => {
   it("keeps a hint whose value was expanded past the hint's timeout", () => {
-    showHint(view, () => valueHint("order", order, session), { pos: 0, timeout: 4000 });
+    showHint(view, () => valueHint(view, "order", order, session), { pos: 0, timeout: 4000 });
     expand();
     expect(document.querySelector(".cm-lsp-hint .tree")).not.toBeNull();
     vi.advanceTimersByTime(60_000);
@@ -47,7 +47,7 @@ describe("value hint", () => {
 
   it("hands an expanded hover hint to its pin instead of growing in place", () => {
     const pin = vi.fn();
-    showHint(view, () => valueHint("order", order, session, 400, { pin }), { pos: 0 });
+    showHint(view, () => valueHint(view, "order", order, session, 400, { pin }), { pos: 0 });
     expand();
     expect(pin).toHaveBeenCalled();
     expect(document.querySelector(".tree")).toBeNull();

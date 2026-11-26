@@ -5,6 +5,8 @@ import { PageContext } from "../components/context";
 import { OptionsPage } from "../pages/OptionsPage";
 import type { SectionSpec } from "../pages/spec";
 
+const PAGE_CONTEXT = { pageId: "languages.go.modules", scope: "project" } as const;
+
 export const GO_MODULE_SECTIONS: SectionSpec[] = [
   {
     options: [
@@ -34,7 +36,7 @@ export function GoModulesPage() {
   const newProjects = useSettingsDialog((s) => s.newProjects);
   if (!hasProject || newProjects) return <T>Open a project to configure Go modules.</T>;
   return (
-    <PageContext.Provider value={{ pageId: "languages.go.modules", scope: "project" }}>
+    <PageContext.Provider value={PAGE_CONTEXT}>
       <OptionsPage spec={{ id: "languages.go.modules", title: "Go Modules", order: 0, sections: GO_MODULE_SECTIONS }} />
     </PageContext.Provider>
   );

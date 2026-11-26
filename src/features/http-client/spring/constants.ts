@@ -102,6 +102,7 @@ export class ConstantPool {
           if (this.classes.has(name) && !this.pending.has(name)) continue;
           if (!this.pending.has(name) && this.classes.size >= MAX_CLASSES) continue;
           const isNew = !this.pending.has(name);
+          // oxlint-disable-next-line no-await-in-loop -- lookup seeds classes/pending and the loaded file drives the next breadth-first round
           const loaded = await this.lookup(name, file);
           if (!loaded) continue;
           added = true;
@@ -137,10 +138,12 @@ export class ConstantPool {
     const imported = from.imports.find((i) => i.endsWith(`.${name}`) || i.includes(`.${name}.`));
     const pkg = imported ? imported.slice(0, imported.indexOf(`.${name}`)) : from.packageName;
     for (const ext of EXTENSIONS) {
+      // oxlint-disable-next-line no-await-in-loop -- .java is tried before .kt; stop once an extension has a candidate
       const paths = (await this.files.filesNamed(`${name}${ext}`)).map((p) => p.replace(/\\/g, "/"));
       if (!paths.length) continue;
       const suffix = `/${pkg.replace(/\./g, "/")}/${name}${ext}`;
       const path = paths.find((p) => p.endsWith(suffix)) ?? paths[0]!;
+      // oxlint-disable-next-line no-await-in-loop -- a missing or unreadable file falls through to the next candidate
       const text = await this.files.read(path);
       if (text != null) return parseSource(text);
     }

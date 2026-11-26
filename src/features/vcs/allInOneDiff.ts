@@ -12,10 +12,14 @@ export interface CombinedDiffData {
   items: DiffData[];
   /** Path of the file to scroll to when the tab opens. */
   reveal?: string;
+  /** Diff key of the entry to scroll to when several share `reveal` (staged and unstaged). */
+  revealKey?: string;
   title?: string;
 }
 
 const KEY = "openidea.diff.allInOne";
+
+export const combinedDiffDocumentOwner = (tab: string, diff: string) => `${tab}\0${diff}`;
 
 /** Whether diffs of several files open as one all-in-one diff (off by default). */
 export function allInOneDiff(): boolean {
@@ -36,6 +40,6 @@ export function setAllInOneDiff(on: boolean) {
 
 /** The chain of `data` as an all-in-one diff, when that view is on and the chain has several files. */
 export function combinedOf(data: DiffData): CombinedDiffData | null {
-  if (data.embedded || !data.chain || data.chain.length < 2 || !allInOneDiff()) return null;
+  if (data.middle || data.embedded || !data.chain || data.chain.length < 2 || !allInOneDiff()) return null;
   return { items: data.chain, reveal: data.path };
 }

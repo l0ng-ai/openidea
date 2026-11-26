@@ -51,12 +51,12 @@ pub struct Project {
     pub(crate) member_excludes: MemberExcludes,
     /// Per-project cache directory (build tool sync results…).
     pub cache_dir: PathBuf,
-    /// Superseded launch snapshots retained until this project session ends.
-    pub(crate) java_launch_snapshots: Mutex<crate::ops::java::cache::Session>,
-    /// Java launches waiting for their build, which can share one Maven run.
-    pub(crate) java_launches_waiting: crate::ops::java::cache::Waiting,
+    /// Pending launches and retained snapshots, scoped to each workspace project.
+    pub(crate) java_launches: crate::ops::java::cache::Sessions,
     /// Reasons this window was already told why Kotlin is debugged with kotlin-debug-adapter.
     pub(crate) kotlin_debug_notices: Mutex<HashSet<&'static str>>,
+    /// The completion only some plugins asked to complete again ([`crate::ops::lsp::lsp_completion`]).
+    pub(crate) completion_session: Mutex<Option<crate::ops::lsp::CompletionSession>>,
     /// Database tool window: data sources and their connections.
     pub db: Arc<ide_db::DbManager>,
     /// HTTP Client responses (IDEA's `.idea/httpRequests`), in the app data dir.
@@ -68,7 +68,9 @@ pub struct Project {
     /// Flutter's devices; its daemon starts when the UI first asks for them.
     pub(crate) flutter: ide_flutter::FlutterDaemon,
     /// Flutter DevTools; its server starts when the UI first asks for it.
-    pub(crate) devtools: ide_flutter::DevToolsServer,
+    pub(crate) devtools: ide_flutter::ToolServer,
+    /// Flutter Widget Preview; its server starts when its tool window first opens.
+    pub(crate) widget_preview: ide_flutter::ToolServer,
     pub(crate) kotlin_bridge: Option<Arc<crate::kotlin_bridge::KotlinBridge>>,
     pub(crate) phpstan: Option<Arc<crate::phpstan::Phpstan>>,
     pub(crate) watcher: Arc<Watcher>,
@@ -78,6 +80,8 @@ pub struct Project {
     /// watchers for (a virtualenv elsewhere, a path dependency).
     lsp_watchers: Mutex<Vec<(PathBuf, Watcher)>>,
     pub(crate) _scratch_watcher: Option<Watcher>,
+    /// Git metadata of repositories whose git directory lies outside the project folder.
+    pub(crate) git_metadata: Option<Arc<ide_vcs::MetadataWatch>>,
     /// Picks up data sources edited on disk outside the Database tool window.
     _db_sources_watch: Option<ide_db::SourcesWatch>,
     /// A LightEdit window's loose files ([`Host::open_light`]): global settings only,
@@ -108,13 +112,21 @@ impl Host {
             && current.root == root
             && !current.light
         {
+            let status = current.index.status();
+            if status.indexing {
+                current.sink.emit(IdeEvent::IndexState {
+                    indexing: true,
+                    files: status.files,
+                    symbols: status.symbols,
+                });
+            }
             return Ok(current);
         }
         // A window takes the root over from the MCP server's background project, whose
         // shutdown the wait below sits out; none opens until this open is over.
         let _claim = (!crate::mcp::BackgroundProjects::is_key(window)).then(|| self.mcp_background.claim(self, &root));
-        self.close_project(window);
-        self.wait_detached_closes();
+        self.close_project_detached(window);
+        self.wait_detached_closes_for(&root);
         let sink: SharedSink = (self.sink_for)(window);
         // Before anything the project starts: its children get the project's environment.
         let trusted = Arc::new(AtomicBool::new(self.trust.window_trusted(&root)?));
@@ -202,9 +214,17 @@ impl Host {
                 // resolve imports into them. A container target already supplies its own
                 // `extraPaths` (the site-packages snapshot); don't mix local sources into it.
                 if !container_python {
-                    ide_sdk::apply::configure_python_extra_paths(cfg, &python_dependency_roots(&effective, root));
+                    let mut paths = python_dependency_roots(&effective, root);
+                    // The folders added to the paths of the interpreter this server analyses with.
+                    if let Some(python) = ide_sdk::apply::python_server_interpreter(root, server_root, &effective) {
+                        paths.extend(ide_sdk::apply::interpreter_user_paths(&python, &effective));
+                    }
+                    ide_sdk::apply::configure_python_extra_paths(cfg, &paths);
                 }
                 if cfg.name == "jdtls" {
+                    // Before anything reads the install the command resolves to.
+                    let managed = ide_tools::tools_dir(&data_dir).join("jdtls").join("bin").join("jdtls");
+                    ide_sdk::jdtls::skip_plain_launcher_wrappers(cfg, &managed);
                     // A workspace member keeps its build model under its own key (Build Project).
                     let cache = match &member {
                         Some(member) if member != window_root => build_cache.join(crate::project::project_key(member)),
@@ -286,6 +306,10 @@ impl Host {
                         lombok.jar(),
                     );
                     ide_sdk::apply::configure_gradle_runtime(cfg, root, server_root, &effective);
+                    let gradle_dirs: Vec<_> = std::iter::once(data_dir.join("gradle"))
+                        .chain(dirs::cache_dir().map(|dir| dir.join("openidea").join("gradle")))
+                        .collect();
+                    ide_sdk::apply::configure_gradle_classpath(cfg, &gradle_dirs);
                     ide_sdk::apply::configure_maven_sources(cfg, &effective);
                     ide_sdk::jdtls::launch_directly(cfg);
                 }
@@ -294,7 +318,13 @@ impl Host {
                 ide_sdk::php::configure_intelephense_storage(cfg, &data_dir);
                 if cfg.name == "jdtls" {
                     let (excluded_poms, build_files) = jdtls_maven_import(root, &effective);
-                    ide_sdk::apply::configure_maven_import(cfg, root, &excluded_poms, build_files.as_deref());
+                    ide_sdk::apply::configure_maven_import(
+                        cfg,
+                        root,
+                        &excluded_poms,
+                        &effective.project_structure.excluded,
+                        build_files.as_deref(),
+                    );
                     ide_sdk::apply::configure_gradle_import(
                         cfg,
                         effective.languages.java.gradle.linked_projects.as_deref(),
@@ -370,6 +400,10 @@ impl Host {
         for repo in repos.read().all() {
             repo.set_execution_allowed(trusted.load(Ordering::Acquire));
         }
+        let git_metadata = git_metadata_watch(&root, &sink);
+        if let Some(watch) = &git_metadata {
+            watch.set_repos(repos.read().all(), &root);
+        }
         // Shared handle: `unwatched_reason` is a live query on the watcher,
         // filled after `start` returns so the on-change callback can reach it.
         let watcher_weak = Arc::new(std::sync::OnceLock::<std::sync::Weak<Watcher>>::new());
@@ -383,6 +417,7 @@ impl Host {
             let kotlin_bridge = kotlin_bridge.clone();
             let phpstan = phpstan.clone();
             let repos = repos.clone();
+            let git_metadata = git_metadata.clone();
             let settings = settings.clone();
             let index = index.clone();
             let documents = documents.clone();
@@ -506,6 +541,7 @@ impl Host {
                         scan_repositories(
                             &root,
                             &repos,
+                            git_metadata.as_deref(),
                             &settings,
                             &sink,
                             &build_cache,
@@ -596,11 +632,11 @@ impl Host {
         mark("watcher");
         {
             let (root, repos, settings, sink) = (root.clone(), repos.clone(), settings.clone(), sink.clone());
-            let build_cache = build_cache.clone();
+            let (build_cache, git_metadata) = (build_cache.clone(), git_metadata.clone());
             let trusted = trusted.load(Ordering::Acquire);
-            std::thread::Builder::new()
-                .name("openidea-vcs-roots".into())
-                .spawn(move || scan_repositories(&root, &repos, &settings, &sink, &build_cache, trusted))?;
+            std::thread::Builder::new().name("openidea-vcs-roots".into()).spawn(move || {
+                scan_repositories(&root, &repos, git_metadata.as_deref(), &settings, &sink, &build_cache, trusted)
+            })?;
         }
         mark("git");
         tracing::info!("opened {} in window {window} in {} ms {laps:?}", root.display(), started.elapsed().as_millis());
@@ -619,8 +655,16 @@ impl Host {
         let project = Arc::new(Project {
             plugin_diagnostics,
             trusted,
-            flutter: ide_flutter::FlutterDaemon::new(root.clone(), sink.clone()),
-            devtools: ide_flutter::DevToolsServer::new(root.clone()),
+            flutter: ide_flutter::FlutterDaemon::new(
+                root.clone(),
+                sink.clone(),
+                flutter_tool(&root, &settings, "flutter"),
+            ),
+            devtools: ide_flutter::ToolServer::devtools(root.clone(), flutter_tool(&root, &settings, "dart")),
+            widget_preview: ide_flutter::ToolServer::widget_preview(
+                root.clone(),
+                flutter_tool(&root, &settings, "flutter"),
+            ),
             root,
             sink,
             languages,
@@ -637,11 +681,9 @@ impl Host {
             detected_roots,
             member_excludes,
             cache_dir: self.local_data_dir.join("cache").join(&project_key),
-            java_launch_snapshots: Mutex::new(crate::ops::java::cache::Session::new(
-                self.local_data_dir.join("cache").join(&project_key).join("build"),
-            )),
-            java_launches_waiting: Default::default(),
+            java_launches: Default::default(),
             kotlin_debug_notices: Mutex::default(),
+            completion_session: Mutex::default(),
             db,
             http_history,
             agents,
@@ -652,6 +694,7 @@ impl Host {
             content_watchers: Mutex::new(content_watchers),
             lsp_watchers: Mutex::new(Vec::new()),
             _scratch_watcher: scratch_watcher,
+            git_metadata,
             _db_sources_watch: db_sources_watch,
             files_events_active,
             light: false,
@@ -681,6 +724,20 @@ impl Host {
             project.agents.set_security_hook(Arc::new(move || {
                 weak.upgrade().map(|p| p.settings.effective().agent_security).unwrap_or_default()
             }));
+        }
+        {
+            let weak = Arc::downgrade(&project);
+            let trust = self.trust.clone();
+            project.agents.set_workspace_roots_hook(Arc::new(move || {
+                let Some(p) = weak.upgrade() else { return Vec::new() };
+                let mut roots = vec![p.root.clone()];
+                roots.extend(crate::mcp::trusted_attachments(&trust, &p.root));
+                roots
+            }));
+        }
+        {
+            let weak = Arc::downgrade(&project);
+            project.agents.set_git_executable_hook(Arc::new(move || weak.upgrade()?.git_executable()));
         }
         self.insert_project(window, project.clone());
         for (key, text, dirty) in &carried {
@@ -715,7 +772,8 @@ impl Host {
                 self.data_dir.join("db-history.json"),
                 self.ssh.clone(),
             )
-            .with_global_sources(self.data_dir.clone()),
+            .with_global_sources(self.data_dir.clone())
+            .with_local_external_tunnels(self.local_database_tunnels),
         );
         let http_history = Arc::new(ide_http::History::new(self.data_dir.join("http-history").join(project_key)));
         let agents = Arc::new(ide_agent::AgentManager::new(
@@ -755,12 +813,20 @@ impl Host {
         let skill_settings = settings.clone();
         let skill_root = root.clone();
         let trust = self.trust.clone();
+        let plugin_host = self.plugin_host.read().clone();
         agents.set_skills_policy_hook(Box::new(move || {
             let layer = |scope| skill_settings.layer(scope).agents.skills.clone();
+            let workspace_trusted = trust.window_trusted(&skill_root).unwrap_or(false);
+            let plugin_dirs = plugin_host
+                .upgrade()
+                .map(|plugins| plugins.skill_dirs(Some(&skill_root), workspace_trusted))
+                .unwrap_or_default();
             ide_agent::SkillsPolicy {
                 user: layer(ide_workspace::settings::SettingsScope::Global),
                 workspace: layer(ide_workspace::settings::SettingsScope::Project),
-                workspace_trusted: trust.trusted(&skill_root).unwrap_or(false),
+                workspace_trusted,
+                workspace_roots: crate::ops::agent::workspace_skill_roots(&skill_root),
+                plugin_dirs,
             }
         }));
         agents.set_mcp_servers_hook(Box::new(move || {
@@ -810,8 +876,10 @@ impl Host {
             }
             return Ok(current);
         }
-        self.close_project(window);
-        self.wait_detached_closes();
+        self.close_project_detached(window);
+        if let Some(dir) = watch_dir {
+            self.wait_detached_closes_for(dir);
+        }
         let sink: SharedSink = (self.sink_for)(window);
         let settings = Arc::new(SettingsStore::load(&self.config_dir, None));
         let effective = settings.effective();
@@ -848,8 +916,16 @@ impl Host {
         let project = Arc::new(Project {
             plugin_diagnostics,
             trusted: Arc::new(AtomicBool::new(false)),
-            flutter: ide_flutter::FlutterDaemon::new(dir.clone(), sink.clone()),
-            devtools: ide_flutter::DevToolsServer::new(dir.clone()),
+            flutter: ide_flutter::FlutterDaemon::new(
+                dir.clone(),
+                sink.clone(),
+                flutter_tool(&dir, &settings, "flutter"),
+            ),
+            devtools: ide_flutter::ToolServer::devtools(dir.clone(), flutter_tool(&dir, &settings, "dart")),
+            widget_preview: ide_flutter::ToolServer::widget_preview(
+                dir.clone(),
+                flutter_tool(&dir, &settings, "flutter"),
+            ),
             sink,
             languages,
             settings,
@@ -865,11 +941,9 @@ impl Host {
             detected_roots: Arc::default(),
             member_excludes: Arc::default(),
             cache_dir: self.local_data_dir.join("cache").join(&project_key),
-            java_launch_snapshots: Mutex::new(crate::ops::java::cache::Session::new(
-                self.local_data_dir.join("cache").join(&project_key).join("build"),
-            )),
-            java_launches_waiting: Default::default(),
+            java_launches: Default::default(),
             kotlin_debug_notices: Mutex::default(),
+            completion_session: Mutex::default(),
             db,
             http_history,
             agents,
@@ -880,6 +954,7 @@ impl Host {
             content_watchers: Mutex::new(Vec::new()),
             lsp_watchers: Mutex::new(Vec::new()),
             _scratch_watcher: None,
+            git_metadata: None,
             _db_sources_watch: None,
             files_events_active: Arc::new(AtomicBool::new(false)),
             light: true,
@@ -978,11 +1053,18 @@ fn light_watcher(
     )
 }
 
+/// `flutter` / `dart` as Settings › Flutter chooses them, read each time the daemon or DevTools starts.
+fn flutter_tool(root: &Path, settings: &Arc<SettingsStore>, command: &'static str) -> ide_flutter::Configured {
+    let (root, settings) = (root.to_path_buf(), settings.clone());
+    Box::new(move || ide_sdk::apply::tool_command(&root, &settings.effective(), command))
+}
+
 /// Looks for repositories nested below the project (and the one containing it);
 /// emits `VcsChanged` when the set of roots changed.
 fn scan_repositories(
     root: &Path,
     repos: &RwLock<Repos>,
+    git_metadata: Option<&ide_vcs::MetadataWatch>,
     settings: &SettingsStore,
     sink: &SharedSink,
     build_cache: &Path,
@@ -991,6 +1073,9 @@ fn scan_repositories(
     match discover_repositories(root, settings, build_cache, trusted) {
         Ok(found) => {
             if found.roots() != repos.read().roots() {
+                if let Some(watch) = git_metadata {
+                    watch.set_repos(found.all(), root);
+                }
                 *repos.write() = found;
                 sink.emit(IdeEvent::VcsChanged { root: root.to_path_buf().into() });
             }
@@ -1044,6 +1129,7 @@ impl Project {
         scan_repositories(
             &self.root,
             &self.repos,
+            self.git_metadata.as_deref(),
             &self.settings,
             &self.sink,
             &self.build_cache_dir(),
@@ -1051,11 +1137,24 @@ impl Project {
         );
     }
 
+    /// Settings › Version Control › Git › Path to Git executable, this project's value (its own
+    /// layer over the global one); `None` when it is empty or the project is not trusted.
+    /// Every git started for the project runs it: the project's repositories carry it, and work
+    /// that opens repositories of its own (agent worktrees, gh, plugins) passes it to
+    /// [`ide_vcs::with_git_executable`].
+    pub fn git_executable(&self) -> Option<PathBuf> {
+        let git = self.settings.read_effective(|s| s.vcs.git.executable.trim().to_owned());
+        (self.is_trusted() && !git.is_empty()).then(|| PathBuf::from(git))
+    }
+
     /// The project's git repositories.
     pub fn repos(&self) -> Repos {
         let repos = self.repos.read().clone();
+        let trusted = self.is_trusted();
+        let git = self.git_executable();
         for repo in repos.all() {
-            repo.set_execution_allowed(self.is_trusted());
+            repo.set_execution_allowed(trusted);
+            repo.set_git_executable(git.as_deref());
         }
         repos
     }
@@ -1139,11 +1238,13 @@ impl Project {
 
     fn run_in<T>(&self, repo: &Repo, f: impl FnOnce(&Repo) -> IdeResult<T>) -> IdeResult<T> {
         let settings = self.settings.effective();
-        if self.is_trusted() {
-            apply_git_executable(&settings);
-        }
         repo.set_ignored_names(settings.ignored_names());
         repo.set_cli_status(settings.vcs.git.cli_status);
+        repo.set_automatic_shelf(
+            (settings.vcs.git.save_changes_policy == ide_core::workflow_settings::GitSaveChangesPolicy::Shelve)
+                .then(|| ide_core::project_dir::path(&self.root, "shelf")),
+            (!settings.vcs.git.staging_area).then(|| self.root.clone()),
+        );
         f(repo)
     }
 
@@ -1164,11 +1265,6 @@ impl Project {
     /// `with_log_repo_of` through the backend-agnostic Changes-view surface.
     pub fn with_log_backend_of<T>(&self, path: &Path, f: impl FnOnce(&dyn Backend) -> IdeResult<T>) -> IdeResult<T> {
         self.with_log_repo_of(path, |r| f(r as &dyn Backend))
-    }
-
-    /// `with_repo` through the backend-agnostic Changes-view surface.
-    pub fn with_backend<T>(&self, f: impl FnOnce(&dyn Backend) -> IdeResult<T>) -> IdeResult<T> {
-        self.with_backend_at(None, f)
     }
 
     /// `with_repo_recorded` through the backend-agnostic Changes-view surface.
@@ -1414,12 +1510,22 @@ impl Project {
     /// Use the open document's selected encoding, or the same detection/settings as opening it.
     pub fn vcs_encoding(&self, path: &Path, rev: Option<&str>) -> IdeResult<ide_vcs::TextEncoding> {
         let charset = self.file_encoding(path, rev)?;
+        Ok(self.vcs_text_encoding(path, charset))
+    }
+
+    pub fn staged_file_encoding(&self, path: &Path, bytes: &[u8]) -> ide_vcs::TextEncoding {
+        let defaults = self.documents.file_defaults();
+        let charset = ide_vfs::detect_encoding(bytes, defaults.fallback_for(path));
+        self.vcs_text_encoding(path, charset)
+    }
+
+    fn vcs_text_encoding(&self, path: &Path, charset: &'static encoding_rs::Encoding) -> ide_vcs::TextEncoding {
         let encoding = ide_vcs::TextEncoding::from(charset);
-        Ok(if self.documents.native_to_ascii_for(path) {
+        if self.documents.native_to_ascii_for(path) {
             encoding.with_ascii_conversion(ide_vfs::decode_properties_escapes, ide_vfs::encode_properties_ascii)
         } else {
             encoding
-        })
+        }
     }
 
     fn file_encoding(&self, path: &Path, rev: Option<&str>) -> IdeResult<&'static encoding_rs::Encoding> {
@@ -1428,17 +1534,15 @@ impl Project {
             return encoding_rs::Encoding::for_label(info.encoding.as_bytes())
                 .ok_or_else(|| ide_core::IdeError::invalid("unknown document encoding"));
         }
-        let defaults = self.documents.file_defaults();
-        let fallback = defaults.fallback_for(path);
         // The working file only when it is a regular file: a path that is a directory there
         // (a committed symlink to a folder, a file replaced by a folder) has only its blob.
         if path.is_file() {
-            let loaded = ide_vfs::load_text_with_fallback(path, fallback)?;
+            let loaded = self.documents.load_file(path)?;
             return encoding_rs::Encoding::for_label(loaded.encoding.as_bytes())
                 .ok_or_else(|| ide_core::IdeError::invalid("unknown file encoding"));
         }
         let bytes = self.with_log_repo_of(path, |r| r.file_bytes_at(path, rev))?.unwrap_or_default();
-        Ok(ide_vfs::detect_encoding(&bytes, fallback))
+        Ok(self.documents.detect_encoding(path, &bytes))
     }
 
     /// Current text of `path`: the open buffer when available, else the file on disk.
@@ -1911,7 +2015,7 @@ fn with_gradle_roots(
     use ide_build::gradle::ReportedRoot;
     use ide_workspace::roots::RootKind;
     let mut out: Vec<SourceFolder> = Vec::new();
-    for (dir, kind) in ide_build::gradle_source_roots(root, build_cache, settings) {
+    for (dir, kind, project) in ide_build::gradle_source_roots(root, build_cache, settings) {
         if !dir.is_dir() {
             continue;
         }
@@ -1924,7 +2028,16 @@ fn with_gradle_roots(
             ReportedRoot::Excluded => RootKind::Excluded,
         };
         if !out.iter().any(|f| f.path == path) {
-            out.push(SourceFolder { path, kind, detected_from: Some("Gradle".into()) });
+            // `<module>/Gradle`, like the `<module>/build.gradle` static detection reports, so the
+            // UI still finds the module after a sync. Projects outside the root stay `Gradle`:
+            // the UI reads the folder as project-relative.
+            let detected_from = match project.strip_prefix(root) {
+                Ok(rel) if !rel.as_os_str().is_empty() => {
+                    format!("{}/Gradle", ide_workspace::roots::normalize(&rel.to_string_lossy()))
+                }
+                _ => "Gradle".into(),
+            };
+            out.push(SourceFolder { path, kind, detected_from: Some(detected_from) });
         }
     }
     out.extend(detected.iter().filter(|d| !out.iter().any(|o| o.path == d.path)).cloned().collect::<Vec<_>>());
@@ -2157,12 +2270,6 @@ fn notify_transfer(sink: &SharedSink, what: &str, path: &Path, result: IdeResult
     });
 }
 
-/// Settings › Version Control › Git › Path to Git executable (empty = auto-detect).
-pub fn apply_git_executable(settings: &ide_core::settings::Settings) {
-    let exe = settings.vcs.git.executable.trim();
-    ide_vcs::set_git_executable((!exe.is_empty()).then(|| Path::new(exe)));
-}
-
 #[cfg(test)]
 mod maven_linkage_tests {
     #[test]
@@ -2265,7 +2372,7 @@ mod maven_linkage_tests {
             serde_json::json!({"name": "jdtls", "command": "jdtls"}),
         )
         .unwrap();
-        ide_sdk::apply::configure_maven_import(&mut server, tmp.path(), &excluded_poms, None);
+        ide_sdk::apply::configure_maven_import(&mut server, tmp.path(), &excluded_poms, &[], None);
         let options = serde_json::to_value(server.initialization_options).unwrap();
         let exclusions = options.pointer("/settings/java/import/exclusions").unwrap().as_array().unwrap();
         assert!(exclusions.contains(&serde_json::json!(tmp.path().join("a").to_string_lossy().replace('\\', "/"))));
@@ -2284,14 +2391,73 @@ mod maven_linkage_tests {
     }
 }
 
+/// Commits, checkouts and resets made outside the IDE in a git directory the project
+/// watcher doesn't see (the project is a subfolder of its repository, or a linked worktree).
+fn git_metadata_watch(root: &Path, sink: &SharedSink) -> Option<Arc<ide_vcs::MetadataWatch>> {
+    let (root, sink) = (root.to_path_buf(), sink.clone());
+    ide_vcs::MetadataWatch::new(move |paths| {
+        if paths.iter().any(|p| vcs_path_changed(p)) {
+            sink.emit(IdeEvent::VcsChanged { root: root.clone().into() });
+        }
+    })
+    .map(Arc::new)
+    .map_err(|e| tracing::warn!("{}", e.message))
+    .ok()
+}
+
+/// Whether a VCS metadata path changed for a reason other than our own status run
+/// refreshing an index: the main repository's `.git/index` or a linked worktree's
+/// `.git/worktrees/<id>/index`.
 fn vcs_path_changed(path: &Path) -> bool {
-    !path.ends_with(".git/index") || !ide_vcs::is_own_index_write(path)
+    path.file_name().is_none_or(|n| n != "index") || !ide_vcs::is_own_index_write(path)
 }
 
 #[cfg(test)]
 mod gradle_roots_tests {
     use super::*;
     use ide_workspace::RootKind;
+
+    #[test]
+    fn gradle_sync_roots_keep_the_module_they_belong_to() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let cache = root.join(".cache");
+        for d in [root.join("src/main/java"), root.join("lib/src/main/java"), root.join("lib/build"), cache.clone()] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(root.join("build.gradle"), "").unwrap();
+        let s = |p: PathBuf| p.to_string_lossy().into_owned();
+        let json = serde_json::json!({ "hash": "", "at_ms": 1.0, "error": null, "tasks": [], "projects": [
+            { "path": ":", "dir": s(root.clone()), "sourceSets": [
+                { "name": "main", "test": false, "src": [s(root.join("src/main/java"))], "res": [] } ] },
+            { "path": ":lib", "dir": s(root.join("lib")), "buildDir": s(root.join("lib/build")), "sourceSets": [
+                { "name": "main", "test": false, "src": [s(root.join("lib/src/main/java"))], "res": [] } ] },
+        ]});
+        std::fs::write(cache.join("gradle.json"), json.to_string()).unwrap();
+        // What static detection reports for this layout before the first sync.
+        let detected = [
+            SourceFolder {
+                path: "src/main/java".into(),
+                kind: RootKind::Source,
+                detected_from: Some("build.gradle".into()),
+            },
+            SourceFolder {
+                path: "lib/src/main/java".into(),
+                kind: RootKind::Source,
+                detected_from: Some("lib/build.gradle".into()),
+            },
+        ];
+        let out = with_gradle_roots(&root, &cache, &Default::default(), &detected);
+        let got: Vec<_> = out.iter().map(|f| (f.path.as_str(), f.detected_from.as_deref())).collect();
+        assert_eq!(
+            got,
+            [
+                ("src/main/java", Some("Gradle")),
+                ("lib/src/main/java", Some("lib/Gradle")),
+                ("lib/build", Some("lib/Gradle")),
+            ]
+        );
+    }
 
     #[test]
     fn gradle_sync_roots_win_and_reach_outside_the_project() {
@@ -2316,14 +2482,15 @@ mod gradle_roots_tests {
         std::fs::write(root.join("build.gradle"), "").unwrap();
         let out = with_gradle_roots(&root, &cache, &Default::default(), &[guessed, other.clone()]);
         let abs = |p: PathBuf| ide_workspace::roots::normalize(&s(p));
-        let got: Vec<(String, RootKind)> = out.iter().map(|f| (f.path.clone(), f.kind)).collect();
+        let got: Vec<_> = out.iter().map(|f| (f.path.clone(), f.kind, f.detected_from.as_deref())).collect();
+        // A project outside the root is not a module the UI could address.
         assert_eq!(
             got,
             [
-                ("src/it/java".into(), RootKind::Test),
-                (abs(svc.join("src/main/java")), RootKind::Source),
-                (abs(svc.join("build")), RootKind::Excluded),
-                ("web".into(), RootKind::Source),
+                ("src/it/java".into(), RootKind::Test, Some("Gradle")),
+                (abs(svc.join("src/main/java")), RootKind::Source, Some("Gradle")),
+                (abs(svc.join("build")), RootKind::Excluded, Some("Gradle")),
+                ("web".into(), RootKind::Source, None),
             ]
         );
     }
@@ -2368,6 +2535,40 @@ mod index_event_tests {
         assert!(vcs_path_changed(&index));
         std::fs::remove_file(&index).unwrap();
         assert!(vcs_path_changed(&index));
+    }
+
+    #[test]
+    fn status_write_in_a_linked_worktree_is_suppressed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("main");
+        std::fs::create_dir(&main).unwrap();
+        let git = |dir: &std::path::Path, args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .current_dir(dir)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        };
+        git(&main, &["init", "-q"]);
+        std::fs::write(main.join("file.txt"), "original\n").unwrap();
+        git(&main, &["add", "file.txt"]);
+        git(&main, &["commit", "-qm", "init"]);
+        let linked = tmp.path().join("linked");
+        git(&main, &["worktree", "add", "-q", linked.to_str().unwrap()]);
+        std::fs::File::options()
+            .write(true)
+            .open(linked.join("file.txt"))
+            .unwrap()
+            .set_modified(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1))
+            .unwrap();
+        let index = main.join(".git/worktrees/linked/index");
+        let before = std::fs::read(&index).unwrap();
+        ide_vcs::Repo::discover(&linked).unwrap().unwrap().status().unwrap();
+        assert_ne!(before, std::fs::read(&index).unwrap(), "status must actually write the index");
+        assert!(!vcs_path_changed(&index));
+        assert!(vcs_path_changed(&main.join(".git/worktrees/linked/HEAD")));
     }
 }
 
@@ -2566,5 +2767,79 @@ mod content_roots_tests {
         let members = member_excludes(&store(&ws), &ws);
         assert_eq!(members[&other], ["/dist", "/gen"]);
         assert_eq!(members[&root], ["/dist", "/target"]);
+    }
+}
+
+#[cfg(test)]
+mod external_git_metadata_tests {
+    use crate::{Host, HostConfig};
+    use ide_core::{IdeEvent, SharedSink};
+    use parking_lot::Mutex;
+    use std::path::Path;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    fn git(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(["-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    /// A commit made in a terminal refreshes the project's VCS state when the project folder
+    /// is the repository root, a subfolder of it, or a linked worktree, and for a submodule.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn external_commits_refresh_vcs_wherever_the_git_dir_lives() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(temp.path()).unwrap();
+        let main = base.join("main");
+        std::fs::create_dir_all(main.join("sub")).unwrap();
+        git(&main, &["init", "-q", "-b", "main"]);
+        git(&main, &["commit", "-q", "--allow-empty", "-m", "init"]);
+        git(&main, &["worktree", "add", "-q", "-b", "topic", base.join("wt").to_str().unwrap()]);
+        let lib = base.join("lib");
+        std::fs::create_dir(&lib).unwrap();
+        git(&lib, &["init", "-q", "-b", "main"]);
+        git(&lib, &["commit", "-q", "--allow-empty", "-m", "init"]);
+        let sup = base.join("super");
+        std::fs::create_dir(&sup).unwrap();
+        git(&sup, &["init", "-q", "-b", "main"]);
+        git(&sup, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", lib.to_str().unwrap(), "lib"]);
+        git(&sup, &["commit", "-q", "-m", "submodule"]);
+        let seen = Arc::new(Mutex::new(0usize));
+        let counted = seen.clone();
+        let sink: SharedSink = Arc::new(move |e: IdeEvent| {
+            if matches!(e, IdeEvent::VcsChanged { .. }) {
+                *counted.lock() += 1;
+            }
+        });
+        let host = Host::new(HostConfig {
+            sink_for: Box::new(move |_| sink.clone()),
+            local_data_dir: base.join("local"),
+            ..HostConfig::for_test(&base)
+        });
+        let cases = [
+            (main.clone(), main.clone()),
+            (main.join("sub"), main.join("sub")),
+            (base.join("wt"), base.join("wt")),
+            (sup.clone(), sup.join("lib")),
+        ];
+        for (project, repo) in cases {
+            host.open_project("main", &project).unwrap();
+            std::thread::sleep(Duration::from_millis(1500));
+            *seen.lock() = 0;
+            std::fs::write(repo.join("a.txt"), repo.to_string_lossy().as_bytes()).unwrap();
+            git(&repo, &["add", "a.txt"]);
+            git(&repo, &["commit", "-q", "-m", "change"]);
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while *seen.lock() == 0 && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            assert!(*seen.lock() > 0, "no VcsChanged for a commit in {}", repo.display());
+            host.close_project("main");
+        }
     }
 }

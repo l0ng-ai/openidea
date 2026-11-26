@@ -21,6 +21,7 @@ import {
   Annotation,
   Compartment,
   Facet,
+  type ChangeSet,
   type ChangeSpec,
   StateEffect,
   type EditorState,
@@ -48,7 +49,7 @@ export {
   type NavigationMatch,
 } from "@/editor/navigationProviders";
 export { registerRelatedProvider, type RelatedContext, type RelatedItem } from "@/editor/relatedProviders";
-export { offsetsToRange, offsetToPos, posToOffset, rangeToOffsets } from "@/editor/lsp/positions";
+export { offsetsToRange, offsetToPos, posToOffset, rangeToOffsets, textEditsToChanges } from "@/editor/lsp/positions";
 
 /** Documents above this size (UTF-16 units) skip per-line decorations. */
 export const HEAVY_LIMIT = 8_000_000;
@@ -558,6 +559,13 @@ export function contributedQuickFixes(view: EditorView, from: number, to: number
   return view.state.facet(quickFixProviders).flatMap((provider) => provider(view, from, to));
 }
 
+/**
+ * Extra rows for the ⌥↵ submenu of inspection `inspectionId` at the caret (after Edit
+ * inspection profile setting and Disable inspection), such as Suppress for statement.
+ */
+export const inspectionControlProviders =
+  Facet.define<(view: EditorView, inspectionId: string) => readonly ContributedIntention[]>();
+
 /** Providers of `ContributedIntention`s for the caret of `view` (cheap and synchronous: also drives the light bulb). */
 export const intentionProviders = Facet.define<(view: EditorView) => ContributedIntention[]>();
 
@@ -572,6 +580,31 @@ export function contributedIntentions(view: EditorView): ContributedIntention[] 
   });
 }
 
+/**
+ * Providers of context actions that need an answer from the language server first. ⌥↵ waits for
+ * them along with the server's code actions; the light bulb does too. `signal` aborts when the
+ * answer is no longer wanted (the caret moved on).
+ */
+export const asyncIntentionProviders =
+  Facet.define<(view: EditorView, signal: AbortSignal) => Promise<ContributedIntention[]>>();
+
+export async function contributedIntentionsAsync(
+  view: EditorView,
+  signal: AbortSignal,
+): Promise<ContributedIntention[]> {
+  const found = await Promise.all(
+    view.state.facet(asyncIntentionProviders).map((p) =>
+      Promise.resolve()
+        .then(() => p(view, signal))
+        .catch((e: unknown) => {
+          if (!signal.aborted) console.error("intention provider failed", e);
+          return [];
+        }),
+    ),
+  );
+  return found.flat();
+}
+
 // --- navigation history ------------------------------------------------------
 
 /** One entry of the Back/Forward (⌘[ / ⌘]) history. 0-based line, UTF-16 col. */
@@ -581,8 +614,10 @@ export interface NavigationLocation {
   col: number;
   /** `Date.now()` when the location was last visited. */
   time: number;
-  /** A place that is a tab rather than a text position (a diff), opened with this input on Back. */
+  /** A place that is a tab rather than a text position (diff, agent chat, terminal tab…), opened with this input on Back. */
   input?: EditorInput;
+  /** Split pane holding the editor tab when recorded, so Back/Forward returns to the same split when it still exists. */
+  paneId?: string;
 }
 
 export interface NavigationHistorySnapshot {
@@ -870,6 +905,10 @@ export interface DocumentAttachment {
   /** The document's context, as editor contributions receive it. */
   context(): EditorDocContext;
   readOnly: boolean;
+  /** Watch read-only state even when this attachment has no mounted view. */
+  subscribeReadOnly(listener: () => void): () => void;
+  /** Edits from other views or the backend, in the coordinates of the previous text. */
+  subscribeExternalChanges(listener: (changes: ChangeSet) => void): () => void;
   /** Last view state, kept current while unmounted; use it when remounting this attachment. */
   editorState(): EditorState | null;
   /** Dispatch typing through the document history when `sharedHistory` was requested. */
@@ -891,8 +930,8 @@ export interface DocumentAttachment {
   /**
    * Applies a change made by this view's owner as one edit of the document's
    * history (where `undo` works): the text editor tab's when one shows the
-   * file, so Undo there reverts it too; else this view's. The view receives
-   * it like any other change of the document, before this returns.
+   * file, so Undo there reverts it too; else this view's. Before either exists,
+   * applies the edit directly to the document.
    */
   edit(changes: ChangeSpec, userEvent?: string): void;
   /** Detach; the document closes when nothing else shows it. */

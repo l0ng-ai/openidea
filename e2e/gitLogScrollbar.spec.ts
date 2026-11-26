@@ -76,6 +76,35 @@ test.beforeEach(async ({ workbench: page }) => {
   });
 });
 
+test("keeps the last Log mounted and prevents focus while another Git tab is shown", async ({ workbench: page }) => {
+  const list = page.locator('[data-git-log] [role="listbox"]');
+  const original = await list.elementHandle();
+  await page.getByRole("tab", { name: "Console", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "Console", exact: true })).toHaveAttribute("aria-selected", "true");
+  expect(await list.evaluate((element, previous) => element === previous, original)).toBe(true);
+
+  expect(
+    await list.evaluate((element) => {
+      // WebKit briefly paints a parked log while clearing its text selection.
+      const host = element.closest("[data-git-log]")!.parentElement!;
+      host.setAttribute("data-selection", "");
+      try {
+        element.focus();
+        return host.contains(document.activeElement);
+      } finally {
+        host.removeAttribute("data-selection");
+      }
+    }),
+  ).toBe(false);
+
+  await page.getByRole("tab", { name: "Worktrees", exact: true }).click();
+  await page.getByRole("tab", { name: "Log", exact: true }).click();
+  await expect(page.getByRole("listbox", { name: "Commits" })).toBeVisible();
+  expect(await list.evaluate((element, previous) => element === previous, original)).toBe(true);
+  await list.focus();
+  await expect(list).toBeFocused();
+});
+
 test("fits a wide graph and saved columns without horizontal scrolling", async ({ workbench: page }) => {
   await page.evaluate(async () => {
     const module = "/src/features/vcs/logOptions.ts";
@@ -117,7 +146,7 @@ test("fits a wide graph and saved columns without horizontal scrolling", async (
   expect(await list.evaluate((element) => element.scrollLeft)).toBe(0);
 });
 
-test("keeps ref names visible when a long commit subject competes for space", async ({ workbench: page }) => {
+test("keeps expanded ref names visible when a long commit subject competes for space", async ({ workbench: page }) => {
   const branch = "origin/feature/workspace-settings";
   const tag = "v2.1";
   const summary = "Keep workspace settings and commit references visible ".repeat(4).trim();
@@ -127,7 +156,7 @@ test("keeps ref names visible when a long commit subject competes for space", as
       const options = "/src/features/vcs/logOptions.ts";
       const { useGitLog } = await import(/* @vite-ignore */ log);
       const { useLogOptions } = await import(/* @vite-ignore */ options);
-      useLogOptions.setState({ tagNames: true });
+      useLogOptions.setState({ tagNames: true, compactRefs: false });
       const [first, ...rest] = useGitLog.getState().commits;
       useGitLog.setState({ commits: [{ ...first, summary, refs: [branch, `tag: ${tag}`] }, ...rest] });
     },

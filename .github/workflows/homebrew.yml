@@ -1,0 +1,73 @@
+name: Homebrew
+
+# Updates the cask in the project tap, l0ng-ai/homebrew-tap (scripts/homebrew-cask.ts), so
+# `brew install --cask l0ng-ai/tap/openidea` installs the new release. Release runs it after
+# publishing; run it by hand to write the cask of an existing tag again. Skipped for prereleases
+# and without the HOMEBREW_TAP_TOKEN secret (contents: write on l0ng-ai/homebrew-tap).
+on:
+  workflow_call:
+    inputs:
+      tag: { type: string, required: true }
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Published stable release to write the cask for (e.g. v0.1.51)"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: homebrew-tap
+
+jobs:
+  cask:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TAG: ${{ inputs.tag }}
+      TAP: l0ng-ai/homebrew-tap
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check tag and token
+        id: check
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::notice::$TAG is not a stable release: the cask stays as is"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          elif [ -z "$HOMEBREW_TAP_TOKEN" ]; then
+            echo "::notice::HOMEBREW_TAP_TOKEN unset: not updating the cask for $TAG"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v5
+        if: steps.check.outputs.skip != 'true'
+        with: { sparse-checkout: scripts }
+      - uses: actions/checkout@v5
+        if: steps.check.outputs.skip != 'true'
+        with:
+          repository: ${{ env.TAP }}
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+      - uses: actions/setup-node@v5
+        if: steps.check.outputs.skip != 'true'
+        with: { node-version: 22 }
+      - name: Download DMGs
+        if: steps.check.outputs.skip != 'true'
+        run: gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p '*.dmg' -D assets
+      - name: Write the cask
+        if: steps.check.outputs.skip != 'true'
+        run: node scripts/homebrew-cask.ts "$TAG" assets tap/Casks/openidea.rb
+      - name: Push to the tap
+        if: steps.check.outputs.skip != 'true'
+        working-directory: tap
+        run: |
+          git add Casks/openidea.rb
+          if git diff --cached --quiet; then
+            echo "the cask is already at ${TAG#v}"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "openidea ${TAG#v}"
+          git push

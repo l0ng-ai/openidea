@@ -53,6 +53,7 @@ describe("source-declared Spring service identity", () => {
         "application-dev.properties": "spring.application.name=users\n",
       },
     ] as Record<string, string>[])
+      // oxlint-disable-next-line no-await-in-loop -- the test asserts each configuration sample in order
       expect(await loadServiceName("/p/users", reader(configs))).toBe("users");
     expect(sourceModule("D:\\p\\users\\src\\main\\kotlin\\Users.kt")).toBe("D:/p/users");
     expect(sourceModule("/p/users/child/src/main/java/C.java")).toBe("/p/users/child");
@@ -104,6 +105,7 @@ describe("source-declared Spring service identity", () => {
       },
     ];
     for (const configs of samples)
+      // oxlint-disable-next-line no-await-in-loop -- the test asserts each sample with its own message before the next one
       expect(await loadServiceName("/p/users", reader(configs)), JSON.stringify(configs)).toBeNull();
   });
 
@@ -120,6 +122,7 @@ describe("source-declared Spring service identity", () => {
       r.read = async () => {
         throw new Error("Must not be read");
       };
+      // oxlint-disable-next-line no-await-in-loop -- each override is asserted in order with its own reader
       expect(await loadServiceName("/p/users", r)).toBeNull();
     }
     const denied = reader(configs);
@@ -136,6 +139,7 @@ describe("source-declared Spring service identity", () => {
       const list = r.directory;
       r.directory = vi.fn(async (path) => (await list(path)).map((file) => ({ ...file, ...entry }) as FileEntry));
       r.read = vi.fn();
+      // oxlint-disable-next-line no-await-in-loop -- each override is asserted in order with fresh spies
       expect(await loadServiceName("/p/users", r)).toBeNull();
       expect(r.directory).toHaveBeenCalledTimes(1);
       expect(r.read).not.toHaveBeenCalled();

@@ -1,11 +1,13 @@
 /**
- * Text editor wrapper of Markdown files: the editor, a live preview, or both
- * side by side, switched from the tab strip or a floating toolbar. The
+ * Text editor wrapper of Markdown files: the editor, a live preview, or both,
+ * switched from the tab strip or a floating toolbar. The
  * preview follows the editor's scroll position in the split layout; Preview
  * only, it follows navigation in the hidden editor and reports the line on
  * screen (Structure's Autoscroll from Source).
  */
 import {
+  Suspense,
+  use,
   useDeferredValue,
   useEffect,
   useLayoutEffect,
@@ -18,13 +20,25 @@ import {
   type ReactNode,
 } from "react";
 import clsx from "clsx";
+import { Text } from "@codemirror/state";
+import { editorController } from "@/editor/core/controller";
+import type { EditorView } from "@codemirror/view";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { editorPrefs, useEditorPrefs } from "@/platform/editorSettings";
-import { useMarkdownPreviewFontSize } from "@/platform/languageSettings";
-import { maybeEditorService, registerFontZoomSurface } from "@/workbench/contributions";
+import { useMarkdownPreviewFontSize, useMarkdownPreviewLayout } from "@/platform/languageSettings";
+import { maybeEditorService, notifications, registerFontZoomSurface, useEditorShown } from "@/workbench/contributions";
 import { editorsFor, setShownLine } from "@/editor/api";
 import { highlightInto } from "@/editor/lsp/markdown";
-import { FloatingToolbar, SplitGroup, SplitHandle, SplitPanel, selectableText } from "@/ui";
+import {
+  FloatingToolbar,
+  Scrollbar,
+  Spinner,
+  SplitGroup,
+  SplitHandle,
+  SplitPanel,
+  hideNativeScrollbar,
+  selectableText,
+} from "@/ui";
 import {
   FIND_CURRENT_HIGHLIGHT,
   FIND_HIGHLIGHT,
@@ -38,15 +52,25 @@ import {
   selectionMatchesInNode,
   setPreviewHighlight,
 } from "./highlight";
-import { publishPreviewSelection, publishPreviewTop, stepMarkdownPreviewFontZoom, useLiveMarkdown } from "./live";
+import { followMarkdownSource } from "./splitScroll";
+import {
+  installMarkdownSourceScroll,
+  publishPreviewSelection,
+  publishPreviewTop,
+  stepMarkdownPreviewFontZoom,
+  useLiveMarkdown,
+} from "./live";
 import { subscribeTheme, themeKey } from "@/platform/themeWatch";
 import { hasMermaid, MERMAID_SELECTOR, renderMermaidIn } from "./mermaid";
-import { renderMath } from "@/editor/lsp/markdownMath";
+import { declaresMathMacros, renderMath } from "@/editor/lsp/markdownMath";
+import type { renderMathSvg } from "./mathSvg";
 import { modeOf, pinMarkdownMode, useMarkdownModes } from "./modes";
 import { MarkdownLayoutActions } from "./MarkdownLayoutActions";
 import {
   ANCHOR_PREFIX,
   createMarkdownRenderer,
+  headingLine,
+  isRenderedFence,
   previewLineAtOffset,
   previewOffsetForLine,
   resolveLink,
@@ -54,8 +78,11 @@ import {
 } from "./render";
 import { applyImageZoomWidth, svgDataUrlSize } from "@/ui/svgSize";
 import styles from "./Markdown.module.css";
+import { writeClipboardText } from "@/platform/clipboard";
 import { tx } from "@/platform/i18n";
 import { wheelZoomStep } from "@/platform/wheelZoom";
+import { iconNode } from "@/ui/iconNode";
+import { isMarkdownPath } from "../fileKinds";
 import { attachPanZoom } from "../panZoom";
 
 /** Loaded local images by absolute path (data URLs), shared by all previews. */
@@ -71,6 +98,18 @@ function imageUrl(path: string): Promise<string> {
     imageCache.set(path, p);
   }
   return p;
+}
+
+/**
+ * Line of the heading `anchor` in the Markdown file `path`, from an open editor's text (unsaved
+ * edits included) or else the file on disk; undefined when the file is not Markdown, cannot be
+ * read or has no such heading.
+ */
+async function anchorLine(path: string, anchor: string): Promise<number | undefined> {
+  if (!isMarkdownPath(path, "source")) return undefined;
+  const open = editorsFor(path)[0];
+  const text = open ? open.view.state.doc.toString() : await call(commands.fsReadText(path)).catch(() => null);
+  return (text === null ? null : headingLine(text, anchor)) ?? undefined;
 }
 
 function openExternal(url: string) {
@@ -91,6 +130,7 @@ function attachImagePanZoom(img: HTMLImageElement): void {
 }
 
 const SPLIT_STORAGE_KEY = "openidea.markdown.split";
+const DEFAULT_SPLIT_LAYOUT = { editor: 50, preview: 50 };
 
 export function MarkdownEditor({
   path,
@@ -104,9 +144,14 @@ export function MarkdownEditor({
   actionsInTabs?: boolean;
 }) {
   const mode = useMarkdownModes((s) => modeOf(s, tabId));
+  const stacked = useMarkdownPreviewLayout() === "stacked";
   useEffect(() => pinMarkdownMode(tabId), [tabId]);
   const ref = useRef<HTMLDivElement>(null);
   const editorRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (mode === "split" && editorRef.current) return installMarkdownSourceScroll(editorRef.current);
+  }, [mode]);
 
   // CodeMirror's internal ResizeObserver skips resizes within 75ms of a view update
   // and debounces by 50ms; re-measure immediately on drag and mode transitions.
@@ -128,13 +173,14 @@ export function MarkdownEditor({
   }, [path, tabId]);
 
   const splitBounds = mode === "split" ? { minSize: "10%", maxSize: "90%" } : {};
+  const storageKey = stacked ? `${SPLIT_STORAGE_KEY}.stacked` : SPLIT_STORAGE_KEY;
   return (
     <div ref={ref} className={clsx(styles.split, styles[`mode-${mode}`])}>
       <SplitGroup
-        orientation="horizontal"
-        disableCursor
+        orientation={stacked ? "vertical" : "horizontal"}
         className={styles.group}
-        storageKey={mode === "split" ? SPLIT_STORAGE_KEY : undefined}
+        storageKey={mode === "split" ? storageKey : undefined}
+        defaultLayout={mode === "split" ? DEFAULT_SPLIT_LAYOUT : undefined}
       >
         {/* Hidden but mounted in Preview only (its caret drives the preview). Disabled, it leaves the group a
             single resizable panel: two enabled panels without a separator get an implicit resize region between
@@ -147,7 +193,15 @@ export function MarkdownEditor({
         {mode === "split" && <SplitHandle aria-label={tx("Resize Markdown preview")} />}
         {mode !== "editor" && (
           <SplitPanel id="preview" style={{ overflow: "hidden" }} {...splitBounds}>
-            <MarkdownPreview path={path} sync={mode === "split"} />
+            <Suspense
+              fallback={
+                <div className={styles.preview}>
+                  <Spinner label={tx("Loading")} />
+                </div>
+              }
+            >
+              <MarkdownPreview path={path} tabId={tabId} sync={mode === "split"} />
+            </Suspense>
           </SplitPanel>
         )}
       </SplitGroup>
@@ -160,34 +214,164 @@ export function MarkdownEditor({
   );
 }
 
-const blocksOf = (root: HTMLElement) =>
-  [...root.querySelectorAll<HTMLElement>(":scope > [data-line]")].map((el) => ({
-    line: Number(el.dataset.line),
-    get top() {
-      return el.offsetTop;
-    },
-  }));
+function blocksOf(root: HTMLElement) {
+  const blocks = [];
+  for (const el of root.querySelectorAll<HTMLElement>(":scope > [data-preview-blocks] > [data-line]")) {
+    const line = Number(el.dataset.line);
+    const endLine = Number(el.dataset.endLine);
+    const table = el.firstElementChild;
+    if (
+      table instanceof HTMLTableElement &&
+      table.hasAttribute("data-markdown-table") &&
+      table.rows.length + 1 === endLine - line
+    ) {
+      for (const [i, row] of Array.from(table.rows).entries()) {
+        const start = i === 0 ? line : line + i + 1;
+        blocks.push({
+          line: start,
+          endLine: i === 0 ? line + 2 : start + 1,
+          get top() {
+            return row.getBoundingClientRect().top - root.getBoundingClientRect().top + root.scrollTop;
+          },
+          get bottom() {
+            return row.getBoundingClientRect().bottom - root.getBoundingClientRect().top + root.scrollTop;
+          },
+        });
+      }
+    } else {
+      blocks.push({
+        line,
+        endLine,
+        get top() {
+          return el.offsetTop;
+        },
+        get bottom() {
+          return el.offsetTop + el.offsetHeight;
+        },
+      });
+    }
+  }
+  return blocks;
+}
 
-function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
+let svgRenderer: Promise<typeof renderMathSvg | null> | undefined;
+
+function loadSvgRenderer() {
+  return (svgRenderer ??= import("./mathSvg").then(
+    (module) => module.renderMathSvg,
+    () => null,
+  ));
+}
+
+let lastParse: { source: Text; html: string } | undefined;
+const parkedPreviews = new WeakMap<EditorView, { source: Text; root: HTMLElement; html: string }>();
+const previewGraphics = new WeakMap<HTMLElement, Map<string, HTMLElement[]>>();
+
+function previewMarkup(source: Text, render: (text: string) => string, view: EditorView | null | undefined) {
+  const parked = view && parkedPreviews.get(view);
+  if (parked?.source === source) return parked.html;
+  if (lastParse?.source !== source) lastParse = { source, html: render(source.toString()) };
+  return lastParse.html;
+}
+
+function typesetPreview(content: HTMLElement, previous: HTMLElement, svg: typeof renderMathSvg | null) {
+  const inputs = [...content.querySelectorAll<HTMLElement>("[data-math], [data-mermaid]")];
+  // A declaration can change the meaning of a later formula with identical source.
+  const declaresMacros = inputs.some((el) => el.hasAttribute("data-math") && declaresMathMacros(el.textContent ?? ""));
+  const available = previewGraphics.get(previous);
+  const rendered = new Map<string, HTMLElement[]>();
+  for (const input of inputs) {
+    if (input.hasAttribute("data-math") && (declaresMacros || input.childElementCount)) continue;
+    const key = input.outerHTML;
+    const found = available?.get(key)?.pop();
+    if (found) input.replaceWith(found);
+    const copies = rendered.get(key);
+    if (copies) copies.push(found ?? input);
+    else rendered.set(key, [found ?? input]);
+  }
+  for (const copies of rendered.values()) copies.reverse();
+  svg?.(content);
+  renderMath(content);
+  return rendered;
+}
+
+function attachCodeCopy(pre: HTMLElement, source: string) {
+  const parent = pre.parentElement;
+  if (parent?.querySelector(`:scope > .${styles.codeCopy}`)) return;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = styles.codeCopy!;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const setCopied = (copied: boolean) => {
+    const label = copied ? tx("Copied") + "!" : tx("Copy Code");
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    button.replaceChildren(iconNode(copied ? "check" : "copy", 14));
+    button.toggleAttribute("data-copied", copied);
+  };
+  setCopied(false);
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    // Drop the blank lines around the code, but keep the first line's indentation.
+    void writeClipboardText(source.replace(/^\s*\n/, "").trimEnd()).then(
+      () => {
+        clearTimeout(timer);
+        setCopied(true);
+        timer = setTimeout(() => setCopied(false), 1500);
+      },
+      (error: unknown) => {
+        notifications().notify({
+          level: "error",
+          title: tx("Cannot access the clipboard"),
+          body: error instanceof Error ? error.message : String(error),
+        });
+      },
+    );
+  });
+
+  if (parent?.matches(MERMAID_SELECTOR)) {
+    parent.append(button);
+    return;
+  }
+
+  // A control inside <pre> interferes with WebKit's selection of the block
+  const block = document.createElement("div");
+  block.className = styles.codeBlock!;
+  pre.replaceWith(block);
+  block.append(pre, button);
+}
+
+function MarkdownPreview({ path, tabId, sync }: { path: string; tabId: string; sync: boolean }) {
+  const shown = useEditorShown();
   const text = useLiveMarkdown((s) => s[path]?.text);
   const fontZoom = useLiveMarkdown((s) => s[path]?.fontZoom ?? 0);
   const fontSize = useMarkdownPreviewFontSize();
   const zoomScale = Number((Math.max(4, fontSize + fontZoom) / fontSize).toFixed(4));
-  const topLine = useLiveMarkdown((s) => s[path]?.topLine ?? 0);
-  const scrollSeq = useLiveMarkdown((s) => s[path]?.scrollSeq ?? 0);
+  const follower = useRef<ReturnType<typeof followMarkdownSource> | null>(null);
   const caretLine = useLiveMarkdown((s) => s[path]?.caretLine ?? 0);
   const caretSeq = useLiveMarkdown((s) => s[path]?.caretSeq ?? 0);
   const find = useLiveMarkdown((s) => s[path]?.find ?? null);
   const editorSelection = useLiveMarkdown((s) => s[path]?.editorSelection ?? "");
   const highlightSelection = useEditorPrefs().codeEditing.highlightSelection;
-  const deferred = useDeferredValue(text ?? "");
+  const deferred = useDeferredValue(text ?? Text.empty);
   const [render] = useState(createMarkdownRenderer);
-  const html = useMemo(() => render(deferred), [render, deferred]);
+  const slot = editorController().slotFor(tabId);
+  const html = useMemo(() => previewMarkup(deferred, render, slot?.live), [render, deferred, slot]);
+  const sourceOffsets = useMemo(() => {
+    if (!sync) return undefined;
+    const offsets = [0];
+    for (let n = 2; n <= deferred.lines; n++) offsets.push(deferred.line(n).from);
+    offsets.push(deferred.length);
+    return offsets;
+  }, [deferred, sync]);
+  const renderSvg = html.includes(' data-math="') ? use(loadSvgRenderer()) : null;
   const ref = useRef<HTMLDivElement>(null);
+  const linkRequest = useRef(0);
   const blocks = useRef<ReturnType<typeof blocksOf>>([]);
   const theme = useSyncExternalStore(subscribeTheme, themeKey, () => "");
   const diagrams = useRef<Node[]>([]);
   const [diagramsDrawn, setDiagramsDrawn] = useState(0);
+  const [contentHeight, setContentHeight] = useState(0);
   const seenCaret = useRef(caretSeq);
   const seenFindMatch = useRef<number | null>(null);
   /** scrollTop set by navigation, whose scroll event isn't the user's. */
@@ -198,21 +382,45 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   /** `<details>` the reader opened or closed, by position: each edit re-renders them as written. */
   const toggled = useRef(new Map<number, boolean>());
 
-  useLayoutEffect(() => toggled.current.clear(), [path]);
   useLayoutEffect(() => {
-    ref.current?.querySelectorAll("details").forEach((d, i) => {
+    toggled.current.clear();
+  }, [path]);
+  useLayoutEffect(
+    () => () => {
+      linkRequest.current++;
+    },
+    [path, shown],
+  );
+  useLayoutEffect(() => {
+    const root = ref.current;
+    if (!root) return;
+    const view = slot?.live;
+    const parked = view && parkedPreviews.get(view);
+    if (view) parkedPreviews.delete(view);
+    const cached = parked?.html === html ? parked.root : null;
+    if (cached !== root) {
+      if (cached) {
+        root.replaceChildren(...cached.children);
+        const graphics = previewGraphics.get(cached);
+        if (graphics) previewGraphics.set(root, graphics);
+      } else {
+        const content = document.createElement("div");
+        content.dataset.previewBlocks = "";
+        content.innerHTML = html;
+        previewGraphics.set(root, typesetPreview(content, parked?.root ?? root, renderSvg));
+        root.replaceChildren(content);
+      }
+    }
+    root.querySelectorAll("details").forEach((d, i) => {
       const open = toggled.current.get(i);
       if (open !== undefined) d.open = open;
     });
-  }, [html]);
-
-  // Math before the preview index: typesetting changes the blocks' heights.
-  useLayoutEffect(() => {
-    if (!ref.current) return;
-    renderMath(ref.current);
-    blocks.current = blocksOf(ref.current);
-    invalidatePreviewIndex(ref.current);
-  }, [html]);
+    blocks.current = blocksOf(root);
+    invalidatePreviewIndex(root);
+    return () => {
+      if (view) parkedPreviews.set(view, { source: deferred, html, root });
+    };
+  }, [html, deferred, slot, renderSvg]);
 
   // Mermaid diagrams: before paint, so cached ones don't flash their source.
   useLayoutEffect(() => {
@@ -249,7 +457,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
           setDiagramsDrawn((n) => n + 1);
         }
       };
-      img.src = url;
+      if (img.getAttribute("src") !== url) img.src = url;
       if (!img.hasAttribute("data-natural-width") && img.complete && img.naturalWidth > 0 && img.naturalHeight > 0) {
         size(img, { w: img.naturalWidth, h: img.naturalHeight });
       }
@@ -275,9 +483,11 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
       );
     });
     root.querySelectorAll<HTMLElement>("pre > code").forEach((code) => {
+      const pre = code.parentElement!;
+      const src = (code.textContent ?? "").replace(/\n+$/, "");
+      if (isRenderedFence(pre)) attachCodeCopy(pre, src);
       if (code.closest(MERMAID_SELECTOR)) return;
       const lang = [...code.classList].find((c) => c.startsWith("language-"))?.slice("language-".length) ?? null;
-      const src = (code.textContent ?? "").replace(/\n+$/, "");
       code.textContent = src;
       void highlightInto(code, src, lang);
     });
@@ -287,31 +497,113 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     };
   }, [html, path]);
 
-  // Scroll sync: editor → preview.
   useLayoutEffect(() => {
     const root = ref.current;
-    if (!root || !sync) return;
-    root.scrollTop = topLine <= 0 ? 0 : previewOffsetForLine(blocks.current, topLine, root.scrollHeight);
-  }, [html, topLine, scrollSeq, sync, diagramsDrawn, fontZoom, fontSize]);
+    if (!root || !sync || !shown) return;
+    const follow = followMarkdownSource(path, root, (line) =>
+      line <= 0 ? 0 : previewOffsetForLine(blocks.current, line, root.scrollHeight, sourceOffsets),
+    );
+    follower.current = follow;
+    return () => {
+      follow.dispose();
+      follower.current = null;
+    };
+  }, [path, shown, sync, sourceOffsets]);
 
-  // Keep the split preview anchored to `topLine` as dragging the divider or resizing the window reflows text.
+  useLayoutEffect(() => {
+    follower.current?.align();
+  }, [path, sync, html, sourceOffsets, diagramsDrawn, fontZoom, fontSize]);
+
   useEffect(() => {
     const root = ref.current;
-    if (!root || !sync || typeof ResizeObserver === "undefined") return;
-    let width = root.clientWidth;
-    const ro = new ResizeObserver(() => {
-      if (root.clientWidth === width) return;
-      width = root.clientWidth;
-      const top = useLiveMarkdown.getState()[path]?.topLine ?? 0;
-      root.scrollTop = top <= 0 ? 0 : previewOffsetForLine(blocks.current, top, root.scrollHeight);
-    });
-    ro.observe(root);
-    return () => ro.disconnect();
-  }, [path, sync]);
+    if (!root || !window.IntersectionObserver || !window.ResizeObserver) return;
+    const visibility = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) entry.target.toggleAttribute("data-in-viewport", entry.isIntersecting);
+      },
+      { root, rootMargin: "100% 0px" },
+    );
+    // The blocks to watch: the preview's content is replaced without a new `html` too (a parked
+    // preview restored on a tab switch, a theme or diagram re-render).
+    const observeBlocks = () => {
+      visibility.disconnect();
+      for (const block of root.querySelectorAll(":scope > [data-preview-blocks] > [data-line]"))
+        visibility.observe(block);
+    };
+    observeBlocks();
+    const replaced = new MutationObserver(observeBlocks);
+    replaced.observe(root, { childList: true });
 
-  // The preview's own scroll offset: tab switches and mode toggles unmount the
-  // preview, so Preview Only would otherwise start over at the top. Writes made
-  // by the split sync above are captured too — the last visible position wins.
+    let width = 0;
+    let settled = 0;
+    let timer: number | undefined;
+    const apply = () => {
+      if (!width || width === settled) return;
+      const follow = follower.current;
+      const top = root.scrollTop;
+      const atBottom = top > 0 && top + root.clientHeight >= root.scrollHeight - 1;
+      const line = !follow && top > 0 ? previewLineAtOffset(blocks.current, top) : -1;
+      const block = line >= 0 ? blocks.current.find((b) => b.line === line) : undefined;
+      const within = block ? top - block.top : 0;
+      settled = width;
+      root.removeAttribute("data-constrain-blocks");
+      root.style.setProperty("--markdown-block-width", `${width}px`);
+      if (follow) follow.align();
+      else if (atBottom) root.scrollTop = root.scrollHeight;
+      else if (block) root.scrollTop = block.top + within;
+    };
+    const schedule = () => {
+      if (width === settled) return;
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        if (!document.querySelector('[data-drag-cursor-surface$="resize"], [data-separator="active"]')) apply();
+      }, 150);
+    };
+    // When a resize starts, the blocks in and near the viewport by their position: they reflow
+    // live even where the observer has not reported them (yet).
+    const markVisible = () => {
+      const top = root.scrollTop - root.clientHeight;
+      const bottom = root.scrollTop + 2 * root.clientHeight;
+      for (const block of root.querySelectorAll<HTMLElement>(":scope > [data-preview-blocks] > [data-line]")) {
+        if (block.offsetTop > bottom) break;
+        if (block.offsetTop + block.offsetHeight >= top) block.toggleAttribute("data-in-viewport", true);
+      }
+    };
+    const sizes = new ResizeObserver(([entry]) => {
+      if (!entry || width === entry.contentRect.width) return;
+      width = entry.contentRect.width;
+      if (settled && width !== settled) markVisible();
+      root.toggleAttribute("data-constrain-blocks", width < settled);
+      if (!settled) apply();
+      else schedule();
+    });
+    sizes.observe(root);
+    document.addEventListener("pointerup", schedule, true);
+    document.addEventListener("pointercancel", schedule, true);
+    window.addEventListener("blur", schedule);
+    return () => {
+      visibility.disconnect();
+      replaced.disconnect();
+      sizes.disconnect();
+      window.clearTimeout(timer);
+      document.removeEventListener("pointerup", schedule, true);
+      document.removeEventListener("pointercancel", schedule, true);
+      window.removeEventListener("blur", schedule);
+      root.style.removeProperty("--markdown-block-width");
+      root.removeAttribute("data-constrain-blocks");
+    };
+  }, [html]);
+
+  useLayoutEffect(() => {
+    const root = ref.current;
+    if (!root) return;
+    const measure = () => setContentHeight(root.scrollHeight);
+    measure();
+    root.addEventListener("toggle", measure, true);
+    return () => root.removeEventListener("toggle", measure, true);
+  }, [html, diagramsDrawn, fontZoom, fontSize]);
+
+  // Restore Preview Only after a mode change or eviction from the kept tabs.
   useEffect(() => {
     const root = ref.current;
     if (!root) return;
@@ -355,7 +647,9 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   // Preview only: go where the hidden editor's caret was sent (Structure, Go to Symbol…).
   useLayoutEffect(() => {
     const root = ref.current;
-    if (!root || caretSeq === seenCaret.current) return;
+    if (!root || !shown || caretSeq === seenCaret.current) return;
+    // First-open navigation can arrive before the destination's deferred Markdown is rendered.
+    if (!sync && deferred !== text) return;
     seenCaret.current = caretSeq;
     if (sync) return;
     if (find && find.currentMatchIndex >= 0) {
@@ -377,12 +671,12 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
       restoreRetry.current = null;
     }
     setShownLine(path, caretLine);
-  }, [caretSeq, caretLine, sync, path, find]);
+  }, [caretSeq, caretLine, shown, sync, path, find, deferred, text]);
 
   // Search (⌘F) and selection occurrence highlights in the preview.
   useLayoutEffect(() => {
     const root = ref.current;
-    if (!root) return;
+    if (!root || !shown) return;
     const applyFind = () => {
       if (!find) {
         seenFindMatch.current = null;
@@ -447,7 +741,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
       document.removeEventListener("selectionchange", applySelection);
       root.removeEventListener("toggle", applyAll, true);
     };
-  }, [html, path, sync, find, editorSelection, highlightSelection]);
+  }, [html, path, shown, sync, find, editorSelection, highlightSelection]);
 
   useEffect(() => {
     const root = ref.current;
@@ -473,10 +767,40 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
       e.stopPropagation();
       if (zoom) stepMarkdownPreviewFontZoom(path, root, zoom);
     };
+    const onPreviewWheel = (e: WheelEvent) => {
+      if (
+        e.defaultPrevented ||
+        !e.cancelable ||
+        e.ctrlKey ||
+        e.metaKey ||
+        e.altKey ||
+        e.shiftKey ||
+        e.deltaMode !== WheelEvent.DOM_DELTA_PIXEL ||
+        !e.deltaY ||
+        Math.abs(e.deltaY) < Math.abs(e.deltaX)
+      )
+        return;
+      const max = root.scrollHeight - root.clientHeight;
+      if (max <= root.clientHeight || (e.deltaY > 0 ? root.scrollTop >= max : root.scrollTop <= 0)) return;
+      for (let el = e.target instanceof Element ? e.target : null; el && el !== root; el = el.parentElement) {
+        if (el.scrollHeight <= el.clientHeight && (!e.deltaX || el.scrollWidth <= el.clientWidth)) continue;
+        const style = getComputedStyle(el);
+        if (
+          (el.scrollHeight > el.clientHeight && /^(auto|scroll)$/.test(style.overflowY)) ||
+          (e.deltaX && el.scrollWidth > el.clientWidth && /^(auto|scroll)$/.test(style.overflowX))
+        )
+          return;
+      }
+      // WebKit decides on the first wheel event whether it can scroll ahead of paint for the entire gesture.
+      e.preventDefault();
+      root.scrollBy(e.deltaX, e.deltaY);
+    };
+    root.addEventListener("wheel", onPreviewWheel, { passive: false });
     root.addEventListener("wheel", onWheel, { capture: true, passive: false });
     const release = registerFontZoomSurface(root, (delta) => stepMarkdownPreviewFontZoom(path, root, delta));
     return () => {
       root.removeEventListener("wheel", onWheel, { capture: true });
+      root.removeEventListener("wheel", onPreviewWheel);
       release();
     };
   }, [path]);
@@ -485,10 +809,10 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
   // cleared when the editor is back or the preview goes away.
   useEffect(() => {
     const root = ref.current;
-    if (!root || sync) return;
+    if (!root || sync || !shown) return;
     setShownLine(path, previewLineAtOffset(blocks.current, root.scrollTop));
     return () => setShownLine(path, null);
-  }, [sync, path]);
+  }, [sync, path, shown]);
   useEffect(() => () => cancelAnimationFrame(scrollFrame.current), []);
 
   const onScroll = () => {
@@ -516,6 +840,7 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     e.preventDefault();
     const target = resolveLink(path, a.getAttribute("href") ?? "");
     if (!target) return;
+    const request = ++linkRequest.current;
     const scrollTo = (id: string) => {
       const root = ref.current;
       if (!root) return;
@@ -529,29 +854,35 @@ function MarkdownPreview({ path, sync }: { path: string; sync: boolean }) {
     else if (target.kind === "anchor") scrollTo(target.id);
     else if (target.path === path && target.anchor) scrollTo(target.anchor);
     else
-      void maybeEditorService()?.openFile(target.path, {
-        focus: true,
-        ...(target.line !== undefined ? { selection: { line: target.line, col: 0 } } : {}),
-      });
+      void (async () => {
+        const line = target.line ?? (target.anchor ? await anchorLine(target.path, target.anchor) : undefined);
+        if (request !== linkRequest.current) return;
+        await maybeEditorService()?.openFile(target.path, {
+          focus: true,
+          ...(line !== undefined ? { selection: { line, col: 0 } } : {}),
+        });
+      })();
   };
 
   return (
-    <div
-      ref={ref}
-      className={clsx(styles.preview, selectableText)}
-      style={
-        {
-          "--markdown-preview-font-size": `${fontSize}px`,
-          "--markdown-font-zoom": `${fontZoom}px`,
-          "--markdown-zoom-scale": String(zoomScale),
-        } as CSSProperties
-      }
-      tabIndex={-1}
-      role="document"
-      aria-label={tx("Markdown preview")}
-      onClick={onClick}
-      onScroll={onScroll}
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
+    <div className={styles.previewPane}>
+      <div
+        ref={ref}
+        className={clsx(styles.preview, hideNativeScrollbar, selectableText)}
+        style={
+          {
+            "--markdown-preview-font-size": `${fontSize}px`,
+            "--markdown-font-zoom": `${fontZoom}px`,
+            "--markdown-zoom-scale": String(zoomScale),
+          } as CSSProperties
+        }
+        tabIndex={-1}
+        role="document"
+        aria-label={tx("Markdown preview")}
+        onClick={onClick}
+        onScroll={onScroll}
+      />
+      <Scrollbar target={ref} contentHeight={contentHeight} />
+    </div>
   );
 }

@@ -76,6 +76,10 @@ impl AppState {
         // Caches: the previous tree moves first, so a pending invalidation still
         // wipes what was just moved.
         let identifier = app.config().identifier.clone();
+        // Windows: the WebView2 profile follows the local data directory too, and must be in
+        // place before the first window opens (the scheduled move below runs before them too).
+        #[cfg(windows)]
+        ide_host::data_dirs::adopt_webview_profile(&identifier, &local_data_dir);
         ide_host::data_dirs::apply_custom_migration(&identifier, &local_data_dir);
         // File › Invalidate Caches… requested at the last run.
         let removed = ide_workspace::caches::apply_pending(&data_dir, &local_data_dir);
@@ -83,27 +87,33 @@ impl AppState {
             tracing::info!("invalidated caches: {removed:?}");
         }
         ide_host::data_dirs::migrate(&data_dir, &local_data_dir);
+        if let Err(error) = ide_workspace::settings::initialize_global_locale(&config_dir, system_ui_language) {
+            tracing::warn!(%error, "cannot initialize the UI language");
+        }
         let runtime = tauri::async_runtime::handle().inner().clone();
         let global_sink = coalescing_sink(Arc::new(TauriSink { app: app.clone(), window: None }), runtime.clone());
         let languages = Arc::new(LanguageRegistry::load(Some(&config_dir.join("languages")))?);
         let sink_app = app.clone();
         let sink_runtime = runtime.clone();
-        let host = Arc::new(Host::new(ide_host::HostConfig {
-            config_dir: config_dir.clone(),
-            data_dir: data_dir.clone(),
-            local_data_dir,
-            languages: languages.clone(),
-            syntax,
-            sink_for: Box::new(move |window| {
-                coalescing_sink(
-                    Arc::new(TauriSink { app: sink_app.clone(), window: Some(window.to_owned()) }),
-                    sink_runtime.clone(),
-                )
-            }),
-            owner: Self::owner_window,
-            runtime,
-            project_environment: false,
-        }));
+        let host = Arc::new(
+            Host::new(ide_host::HostConfig {
+                config_dir: config_dir.clone(),
+                data_dir: data_dir.clone(),
+                local_data_dir,
+                languages: languages.clone(),
+                syntax,
+                sink_for: Box::new(move |window| {
+                    coalescing_sink(
+                        Arc::new(TauriSink { app: sink_app.clone(), window: Some(window.to_owned()) }),
+                        sink_runtime.clone(),
+                    )
+                }),
+                owner: Self::owner_window,
+                runtime,
+                project_environment: false,
+            })
+            .with_local_database_tunnels(),
+        );
         let announce = global_sink.clone();
         host.set_background_projects_observer(Arc::new(move || announce.emit(IdeEvent::McpBackgroundProjectsChanged)));
         host.start_background_sweeper();
@@ -157,15 +167,7 @@ impl AppState {
     }
 
     pub fn record_project(&self, project: &Project) -> IdeResult<()> {
-        let info = ide_host::ops::project::info(project);
-        let attached = info.workspace.as_ref().is_some_and(|w| !w.is_container(&project.root));
-        let branch = if attached {
-            None
-        } else {
-            project.repos.read().primary().and_then(|r| r.branch_info().ok()).and_then(|b| b.head)
-        };
-        self.recent.touch(&project.root, branch)?;
-        self.recent.rename(&project.root, Some(&info.display_name))?;
+        ide_host::ops::project::record_recent(&self.recent, project)?;
         crate::jump_list::refresh(&self.app, self.recent.list());
         Ok(())
     }
@@ -191,6 +193,38 @@ impl AppState {
         self.remote_dev.disconnect(window);
         self.host.close_project_detached(window);
     }
+}
+
+/// The OS's preferred UI language as a BCP 47 / POSIX locale tag.
+#[cfg(windows)]
+fn system_ui_language() -> Option<String> {
+    use windows_sys::Win32::Globalization::{GetUserPreferredUILanguages, MUI_LANGUAGE_NAME};
+
+    let mut count = 0;
+    let mut length = 0;
+    if unsafe { GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &mut count, std::ptr::null_mut(), &mut length) } == 0
+        || length == 0
+    {
+        return None;
+    }
+    let mut languages = vec![0; length as usize];
+    if unsafe { GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &mut count, languages.as_mut_ptr(), &mut length) } == 0 {
+        return None;
+    }
+    String::from_utf16(languages.split(|&unit| unit == 0).next()?).ok()
+}
+
+#[cfg(target_os = "macos")]
+fn system_ui_language() -> Option<String> {
+    objc2_foundation::NSLocale::preferredLanguages().firstObject().map(|language| language.to_string())
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn system_ui_language() -> Option<String> {
+    ["LC_ALL", "LC_MESSAGES", "LANG"]
+        .into_iter()
+        .filter_map(|key| std::env::var(key).ok())
+        .find(|value| !value.is_empty())
 }
 
 /// Serves askpass prompts to the focused window and routes `git`'s prompts there.

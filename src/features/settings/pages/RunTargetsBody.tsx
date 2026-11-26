@@ -304,7 +304,7 @@ function DockerConnectionSelect({ value, onChange }: { value: string; onChange: 
   const connections = useDockerConnections();
   const options: SelectOption[] = [
     { value: "", label: tx("Docker CLI default") },
-    ...connections.map((c) => ({ value: c.id, label: c.name })),
+    ...connections.map((c) => ({ value: c.id, verbatim: true, label: c.name })),
   ];
   if (value && connections.length && !connections.some((c) => c.id === value))
     options.push({ value, label: tx`${value} (missing)` });
@@ -516,7 +516,9 @@ export function RunTargetsEditor() {
         </Row>
       </Section>
       {current && (
-        <Section title="Target Settings">
+        // Keyed by target id: switching targets remounts the form and drops any
+        // uncommitted ListField draft instead of committing it to the new target.
+        <Section title="Target Settings" key={current.id}>
           <TextField label="Name" value={current.name} onChange={(name) => update({ name })} />
           <Row label="Type" className={styles.alignedRow}>
             <Select

@@ -8,12 +8,14 @@
 import { EditorSelection, Facet, type EditorState, type Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import { foldNodeProp, syntaxTree } from "@codemirror/language";
-import { highlightTree } from "@lezer/highlight";
 import { backendFolds } from "./folding";
-import { openideaHighlightStyle } from "./highlight";
 import { LINE_INSET } from "./lineInset";
-import { bracketClass, bracketScanner, DEFAULT_BRACKET_COLORS, type BracketMark } from "./rainbowBrackets";
+import { bracketScanner } from "./rainbowBrackets";
+import { MAX_PREVIEW_LINE_LENGTH, previewHighlightSets, renderLineContent } from "./renderLineContent";
 import { editorLineNumber } from "./relativeLineNumbers";
+
+const sameSets = (a: readonly unknown[], b: readonly unknown[]) =>
+  a.length === b.length && a.every((set, i) => set === b[i]);
 
 /** Maximum number of sticky lines (Settings › Editor › Code Editing). */
 export const stickyMaxLines = Facet.define<number, number>({
@@ -50,66 +52,6 @@ export function enclosingHeaders(state: EditorState, lineNo: number): number[] {
     .filter((n) => n < lineNo)
     .sort((a, b) => a - b)
     .slice(-state.facet(stickyMaxLines));
-}
-
-/** Characters of a sticky line rendered at most. */
-const MAX_TEXT = 400;
-
-/**
- * Renders line `lineNo` highlighted into `target`; `brackets` (ascending, as from the
- * rainbow bracket scanner) are wrapped in their rainbow class, outside the token's span
- * as in the editor.
- */
-export function renderLineContent(
-  state: EditorState,
-  lineNo: number,
-  target: HTMLElement,
-  brackets: readonly BracketMark[] = [],
-  colors = DEFAULT_BRACKET_COLORS,
-) {
-  const line = state.doc.line(lineNo);
-  const text = line.text.length > MAX_TEXT ? line.text.slice(0, MAX_TEXT) : line.text;
-  const end = line.from + text.length;
-  const tree = syntaxTree(state);
-  let pos = line.from;
-  let next = 0;
-  const node = (to: number, cls: string): Node => {
-    const s = state.doc.sliceString(pos, to);
-    pos = to;
-    if (!cls) return document.createTextNode(s);
-    const span = document.createElement("span");
-    span.className = cls;
-    span.textContent = s;
-    return span;
-  };
-  const push = (to: number, cls: string) => {
-    while (to > pos) {
-      while (next < brackets.length && brackets[next]!.from < pos) next++;
-      const bracket = brackets[next];
-      if (!bracket || bracket.from >= to) {
-        target.appendChild(node(to, cls));
-        return;
-      }
-      if (bracket.from > pos) target.appendChild(node(bracket.from, cls));
-      const wrap = document.createElement("span");
-      wrap.className = bracketClass(bracket.depth, colors);
-      wrap.appendChild(node(bracket.from + 1, cls));
-      target.appendChild(wrap);
-    }
-  };
-  if (tree.length >= end) {
-    highlightTree(
-      tree,
-      openideaHighlightStyle,
-      (from, to, cls) => {
-        push(Math.max(from, pos), "");
-        push(Math.min(to, end), cls);
-      },
-      line.from,
-      end,
-    );
-  }
-  push(end, "");
 }
 
 /** Character offset in a rendered sticky line closest to `clientX`. */
@@ -165,15 +107,46 @@ function xAtOffset(inner: HTMLElement, offset: number): number {
   return range.getBoundingClientRect().right;
 }
 
+export function readEditorTopLayout(view: EditorView) {
+  const scroller = view.scrollDOM;
+  const viewport = scroller.getBoundingClientRect();
+  const gutters = view.dom.querySelector(".cm-gutters")?.getBoundingClientRect();
+  const numbers = view.dom.querySelector(".cm-lineNumbers")?.getBoundingClientRect();
+  const overview = view.dom.querySelector(".cm-openidea-overview")?.getBoundingClientRect();
+  const width = scroller.clientWidth;
+  return {
+    viewport,
+    top: scroller.offsetTop,
+    left: scroller.offsetLeft,
+    width,
+    rightInset: overview?.width ? Math.max(0, width - (overview.left - viewport.left) / view.scaleX) : 0,
+    gutterWidth: (gutters?.width ?? 0) / view.scaleX,
+    numberWidth: (numbers?.width ?? 0) / view.scaleX,
+    // Gutters left of the line numbers (e.g. VCS annotations) shift the number column.
+    numberLeft: gutters && numbers ? Math.max(0, (numbers.left - gutters.left) / view.scaleX) : 0,
+  };
+}
+
 class StickyScroll {
   dom: HTMLElement;
   private lines: number[] = [];
+  /** Header rows showing now. */
+  get rows(): number {
+    return this.lines.length;
+  }
   /**
    * Text and syntax tree the rows were rendered from (re-render when either changes), and
-   * the document while bracket colours are on (an edit above may change their depth).
+   * the document while bracket colours are on (an edit above may change their depth), and the
+   * semantic marks painted over the syntax colours.
    */
-  private renderedFrom: { texts: string[]; numbers: string[]; tree: unknown; doc: unknown; scanner: unknown } | null =
-    null;
+  private renderedFrom: {
+    texts: string[];
+    numbers: string[];
+    tree: unknown;
+    doc: unknown;
+    scanner: unknown;
+    highlights: readonly unknown[];
+  } | null = null;
   private gutterWidth = 0;
   private numberWidth = 0;
   private numberLeft = 0;
@@ -202,7 +175,8 @@ class StickyScroll {
       u.geometryChanged ||
       u.transactions.some((tr) => tr.reconfigured) ||
       syntaxTree(u.startState) !== syntaxTree(u.state) ||
-      u.startState.field(backendFolds, false) !== u.state.field(backendFolds, false)
+      u.startState.field(backendFolds, false) !== u.state.field(backendFolds, false) ||
+      !sameSets(previewHighlightSets(u.startState), previewHighlightSets(u.state))
     )
       this.schedule();
   }
@@ -216,29 +190,10 @@ class StickyScroll {
       key: this,
       read: (view) => {
         this.scheduled = false;
-        const scroller = view.scrollDOM;
-        const viewport = scroller.getBoundingClientRect();
-        const scrollTop = scroller.scrollTop;
-        const docOffset = view.documentTop - viewport.top + scrollTop;
+        const layout = readEditorTopLayout(view);
+        const scrollTop = view.scrollDOM.scrollTop;
+        const docOffset = view.documentTop - layout.viewport.top + scrollTop;
         const lh = view.defaultLineHeight;
-        const gutters = view.dom.querySelector(".cm-gutters")?.getBoundingClientRect();
-        const numbers = view.dom.querySelector(".cm-lineNumbers")?.getBoundingClientRect();
-        const gutterWidth = (gutters?.width ?? 0) / view.scaleX;
-        const numberWidth = (numbers?.width ?? 0) / view.scaleX;
-        // Gutters left of the line numbers (e.g. VCS annotations) shift the number column.
-        const numberLeft = gutters && numbers ? Math.max(0, (numbers.left - gutters.left) / view.scaleX) : 0;
-        const overview = view.dom.querySelector(".cm-openidea-overview")?.getBoundingClientRect();
-        const width = scroller.clientWidth;
-        const rightInset = overview?.width ? Math.max(0, width - (overview.left - viewport.left) / view.scaleX) : 0;
-        const layout = {
-          top: scroller.offsetTop,
-          left: scroller.offsetLeft,
-          width,
-          rightInset,
-          gutterWidth,
-          numberWidth,
-          numberLeft,
-        };
         if (scrollTop - docOffset <= 0) return { lines: [] as number[], layout, scrollLeft: 0 };
         // n sticky rows cover the first n visible lines; they show the n outermost
         // headers of the first line below them, as long as it has that many.
@@ -252,7 +207,7 @@ class StickyScroll {
           if (enclosing.length < n) break;
           headers = enclosing.slice(0, n);
         }
-        return { lines: headers, layout, scrollLeft: scroller.scrollLeft };
+        return { lines: headers, layout, scrollLeft: view.scrollDOM.scrollLeft };
       },
       write: ({ lines, layout, scrollLeft }) => {
         const state = this.view.state;
@@ -261,6 +216,7 @@ class StickyScroll {
         const numbers = numberWidth > 0 ? lines.map((n) => editorLineNumber(state, n)) : [];
         const tree = syntaxTree(state);
         const scanner = bracketScanner(this.view);
+        const highlights = previewHighlightSets(state);
         const prev = this.renderedFrom;
         const same =
           lines.length === this.lines.length &&
@@ -269,6 +225,7 @@ class StickyScroll {
           prev.tree === tree &&
           prev.doc === (scanner ? state.doc : null) &&
           prev.scanner === scanner &&
+          sameSets(prev.highlights, highlights) &&
           texts.every((t, i) => t === prev.texts[i]) &&
           numbers.every((number, i) => number === prev.numbers[i]);
         if (!lines.length) {
@@ -293,7 +250,7 @@ class StickyScroll {
           numberLeft !== this.numberLeft;
         if (rebuild) {
           this.lines = lines;
-          this.renderedFrom = { texts, numbers, tree, doc: scanner ? state.doc : null, scanner };
+          this.renderedFrom = { texts, numbers, tree, doc: scanner ? state.doc : null, scanner, highlights };
           this.gutterWidth = gutterWidth;
           this.numberWidth = numberWidth;
           this.numberLeft = numberLeft;
@@ -327,7 +284,7 @@ class StickyScroll {
               state,
               n,
               inner,
-              scanner?.marks(state, line.from, line.from + Math.min(MAX_TEXT, line.length)),
+              scanner?.marks(state, line.from, line.from + Math.min(MAX_PREVIEW_LINE_LENGTH, line.length)),
               scanner?.colors,
             );
             text.appendChild(inner);
@@ -416,4 +373,39 @@ class StickyScroll {
     this.dom.remove();
   }
 }
-export const stickyScroll: Extension = ViewPlugin.fromClass(StickyScroll);
+/**
+ * Room the sticky rows take above the caret's line once it sits right below them: they show its
+ * enclosing headers. Scrolling the caret into view (search, vim `N`, Go to Line) keeps it out
+ * from under them, as in IDEA.
+ */
+export function stickyTopMargin(view: EditorView): number {
+  const caretBlock = view.lineBlockAt(view.state.selection.main.head);
+  const line = view.state.doc.lineAt(caretBlock.from).number;
+  const rows = Math.min(enclosingHeaders(view.state, line).length, view.state.facet(stickyMaxLines));
+  return rows * view.defaultLineHeight;
+}
+
+/**
+ * The editor's top scroll margin. CodeMirror also treats it as covered when placing tooltips, so
+ * the caret's rows are reserved only while the caret sits above where they would stick (revealing
+ * it then scrolls up and they appear); otherwise it is what sticks now. A caret deep in a method
+ * at the top of the file must not hide the hovers of its first lines.
+ */
+export function stickyScrollMargin(caretTop: number, visibleTop: number, reserve: number, shown: number): number {
+  return caretTop < visibleTop + reserve ? Math.max(reserve, shown) : shown;
+}
+
+const stickyScrollPlugin: ViewPlugin<StickyScroll> = ViewPlugin.fromClass(StickyScroll, {
+  provide: () =>
+    EditorView.scrollMargins.of((view) => {
+      const caretTop = view.lineBlockAt(view.state.selection.main.head).top;
+      // In document coordinates, like the caret's block.
+      const visibleTop = view.scrollDOM.getBoundingClientRect().top - view.documentTop;
+      const shown = (view.plugin(stickyScrollPlugin)?.rows ?? 0) * view.defaultLineHeight;
+      return { top: stickyScrollMargin(caretTop, visibleTop, stickyTopMargin(view), shown) };
+    }),
+});
+
+export const stickyScroll: Extension = stickyScrollPlugin;
+
+export { renderLineContent as renderContextLine };

@@ -1,8 +1,25 @@
 .root {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+/* Absolute in both states, so hiding and showing the log doesn't lay it out again. */
+.logHost {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+}
+.logHidden {
+  content-visibility: hidden;
+  z-index: -1;
+}
+/* WebKit leaves a stale selection highlight on a subtree whose rendering was skipped when the selection cleared. */
+.logHidden[data-selection] {
+  content-visibility: visible;
+  opacity: 0;
 }
 .headerTabs {
   min-width: 0;
@@ -162,15 +179,24 @@
   white-space: nowrap;
   max-width: 220px;
   overflow: hidden;
-  text-overflow: ellipsis;
 }
 .filterValue {
+  min-width: 0;
+  max-width: 16ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--fg-strong);
+}
+@container git-log (max-width: 600px) {
+  .filterValue {
+    max-width: 10ch;
+  }
 }
 .filterChevron {
   color: var(--fg-icon);
 }
 .filterClear {
+  flex: none;
   height: 100%;
   display: inline-flex;
   align-items: center;
@@ -249,6 +275,11 @@
   padding-inline-start: min(var(--space-2), 2%);
   /* Anchor for the full-height column resize strip (IDEA's invisible divider). */
   position: relative;
+}
+.signatureIndicator {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
 }
 .columnHeading {
   position: relative;
@@ -388,9 +419,6 @@
   font-weight: 600;
   color: var(--fg);
 }
-.mergeSubject {
-  color: var(--fg-subtle);
-}
 .muted {
   color: var(--fg-subtle);
 }
@@ -405,9 +433,15 @@
 .subject {
   flex: 0 1 auto;
   min-width: var(--log-subject-min);
+  color: var(--fg);
+}
+.subjectText {
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: var(--fg);
+}
+.mergeSubject {
+  color: var(--fg-subtle);
 }
 .headSubject {
   font-weight: 600;
@@ -436,6 +470,22 @@
   /* Keep ref names at their full width while leaving space for a short subject. */
   flex: none;
   max-width: calc(100% - var(--log-subject-min) - var(--space-1-5));
+}
+.commitText > .refsCompact {
+  flex: 0 1 auto;
+  max-width: calc(100% / 3);
+}
+.commitText:has(> .refsCompact) > .subject {
+  /* Protect a short subject while leaving room for compact reference names. */
+  flex: 0 1000 max-content;
+  min-width: auto;
+  width: min(75%, 24ch);
+}
+.commitText > .refs .ref {
+  font-size: var(--fs-small);
+}
+.refsCompact .ref {
+  min-width: 11px;
 }
 .refsLeft {
   margin-left: 0;
@@ -496,7 +546,17 @@
   flex-direction: column;
   min-height: 0;
 }
+.detailsBar {
+  height: auto;
+  min-height: 32px;
+  flex-wrap: wrap;
+  padding-block: var(--space-0-5);
+}
 .detailsCount {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   padding-left: 4px;
   color: var(--fg-subtle);
   font-size: var(--fs-ui);
@@ -630,45 +690,53 @@
   flex: 1;
   min-width: 0;
 }
+.messageText {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
 .subjectLine {
   color: var(--fg-strong);
-  font-weight: 600;
-  white-space: pre-wrap;
-  word-break: break-word;
-  line-height: 1.5;
 }
 .fullMessage {
-  margin-top: 6px;
+  margin-top: var(--space-1-5);
   color: var(--fg);
-  white-space: pre-wrap;
-  word-break: break-word;
-  line-height: 1.5;
 }
 .meta {
-  margin-top: 10px;
+  font-size: var(--fs-small);
   color: var(--fg-subtle);
   line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.messageText + .meta {
+  margin-top: var(--space-2);
+}
+.meta + .meta,
+.commitEntry .messageText + .meta {
+  margin-top: var(--space-0-5);
 }
 .commitEntry + .commitEntry {
   margin-top: 10px;
   padding-top: 10px;
   border-top: 1px solid var(--border);
 }
-.metaCompact {
-  margin-top: 2px;
-}
-.meta .refs {
-  margin-left: 0;
-  max-width: none;
+.detailRefGroup {
+  display: flex;
   flex-wrap: wrap;
+  gap: var(--space-0-5) var(--space-2);
 }
-.meta .ref {
+.detailRefGroup .ref {
+  align-items: baseline;
+  font-size: inherit;
   max-width: 100%;
   white-space: normal;
-  overflow-wrap: anywhere;
 }
 .hash {
   font-family: var(--font-mono);
+}
+.messageText .linkButton,
+.meta .linkButton {
+  max-width: 100%;
 }
 .linkButton {
   color: var(--link);
@@ -820,10 +888,19 @@
 }
 
 .colRepository {
-  flex: 0 1 100px;
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--fg-secondary);
+}
+.shallowHistory {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  padding-inline: var(--space-2);
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-muted);
 }

@@ -1,7 +1,8 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import clsx from "clsx";
 import { useProject } from "@/platform/project";
-import { toolWindowService } from "@/workbench/contributions";
+import { isRemoteWindow, projectLocation, useRemote } from "@/platform/remote";
+import { EDITOR_TAB_MIME, toolWindowService } from "@/workbench/contributions";
 import { ToolWindowHeader, useOwnToolWindowHeader } from "@/workbench/toolwindows/ToolWindows";
 import { usePlatform } from "@/platform/platformInfo";
 import { commands, isTauri } from "@/platform/ipc";
@@ -45,24 +46,22 @@ import {
   tabTitle,
   topRightGroup,
   useTerminals,
+  waitForTerminalRestore,
   type GroupLayout,
   type TerminalTab,
 } from "./store";
-import { TerminalFindBar } from "./FindBar";
+import { TERMINAL_TAB_MIME, cliEditorPayload, moveEditorToTerminal } from "./cli";
+import { openTerminalFind, TerminalFindBar } from "./FindBar";
 import styles from "./Terminal.module.css";
 
 const TAB_PREFIX = "openidea-terminal";
-/**
- * Drag type of terminal tabs: dragging one reorders its group's strip or moves
- * it to another group's, like IDEA's terminal tabs.
- */
-const TAB_MIME = "application/x-openidea-terminal-tab";
+const TAB_MIME = TERMINAL_TAB_MIME;
 
-/** Full title when the label is trimmed, then the working directory. */
+/** Session title and working directory, even when available space trims the label. */
 function tabTooltip(tab: TerminalTab, sessions: Parameters<typeof tabTitle>[1]): string | undefined {
   const full = tabFullTitle(tab, sessions);
   const cwd = sessions?.[tab.session]?.cwd;
-  if (full === tabTitle(tab, sessions)) return cwd;
+  if (full === tab.name) return cwd;
   return cwd ? `${full}\n${cwd}` : full;
 }
 
@@ -106,6 +105,20 @@ function paneMenu(e: MouseEvent, key: string) {
   const exited = session.state.status === "exited" || session.state.status === "error";
   const mac = usePlatform.getState().os === "macos";
   const items: MenuItem[] = [
+    { label: "Find in Terminal", icon: "search", shortcut: mac ? "⌘F" : undefined, run: openTerminalFind },
+    { kind: "action", action: "terminal.new" },
+    ...(exited ? [{ label: "Restart Session", icon: "rerun", run: () => session.restart() }] : []),
+    {
+      label: "Close Session",
+      icon: "close",
+      run: () =>
+        void requestCloseSession(key).then((closed) => {
+          if (!closed) return;
+          if (useTerminals.getState().tabs.length === 0) toolWindowService().hide("terminal");
+          else requestAnimationFrame(() => activeSession()?.focus());
+        }),
+    },
+    { kind: "separator" },
     {
       label: "Copy",
       icon: "copy",
@@ -124,24 +137,7 @@ function paneMenu(e: MouseEvent, key: string) {
     { kind: "separator" },
     { kind: "action", action: "terminal.splitRight" },
     { kind: "action", action: "terminal.splitDown" },
-    {
-      label: "Close Session",
-      icon: "close",
-      run: () =>
-        void requestCloseSession(key).then((closed) => {
-          if (!closed) return;
-          if (useTerminals.getState().tabs.length === 0) toolWindowService().hide("terminal");
-          else requestAnimationFrame(() => activeSession()?.focus());
-        }),
-    },
   ];
-  if (exited)
-    items.splice(
-      0,
-      0,
-      { label: "Restart Session", icon: "rerun", run: () => session.restart() },
-      { kind: "separator" },
-    );
   showContextMenu(e, items);
 }
 
@@ -196,12 +192,26 @@ function TabGroup({ group, corners }: { group: string; corners: Corners | null }
       const tab = tabs.find((t) => t.id === id);
       return tab && (tab.group !== group || groupTabs(tabs, group).length > 1) ? zone : null;
     };
+    const editorZoneAt = (x: number, y: number): DropEdge | "center" => {
+      const rect = panelsRef.current?.getBoundingClientRect();
+      const zone = rect && y >= rect.top ? dropZoneAt(x, y, rect) : "center";
+      return zone !== "center" && groupTabs(useTerminals.getState().tabs, group).length === 0 ? "center" : zone;
+    };
     return registerDropTarget(el, {
-      accepts: (type) => type === TAB_MIME,
-      over: (data, x, y) => setDropZone(zoneAt(data.payload, x, y)),
+      accepts: (type, data) =>
+        type === TAB_MIME || (type === EDITOR_TAB_MIME && cliEditorPayload(data.payload) !== null),
+      over: (data, x, y) =>
+        setDropZone(data.type === EDITOR_TAB_MIME ? editorZoneAt(x, y) : zoneAt(data.payload, x, y)),
       leave: () => setDropZone(null),
       drop: (data, x, y) => {
         setDropZone(null);
+        if (data.type === EDITOR_TAB_MIME) {
+          const input = cliEditorPayload(data.payload);
+          if (!input) return;
+          const zone = editorZoneAt(x, y);
+          void moveEditorToTerminal(input, zone === "center" ? { group } : { group, edge: zone });
+          return;
+        }
         const zone = zoneAt(data.payload, x, y);
         if (!zone) return;
         if (zone === "center") moveTab(data.payload, group, groupTabs(useTerminals.getState().tabs, group).length);
@@ -267,6 +277,8 @@ function RenamePopup({ tab, anchor, onClose }: { tab: TerminalTab; anchor: Eleme
 export function TerminalView() {
   const layout = useTerminals((s) => s.layout);
   const root = useProject((s) => s.project?.root);
+  const remoteSession = useRemote((s) => s.session);
+  const scope = projectLocation(root);
   const rootRef = useRef<HTMLDivElement>(null);
   const split = typeof layout !== "string";
   // Split, each group shows a header of its own, as in IDEA.
@@ -278,12 +290,23 @@ export function TerminalView() {
   useEffect(() => {
     const el = rootRef.current;
     if (!root || !el) return;
+    let alive = true;
     const ensureTab = () => {
-      if (el.clientHeight <= 0) return;
+      if (!alive || el.clientHeight <= 0) return;
       // Restore this project's tabs once the pane is actually visible. A project
       // switch while the runtime is loaded restores from the project subscription.
-      syncTerminalProject(root);
-      if (useTerminals.getState().tabs.length === 0) newTab(root);
+      syncTerminalProject(root, scope);
+      if (useTerminals.getState().tabs.length === 0) {
+        if (isRemoteWindow()) {
+          void waitForTerminalRestore().then(() => {
+            if (!alive || el.clientHeight <= 0 || useProject.getState().project?.root !== root) return;
+            if (useTerminals.getState().tabs.length === 0) newTab(root);
+            refitSessions();
+          });
+          return;
+        }
+        newTab(root);
+      }
       // Sessions created while this window was hidden open once it actually has a box.
       refitSessions();
     };
@@ -291,8 +314,11 @@ export function TerminalView() {
     if (typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(ensureTab);
     ro.observe(el);
-    return () => ro.disconnect();
-  }, [root]);
+    return () => {
+      alive = false;
+      ro.disconnect();
+    };
+  }, [root, scope, remoteSession]);
 
   return (
     <div
@@ -333,6 +359,7 @@ export function shellItems(paths: string[]): MenuItem[] {
     action: "terminal.newPredefinedSession",
     arg: p,
     label: paths.filter((q) => name(q) === name(p)).length > 1 ? `${name(p)} (${p})` : name(p),
+    verbatim: true,
     icon: "",
   }));
 }
@@ -388,6 +415,8 @@ function GroupTabs({ group }: { group: string }) {
     return {
       id: t.id,
       label: tabTitle(t, sessions),
+      // A renamed tab or the running program's title; the default name stays localized.
+      verbatim: tabTitle(t, sessions) !== t.name,
       closable: true,
       italic: dead,
       color: dead ? "var(--fg-subtle)" : undefined,
@@ -430,15 +459,9 @@ function GroupTabs({ group }: { group: string }) {
   };
 
   const renameTarget = renaming && tabs.find((t) => t.id === renaming.id);
-  const moreItems: MenuItem[] = [
-    { kind: "action", action: "terminal.new" },
-    { kind: "separator" },
-    { kind: "header", label: "New Predefined Session" },
+  const sessionItems: MenuItem[] = [
     ...shellItems(shells),
     { kind: "action", action: "ssh.startSession", label: "SSH Session…" },
-    { kind: "separator" },
-    { kind: "action", action: "terminal.splitRight" },
-    { kind: "action", action: "terminal.splitDown" },
     { kind: "separator" },
     { kind: "action", action: "file.settings", arg: "tools.terminal", label: "Settings", icon: "settings" },
   ];
@@ -457,6 +480,7 @@ function GroupTabs({ group }: { group: string }) {
     >
       <Tabs
         variant="compact"
+        layout="fit"
         className={styles.tabStrip}
         aria-label="Terminal sessions"
         items={items}
@@ -475,6 +499,11 @@ function GroupTabs({ group }: { group: string }) {
             moveTab(id, group, index);
             focusActiveTab(focusRaf);
           },
+          accepts: (data) => data.type === EDITOR_TAB_MIME && cliEditorPayload(data.payload) !== null,
+          onExternalDrop: (data, index) => {
+            const input = cliEditorPayload(data.payload);
+            if (input) void moveEditorToTerminal(input, { group, index });
+          },
         }}
         trailing={
           <div className={styles.tabActions}>
@@ -490,7 +519,7 @@ function GroupTabs({ group }: { group: string }) {
               ref={menuRef}
               icon="toolbar-expand"
               size="small"
-              title="More Terminal Options"
+              title="New Predefined Session"
               aria-haspopup="menu"
               aria-expanded={menuOpen}
               onClick={() => {
@@ -501,7 +530,13 @@ function GroupTabs({ group }: { group: string }) {
                 setMenuOpen((v) => !v);
               }}
             />
-            <Menu open={menuOpen} anchor={menuRef} items={moreItems} onClose={() => setMenuOpen(false)} />
+            <Menu
+              open={menuOpen}
+              anchor={menuRef}
+              items={sessionItems}
+              aria-label={tx("New Predefined Session")}
+              onClose={() => setMenuOpen(false)}
+            />
           </div>
         }
       />

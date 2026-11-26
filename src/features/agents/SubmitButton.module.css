@@ -1,4 +1,11 @@
 .submit {
+  --button-radius: var(--radius-toolbar-button);
   width: var(--h-control);
   padding: 0;
+}
+
+.submit:disabled {
+  background: var(--bg-toolbar-hover);
+  color: var(--fg-faint);
+  box-shadow: none;
 }

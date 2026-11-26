@@ -39,6 +39,8 @@ const FILTERS_KEY = "openidea.run.testFilters";
 interface TestFilters {
   showPassed: boolean;
   showIgnored: boolean;
+  showDurations: boolean;
+  selectFirstFailed: boolean;
   sortAlphabetically: boolean;
   sortByDuration: boolean;
 }
@@ -50,11 +52,20 @@ export function loadTestFilters(): TestFilters {
     return {
       showPassed: v.showPassed === true,
       showIgnored: v.showIgnored !== false,
+      showDurations: v.showDurations !== false,
+      selectFirstFailed: v.selectFirstFailed === true,
       sortAlphabetically: v.sortAlphabetically === true && v.sortByDuration !== true,
       sortByDuration: v.sortByDuration === true,
     };
   } catch {
-    return { showPassed: false, showIgnored: true, sortAlphabetically: false, sortByDuration: false };
+    return {
+      showPassed: false,
+      showIgnored: true,
+      showDurations: true,
+      selectFirstFailed: false,
+      sortAlphabetically: false,
+      sortByDuration: false,
+    };
   }
 }
 
@@ -104,27 +115,24 @@ export function TestStatusBar({
   running: boolean;
 }) {
   const counts = useMemo(() => results.counts(), [results, version]); // eslint-disable-line react-hooks/exhaustive-deps
-  const status = running
-    ? "running"
-    : counts.failed
-      ? "failed"
-      : counts.passed
-        ? "passed"
-        : counts.skipped
-          ? "skipped"
-          : null;
+  const outcome = counts.failed ? "failed" : counts.passed ? "passed" : counts.skipped ? "skipped" : null;
   const duration = results.summary.durationMs;
 
   return (
-    <div className={styles.testStatusBar} role="status">
-      <StatusIcon status={status} />
+    <div
+      className={styles.testStatusBar}
+      role="status"
+      data-running={running || undefined}
+      data-outcome={outcome ?? undefined}
+    >
+      <StatusIcon status={running ? "running" : outcome} />
       <span className={styles.testCounts}>
         {counts.failed > 0 && <span className={styles.failed}>{tx`${counts.failed} failing`}</span>}
         {counts.passed > 0 && <span>{tx`${counts.passed} passed`}</span>}
         {counts.skipped > 0 && <span className={styles.skipped}>{tx`${counts.skipped} ignored`}</span>}
-        {counts.total === 0 && <span className={styles.skipped}>{running ? tx("Running…") : tx("No tests")}</span>}
+        {!outcome && <span className={styles.skipped}>{running ? tx("Running…") : tx("No tests")}</span>}
+        {duration !== undefined && <span className={styles.testTotalDuration}>{formatDuration(duration)}</span>}
       </span>
-      {duration !== undefined && <span className={styles.testTotalDuration}>{formatDuration(duration)}</span>}
     </div>
   );
 }
@@ -180,6 +188,9 @@ export interface TestTreeViewProps {
   running: boolean;
   /** The run configuration's name (Export Test Results names the file after it). */
   name?: string;
+  /** Update Snapshot: reruns the selection's Jest / Vitest snapshot mismatches with `-u`. */
+  onUpdateSnapshots?: (ids: string[]) => void;
+  canUpdateSnapshots?: (ids: string[]) => boolean;
   /** Run / Debug the selected tests (context menu); absent when the configuration can't be narrowed. */
   onRunTests?: (ids: string[], debug: boolean) => void;
   canRunTests?: (ids: string[]) => boolean | Promise<boolean>;
@@ -193,11 +204,13 @@ export function TestTreeView({
   onSelect,
   running,
   name = "Tests",
+  onUpdateSnapshots,
+  canUpdateSnapshots,
   onRunTests,
   canRunTests,
 }: TestTreeViewProps) {
   const [filters, setFilters] = useState(loadTestFilters);
-  const { showPassed, showIgnored, sortAlphabetically, sortByDuration } = filters;
+  const { showPassed, showIgnored, showDurations, selectFirstFailed, sortAlphabetically, sortByDuration } = filters;
   const toggle = (key: keyof TestFilters) =>
     setFilters((f) => {
       const next = { ...f, [key]: !f[key] };
@@ -272,6 +285,8 @@ export function TestTreeView({
       }
       if (ids.length === 1 && nodeStatus(node) === "failed" && parseComparison(node.output))
         items.push({ label: "Show Diff", icon: "diff", run: () => void showTestDiff(node) });
+      if (onUpdateSnapshots && canUpdateSnapshots?.(ids))
+        items.push({ label: "Update Snapshot", icon: "rerun", run: () => onUpdateSnapshots(ids) });
       if (ids.length === 1 && !node.children.length && nodeStatus(node) === "failed" && getAction(DIAGNOSE))
         items.push({ label: "Diagnose with Agent", icon: "toolwindow-agents", run: () => void diagnose(node, name) });
       items.push({
@@ -323,12 +338,37 @@ export function TestTreeView({
     testTree.expandAll = () => setExpanded(suiteIds(results.roots));
     testTree.collapseAll = () => setExpanded(new Set());
     testTree.exportResults = canExport ? () => setExporting(true) : null;
+    testTree.showDurations = showDurations;
+    testTree.toggleDurations = () => toggle("showDurations");
+    testTree.selectFirstFailed = selectFirstFailed;
+    testTree.toggleSelectFirstFailed = () => toggle("selectFirstFailed");
     return () => {
       testTree.expandAll = null;
       testTree.collapseAll = null;
       testTree.exportResults = null;
+      testTree.showDurations = null;
+      testTree.toggleDurations = null;
+      testTree.selectFirstFailed = null;
+      testTree.toggleSelectFirstFailed = null;
     };
   });
+
+  // Select First Failed Test When Finished: when a run ends, select its first failure in tree order, as IDEA does.
+  const [wasRunning, setWasRunning] = useState(running);
+  const [firstFailed, setFirstFailed] = useState<{ key: string } | null>(null);
+  if (wasRunning !== running) {
+    setWasRunning(running);
+    const first = !running && selectFirstFailed ? findOccurrence(roots, null, 1, treeModel) : null;
+    if (first) {
+      // Failed suites are open by default; pin the expansion only when the failure is under a collapsed one.
+      if (first.ancestors.some((a) => !effectiveExpanded.has(a.id)))
+        setExpanded(new Set([...effectiveExpanded, ...first.ancestors.map((a) => a.id)]));
+      setFirstFailed({ key: first.node.id });
+    }
+  }
+  useEffect(() => {
+    if (firstFailed) tree.current?.reveal(firstFailed.key);
+  }, [firstFailed]);
   const hasSuites = roots.some((n) => n.children.length > 0);
 
   // Previous / Next Failed Test (⌘⌥↑ / ⌘⌥↓): like IDEA, stops at the first / last failure instead of wrapping.
@@ -345,22 +385,24 @@ export function TestTreeView({
   return (
     <div className={styles.testPane}>
       <Toolbar className={styles.testToolbar} aria-label="Test results">
-        <IconButton
-          icon="test-show-passed"
-          size="small"
-          iconSize={16}
-          title="Show Passed"
-          pressed={showPassed}
-          onClick={() => toggle("showPassed")}
-        />
-        <IconButton
-          icon="test-show-ignored"
-          size="small"
-          iconSize={16}
-          title="Show Ignored"
-          pressed={showIgnored}
-          onClick={() => toggle("showIgnored")}
-        />
+        <div className={styles.testFilters}>
+          <IconButton
+            icon="test-show-passed"
+            size="small"
+            iconSize={16}
+            title="Show Passed"
+            pressed={showPassed}
+            onClick={() => toggle("showPassed")}
+          />
+          <IconButton
+            icon="test-show-ignored"
+            size="small"
+            iconSize={16}
+            title="Show Ignored"
+            pressed={showIgnored}
+            onClick={() => toggle("showIgnored")}
+          />
+        </div>
         <IconButton
           ref={sortButton}
           icon="test-sort"
@@ -385,22 +427,6 @@ export function TestTreeView({
             },
           ]}
           onClose={() => setSortMenu(false)}
-        />
-        <IconButton
-          icon="arrow-up"
-          action="navigate.prevOccurrence"
-          size="small"
-          iconSize={16}
-          title="Previous Failed Test"
-          disabled={!hasPrevFailed}
-        />
-        <IconButton
-          icon="arrow-down"
-          action="navigate.nextOccurrence"
-          size="small"
-          iconSize={16}
-          title="Next Failed Test"
-          disabled={!hasNextFailed}
         />
         <IconButton
           ref={moreButton}
@@ -431,10 +457,32 @@ export function TestTreeView({
             },
             { kind: "separator" },
             {
+              kind: "action",
+              action: "navigate.prevOccurrence",
+              label: "Previous Failed Test",
+              disabled: !hasPrevFailed,
+            },
+            {
+              kind: "action",
+              action: "navigate.nextOccurrence",
+              label: "Next Failed Test",
+              disabled: !hasNextFailed,
+            },
+            { kind: "separator" },
+            {
               icon: "export",
               label: "Export Test Results…",
               disabled: !canExport,
               run: () => setExporting(true),
+            },
+            { kind: "separator" },
+            {
+              label: "Test Runner Options",
+              icon: "settings",
+              submenu: [
+                { kind: "action", action: "run.toggleTestDurations" },
+                { kind: "action", action: "run.toggleSelectFirstFailedTest" },
+              ],
             },
           ]}
         />
@@ -466,7 +514,7 @@ export function TestTreeView({
         onContextMenu={contextMenu}
         renderNode={(n) => {
           const s = nodeStatus(n);
-          const d = nodeDuration(n);
+          const d = showDurations ? nodeDuration(n) : undefined;
           return (
             <span className={styles.testRow}>
               <StatusIcon status={s} />

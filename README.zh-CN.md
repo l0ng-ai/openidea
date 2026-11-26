@@ -35,6 +35,12 @@ OpenIDEA 把 IntelliJ IDEA 的使用方式（快捷键、工具窗口、随处�
 编辑器、代码洞察、调试器、Git、终端、数据库客户端和 HTTP 客户端，支持 60 多种语言。
 提供 macOS、Windows 和 Linux 版本。
 
+在 macOS 上也可以用 Homebrew 安装：
+
+```bash
+brew install --cask l0ng-ai/tap/openidea
+```
+
 ## 性能对比
 
 在缓存已预热的情况下打开 [freqtrade](https://github.com/freqtrade/freqtrade)（Python，约 770 个文件），
@@ -66,7 +72,7 @@ WebAssembly 组件运行；主题、图标主题和语言无需编写代码。
 - [Discord](https://discord.gg/2Zy4yn7gP)：提问、反馈和版本发布消息。
 - 微信群，扫码加入：
 
-  <img src=".github/assets/wechat-group-3.png" alt="微信群二维码" width="200">
+  <img src=".github/assets/wechat-group-4.png" alt="微信群二维码" width="200">
 
 - 参与贡献：参见 [CONTRIBUTING.md](CONTRIBUTING.md) 和[贡献者文档](https://openidea.sh/zh/contribute/setup)。
 

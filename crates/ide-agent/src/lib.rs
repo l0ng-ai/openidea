@@ -16,6 +16,7 @@ mod conversation;
 mod elicitation;
 mod external;
 pub mod hermes;
+mod images;
 pub mod mcp;
 mod model;
 mod native;
@@ -23,6 +24,7 @@ mod provider;
 pub mod registry;
 pub mod security;
 mod shell;
+pub mod skill_installer;
 pub mod skills;
 mod timeline;
 mod worktree;
@@ -31,15 +33,21 @@ pub use catalogs::AgentCatalogs;
 pub use cli_update::{AgentCliOffer, AgentCliUpdateResult};
 pub use external::ExternalSession;
 pub use model::*;
+pub use skill_installer::{
+    InstallRemoteSkillRequest, RemoteSkillBrowseResult, RemoteSkillCandidate, RemoteSkillFile, RemoteSkillPreview,
+    SkillScanWarning, SkillScanWarningKind,
+};
 
 use conversation::{Conversation, SavedSubagent, Session};
-use ide_core::{IdeError, IdeResult, IpcPath};
+use ide_core::{IdeError, IdeResult, IpcPath, error::ErrorKind};
 use ide_jsonrpc::{Framing, Handler, Peer, RpcError, codes};
 use ide_vcs::Repo;
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::hash::Hasher;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
@@ -54,8 +62,17 @@ pub type SecurityHook = Arc<dyn Fn() -> ide_core::settings::AgentSecuritySetting
 /// Returns the user's choice of the approvals new tasks start with.
 pub type NewTaskApprovalsHook = Arc<dyn Fn() -> ide_core::settings::NewTaskApprovals + Send + Sync>;
 
+/// Returns the roots of the project's workspace an agent may work in: the project and the
+/// attached projects the user trusts.
+pub type WorkspaceRootsHook = Arc<dyn Fn() -> Vec<PathBuf> + Send + Sync>;
+
+/// Returns the project's git executable (`None`: the default), which the tasks' git runs.
+pub type GitExecutableHook = Arc<dyn Fn() -> Option<PathBuf> + Send + Sync>;
+
 /// Entry changes are batched for this long before they are sent.
 const FLUSH_DELAY: Duration = Duration::from_millis(40);
+/// A save asked for with `persist_soon` waits this long for others to join it.
+const SAVE_DELAY: Duration = Duration::from_millis(250);
 /// Updates that arrive this late after `session/load` returns are still replayed history.
 const REPLAY_GRACE: Duration = Duration::from_millis(300);
 /// Notifications are delivered on their own thread: the last `session/update`s of a turn
@@ -83,6 +100,8 @@ const MAX_EMBED: u64 = 256 * 1024;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long deleting a task waits for its agent to exit before removing the worktree.
 const EXIT_WAIT: Duration = Duration::from_secs(5);
+/// Change lists can each open several Git pipes; leave room for interactive VCS operations.
+const MAX_CHANGE_READS: usize = 4;
 
 /// The agent tasks of one project.
 pub struct AgentManager {
@@ -134,11 +153,27 @@ pub type McpExecutableFn = dyn Fn() -> Option<PathBuf> + Send + Sync;
 /// The `[agents.skills.<name>]` policies a session resolves against: the user's (global
 /// `settings.toml`), the workspace's (`.openidea/settings.toml`), and whether the workspace
 /// is trusted (an untrusted one can only turn skills off).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct SkillsPolicy {
     pub user: BTreeMap<String, AgentSkillPolicy>,
     pub workspace: BTreeMap<String, AgentSkillPolicy>,
     pub workspace_trusted: bool,
+    /// All workspace folders (the project root plus any multi-repo workspace members).
+    pub workspace_roots: Vec<PathBuf>,
+    /// Validated `<dir>` folders contributed by live OpenIDEA plugins (`[[contributes.skills]]`).
+    pub plugin_dirs: Vec<PathBuf>,
+}
+
+impl Default for SkillsPolicy {
+    fn default() -> Self {
+        Self {
+            user: BTreeMap::new(),
+            workspace: BTreeMap::new(),
+            workspace_trusted: true,
+            workspace_roots: Vec::new(),
+            plugin_dirs: Vec::new(),
+        }
+    }
 }
 
 /// Returns the skill policies for this project.
@@ -159,6 +194,9 @@ struct Shared {
     sinks: RwLock<HashMap<String, AgentSink>>,
     security: RwLock<Option<SecurityHook>>,
     new_task_approvals: RwLock<Option<NewTaskApprovalsHook>>,
+    workspace_roots: RwLock<Option<WorkspaceRootsHook>>,
+    git_executable: RwLock<Option<GitExecutableHook>>,
+    change_reads: Arc<tokio::sync::Semaphore>,
     known: Arc<Mutex<HashMap<String, Known>>>,
     providers: RwLock<Vec<provider::ProviderSpec>>,
     /// Last probe of each provider.
@@ -186,6 +224,24 @@ struct Known {
 }
 
 impl Shared {
+    /// The workspace roots offered to a session besides its own directory and project, for an
+    /// agent that takes them (`sessionCapabilities.additionalDirectories`).
+    fn additional_directories(&self, init: &acp::Negotiated, cwd: &Path, project_root: Option<&Path>) -> Vec<String> {
+        let Some(hook) = self.workspace_roots.read().clone().filter(|_| init.session("additionalDirectories")) else {
+            return Vec::new();
+        };
+        let canonical = |p: &Path| dunce::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        let own: Vec<PathBuf> = std::iter::once(cwd).chain(project_root).map(canonical).collect();
+        let mut roots = Vec::new();
+        for root in hook().iter().map(|r| canonical(r)) {
+            let root = root.to_string_lossy().into_owned();
+            if !own.iter().any(|o| o.to_string_lossy() == root) && !roots.contains(&root) {
+                roots.push(root);
+            }
+        }
+        roots
+    }
+
     fn spec(&self, id: &str) -> Option<provider::ProviderSpec> {
         self.providers.read().iter().find(|p| p.id == id).cloned()
     }
@@ -275,17 +331,21 @@ impl Shared {
         let hook = self.new_task_approvals.read().clone();
         if hook.is_some_and(|ask| ask() == ide_core::settings::NewTaskApprovals::Ask) {
             config::ask_for_approvals(&mut config);
-            return config;
-        }
-        if let Some((o, v)) = config::bypass_mode(&config).map(|(o, v)| (o.id.clone(), v.value.clone()))
-            && let Some(o) = config.iter_mut().find(|c| c.id == o)
-        {
-            o.current = Some(v);
-        }
-        if let Some(o) = config.iter_mut().find(|o| o.id == config::CURSOR_APPROVAL) {
-            o.current = Some("bypass".into());
+        } else {
+            config::apply_bypass_approvals(&mut config);
         }
         config
+    }
+
+    pub(crate) fn thought_levels_for_new_task(
+        &self,
+        mut levels: BTreeMap<String, Vec<AgentConfigOption>>,
+        provider: &str,
+    ) -> BTreeMap<String, Vec<AgentConfigOption>> {
+        for options in levels.values_mut() {
+            config::apply_model_defaults(provider, options);
+        }
+        levels
     }
 
     /// The commands the agent offered last time in this project.
@@ -319,8 +379,19 @@ impl Shared {
             }
         }
         // Discovery reads one model's options; a session on another model reports that model's.
+        // Restore each option's agent default so a session's manual overrides never pollute the catalog.
         if acp && let Some((model, config)) = model.zip(config) {
-            let levels: Vec<_> = config.iter().filter(|o| config::is_per_model_option(o)).cloned().collect();
+            let levels: Vec<_> = config
+                .iter()
+                .filter(|o| config::is_per_model_option(o))
+                .cloned()
+                .map(|mut o| {
+                    if let Some(def) = o.default_value.clone().filter(|d| o.values.iter().any(|v| v.value == *d)) {
+                        o.current = Some(def);
+                    }
+                    o
+                })
+                .collect();
             if !levels.is_empty() {
                 self.paths.catalogs.learn_levels(self, provider, model, levels);
             }
@@ -364,9 +435,13 @@ struct TaskFile {
     /// `None` for a worktree task, and a task saved before these were recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     touched: Option<BTreeSet<String>>,
-    /// The checkout as the last turn started, its copies in the store's `<id>.turn` folder.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The checkout as the last turn started, in task files saved before every turn's was kept.
+    #[serde(default, skip_serializing)]
     turn: Option<worktree::TurnStart>,
+    /// The checkout as each turn of the conversation started (by turn, `None` where it wasn't
+    /// recorded), the copies in the store's `<id>.turn` folder.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    turns: Vec<Option<worktree::TurnStart>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     subagents: Vec<SavedSubagent>,
     /// Turns to drop from the session once it is loaded (a fork of an earlier point).
@@ -375,6 +450,31 @@ struct TaskFile {
     /// The user named the task: its agent's own title updates no longer replace it.
     #[serde(default, skip_serializing_if = "is_false")]
     title_renamed: bool,
+    /// Start the first session as a fork of a recorded native one (once).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending_native_fork: Option<ForkStart>,
+}
+
+/// A session to start as a fork of the recorded one: its source, and the id the host
+/// chooses for the fork (claude); codex assigns its own.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ForkStart {
+    source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target: Option<String>,
+}
+
+/// A canonical lowercase UUID, the only session id shape either native agent writes.
+fn canonical_uuid(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+            }
+        })
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -408,6 +508,16 @@ impl PendingModel {
 /// The changed files of a checkout, stamped.
 type Snapshot = BTreeMap<String, worktree::Stamp>;
 
+/// Holds `TaskState::busy` for the duration of an operation so concurrent prompts or rollbacks
+/// wait until it finishes.
+struct BusyGuard(Arc<Task>);
+
+impl Drop for BusyGuard {
+    fn drop(&mut self) {
+        self.0.state.lock().busy = false;
+    }
+}
+
 struct TaskState {
     task: AgentTask,
     session_id: Option<String>,
@@ -420,11 +530,13 @@ struct TaskState {
     saved: Option<String>,
     /// See `TaskFile::touched`.
     touched: Option<Arc<BTreeSet<String>>>,
-    /// See `TaskFile::turn`.
-    turn: Option<Arc<worktree::TurnStart>>,
+    /// See `TaskFile::turns`.
+    turns: Vec<Option<Arc<worktree::TurnStart>>>,
     pending_rollback: u32,
     /// The user named the task; see `TaskFile::title_renamed`.
     title_renamed: bool,
+    /// See `TaskFile::pending_native_fork`: cleared once a session is established.
+    pending_native_fork: Option<ForkStart>,
     /// A turn is running or about to (prompts arriving now are queued).
     busy: bool,
     /// Background tasks the agent reported as running (`run_in_background` commands and
@@ -507,8 +619,11 @@ struct Task {
     /// Unanswered permission requests: where to send the chosen option id.
     permissions: Mutex<HashMap<u32, std::sync::mpsc::Sender<Option<String>>>>,
     next_permission: AtomicU32,
-    /// Set while `session/load` replays history we already have.
+    /// Set while `session/load` replays the session's history.
     replaying: AtomicBool,
+    /// The task has a session but none of its history (an imported session): the next load's
+    /// replay becomes the task's history instead of being dropped.
+    adopting_replay: AtomicBool,
     /// The saved session failed to load and the user was told: the next start opens a new one.
     start_fresh: AtomicBool,
     /// The current turn is being cancelled to send the first queued message right away.
@@ -530,12 +645,24 @@ struct Task {
     /// Settings already sent this session (`(option, value)`), so a refusal is not retried.
     config_sent: Mutex<HashSet<(String, String)>>,
     dirty: Mutex<BTreeSet<(Session, usize)>>,
-    /// How much of each session's streaming message was last sent, so the next flush sends the rest.
-    streamed: Mutex<HashMap<Session, Sent>>,
+    /// What was last sent of the entries that stream, so the next flush sends the rest.
+    streamed: Mutex<Streamed>,
     flush_scheduled: AtomicBool,
     stderr: Mutex<VecDeque<String>>,
-    /// Set by `delete`; held while saving.
-    deleted: Mutex<bool>,
+    /// Saves asked for (see `persist`); the file holds those up to `file.saved`.
+    saves_asked: AtomicU64,
+    save_scheduled: AtomicBool,
+    /// Held while the file is written, so saves land in order and none follows a delete.
+    file: Mutex<SavedFile>,
+}
+
+/// What the task's file on disk holds.
+#[derive(Default)]
+struct SavedFile {
+    /// Set by `delete`: nothing is written any more.
+    deleted: bool,
+    /// The saves asked for that the file holds.
+    saved: u64,
 }
 
 impl AgentManager {
@@ -567,6 +694,9 @@ impl AgentManager {
             sinks: RwLock::new(HashMap::new()),
             security: RwLock::new(None),
             new_task_approvals: RwLock::new(None),
+            workspace_roots: RwLock::new(None),
+            git_executable: RwLock::new(None),
+            change_reads: Arc::new(tokio::sync::Semaphore::new(MAX_CHANGE_READS)),
             known,
             providers,
             probes: Mutex::new(HashMap::new()),
@@ -606,12 +736,8 @@ impl AgentManager {
         Self { shared, tasks: RwLock::new(tasks) }
     }
 
-    /// Routes events to `sink` (replacing the previous subscriber); returns every task.
-    pub fn subscribe(&self, sink: AgentSink) -> Vec<AgentTask> {
-        self.subscribe_as("", sink)
-    }
-
-    /// Routes events to `sink` too, replacing only the sink `subscriber` (a view of the project) had.
+    /// Routes events to `sink`, replacing only the sink `subscriber` (a view of the project) had;
+    /// returns every task.
     pub fn subscribe_as(&self, subscriber: &str, sink: AgentSink) -> Vec<AgentTask> {
         self.shared.sinks.write().insert(subscriber.to_owned(), sink);
         let mut tasks: Vec<AgentTask> = self.tasks.read().values().map(|t| t.state.lock().snapshot()).collect();
@@ -624,6 +750,15 @@ impl AgentManager {
         self.shared.sinks.write().remove(subscriber);
     }
 
+    pub fn has_live_work(&self) -> bool {
+        self.tasks.read().values().any(|task| {
+            let state = task.state.lock();
+            state.busy
+                || !state.background_tasks.is_empty()
+                || matches!(state.task.status, AgentStatus::Starting | AgentStatus::Running | AgentStatus::NeedsInput)
+        })
+    }
+
     /// Sets the callback used to read the active command execution security policy.
     pub fn set_security_hook(&self, hook: SecurityHook) {
         *self.shared.security.write() = Some(hook);
@@ -632,6 +767,16 @@ impl AgentManager {
     /// Sets the callback that reads which approvals new tasks start with.
     pub fn set_new_task_approvals_hook(&self, hook: NewTaskApprovalsHook) {
         *self.shared.new_task_approvals.write() = Some(hook);
+    }
+
+    /// Sets the callback that lists the workspace roots offered to agents besides a task's own.
+    pub fn set_workspace_roots_hook(&self, hook: WorkspaceRootsHook) {
+        *self.shared.workspace_roots.write() = Some(hook);
+    }
+
+    /// Sets the callback that reads the project's git executable.
+    pub fn set_git_executable_hook(&self, hook: GitExecutableHook) {
+        *self.shared.git_executable.write() = Some(hook);
     }
 
     /// The agents (custom ones re-read), whether each is installed, and what they offered last time.
@@ -646,7 +791,7 @@ impl AgentManager {
                 let mut info = provider::describe(p);
                 let catalog = self.shared.paths.catalogs.cached(&self.shared, &p.id);
                 info.config = self.shared.config_for_new_task(catalog.config, &p.id);
-                info.thought_levels = catalog.thought_levels;
+                info.thought_levels = self.shared.thought_levels_for_new_task(catalog.thought_levels, &p.id);
                 info.commands = self.shared.known_commands(&p.id);
                 info
             })
@@ -768,20 +913,22 @@ impl AgentManager {
         }
         let home = self.shared.paths.home_dir.clone();
         if provider == "hermes" || provider.starts_with("hermes-") {
+            let hermes_home = home.clone();
+            let hermes_provider = provider.clone();
             let found = blocking(move || {
-                let profile = hermes::root(home.as_deref()).and_then(|root| hermes::profile_home(&root, &provider));
+                let profile =
+                    hermes::root(hermes_home.as_deref()).and_then(|root| hermes::profile_home(&root, &hermes_provider));
                 Ok(profile.map(|p| skills::hermes(&p)).unwrap_or_default())
             })
             .await?;
-            return Ok(skills::merge(offered, found));
-        }
-        if provider == "claude" || provider == "claude-acp" {
+            offered = skills::merge(offered, found);
+        } else if provider == "claude" || provider == "claude-acp" {
             let claude_cwd = cwd.clone();
             let found = blocking(move || Ok(skills::discover(&claude_cwd, home.as_deref()))).await?;
             offered = skills::merge(offered, found);
         }
-        // The hub's active skills complete on every agent; its `off` ones drop out here,
-        // which is all the enforcement an ACP agent gets.
+        // The hub's active skills complete on every agent; its `off` ones drop out here
+        // (including entries `offered` already held), which is all the enforcement an ACP agent gets.
         let holder = self.task_for_commands(&provider, task);
         let states = match holder {
             Some(holder) => holder.skill_states().await,
@@ -791,10 +938,12 @@ impl AgentManager {
                     let policy = shared.skills_policy_hook.read().as_ref().map(|hook| hook()).unwrap_or_default();
                     (policy, shared.paths.project_root.clone())
                 };
+                let roots = if policy.workspace_roots.is_empty() { vec![root] } else { policy.workspace_roots };
+                let plugin_dirs = policy.plugin_dirs;
                 let home = self.shared.paths.home_dir.clone();
                 blocking(move || {
                     Ok(skills::resolve(
-                        skills::discover_skills(&root, home.as_deref()),
+                        skills::discover_skills_with_plugins(&roots, home.as_deref(), &plugin_dirs),
                         None,
                         &policy.workspace,
                         &policy.user,
@@ -853,7 +1002,7 @@ impl AgentManager {
         out
     }
 
-    /// Imports an external session as a task: its first turn loads and replays it (#312).
+    /// Imports an external session as a task, loading it in the background to show its history (#312).
     pub fn import_session(&self, provider: &str, session_id: &str) -> IdeResult<AgentTask> {
         if !matches!(provider, "claude" | "codex") {
             return Err(IdeError::invalid(format!("cannot import {provider} sessions")));
@@ -910,14 +1059,108 @@ impl AgentManager {
             saved: None,
             touched: Some(BTreeSet::new()),
             turn: None,
+            turns: Vec::new(),
             subagents: Vec::new(),
             pending_rollback: 0,
             title_renamed: true,
+            pending_native_fork: None,
         };
         let handle = Task::restore(file, self.shared.clone());
         self.tasks.write().insert(task.id.clone(), handle.clone());
         handle.emit_task();
         handle.persist();
+        Ok(task)
+    }
+
+    /// Forks a recorded external session into a new task: its first turn continues the
+    /// recording as the agent's own fork, under an id the host chooses. The session must
+    /// belong to this project and have been recorded in `cwd`.
+    pub fn fork_session(&self, provider: &str, session_id: &str, cwd: &Path) -> IdeResult<AgentTask> {
+        if !matches!(provider, "claude" | "codex") {
+            return Err(IdeError::invalid(format!("cannot fork {provider} sessions")));
+        }
+        if !canonical_uuid(session_id) {
+            return Err(IdeError::invalid("the recorded session has no canonical id"));
+        }
+        let spec = self.shared.spec(provider).ok_or_else(|| IdeError::invalid(format!("unknown agent {provider}")))?;
+        if self.imported_session_ids().contains(session_id) {
+            return Err(IdeError::invalid("that session is already a task"));
+        }
+        let found = self
+            .external_sessions()
+            .into_iter()
+            .find(|s| s.provider == provider && s.session_id == session_id)
+            .ok_or_else(|| IdeError::not_found(format!("unknown {provider} session {session_id}")))?;
+        let recorded = found
+            .cwd
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .ok_or_else(|| IdeError::invalid("the recorded session has no working directory"))?;
+        let canonical = |p: &Path| dunce::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        if canonical(cwd) != canonical(&recorded) {
+            return Err(IdeError::invalid("the session was recorded in another directory"));
+        }
+        let root = self.shared.paths.project_root.clone();
+        let config = self.shared.known_config(&spec.id);
+        let now = now_ms();
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        // The host names the fork's session id for claude; codex assigns its own.
+        let target = (provider == "claude").then(|| uuid::Uuid::new_v4().to_string());
+        let task = AgentTask {
+            project_root: Some(IpcPath(root)),
+            id,
+            title: found.title,
+            provider: spec.id.clone(),
+            model: model_of(&config),
+            status: AgentStatus::Ready,
+            isolation: Isolation::Local,
+            cwd: IpcPath(recorded),
+            branch: None,
+            base: None,
+            base_commit: None,
+            error: None,
+            created_ms: now,
+            updated_ms: now,
+            config,
+            commands: self.shared.known_commands(&spec.id),
+            usage: None,
+            queue: Vec::new(),
+            capabilities: self.shared.probes.lock().get(&spec.id).map(|p| p.capabilities).unwrap_or_default(),
+            resets_ms: None,
+            retry: None,
+            background: Box::default(),
+            mcp_overrides: BTreeMap::new(),
+            skill_overrides: BTreeMap::new(),
+            stats: Box::default(),
+        };
+        let file = TaskFile {
+            task: task.clone(),
+            session_id: target.clone(),
+            entries: Vec::new(),
+            wanted: Vec::new(),
+            pending_model: None,
+            pending_switch: None,
+            before: BTreeMap::new(),
+            saved: None,
+            touched: Some(BTreeSet::new()),
+            turn: None,
+            turns: Vec::new(),
+            subagents: Vec::new(),
+            pending_rollback: 0,
+            title_renamed: true,
+            pending_native_fork: Some(ForkStart { source: session_id.to_owned(), target }),
+        };
+        let handle = Task::restore(file, self.shared.clone());
+        self.tasks.write().insert(task.id.clone(), handle.clone());
+        handle.emit_task();
+        handle.persist();
+        // Loading the session replays its history into the task, so it shows before a first message.
+        self.shared.runtime.spawn(async move {
+            match handle.ensure_session().await {
+                Ok(_) => handle.release_when_idle(),
+                Err(e) => tracing::info!("agent task {}: loading the imported session failed: {e}", handle.id),
+            }
+        });
         Ok(task)
     }
 
@@ -942,21 +1185,22 @@ impl AgentManager {
                 }
                 let dir = self.shared.paths.worktrees_dir.clone();
                 let (t, b) = (title.clone(), req.base.clone());
-                let c = blocking(move || worktree::create(&root, &dir, &t, b.as_deref())).await?;
+                let c = vcs(&self.shared, move || worktree::create(&root, &dir, &t, b.as_deref())).await?;
                 (c.path, Some(c.branch), Some(c.base), Some(c.base_commit), BTreeMap::new())
             }
             Isolation::Local => {
                 let r = root.clone();
-                let (head, before) =
-                    blocking(move || Ok((worktree::head_of(&r).ok(), worktree::snapshot(&r).unwrap_or_default())))
-                        .await?;
+                let (head, before) = vcs(&self.shared, move || {
+                    Ok((worktree::head_of(&r).ok(), worktree::snapshot(&r).unwrap_or_default()))
+                })
+                .await?;
                 let (base, commit) = head.unzip();
                 (root, None, base, commit, before)
             }
         };
         // Until the session reports its own, show what the agent offered last time with the choices applied.
         let catalog = self.shared.paths.catalogs.cached(&self.shared, &spec.id);
-        let mut levels = catalog.thought_levels;
+        let mut levels = self.shared.thought_levels_for_new_task(catalog.thought_levels, &spec.id);
         let mut config = self.shared.config_for_new_task(catalog.config, &spec.id);
         for choice in &req.config {
             if let Some(o) = config.iter_mut().find(|o| o.id == choice.id) {
@@ -983,7 +1227,7 @@ impl AgentManager {
         } else {
             let name = format!("{id}.before");
             let (dir, at, files) = (self.shared.paths.store_dir.join(&name), cwd.clone(), before.clone());
-            match blocking(move || worktree::save_before(&at, &files, &dir)).await {
+            match vcs(&self.shared, move || worktree::save_before(&at, &files, &dir)).await {
                 Ok(saved) => saved.then_some(name),
                 Err(e) => {
                     tracing::warn!("saving the changed files of agent task {id}: {e}");
@@ -1029,9 +1273,11 @@ impl AgentManager {
             saved,
             touched: (req.isolation == Isolation::Local).then(BTreeSet::new),
             turn: None,
+            turns: Vec::new(),
             subagents: Vec::new(),
             pending_rollback: 0,
             title_renamed: false,
+            pending_native_fork: None,
         };
         let handle = Task::restore(file, self.shared.clone());
         handle.state.lock().busy = !req.idle;
@@ -1116,35 +1362,14 @@ impl AgentManager {
 
     /// Drops a queued message.
     pub fn unqueue(&self, id: &str, queued: &str) -> IdeResult<AgentQueued> {
-        let task = self.task(id)?;
-        let item = {
-            let mut s = task.state.lock();
-            let i =
-                s.task.queue.iter().position(|q| q.id == queued).ok_or_else(|| IdeError::not_found("already sent"))?;
-            s.task.queue.remove(i)
-        };
-        task.persist();
-        task.emit_task();
-        Ok(item)
+        self.task(id)?.take_queued(queued, false).map(|(item, _)| item)
     }
 
     /// Sends queued message `queued` now: into the running turn when the agent takes
     /// messages mid-turn, else next, cancelling the current turn if there is one.
     pub async fn send_queued_now(&self, id: &str, queued: &str) -> IdeResult<()> {
         let task = self.task(id)?;
-        let (item, busy) = {
-            let mut s = task.state.lock();
-            let i =
-                s.task.queue.iter().position(|q| q.id == queued).ok_or_else(|| IdeError::not_found("already sent"))?;
-            let item = s.task.queue.remove(i);
-            let busy = s.busy;
-            if !busy {
-                s.busy = true;
-            }
-            (item, busy)
-        };
-        task.persist();
-        task.emit_task();
+        let (item, busy) = task.take_queued(queued, true)?;
         if !busy {
             self.shared.runtime.spawn(async move { task.run(item.prompt).await });
             return Ok(());
@@ -1354,11 +1579,13 @@ impl AgentManager {
         if !live.capabilities.fork || (keep < total && !live.capabilities.rollback) {
             return Err(IdeError::invalid("this agent can't copy a conversation from there"));
         }
-        let (cwd, provider_id, mcp_overrides) = {
+        let (cwd, provider_id, mcp_overrides, project_root) = {
             let s = source.state.lock();
-            (s.task.cwd.0.clone(), s.task.provider.clone(), s.task.mcp_overrides.clone())
+            let t = &s.task;
+            (t.cwd.0.clone(), t.provider.clone(), t.mcp_overrides.clone(), t.project_root.clone().map(|p| p.0))
         };
         let mcp_servers = source.shared.mcp_servers_for_session(&provider_id, &live.init, &mcp_overrides);
+        let roots = source.shared.additional_directories(&live.init, &cwd, project_root.as_deref());
         let skills_delivery = source.stage_skills(stage_key(live.driver), &cwd).await;
         let cwd_s = dunce::canonicalize(&cwd).unwrap_or(cwd).to_string_lossy().into_owned();
         let reply: Value = live
@@ -1366,7 +1593,7 @@ impl AgentManager {
             .request(
                 "session/fork",
                 {
-                    let mut params = session_params(&cwd_s, &mcp_servers, skills_delivery.as_ref());
+                    let mut params = session_params(&cwd_s, &mcp_servers, skills_delivery.as_ref(), &roots);
                     params["sessionId"] = json!(live.session);
                     params
                 },
@@ -1410,11 +1637,13 @@ impl AgentManager {
                 before: (*s.before).clone(),
                 saved: s.saved.clone(),
                 touched: s.touched.as_deref().cloned(),
-                // The source's next turn replaces its copies: the fork's last turn is one of its own.
+                // The copies are the source's: the fork's turns are recorded as it runs them.
                 turn: None,
+                turns: Vec::new(),
                 subagents: s.conversation.saved_subagents(),
                 pending_rollback: total - keep,
                 title_renamed: s.title_renamed,
+                pending_native_fork: None,
             }
         };
         // Copying may have started the source's agent: it stops again once idle.
@@ -1428,21 +1657,31 @@ impl AgentManager {
     }
 
     /// Drops the task's turns after its first `turns`, in the agent's session and in the
-    /// conversation; returns the message that started the first dropped turn. Files the
-    /// agent changed stay as they are.
-    pub async fn rollback(&self, id: &str, turns: u32) -> IdeResult<Option<AgentPrompt>> {
+    /// conversation; returns the message that started the first dropped turn. With `files`,
+    /// the files the dropped turns changed go back as they were when the first of them
+    /// started; otherwise they stay as they are.
+    pub async fn rollback(&self, id: &str, turns: u32, files: bool) -> IdeResult<Option<AgentPrompt>> {
         let task = self.task(id)?;
-        if task.state.lock().busy {
-            return Err(IdeError::invalid("wait until the agent is done"));
-        }
-        let starts = turn_starts(&task.state.lock().conversation.main.entries);
-        let Some(&cut) = starts.get(turns as usize) else { return Ok(None) };
+        let (starts, cut) = {
+            let mut s = task.state.lock();
+            if s.busy {
+                return Err(IdeError::invalid("wait until the agent is done"));
+            }
+            let starts = turn_starts(&s.conversation.main.entries);
+            let Some(&cut) = starts.get(turns as usize) else { return Ok(None) };
+            s.busy = true;
+            (starts, cut)
+        };
+        let guard = BusyGuard(task.clone());
+        // Read and checked before anything changes: a file that can't go back stops it all.
+        let planned = if files { self.plan_rewind(&task, turns as usize, starts.len()).await? } else { Vec::new() };
         // Dropping every turn starts the conversation over, which needs no agent-side
         // rewind — and some agents cannot rewind past their first turn (a resumed
         // Claude Code session). A fresh session avoids both.
         if turns == 0 {
             task.kill();
-            let first = {
+            let restamped = self.write_rewind(&task, planned).await?;
+            let (first, dir, kept) = {
                 let mut s = task.state.lock();
                 let first = match s.conversation.main.entries.get(cut) {
                     Some(AgentEntry::User { text, .. }) => {
@@ -1459,25 +1698,29 @@ impl AgentManager {
                 s.task.usage = None;
                 s.pending_rollback = 0;
                 s.task.updated_ms = now_ms();
-                first
+                Self::finish_rewind(&mut s, 0, restamped);
+                (first, task.turn_dir(), s.turns.clone())
             };
+            drop(guard);
             task.streamed.lock().clear();
             task.persist();
             self.shared.emit(AgentEvent::Truncated { task: id.to_owned(), length: 0 });
             task.emit_task();
+            self.prune_turn_copies(dir, kept).await;
             return Ok(first);
         }
         let live = task.ensure_session().await.map_err(IdeError::internal)?;
         if !live.capabilities.rollback {
             return Err(IdeError::invalid("this agent can't undo turns"));
         }
-        let drop = (starts.len() - turns as usize) as u32;
+        let drop_turns = (starts.len() - turns as usize) as u32;
         let _: Value = live
             .peer
-            .request("_openidea/rollback", json!({ "sessionId": live.session, "turns": drop }), None)
+            .request("_openidea/rollback", json!({ "sessionId": live.session, "turns": drop_turns }), None)
             .await
             .map_err(|e| IdeError::internal(task.describe(e)))?;
-        let first = {
+        let restamped = self.write_rewind(&task, planned).await?;
+        let (first, dir, kept) = {
             let mut s = task.state.lock();
             let first = match s.conversation.main.entries.get(cut) {
                 Some(AgentEntry::User { text, .. }) => Some(AgentPrompt { text: text.clone(), ..Default::default() }),
@@ -1485,12 +1728,15 @@ impl AgentManager {
             };
             s.conversation.truncate(cut);
             s.task.updated_ms = now_ms();
-            first
+            Self::finish_rewind(&mut s, turns as usize, restamped);
+            (first, task.turn_dir(), s.turns.clone())
         };
+        drop(guard);
         task.streamed.lock().clear();
         task.persist();
         self.shared.emit(AgentEvent::Truncated { task: id.to_owned(), length: cut as u32 });
         task.emit_task();
+        self.prune_turn_copies(dir, kept).await;
         // Undoing may have started the agent: it stops again once idle.
         task.release_when_idle();
         Ok(first)
@@ -1764,7 +2010,7 @@ impl AgentManager {
         // A copy of the task (a fork) may work in the same worktree.
         let shared = self.tasks.read().values().any(|t| t.id != id && t.state.lock().task.cwd.0 == cwd);
         self.tasks.write().remove(id);
-        *task.deleted.lock() = true;
+        task.file.lock().deleted = true;
         let _ = std::fs::remove_file(self.shared.paths.store_dir.join(format!("{id}.json")));
         let _ = std::fs::remove_dir_all(task.turn_dir());
         skills::remove_farm(&self.shared.paths.store_dir, id);
@@ -1783,7 +2029,7 @@ impl AgentManager {
                 let _ = tokio::time::timeout(EXIT_WAIT, peer.exited()).await;
             }
             let worktrees = self.shared.paths.worktrees_dir.clone();
-            blocking(move || worktree::remove(&root, &worktrees, &cwd)).await?;
+            vcs(&self.shared, move || worktree::remove(&root, &worktrees, &cwd)).await?;
         }
         Ok(())
     }
@@ -1793,7 +2039,7 @@ impl AgentManager {
         let task = self.task(id)?;
         let at = task.base();
         let (before, touched) = task.attribution();
-        blocking(move || Ok(worktree::made_by_task(at.changes(&before)?, touched.as_deref()))).await
+        read_changes(&self.shared, move || at.changes(&before, touched.as_deref())).await
     }
 
     /// The task's uncommitted changes and, for a worktree task, the commits made since it
@@ -1802,7 +2048,7 @@ impl AgentManager {
         let task = self.task(id)?;
         let at = task.base();
         let (before, touched) = task.attribution();
-        blocking(move || {
+        read_changes(&self.shared, move || {
             let mut grouped = at.grouped_changes(&before)?;
             grouped.uncommitted = worktree::made_by_task(grouped.uncommitted, touched.as_deref());
             Ok(grouped)
@@ -1815,7 +2061,7 @@ impl AgentManager {
     pub async fn turn_changes(&self, id: &str) -> IdeResult<Vec<AgentChange>> {
         let (cwd, turn, dir) = self.task(id)?.last_turn();
         let Some(turn) = turn else { return Ok(Vec::new()) };
-        blocking(move || {
+        read_changes(&self.shared, move || {
             let changed = match &turn.changed {
                 Some(changed) => changed.clone(),
                 None => worktree::changed_in_turn(&cwd, &turn)?.1,
@@ -1832,10 +2078,10 @@ impl AgentManager {
         if view == AgentChangesView::LastTurn {
             let (cwd, turn, dir) = task.last_turn();
             let Some(turn) = turn else { return Ok(None) };
-            return blocking(move || worktree::turn_text(&cwd, &path, &turn, &dir)).await;
+            return vcs(&self.shared, move || worktree::turn_text(&cwd, &path, &turn, &dir)).await;
         }
         let at = task.base();
-        blocking(move || {
+        vcs(&self.shared, move || {
             let rev = match view {
                 AgentChangesView::Group => worktree::head_commit(at.cwd())?,
                 _ => at.rev()?,
@@ -1846,6 +2092,98 @@ impl AgentManager {
             }
         })
         .await
+    }
+
+    /// What rolling the task's files back to the start of its turn `turn` writes.
+    async fn plan_rewind(
+        &self,
+        task: &Arc<Task>,
+        turn: usize,
+        total_turns: usize,
+    ) -> IdeResult<Vec<worktree::PutBack>> {
+        let (cwd, start, before, saved, touched, dropped_changed) = {
+            let s = task.state.lock();
+            let start = s.turns.get(turn).cloned().flatten();
+            let dropped = s.turns.get(turn..).unwrap_or(&[]);
+            let dropped_changed = (dropped.len() == total_turns - turn
+                && dropped.iter().all(|t| t.as_ref().is_some_and(|t| t.changed.is_some())))
+            .then(|| {
+                dropped
+                    .iter()
+                    .flatten()
+                    .filter_map(|t| t.changed.as_ref())
+                    .flatten()
+                    .cloned()
+                    .collect::<BTreeSet<String>>()
+            });
+            (
+                s.task.cwd.0.clone(),
+                start,
+                s.before.clone(),
+                s.saved.as_ref().map(|name| self.shared.paths.store_dir.join(name)),
+                s.touched.clone(),
+                dropped_changed,
+            )
+        };
+        let Some(start) = start else {
+            // The task's own start is the first turn's.
+            if turn == 0 {
+                let at = task.base();
+                return vcs(&self.shared, move || {
+                    worktree::plan_restore(&at, &before, saved.as_deref(), touched.as_deref())
+                })
+                .await;
+            }
+            return Err(IdeError::invalid(
+                "the files weren't recorded as this message was sent: roll them back in the Changes view instead",
+            ));
+        };
+        let dir = task.turn_dir();
+        vcs(&self.shared, move || {
+            let mut changed = worktree::changed_in_turn(&cwd, &start)?.1;
+            // In the project's own checkout, only files the rolled-back turns changed are put back.
+            if let Some(touched) = &touched {
+                let scope = dropped_changed.as_ref().unwrap_or(touched);
+                changed.retain(|rel| scope.contains(rel));
+            }
+            worktree::rewind(&cwd, &start, &dir, &changed)
+        })
+        .await
+    }
+
+    /// Writes what `plan_rewind` planned on the blocking VCS pool and computes any `before`
+    /// restamps off-lock.
+    async fn write_rewind(
+        &self,
+        task: &Arc<Task>,
+        planned: Vec<worktree::PutBack>,
+    ) -> IdeResult<Vec<(String, worktree::Stamp)>> {
+        if planned.is_empty() {
+            return Ok(Vec::new());
+        }
+        let (before, saved) = {
+            let s = task.state.lock();
+            (s.before.clone(), s.saved.as_ref().map(|name| self.shared.paths.store_dir.join(name)))
+        };
+        vcs(&self.shared, move || worktree::put_back(planned, &before, saved.as_deref())).await
+    }
+
+    /// Drops the records of the turns from `turn` on and applies any restamps to `before`.
+    fn finish_rewind(s: &mut TaskState, turn: usize, restamped: Vec<(String, worktree::Stamp)>) {
+        s.turns.truncate(turn);
+        if !restamped.is_empty() {
+            let mut before = (*s.before).clone();
+            before.extend(restamped);
+            s.before = Arc::new(before);
+        }
+    }
+
+    async fn prune_turn_copies(&self, dir: PathBuf, kept: Vec<Option<Arc<worktree::TurnStart>>>) {
+        let _ = vcs(&self.shared, move || {
+            worktree::prune_turn_copies(&dir, kept.iter().flatten().map(|t| &**t));
+            Ok(())
+        })
+        .await;
     }
 
     /// Rollback: puts the task's changed files among `rel_paths` (all with `None`) back as
@@ -1869,10 +2207,10 @@ impl AgentManager {
             let s = task.state.lock();
             (s.before.clone(), s.saved.as_ref().map(|name| self.shared.paths.store_dir.join(name)), s.touched.clone())
         };
-        let (restamped, restored) = blocking(move || {
+        let (restamped, restored) = vcs(&self.shared, move || {
             let (changes, rev) = match view {
                 AgentChangesView::Group => (at.grouped_changes(&before)?.uncommitted, worktree::head_commit(at.cwd())?),
-                AgentChangesView::SinceStart | AgentChangesView::LastTurn => (at.changes(&before)?, at.rev()?),
+                AgentChangesView::SinceStart | AgentChangesView::LastTurn => (at.changes(&before, None)?, at.rev()?),
             };
             let changes = worktree::made_by_task(changes, touched.as_deref());
             let sources = match rev.as_deref() {
@@ -1904,12 +2242,12 @@ impl AgentManager {
                 s.before = Arc::new(before);
             }
             // Rolled back further than the last turn: what it changed there is gone, not the turn's to list.
-            if let Some(turn) = &s.turn
+            if let Some(Some(turn)) = s.turns.last_mut()
                 && let Some(changed) = &turn.changed
                 && restored.iter().any(|rel| changed.contains(rel))
             {
                 let changed = changed.iter().filter(|rel| !restored.contains(rel)).cloned().collect();
-                s.turn = Some(Arc::new(worktree::TurnStart { changed: Some(changed), ..(**turn).clone() }));
+                *turn = Arc::new(worktree::TurnStart { changed: Some(changed), ..(**turn).clone() });
             }
         }
         task.persist();
@@ -1925,7 +2263,7 @@ impl AgentManager {
             let s = task.state.lock();
             (s.before.clone(), s.saved.as_ref().map(|name| self.shared.paths.store_dir.join(name)))
         };
-        let restamped = blocking(move || {
+        let restamped = vcs(&self.shared, move || {
             let changed = match &turn.changed {
                 Some(changed) => changed.clone(),
                 None => worktree::changed_in_turn(&cwd, &turn)?.1,
@@ -1982,7 +2320,7 @@ impl AgentManager {
         let Some(base) = base else {
             return Err(IdeError::invalid("the task has no base revision to accept from"));
         };
-        blocking(move || {
+        vcs(&self.shared, move || {
             let wanted: Vec<AgentChange> = worktree::without_untouched(worktree::changes(&cwd, &base)?, &before)
                 .into_iter()
                 .filter(|c| rel_paths.as_ref().is_none_or(|p| p.contains(&c.rel_path)))
@@ -2081,14 +2419,25 @@ impl AgentManager {
         }
     }
 
+    /// Stops sending events to UI sinks (project closing).
+    pub fn detach_sinks(&self) {
+        self.shared.sinks.write().clear();
+    }
+
     /// Stops every agent (project closed).
     pub fn shutdown(&self) {
-        for task in self.tasks.read().values() {
-            task.kill();
-            // What arrived after the last save (a subagent's late updates).
-            task.persist();
+        self.detach_sinks();
+        let tasks: Vec<_> = self.tasks.read().values().cloned().collect();
+        for task in tasks {
+            let was_live = task.kill().is_some();
+            if was_live {
+                // Persist late subagent updates and cleared live background state.
+                task.persist();
+            } else {
+                // Flush pending delayed saves without rewriting untouched or archived tasks.
+                task.save();
+            }
         }
-        self.shared.sinks.write().clear();
     }
 }
 
@@ -2096,15 +2445,24 @@ impl Task {
     /// The skills offered in this project: every discovery resolved against the policies
     /// and the task's overrides.
     async fn skill_states(&self) -> Vec<AgentSkillState> {
-        let (policy, overrides, home, root) = {
+        let (policy, overrides, home, roots) = {
             let shared = &self.shared;
             let policy = shared.skills_policy_hook.read().as_ref().map(|hook| hook()).unwrap_or_default();
-            let overrides = self.state.lock().task.skill_overrides.clone();
-            (policy, overrides, shared.paths.home_dir.clone(), shared.paths.project_root.clone())
+            let (overrides, task_root) = {
+                let s = self.state.lock();
+                (s.task.skill_overrides.clone(), s.task.project_root.as_ref().map(|p| p.0.clone()))
+            };
+            let mut roots = Vec::new();
+            if let Some(tr) = task_root {
+                roots.push(tr);
+            }
+            roots.extend(policy.workspace_roots.iter().cloned());
+            roots.push(shared.paths.project_root.clone());
+            (policy, overrides, shared.paths.home_dir.clone(), roots)
         };
         blocking(move || {
             Ok(skills::resolve(
-                skills::discover_skills(&root, home.as_deref()),
+                skills::discover_skills_with_plugins(&roots, home.as_deref(), &policy.plugin_dirs),
                 Some(&overrides),
                 &policy.workspace,
                 &policy.user,
@@ -2145,7 +2503,16 @@ impl Task {
     fn restore(file: TaskFile, shared: Arc<Shared>) -> Arc<Self> {
         let mut task = file.task;
         config::add_client_options(&task.provider, &mut task.config);
+        let adopt = file.entries.is_empty() && file.session_id.is_some();
         let conversation = Conversation::restore(file.entries, file.subagents);
+        let mut turns: Vec<_> = file.turns.into_iter().map(|t| t.map(Arc::new)).collect();
+        // Saved with the last turn's only: the turns before it have none.
+        if turns.is_empty()
+            && let Some(last) = file.turn
+        {
+            turns.resize(turn_starts(&conversation.main.entries).len().saturating_sub(1), None);
+            turns.push(Some(Arc::new(last)));
+        }
         let mut wanted = file.wanted;
         let mut pending_model = file.pending_switch.or_else(|| {
             let id = file.pending_model?;
@@ -2184,9 +2551,10 @@ impl Task {
                 before: Arc::new(file.before),
                 saved: file.saved,
                 touched: file.touched.map(Arc::new),
-                turn: file.turn.map(Arc::new),
+                turns,
                 pending_rollback: file.pending_rollback,
                 title_renamed: file.title_renamed,
+                pending_native_fork: file.pending_native_fork,
                 busy: false,
                 background_tasks: Vec::new(),
                 shell_context: Vec::new(),
@@ -2197,6 +2565,7 @@ impl Task {
             permissions: Mutex::new(HashMap::new()),
             next_permission: AtomicU32::new(1),
             replaying: AtomicBool::new(false),
+            adopting_replay: AtomicBool::new(adopt),
             start_fresh: AtomicBool::new(false),
             send_now: AtomicBool::new(false),
             cancel_pending: AtomicBool::new(false),
@@ -2207,10 +2576,12 @@ impl Task {
             skills_reload_pending: AtomicBool::new(false),
             config_sent: Mutex::new(HashSet::new()),
             dirty: Mutex::new(BTreeSet::new()),
-            streamed: Mutex::new(HashMap::new()),
+            streamed: Mutex::new(Streamed::default()),
             flush_scheduled: AtomicBool::new(false),
             stderr: Mutex::new(VecDeque::new()),
-            deleted: Mutex::new(false),
+            saves_asked: AtomicU64::new(0),
+            save_scheduled: AtomicBool::new(false),
+            file: Mutex::new(SavedFile::default()),
         })
     }
 
@@ -2220,7 +2591,7 @@ impl Task {
         (s.before.clone(), s.touched.clone())
     }
 
-    /// Where the copies of the files already changed as the last turn started are kept.
+    /// Where the copies of the files already changed as the turns started are kept.
     fn turn_dir(&self) -> PathBuf {
         self.shared.paths.store_dir.join(format!("{}.turn", self.id))
     }
@@ -2228,30 +2599,50 @@ impl Task {
     /// The checkout as the last turn started, with the folder of its copies.
     fn last_turn(&self) -> (PathBuf, Option<Arc<worktree::TurnStart>>, PathBuf) {
         let s = self.state.lock();
-        (s.task.cwd.0.clone(), s.turn.clone(), self.turn_dir())
+        (s.task.cwd.0.clone(), s.turns.last().cloned().flatten(), self.turn_dir())
     }
 
-    /// Records the checkout as a turn starts: what the turn's changes are compared with.
-    async fn checkout_before_turn(&self) {
-        let (cwd, previous, dir) = self.last_turn();
-        let turn = match blocking(move || worktree::start_turn(&cwd, &dir, previous.as_deref())).await {
+    /// Records the checkout as a turn starts (its message shown): what the turn's changes are
+    /// compared with, and what rolling back to its message puts back.
+    async fn checkout_before_turn(self: &Arc<Self>) {
+        let (cwd, dir, index, earlier) = {
+            let s = self.state.lock();
+            let index = turn_starts(&s.conversation.main.entries).len().saturating_sub(1);
+            let earlier: Vec<_> = s.turns.iter().take(index).cloned().collect();
+            (s.task.cwd.0.clone(), self.turn_dir(), index, earlier)
+        };
+        let kept = earlier.clone();
+        let turn = match vcs(&self.shared, move || {
+            let turn = worktree::start_turn(&cwd, &dir)?;
+            worktree::prune_turn_copies(&dir, kept.iter().flatten().map(|t| &**t).chain([&turn]));
+            Ok(turn)
+        })
+        .await
+        {
             Ok(turn) => Some(Arc::new(turn)),
             Err(e) => {
                 tracing::warn!("recording the checkout as a turn of agent task {} starts: {e}", self.id);
                 None
             }
         };
-        self.state.lock().turn = turn;
-        self.persist();
+        {
+            let mut s = self.state.lock();
+            s.turns = earlier;
+            s.turns.resize(index, None);
+            s.turns.push(turn);
+        }
+        self.persist_soon();
     }
 
     /// Records the files that changed in the checkout while the turn ran: the turn's, and in
     /// the project's own checkout also the task's.
-    async fn record_turn_changes(&self) {
+    async fn record_turn_changes(self: &Arc<Self>) {
         let (cwd, turn, _) = self.last_turn();
         let Some(turn) = turn else { return };
         let start = turn.clone();
-        let Ok((in_worktree, all)) = blocking(move || worktree::changed_in_turn(&cwd, &start)).await else { return };
+        let Ok((in_worktree, all)) = vcs(&self.shared, move || worktree::changed_in_turn(&cwd, &start)).await else {
+            return;
+        };
         {
             let mut s = self.state.lock();
             if !in_worktree.is_empty()
@@ -2261,9 +2652,11 @@ impl Task {
                 touched.extend(in_worktree);
                 s.touched = Some(Arc::new(touched));
             }
-            s.turn = Some(Arc::new(worktree::TurnStart { changed: Some(all), ..(*turn).clone() }));
+            if let Some(last) = s.turns.last_mut() {
+                *last = Some(Arc::new(worktree::TurnStart { changed: Some(all), ..(*turn).clone() }));
+            }
         }
-        self.persist();
+        self.persist_soon();
     }
 
     fn base(&self) -> worktree::TaskBase {
@@ -2280,6 +2673,23 @@ impl Task {
     fn emit_task(&self) {
         let task = self.state.lock().snapshot();
         self.shared.emit(AgentEvent::Task { task: Box::new(task) });
+    }
+
+    /// Takes the item and, for Send now, claims an idle turn under the same lock.
+    fn take_queued(&self, id: &str, for_send: bool) -> IdeResult<(AgentQueued, bool)> {
+        let mut s = self.state.lock();
+        let Some(index) = s.task.queue.iter().position(|item| item.id == id) else {
+            drop(s);
+            self.emit_task();
+            return Err(IdeError::new(ErrorKind::OutOfSync, "Message is no longer queued"));
+        };
+        let item = s.task.queue.remove(index);
+        let was_busy = s.busy;
+        s.busy |= for_send;
+        drop(s);
+        self.persist();
+        self.emit_task();
+        Ok((item, was_busy))
     }
 
     /// Shows (or clears) the agent's pending retry; emitted only when it changes.
@@ -2327,16 +2737,26 @@ impl Task {
         }
     }
 
+    fn change_status(&self, status: AgentStatus, error: Option<String>) {
+        let mut s = self.state.lock();
+        s.task.retry = None;
+        s.task.status = status;
+        s.task.error = error;
+        s.task.updated_ms = now_ms();
+    }
+
     fn set_status(&self, status: AgentStatus, error: Option<String>) {
-        {
-            let mut s = self.state.lock();
-            s.task.retry = None;
-            s.task.status = status;
-            s.task.error = error;
-            s.task.updated_ms = now_ms();
-        }
+        self.change_status(status, error);
         // Saved first: whoever reacts to the status change finds it on disk.
         self.persist();
+        self.emit_task();
+    }
+
+    /// `Running` again after the agent started or a request was answered: the turn's next stop
+    /// saves what changed, and the turn start saved the message that began it.
+    fn resume_running(self: &Arc<Self>) {
+        self.change_status(AgentStatus::Running, None);
+        self.persist_soon();
         self.emit_task();
     }
 
@@ -2362,15 +2782,40 @@ impl Task {
         }
     }
 
+    /// Writes the task file, with everything changed so far, before it returns.
     fn persist(&self) {
-        // Held from snapshot to rename, so saves land in order and none follows a delete.
-        let deleted = self.deleted.lock();
-        if *deleted {
+        self.saves_asked.fetch_add(1, Ordering::AcqRel);
+        self.save();
+    }
+
+    /// Has the task file written within `SAVE_DELAY`, once for every change asked for by then:
+    /// for what the next `persist` (the turn's next stop, shutdown) saves anyway, and a crash
+    /// before it costs at most what changed in this window.
+    fn persist_soon(self: &Arc<Self>) {
+        self.saves_asked.fetch_add(1, Ordering::AcqRel);
+        if !self.save_scheduled.swap(true, Ordering::AcqRel) {
+            let task = self.clone();
+            self.shared.runtime.spawn(async move {
+                tokio::time::sleep(SAVE_DELAY).await;
+                task.save_scheduled.store(false, Ordering::Release);
+                let _ = tokio::task::spawn_blocking(move || task.save()).await;
+            });
+        }
+    }
+
+    /// Writes the file unless it holds every save asked for. The state is locked only to copy
+    /// it: turning a long transcript into JSON and writing it is no reader's wait.
+    fn save(&self) {
+        // Held from the copy to the rename, so saves land in order and none follows a delete.
+        let mut file = self.file.lock();
+        // Read before the copy: whatever was asked for up to now is in it.
+        let asked = self.saves_asked.load(Ordering::Acquire);
+        if file.deleted || file.saved >= asked {
             return;
         }
-        let bytes = {
+        let copy = {
             let s = self.state.lock();
-            serde_json::to_vec(&TaskFile {
+            TaskFile {
                 task: s.task.clone(),
                 session_id: s.session_id.clone(),
                 entries: s.conversation.main.entries.clone(),
@@ -2380,15 +2825,20 @@ impl Task {
                 before: (*s.before).clone(),
                 saved: s.saved.clone(),
                 touched: s.touched.as_deref().cloned(),
-                turn: s.turn.as_deref().cloned(),
+                turn: None,
+                turns: s.turns.iter().map(|t| t.as_deref().cloned()).collect(),
                 subagents: s.conversation.saved_subagents(),
                 pending_rollback: s.pending_rollback,
                 title_renamed: s.title_renamed,
-            })
+                pending_native_fork: s.pending_native_fork.clone(),
+            }
         };
+        let bytes = serde_json::to_vec(&copy);
+        drop(copy);
         let path = self.shared.paths.store_dir.join(format!("{}.json", self.id));
-        if let Err(e) = bytes.map_err(|e| e.to_string()).and_then(|b| write_file(&path, &b)) {
-            tracing::warn!("saving agent task {}: {e}", self.id);
+        match bytes.map_err(|e| e.to_string()).and_then(|b| write_file(&path, &b)) {
+            Ok(()) => file.saved = asked,
+            Err(e) => tracing::warn!("saving agent task {}: {e}", self.id),
         }
     }
 
@@ -2413,7 +2863,7 @@ impl Task {
                 .into_iter()
                 .filter_map(|(subagent, i)| {
                     let entry = s.conversation.timeline(&subagent)?.entries.get(i)?;
-                    Some(entry_event(&self.id, &mut streamed, subagent, i, entry))
+                    entry_event(&self.id, &mut streamed, subagent, i, entry)
                 })
                 .collect()
         };
@@ -2449,6 +2899,19 @@ impl Task {
         self.persist();
     }
 
+    /// Removes the task's own entries and returns them.
+    fn take_entries(self: &Arc<Self>) -> Vec<AgentEntry> {
+        let entries = {
+            let mut s = self.state.lock();
+            let entries = s.conversation.main.entries.clone();
+            s.conversation.truncate(0);
+            entries
+        };
+        self.streamed.lock().clear();
+        self.shared.emit(AgentEvent::Truncated { task: self.id.clone(), length: 0 });
+        entries
+    }
+
     fn push_entry(self: &Arc<Self>, entry: AgentEntry) -> usize {
         let i = self.state.lock().conversation.main.push(entry);
         self.mark_dirty([(None, i)]);
@@ -2459,6 +2922,8 @@ impl Task {
     /// the user stops one. The caller set `busy`.
     async fn run(self: Arc<Self>, mut prompt: AgentPrompt) {
         loop {
+            // The message shows before the checkout is recorded, which can take a while in a large repository.
+            self.show_prompt(&prompt);
             self.checkout_before_turn().await;
             let result = self.turn(&prompt).await;
             self.cancel_pending.store(false, Ordering::Release);
@@ -2490,7 +2955,10 @@ impl Task {
                 self.push_entry(AgentEntry::Error { message: "The agent declined to continue.".into() });
             }
             match (next, result) {
-                (Some(queued), _) => prompt = queued.prompt,
+                (Some(queued), _) => {
+                    self.emit_task();
+                    prompt = queued.prompt;
+                }
                 (None, Ok(stop)) => {
                     self.set_status(AgentStatus::Ready, None);
                     if stop != "cancelled" {
@@ -2775,11 +3243,8 @@ impl Task {
         Ok(())
     }
 
-    /// Sends one prompt, starting the agent first if needed; returns the stop reason.
-    async fn turn(self: &Arc<Self>, prompt: &AgentPrompt) -> Result<String, Failure> {
-        self.turns.fetch_add(1, Ordering::AcqRel);
-        self.turn_started.store(false, Ordering::Release);
-        self.state.lock().task.resets_ms = None;
+    /// Adds the user's message to the conversation and shows the task starting.
+    fn show_prompt(self: &Arc<Self>, prompt: &AgentPrompt) {
         let attachments = prompt
             .files
             .iter()
@@ -2797,12 +3262,19 @@ impl Task {
         // Launching the agent can take a while (`npx` fetches its adapter on first use).
         let starting = self.live.lock().as_ref().is_none_or(|l| l.peer.is_closed());
         self.set_status(if starting { AgentStatus::Starting } else { AgentStatus::Running }, None);
+    }
+
+    /// Sends one prompt, starting the agent first if needed; returns the stop reason.
+    async fn turn(self: &Arc<Self>, prompt: &AgentPrompt) -> Result<String, Failure> {
+        self.turns.fetch_add(1, Ordering::AcqRel);
+        self.turn_started.store(false, Ordering::Release);
+        self.state.lock().task.resets_ms = None;
         let mut live = self.ensure_session().await.map_err(Failure::from)?;
         // Stopped while the agent started: the prompt is never sent.
         if self.cancel_pending.load(Ordering::Acquire) {
             return Ok("cancelled".into());
         }
-        self.set_status(AgentStatus::Running, None);
+        self.resume_running();
         if !prompt.images.is_empty() && !live.capabilities.images {
             return Err(Failure::from("This agent can't read images.".to_owned()));
         }
@@ -3018,13 +3490,18 @@ impl Task {
         let sign_in_message = spec.sign_in_message(&init.auth_methods);
         let can_load = init.load_session();
         let (capabilities, embedded) = capabilities_of(&init);
-        let mcp_overrides = self.state.lock().task.mcp_overrides.clone();
+        let (mcp_overrides, project_root) = {
+            let s = self.state.lock();
+            (s.task.mcp_overrides.clone(), s.task.project_root.clone().map(|p| p.0))
+        };
         let mcp_servers = self.shared.mcp_servers_for_session(provider_id, &init, &mcp_overrides);
+        let roots = self.shared.additional_directories(&init, cwd, project_root.as_deref());
         let skills_delivery = self.stage_skills(stage_key(spec.driver), cwd).await;
         // Agents that compare canonical paths fail in a symlinked directory (macOS `/tmp`).
         let cwd_s = dunce::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf()).to_string_lossy().into_owned();
+        let pending_native_fork = self.state.lock().pending_native_fork.clone();
 
-        let mut opening_params = session_params(&cwd_s, &mcp_servers, skills_delivery.as_ref());
+        let mut opening_params = session_params(&cwd_s, &mcp_servers, skills_delivery.as_ref(), &roots);
         if spec.driver == provider::Driver::Codex {
             let s = self.state.lock();
             let mut wanted = s.wanted.clone();
@@ -3041,48 +3518,97 @@ impl Task {
 
         let mut tried_auth = false;
         let mut session = None;
-        let start_fresh = self.start_fresh.load(Ordering::Acquire);
-        if pending_model.is_some() && (saved.is_none() || !can_load || start_fresh) {
-            return Err(SessionOpenError {
-                message: "The agent does not support resuming this session.".into(),
-                allow_acp_fallback: false,
-            });
-        }
-        if let (Some(id), true, false) = (saved, can_load, start_fresh) {
-            self.replaying.store(true, Ordering::Release);
+        if let Some(fork) = pending_native_fork {
+            if !capabilities.fork {
+                return Err(SessionOpenError {
+                    message: "the agent can't continue a recorded session".into(),
+                    allow_acp_fallback: false,
+                });
+            }
             let mut params = opening_params.clone();
-            params["sessionId"] = json!(&id);
-            let loaded = self.request_with_auth(&peer, &init, &mut tried_auth, "session/load", params).await;
-            tokio::time::sleep(REPLAY_GRACE).await;
-            self.replaying.store(false, Ordering::Release);
-            match loaded {
-                Ok(v) => session = Some((id, v)),
-                // Not silently: a new session would lose the conversation and replace the saved id.
-                Err(e) => {
-                    tracing::info!("agent task {}: session/load failed: {e}", self.id);
-                    if let Some(message) = self.sign_in_error(&e, Some(&sign_in_message)) {
-                        return Err(SessionOpenError { message, allow_acp_fallback: false });
+            params["sessionId"] = json!(&fork.source);
+            if let Some(target) = &fork.target {
+                match params["_meta"].as_object_mut() {
+                    Some(meta) => {
+                        if let Some(openidea) = meta.entry("openidea").or_insert_with(|| json!({})).as_object_mut() {
+                            openidea.insert("forkSessionId".into(), json!(target));
+                        }
                     }
-                    if pending_model.is_some() {
+                    None => params["_meta"] = json!({ "openidea": { "forkSessionId": target } }),
+                }
+            }
+            let reply = self
+                .request_with_auth(&peer, &init, &mut tried_auth, "session/fork", params)
+                .await
+                .map_err(|e| SessionOpenError { message: self.describe(e), allow_acp_fallback: false })?;
+            let id = reply
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| SessionOpenError {
+                    message: "the agent returned no session".into(),
+                    allow_acp_fallback: false,
+                })?
+                .to_owned();
+            session = Some((id, reply));
+        } else {
+            let start_fresh = self.start_fresh.load(Ordering::Acquire);
+            if pending_model.is_some() && (saved.is_none() || !can_load || start_fresh) {
+                return Err(SessionOpenError {
+                    message: "The agent does not support resuming this session.".into(),
+                    allow_acp_fallback: false,
+                });
+            }
+            if let (Some(id), true, false) = (saved, can_load, start_fresh) {
+                // The replay goes before what this turn already showed (the user's message).
+                let shown = self.adopts_replay().then(|| self.take_entries());
+                self.replaying.store(true, Ordering::Release);
+                let mut params = opening_params.clone();
+                params["sessionId"] = json!(&id);
+                let loaded = self.request_with_auth(&peer, &init, &mut tried_auth, "session/load", params).await;
+                tokio::time::sleep(REPLAY_GRACE).await;
+                self.replaying.store(false, Ordering::Release);
+                if let Some(shown) = shown {
+                    if loaded.is_ok() {
+                        self.adopting_replay.store(false, Ordering::Release);
+                        let changed = self.state.lock().conversation.end_turn(None);
+                        self.mark_dirty(changed);
+                    } else {
+                        // A failed load may still have replayed part of it.
+                        self.take_entries();
+                    }
+                    for entry in shown {
+                        self.push_entry(entry);
+                    }
+                }
+                match loaded {
+                    Ok(v) => session = Some((id, v)),
+                    // Not silently: a new session would lose the conversation and replace the saved id.
+                    Err(e) => {
+                        tracing::info!("agent task {}: session/load failed: {e}", self.id);
+                        if let Some(message) = self.sign_in_error(&e, Some(&sign_in_message)) {
+                            return Err(SessionOpenError { message, allow_acp_fallback: false });
+                        }
+                        if pending_model.is_some() {
+                            return Err(SessionOpenError {
+                                message: format!(
+                                    "Couldn't reopen this conversation's {} session: {}",
+                                    spec.name,
+                                    self.describe(e)
+                                ),
+                                allow_acp_fallback: false,
+                            });
+                        }
+                        self.start_fresh.store(true, Ordering::Release);
                         return Err(SessionOpenError {
                             message: format!(
-                                "Couldn't reopen this conversation's {} session: {}",
+                                "Couldn't reopen this conversation's {} session: {}\n\nSend the message again to \
+                                 continue in a new session. The agent won't see the earlier conversation.",
                                 spec.name,
                                 self.describe(e)
                             ),
                             allow_acp_fallback: false,
                         });
                     }
-                    self.start_fresh.store(true, Ordering::Release);
-                    return Err(SessionOpenError {
-                        message: format!(
-                            "Couldn't reopen this conversation's {} session: {}\n\nSend the message again to \
-                             continue in a new session. The agent won't see the earlier conversation.",
-                            spec.name,
-                            self.describe(e)
-                        ),
-                        allow_acp_fallback: false,
-                    });
                 }
             }
         }
@@ -3273,13 +3799,15 @@ impl Task {
             s.pending_model = None;
             s.task.capabilities = capabilities;
             s.session_id = Some(session_id.clone());
+            // The recorded session is forked (or the fork resumed): the one-shot intent is spent.
+            s.pending_native_fork = None;
             self.start_fresh.store(false, Ordering::Release);
             // The (re)started process runs nothing yet: whatever it reports next is all of it.
             s.background_tasks = Vec::new();
             s.task.background.clear();
             *client.opening_config.lock() = None;
         }
-        self.persist();
+        self.persist_soon();
         self.emit_task();
         stop_on_err.0 = None;
         Ok(Live {
@@ -3349,7 +3877,7 @@ impl Task {
                 }
             }
             task.approve_pending();
-            task.persist();
+            task.persist_soon();
             task.emit_task();
         });
     }
@@ -3375,7 +3903,7 @@ impl Task {
         let kind = update.get("sessionUpdate").and_then(Value::as_str).unwrap_or_default();
         // A subagent's title, settings and usage are its own, not the task's.
         if self.state.lock().conversation.owner(session).is_some() {
-            if !SESSION_STATE.contains(&kind) && !self.replaying.load(Ordering::Acquire) {
+            if !SESSION_STATE.contains(&kind) && (!self.replaying.load(Ordering::Acquire) || self.adopts_replay()) {
                 self.apply(session, kind, update);
             }
             return;
@@ -3411,7 +3939,7 @@ impl Task {
                     std::mem::replace(&mut s.task.stats.compressions, depth) != depth
                 };
                 if changed {
-                    self.persist();
+                    self.persist_soon();
                     self.emit_task();
                 }
             }
@@ -3429,11 +3957,11 @@ impl Task {
                 if (user_named || !s.title_renamed) && s.task.title != title {
                     s.task.title = title.to_owned();
                     drop(s);
-                    self.persist();
+                    self.persist_soon();
                     self.emit_task();
                 } else if flag_changed {
                     drop(s);
-                    self.persist();
+                    self.persist_soon();
                     self.emit_task();
                 }
             }
@@ -3479,7 +4007,7 @@ impl Task {
             };
             self.shared.remember(&provider, Some(&config), Some(&commands), model.as_deref());
             if kind != "usage_update" {
-                self.persist();
+                self.persist_soon();
             }
             self.emit_task();
             if kind == "config_option_update" && !self.replaying.load(Ordering::Acquire) {
@@ -3491,6 +4019,13 @@ impl Task {
             return;
         }
         if self.replaying.load(Ordering::Acquire) {
+            if self.adopts_replay() {
+                if kind == "user_message_chunk" {
+                    self.adopt_user_chunk(update);
+                } else {
+                    self.apply(session, kind, update);
+                }
+            }
             return;
         }
         // The first sign that the agent took the prompt: a stop sent before it is repeated.
@@ -3503,14 +4038,48 @@ impl Task {
         self.apply(session, kind, update);
     }
 
+    fn adopts_replay(&self) -> bool {
+        self.adopting_replay.load(Ordering::Acquire)
+    }
+
+    /// A user message of the adopted history: live turns show the user's own, so only a replay's count.
+    fn adopt_user_chunk(self: &Arc<Self>, update: &Value) {
+        let content = update.get("content");
+        let image = content.and_then(images::from_content);
+        let text = if image.is_some() { String::new() } else { timeline::content_text(content).unwrap_or_default() };
+        if text.is_empty() && image.is_none() {
+            return;
+        }
+        let changed = {
+            let mut s = self.state.lock();
+            let entries = &mut s.conversation.main.entries;
+            // The chunks of one message arrive in a row.
+            if let Some(AgentEntry::User { text: shown, images, .. }) = entries.last_mut() {
+                shown.push_str(&text);
+                images.extend(image);
+                entries.len() - 1
+            } else {
+                s.conversation.main.push(AgentEntry::User {
+                    text,
+                    attachments: Vec::new(),
+                    images: image.into_iter().collect(),
+                    sent_ms: None,
+                    done_ms: None,
+                    steered: false,
+                })
+            }
+        };
+        self.mark_dirty([(None, changed)]);
+    }
+
     fn apply(self: &Arc<Self>, session: Option<&str>, kind: &str, update: &Value) {
         // Output again: the retried request went through.
         self.set_retry(None);
         let applied = self.state.lock().conversation.apply(session, update, now_ms());
         self.mark_dirty(applied);
-        // A subagent can start or finish after the turn that started it: saved right away.
+        // A subagent can start or finish after the turn that started it: nothing else saves it then.
         if matches!(kind, "subagent_update" | "user_question") {
-            self.persist();
+            self.persist_soon();
         }
     }
 
@@ -3693,6 +4262,7 @@ impl Task {
     }
 
     /// Records the answer to the request at `entry`; the turn runs on once nothing else waits.
+    /// Saved before it returns, which is before the agent is told: a restart after that keeps the answer.
     fn settle(self: &Arc<Self>, entry: usize, chosen: String) {
         {
             let mut s = self.state.lock();
@@ -3702,8 +4272,13 @@ impl Task {
         }
         self.mark_dirty([(None, entry)]);
         let still_asking = !self.permissions.lock().is_empty();
-        if !still_asking && self.state.lock().task.status == AgentStatus::NeedsInput {
-            self.set_status(AgentStatus::Running, None);
+        let resumed = !still_asking && self.state.lock().task.status == AgentStatus::NeedsInput;
+        if resumed {
+            self.change_status(AgentStatus::Running, None);
+        }
+        self.persist();
+        if resumed {
+            self.emit_task();
         }
     }
 
@@ -3787,7 +4362,7 @@ impl Handler for Client {
                 && let Some(message) = params.get("message").and_then(Value::as_str).filter(|s| !s.trim().is_empty())
             {
                 task.push_entry(AgentEntry::Error { message: message.to_owned() });
-                task.persist();
+                task.persist_soon();
             }
             return;
         }
@@ -4083,9 +4658,12 @@ fn stage_key(driver: provider::Driver) -> &'static str {
 /// The session parameters `session/new`, `session/load` and `session/fork` share: the MCP
 /// servers, and the ones off for this session, so an agent that also loads its own
 /// configuration (Claude Code) can keep a same-named server of it off too — plus the
-/// session's staged skills for the drivers that take them.
-fn session_params(cwd: &str, mcp: &McpForSession, skills: Option<&skills::Delivery>) -> Value {
+/// session's staged skills for the drivers that take them, and the workspace's other roots.
+fn session_params(cwd: &str, mcp: &McpForSession, skills: Option<&skills::Delivery>, roots: &[String]) -> Value {
     let mut params = json!({ "cwd": cwd, "mcpServers": mcp.servers });
+    if !roots.is_empty() {
+        params["additionalDirectories"] = json!(roots);
+    }
     let mut meta = json!({});
     if !mcp.off.is_empty() {
         meta["mcpServersOff"] = json!(mcp.off);
@@ -4189,8 +4767,24 @@ fn file_uri(path: &Path) -> String {
     out
 }
 
+/// The title of a task: the first line of the prompt that says something. Text inside a code
+/// fence (```` ```text ````) is pasted material, so a line outside the fences wins; a prompt
+/// that is all one pasted block still names its task from inside it.
 fn title_of(prompt: &AgentPrompt) -> String {
-    let line = prompt.text.lines().map(str::trim).find(|l| !l.is_empty());
+    let is_fence = |l: &str| l.starts_with("```") || l.starts_with("~~~");
+    let (mut outside, mut inside, mut fenced) = (None, None, false);
+    for l in prompt.text.lines().map(str::trim) {
+        if is_fence(l) {
+            fenced = !fenced;
+        } else if !l.is_empty() {
+            let slot = if fenced { &mut inside } else { &mut outside };
+            slot.get_or_insert(l);
+            if outside.is_some() {
+                break;
+            }
+        }
+    }
+    let line = outside.or(inside);
     let line = match line {
         Some(l) => l.to_owned(),
         None => prompt.files.first().map(|f| file_name(&f.0)).unwrap_or_else(|| "Image".into()),
@@ -4210,16 +4804,44 @@ fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from)
 }
 
+/// How many times each file was written, in test builds: lets a test count a task's saves.
+#[cfg(test)]
+static FILE_WRITES: std::sync::LazyLock<Mutex<HashMap<PathBuf, u32>>> = std::sync::LazyLock::new(Mutex::default);
+
 fn write_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path)).map_err(|e| e.to_string())
+    std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path)).map_err(|e| e.to_string())?;
+    #[cfg(test)]
+    {
+        *FILE_WRITES.lock().entry(path.to_owned()).or_default() += 1;
+    }
+    Ok(())
 }
 
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send + 'static) -> IdeResult<T> {
     tokio::task::spawn_blocking(f).await.map_err(|e| IdeError::internal(e.to_string()))?
+}
+
+/// [`blocking`] for work that runs git: the repositories it opens run the project's git.
+async fn vcs<T: Send + 'static>(shared: &Shared, f: impl FnOnce() -> IdeResult<T> + Send + 'static) -> IdeResult<T> {
+    let git = shared.git_executable.read().as_ref().and_then(|hook| hook());
+    blocking(move || ide_vcs::with_git_executable(git.as_deref(), f)).await
+}
+
+async fn read_changes<T: Send + 'static>(
+    shared: &Shared,
+    f: impl FnOnce() -> IdeResult<T> + Send + 'static,
+) -> IdeResult<T> {
+    let permit = shared.change_reads.clone().acquire_owned().await.map_err(|e| IdeError::internal(e.to_string()))?;
+    vcs(shared, move || {
+        // Dropping the caller doesn't cancel a blocking job. Keep the slot with the work.
+        let _permit = permit;
+        f()
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -4242,78 +4864,158 @@ fn stdio_mcp_servers(executable: Option<&std::path::Path>, supported: bool, root
     vec![json!({ "name": BUILTIN_SERVER, "command": command[0], "args": command[1..], "env": env })]
 }
 
-/// What was sent of a streaming message: its first `bytes` (`utf16` UTF-16 units), which
-/// ended with `tail`. A message only grows while it streams, so its tail tells a message
-/// that went on from one that was replaced without comparing (or keeping) all of it.
+/// What was sent of a streaming text: its first `bytes` (`utf16` UTF-16 units), hashed. The
+/// text only grows while it streams; the hash tells one that went on from one that was replaced
+/// (at its end or anywhere before) without keeping a copy of it.
 struct Sent {
     index: usize,
     bytes: usize,
     utf16: usize,
-    tail: String,
+    hash: u64,
 }
-
-const SENT_TAIL: usize = 64;
 
 impl Sent {
     fn new(index: usize, text: &str) -> Self {
-        Self::after(index, text, 0, 0)
+        Self { index, bytes: text.len(), utf16: text.encode_utf16().count(), hash: Self::digest(text) }
     }
 
-    /// `text` as sent, of which the first `bytes` (`utf16` units) were sent before.
-    fn after(index: usize, text: &str, bytes: usize, utf16: usize) -> Self {
-        let mut start = text.len().saturating_sub(SENT_TAIL);
-        while !text.is_char_boundary(start) {
-            start -= 1;
+    fn digest(text: &str) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        hasher.write(text.as_bytes());
+        hasher.finish()
+    }
+
+    /// `text` at `index` as sent after this, when it is this text with more at the end.
+    fn extended(&self, index: usize, text: &str) -> Option<Self> {
+        if self.index != index || text.len() <= self.bytes || !text.is_char_boundary(self.bytes) {
+            return None;
         }
-        let utf16 = utf16 + text[bytes..].encode_utf16().count();
-        Self { index, bytes: text.len(), utf16, tail: text[start..].to_owned() }
+        let mut hasher = DefaultHasher::new();
+        hasher.write(&text.as_bytes()[..self.bytes]);
+        if hasher.finish() != self.hash {
+            return None;
+        }
+        let more = &text[self.bytes..];
+        hasher.write(more.as_bytes());
+        Some(Self { index, bytes: text.len(), utf16: self.utf16 + more.encode_utf16().count(), hash: hasher.finish() })
     }
 
-    /// Whether `text` at `index` is this message, gone on.
-    fn extended_by(&self, index: usize, text: &str) -> bool {
-        self.index == index
-            && text.len() > self.bytes
-            && text.is_char_boundary(self.bytes)
-            && text[..self.bytes].ends_with(&self.tail)
+    /// Whether `text` is exactly what was sent.
+    fn is(&self, text: &str) -> bool {
+        text.len() == self.bytes && Self::digest(text) == self.hash
+    }
+}
+
+/// A running tool call as last sent: the entry without its output, and what was sent of that.
+struct SentTool {
+    call: AgentEntry,
+    output: Sent,
+}
+
+/// What each window was last sent of the entries that stream, so the next flush sends the rest.
+#[derive(Default)]
+struct Streamed {
+    /// The message each session streams now.
+    messages: HashMap<Session, Sent>,
+    /// The tool calls still running, by session and entry index.
+    tools: HashMap<(Session, usize), SentTool>,
+}
+
+impl Streamed {
+    fn clear(&mut self) {
+        self.messages.clear();
+        self.tools.clear();
     }
 }
 
 /// The event that brings the UI's copy of entry `i` up to date: only the new text when
-/// it extends the message last sent for the session, else the whole entry.
+/// it extends the message (or the tool output) last sent, else the whole entry; `None`
+/// when the UI's copy of a tool already is the entry.
 fn entry_event(
     task: &str,
-    streamed: &mut HashMap<Session, Sent>,
+    streamed: &mut Streamed,
     subagent: Session,
     i: usize,
     entry: &AgentEntry,
-) -> AgentEvent {
+) -> Option<AgentEvent> {
+    let whole = |subagent| AgentEvent::Entry { task: task.to_owned(), subagent, index: i as u32, entry: entry.clone() };
     let text = match entry {
         AgentEntry::Agent { text } | AgentEntry::Thought { text, .. } => Some(text),
+        AgentEntry::Tool { .. } => return tool_event(task, streamed, subagent, i, entry),
         _ => None,
     };
     let Some(text) = text else {
-        if streamed.get(&subagent).is_some_and(|sent| sent.index == i) {
-            streamed.remove(&subagent);
+        if streamed.messages.get(&subagent).is_some_and(|sent| sent.index == i) {
+            streamed.messages.remove(&subagent);
         }
-        return AgentEvent::Entry { task: task.to_owned(), subagent, index: i as u32, entry: entry.clone() };
+        return Some(whole(subagent));
     };
-    match streamed.get(&subagent).filter(|sent| sent.extended_by(i, text)) {
-        Some(sent) => {
-            let (bytes, from) = (sent.bytes, sent.utf16);
-            streamed.insert(subagent.clone(), Sent::after(i, text, bytes, from));
-            AgentEvent::Append {
+    match streamed.messages.get(&subagent).and_then(|sent| Some((sent.bytes, sent.utf16, sent.extended(i, text)?))) {
+        Some((bytes, from, sent)) => {
+            streamed.messages.insert(subagent.clone(), sent);
+            Some(AgentEvent::Append {
                 task: task.to_owned(),
                 subagent,
                 index: i as u32,
                 from: from as u32,
                 text: text[bytes..].to_owned(),
-            }
+            })
         }
         None => {
-            streamed.insert(subagent.clone(), Sent::new(i, text));
-            AgentEvent::Entry { task: task.to_owned(), subagent, index: i as u32, entry: entry.clone() }
+            streamed.messages.insert(subagent.clone(), Sent::new(i, text));
+            Some(whole(subagent))
         }
     }
+}
+
+/// [`entry_event`] for a tool call: the output it grew by while the rest of it is unchanged.
+fn tool_event(
+    task: &str,
+    streamed: &mut Streamed,
+    subagent: Session,
+    i: usize,
+    entry: &AgentEntry,
+) -> Option<AgentEvent> {
+    let AgentEntry::Tool { id, title, kind, status, locations, images, output, diffs, started_ms, ended_ms } = entry
+    else {
+        return None;
+    };
+    let call = AgentEntry::Tool {
+        id: id.clone(),
+        title: title.clone(),
+        kind: kind.clone(),
+        status: *status,
+        locations: locations.clone(),
+        images: images.clone(),
+        output: None,
+        diffs: diffs.clone(),
+        started_ms: *started_ms,
+        ended_ms: *ended_ms,
+    };
+    let text = output.as_deref().unwrap_or_default();
+    let key = (subagent, i);
+    if let Some(sent) = streamed.tools.get_mut(&key).filter(|sent| sent.call == call) {
+        if let Some(output) = sent.output.extended(i, text) {
+            let (bytes, from) = (sent.output.bytes, sent.output.utf16);
+            sent.output = output;
+            return Some(AgentEvent::ToolOutput {
+                task: task.to_owned(),
+                subagent: key.0,
+                index: i as u32,
+                from: from as u32,
+                text: text[bytes..].to_owned(),
+            });
+        }
+        if sent.output.is(text) {
+            return None;
+        }
+    }
+    if matches!(status, AgentToolStatus::Pending | AgentToolStatus::Running) {
+        streamed.tools.insert(key.clone(), SentTool { call, output: Sent::new(i, text) });
+    } else {
+        streamed.tools.remove(&key);
+    }
+    Some(AgentEvent::Entry { task: task.to_owned(), subagent: key.0, index: i as u32, entry: entry.clone() })
 }
 
 struct SessionOpenError {

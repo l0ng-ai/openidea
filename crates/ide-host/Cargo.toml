@@ -66,8 +66,14 @@ serde_json = { workspace = true, features = ["raw_value"] }
 toml.workspace = true
 specta.workspace = true
 specta-typescript.workspace = true
-tokio = { workspace = true, features = ["io-std"] }
+bytes = "1"
+flate2.workspace = true
+http-body-util = "0.1"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
+tokio = { workspace = true, features = ["io-std", "net", "signal"] }
 tracing.workspace = true
+url = "2"
 tracing-subscriber.workspace = true
 parking_lot.workspace = true
 dunce.workspace = true
@@ -78,6 +84,7 @@ zip.workspace = true
 quick-xml = "0.42"
 
 [dev-dependencies]
+ide-heap = { workspace = true, features = ["testing"] }
 ide-ssh = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "test-util"] }
 criterion = { version = "0.5", default-features = false }

@@ -1,0 +1,6 @@
+id = "freemarker"
+name = "FreeMarker"
+extensions = ["ftl", "ftlh", "ftlx"]
+block-comment = ["<#--", "-->"]
+indent = { tab-size = 2, insert-spaces = true }
+ui-mode = "FreeMarker"

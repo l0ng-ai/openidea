@@ -23,6 +23,17 @@ const EXAMPLES = [
     parts: ["fn layout() {\n    resize(", { annotation: "width:" }, "640, ", { annotation: "height:" }, "480);\n}"],
   },
   {
+    id: "closingLabels",
+    label: "Closing labels",
+    language: "dart",
+    file: "home.dart",
+    parts: [
+      "Widget build(BuildContext context) {\n  return Center(\n    child: Text('Hi'),\n  );",
+      { annotation: "// Center" },
+      "\n}",
+    ],
+  },
+  {
     id: "other",
     label: "Other hints (chaining, closing labels…)",
     language: "go",
@@ -87,6 +98,7 @@ export function InlayHintsPanel() {
                 typeof part === "string"
                   ? part
                   : showHint && (
+                      // oxlint-disable-next-line react/no-array-index-key -- annotations can repeat; position is the identity
                       <span className={styles.hint} key={i}>
                         {part.annotation}
                       </span>

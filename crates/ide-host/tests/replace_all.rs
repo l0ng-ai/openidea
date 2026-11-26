@@ -1,8 +1,10 @@
 //! Replace All when the search hit its match limit (#4083): every match in the
 //! scope is replaced, not just the listed ones.
 
-use ide_core::{NullSink, Pos, RequestId};
-use ide_host::{Host, HostConfig, ops};
+mod common;
+
+use ide_core::{Pos, RequestId};
+use ide_host::{Host, ops};
 use ide_search::{ReplaceEvent, ReplaceSummary, ReplaceTarget, SearchQuery};
 use std::sync::{Arc, Mutex};
 
@@ -95,17 +97,7 @@ async fn replace_all_covers_matches_past_the_limit() {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, text).unwrap();
         }
-        let host = Host::new(HostConfig {
-            config_dir: base.join("config"),
-            data_dir: base.join("data"),
-            local_data_dir: base.join("data"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(NullSink)),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let host = Host::new(common::host_config(&base));
         host.trust.decide(&root, true, false).unwrap();
         host.open_project("main", &root).unwrap();
         let targets = case
@@ -155,26 +147,19 @@ async fn replace_all_saves_open_buffers_without_unsaved_changes() {
     let base = dunce::canonicalize(temp.path()).unwrap();
     let root = base.join("project");
     std::fs::create_dir_all(&root).unwrap();
-    for name in ["previewed.txt", "edited.txt", "closed.txt"] {
+    for name in ["previewed.txt", "edited.txt", "closed.txt", "stale.txt"] {
         std::fs::write(root.join(name), "TOKEN\n").unwrap();
     }
-    let host = Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    });
+    let host = Host::new(common::host_config(&base));
     host.trust.decide(&root, true, false).unwrap();
     host.open_project("main", &root).unwrap();
     let project = host.project("main").unwrap();
     project.documents.open(&root.join("previewed.txt")).unwrap();
     let edited = project.documents.open(&root.join("edited.txt")).unwrap().id;
     project.documents.replace_all(edited, "TOKEN\nmore\n").unwrap();
+    // Open and clean, but changed on disk before the watcher reported it.
+    let stale = project.documents.open(&root.join("stale.txt")).unwrap().id;
+    std::fs::write(root.join("stale.txt"), "TOKEN\nexternal\n").unwrap();
     ops::search::replace_in_files(
         &host,
         "main",
@@ -193,6 +178,8 @@ async fn replace_all_saves_open_buffers_without_unsaved_changes() {
     assert_eq!(disk("closed.txt"), "DONE\n");
     assert_eq!(disk("edited.txt"), "TOKEN\n", "unsaved edits stay unsaved");
     assert_eq!(project.documents.text_snapshot(edited).unwrap().text, "DONE\nmore\n");
+    assert_eq!(disk("stale.txt"), "TOKEN\nexternal\n", "the external change is kept");
+    assert!(project.documents.is_dirty(stale).unwrap(), "the replacement stays unsaved");
     host.close_project("main");
 }
 
@@ -218,17 +205,7 @@ async fn replace_all_past_the_limit_keeps_to_the_search_context() {
         let root = base.join("project");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("lib.rs"), &original).unwrap();
-        let host = Host::new(HostConfig {
-            config_dir: base.join("config"),
-            data_dir: base.join("data"),
-            local_data_dir: base.join("data"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(NullSink)),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let host = Host::new(common::host_config(&base));
         host.trust.decide(&root, true, false).unwrap();
         host.open_project("main", &root).unwrap();
         ops::search::replace_in_files(

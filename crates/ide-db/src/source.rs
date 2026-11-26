@@ -296,6 +296,14 @@ pub struct DbSsh {
     pub save_secret: bool,
 }
 
+/// A foreground program that forwards an IDE-assigned loopback port to the database.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DbExternalTunnel {
+    pub executable: String,
+    pub arguments: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase", default)]
 pub struct DataSource {
@@ -318,6 +326,8 @@ pub struct DataSource {
     pub read_only: bool,
     /// SSH tunnel settings (`None`: never configured; kept but unused when not `enabled`).
     pub ssh: Option<DbSsh>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_tunnel: Option<DbExternalTunnel>,
     /// Wire-compatible product preset (`cockroachdb`, `tidb`…; empty: the driver itself).
     pub vendor: String,
     pub color: Option<DbColor>,
@@ -361,6 +371,7 @@ impl Default for DataSource {
             save_password: false,
             read_only: false,
             ssh: None,
+            external_tunnel: None,
             vendor: String::new(),
             color: None,
             comment: String::new(),
@@ -501,6 +512,16 @@ pub fn parse_url(raw: &str) -> IdeResult<ParsedUrl> {
 }
 
 impl DataSource {
+    pub(crate) fn select_database(&mut self, database: Option<&str>) {
+        if let Some(db) = database {
+            // The configured schema belongs to the configured database.
+            if self.driver == DbDriver::Snowflake && !self.database.eq_ignore_ascii_case(db) {
+                self.options.default_schema.clear();
+            }
+            self.database = db.to_owned();
+        }
+    }
+
     pub(crate) fn same_except_visibility(&self, other: &Self) -> bool {
         if self == other {
             return true;

@@ -15,7 +15,8 @@ export interface CustomDocument {
 type Kinds = ReadonlyMap<string, EditorKindContribution>;
 
 export function documentLifecycle(input: EditorInput, kinds: Kinds): EditorDocumentLifecycle | undefined {
-  return kinds.get(input.kind)?.document;
+  const document = kinds.get(input.kind)?.document;
+  return typeof document === "function" ? document(input) : document;
 }
 
 /** Open custom documents by input key, in visual tab order (the first tab's input). */

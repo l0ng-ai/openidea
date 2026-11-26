@@ -187,7 +187,7 @@ describe("McpServersPage", () => {
     expect(screen.getByText("azure")).toBeInTheDocument();
     expect(screen.getByText("npx -y @azure/mcp@latest server start")).toBeInTheDocument();
     const workspace = screen.getByRole("region", { name: "Workspace" });
-    expect(within(workspace).getByText(/stay off until you turn them on here/)).toBeInTheDocument();
+    expect(within(workspace).getByText(/stay off until turned on here/)).toBeInTheDocument();
   });
 
   it("filters servers across sections by search query", async () => {
@@ -253,7 +253,8 @@ describe("McpServersPage", () => {
     render(<McpServersPage backend={backend} />);
 
     await waitFor(() => expect(screen.getByText("slack-official")).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: "Add from JSON" }));
+    fireEvent.click(screen.getByRole("button", { name: "More Actions" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Add from JSON…" }));
 
     const dialog = await screen.findByRole("dialog");
     const jsonField = within(dialog).getByLabelText("JSON:");
@@ -314,13 +315,15 @@ describe("McpServersPage", () => {
     render(<McpServersPage backend={backend} />);
 
     await waitFor(() => expect(screen.getByText("slack-official")).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: "Import from Project" }));
+    fireEvent.click(screen.getByRole("button", { name: "More Actions" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Import from Project" }));
 
     await waitFor(() => expect(backend.imported).toBe(1));
     await waitFor(() => expect(screen.getByText("imported-fs")).toBeInTheDocument());
     expect(screen.getByRole("status")).toHaveTextContent("Imported 1 MCP server from the project.");
 
-    fireEvent.click(screen.getByRole("button", { name: "Import from Project" }));
+    fireEvent.click(screen.getByRole("button", { name: "More Actions" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Import from Project" }));
     await waitFor(() => expect(backend.imported).toBe(2));
     await waitFor(() =>
       expect(screen.getByRole("status")).toHaveTextContent(

@@ -21,21 +21,24 @@ import {
   type TreeHandle,
 } from "@/ui";
 import { maybeEditorService, type EditorInput } from "@/workbench/contributions";
+import { useToolWindowLayout } from "@/workbench/toolwindows/store";
 import clsx from "clsx";
 import {
   useCallback,
   useContext,
   useEffect,
+  useEffectEvent,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
 } from "react";
-import { DIFF_KIND, diffInput, vcsDiffInFront } from "../diffInput";
+import { DIFF_KIND, diffInput } from "../diffInput";
 import { buildFileTree, dirKeys, type FileTreeNode } from "../fileTree";
 import styles from "../GitLog.module.css";
 import {
+  canApplySelectedChanges,
   absolutePath,
   filesUnder,
   flatFileNodes,
@@ -176,21 +179,21 @@ export function CommitDetails({ commits, fileHistory = false }: { commits: Commi
   const treeRef = useRef<TreeHandle>(null);
   const [diffToReveal, setDiffToReveal] = useState<{ key: string } | null>(null);
   const syncingDiff = useRef(false);
+  const affectedPaths = filters.paths?.length ? filters.paths : filters.path;
   const changes = useMemo(() => {
     const changes = files ?? [];
-    const paths = filters.paths?.length ? filters.paths : filters.path ? [filters.path] : [];
-    return onlyAffected && paths.length
-      ? changes.filter((c) =>
-          paths.some((p) => {
-            const matches = (rel: string) => {
-              const abs = absolutePath(rel, c.repo);
-              return abs === p || abs.startsWith(`${p}/`) || (!many && commit?.historyPath === rel);
-            };
-            return matches(c.path) || (c.oldPath != null && matches(c.oldPath));
-          }),
-        )
-      : changes;
-  }, [files, commit, many, filters.path, filters.paths, onlyAffected]);
+    if (!onlyAffected || !affectedPaths) return changes;
+    const paths = typeof affectedPaths === "string" ? [affectedPaths] : affectedPaths;
+    return changes.filter((c) =>
+      paths.some((p) => {
+        const matches = (rel: string) => {
+          const abs = absolutePath(rel, c.repo);
+          return abs === p || abs.startsWith(`${p}/`) || (!many && commit?.historyPath === rel);
+        };
+        return matches(c.path) || (c.oldPath != null && matches(c.oldPath));
+      }),
+    );
+  }, [files, commit, many, affectedPaths, onlyAffected]);
   const lineTotals = useMemo(() => {
     if (!showLineStats || !changes.length) return null;
     if (changes.some((f) => f.added === undefined || f.removed === undefined)) return null;
@@ -212,29 +215,28 @@ export function CommitDetails({ commits, fileHistory = false }: { commits: Commi
   const ordered = useMemo(() => filesUnder(tree), [tree]);
   const chosenChanges = useMemo(() => filesUnder(tree, selectedKeys), [tree, selectedKeys]);
 
-  // Show Diff Preview: a single selected file follows into the editor's preview tab.
+  // Selection updates an open preview. Double-click, Enter and Show Diff open it.
   const previewTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  useEffect(() => {
-    if (!active) clearTimeout(previewTimer.current);
-    return () => clearTimeout(previewTimer.current);
-  }, [active]);
+  useEffect(() => () => clearTimeout(previewTimer.current), [active, diffLocation, ordered, preview]);
   const previewSelection = (sel: ReadonlySet<string>) => {
     clearTimeout(previewTimer.current);
-    if (syncingDiff.current || sel.size !== 1) return;
-    // While the editor shows one of this pane's diffs, the selection walks it along (a click or
-    // arrow key), as in the Commit window.
-    const shown = maybeEditorService()?.activeInput?.();
-    const following = shown?.kind === DIFF_KIND && ordered.some((c) => diffInput(c.diff).key === shown.key);
-    if (!following && (!logOptions().diffPreview || logOptions().diffLocation !== "editor" || vcsDiffInFront())) return;
+    if (!active || !preview || diffLocation !== "editor" || syncingDiff.current || sel.size !== 1) return;
+    const editor = maybeEditorService();
+    const shown = editor?.activeInput?.({ previewOnly: true });
+    if (shown?.kind !== DIFF_KIND || !ordered.some((c) => diffInput(c.diff).key === shown.key)) return;
     const file = fileNodeAt(tree, [...sel][0]!)?.file;
-    // A preview that cannot open (no editor yet, the file went away) is just skipped.
-    if (file)
-      previewTimer.current = setTimeout(() => void showChangesDiff([file], true).catch(() => undefined), PREVIEW_DELAY);
+    if (!file || diffInput(file.diff).key === shown.key) return;
+    previewTimer.current = setTimeout(() => {
+      if (!useToolWindowLayout.getState().maximized && editor?.activeInput?.({ previewOnly: true })?.key === shown.key)
+        void showChangesDiff([file], true, ordered).catch(() => undefined);
+    }, PREVIEW_DELAY);
   };
 
   // Follow only this pane's exact diff (path AND revisions); another commit or
   // Compare with Local must not move its selection. Never take focus from F7.
+  const isOnlySelected = useEffectEvent((key: string) => selectedKeys.size === 1 && selectedKeys.has(key));
   useEffect(() => {
+    if (!active) return;
     const editor = maybeEditorService();
     const followDiff = (input: EditorInput | null) => {
       if (input?.kind !== DIFF_KIND) return;
@@ -242,16 +244,19 @@ export function CommitDetails({ commits, fileHistory = false }: { commits: Commi
       if (!change) return;
       clearTimeout(previewTimer.current);
       const rel = changeTreePath(change);
+      const key = `f:${rel}`;
+      // The tree already selected this row. Revealing it would scroll it to the center.
+      if (isOnlySelected(key)) return;
       setExpanded((current) => {
         const next = new Set(current ?? allDirs);
         for (const key of allDirs) if (rel.startsWith(key.slice(2) + "/")) next.add(key);
         return next;
       });
-      setDiffToReveal({ key: `f:${rel}` });
+      setDiffToReveal({ key });
     };
     followDiff(editor?.activeInput?.() ?? null);
     return editor?.onActiveInputChange?.(followDiff);
-  }, [ordered, allDirs, changeTreePath]);
+  }, [active, ordered, allDirs, changeTreePath]);
 
   // Tree.reveal needs the expanded rows to have rendered. Suppress the reverse
   // preview update so it cannot reopen the diff and lose its requested chunk.
@@ -289,10 +294,12 @@ export function CommitDetails({ commits, fileHistory = false }: { commits: Commi
       { kind: "header", label: "Group By" },
       { kind: "action", action: "vcs.log.changes.groupByDirectory" },
       { kind: "separator" },
-      { kind: "action", action: "vcs.log.changes.diffPreview" },
-      toggle("Show Only Affected Changes", logOptions(), "showOnlyAffected"),
+      { kind: "header", label: "Show" },
       toggle("Show lines added and deleted", logOptions(), "showLineStats"),
       toggle("Show Changes from Parents", logOptions(), "changesFromParents"),
+      { kind: "separator" },
+      { kind: "header", label: "Layout" },
+      { kind: "action", action: "vcs.log.changes.diffPreview" },
       {
         label: "Diff Preview Location",
         submenu: (["editor", "right", "bottom"] as const).map((location) => ({
@@ -308,7 +315,11 @@ export function CommitDetails({ commits, fileHistory = false }: { commits: Commi
     const target = sel.has(node.key) ? filesUnder(tree, sel) : filesUnder([node]);
     if (!target.length) return;
     e.preventDefault();
-    showContextMenu(e, changesMenu(target));
+    const source =
+      !readOnly && chosen.length === 1 && commit.parents.length <= 1 && files
+        ? { commit, total: files.length }
+        : undefined;
+    showContextMenu(e, changesMenu(target, source));
   };
 
   const messagePanel = (
@@ -368,6 +379,9 @@ export function CommitDetails({ commits, fileHistory = false }: { commits: Commi
               actionArg={chosenChanges}
               disabled={readOnly || !chosenChanges.length || new Set(chosenChanges.map((c) => c.repo)).size > 1}
             />
+            {affectedPaths && (
+              <IconButton icon="folder" action="vcs.log.changes.showOnlyAffected" size="small" pressed={onlyAffected} />
+            )}
             <IconButton icon="eye" title="View Options" size="small" aria-haspopup="menu" onClick={openViewOptions} />
             {!many && fromParents && commit.parents.length > 1 && (
               <button
@@ -430,7 +444,10 @@ export function CommitDetails({ commits, fileHistory = false }: { commits: Commi
                 previewSelection(sel);
               }}
               renderNode={(n) => <ChangedFileRow node={n} flat={!groupByDirectory} />}
-              onActivate={(n) => n.file && void showChangesDiff([n.file])}
+              onActivate={(n) => {
+                clearTimeout(previewTimer.current);
+                if (n.file) void showChangesDiff([n.file]);
+              }}
               onJumpToSource={(n, sel) => {
                 const files = sel.has(n.key) ? filesUnder(tree, sel) : filesUnder([n]);
                 void executeAction("vcs.log.changes.jumpToSource", files);
@@ -498,8 +515,9 @@ export function CommitDetails({ commits, fileHistory = false }: { commits: Commi
 }
 
 /** IDEA's changes browser context menu in the Git Log; `changes` = the files it acts on. */
-export function changesMenu(changes: LogChange[]): MenuItem[] {
+export function changesMenu(changes: LogChange[], source?: { commit: Commit; total: number }): MenuItem[] {
   const one = changes.length === 1 ? changes[0]! : null;
+  const edit = source ? { arg: { commit: source.commit, changes }, disabled: changes.length >= source.total } : null;
   return [
     { kind: "action", action: "vcs.log.changes.showDiff", arg: changes },
     { kind: "action", action: "vcs.log.changes.compareWithLocal", arg: changes, disabled: !one?.after || one.readOnly },
@@ -519,6 +537,12 @@ export function changesMenu(changes: LogChange[]): MenuItem[] {
     { kind: "separator" },
     {
       kind: "action",
+      action: "vcs.log.changes.apply",
+      arg: changes,
+      disabled: !canApplySelectedChanges(changes),
+    },
+    {
+      kind: "action",
       action: "vcs.log.changes.revert",
       arg: changes,
       disabled: changes.some((c) => c.readOnly) || new Set(changes.map((c) => c.repo)).size > 1,
@@ -529,6 +553,12 @@ export function changesMenu(changes: LogChange[]): MenuItem[] {
       arg: changes,
       disabled: changes.some((c) => c.readOnly),
     },
+    ...(edit
+      ? ([
+          { kind: "action", action: "vcs.log.changes.extract", ...edit },
+          { kind: "action", action: "vcs.log.changes.drop", ...edit },
+        ] satisfies MenuItem[])
+      : []),
     { kind: "separator" },
     ...(one?.readOnly
       ? [{ label: "Show History for File", run: () => openLogTab("history", absolutePath(one.path, one.repo)) }]

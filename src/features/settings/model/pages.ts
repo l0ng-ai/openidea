@@ -70,10 +70,15 @@ export function flatten(nodes: readonly PageNode[]): PageNode[] {
 
 /** Breadcrumb titles from the root to `key`. */
 export function breadcrumb(nodes: readonly PageNode[], key: string): string[] {
+  return breadcrumbNodes(nodes, key).map((n) => n.title);
+}
+
+/** Breadcrumb nodes from the root to `key` (parents are links in the page header). */
+export function breadcrumbNodes(nodes: readonly PageNode[], key: string): PageNode[] {
   for (const n of nodes) {
-    if (n.key === key) return [n.title];
-    const sub = breadcrumb(n.children, key);
-    if (sub.length) return [n.title, ...sub];
+    if (n.key === key) return [n];
+    const sub = breadcrumbNodes(n.children, key);
+    if (sub.length) return [n, ...sub];
   }
   return [];
 }

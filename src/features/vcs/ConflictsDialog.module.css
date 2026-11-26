@@ -80,6 +80,10 @@
   color: var(--vcs-conflict);
 }
 
+.fileName[data-resolved] {
+  color: var(--vcs-added);
+}
+
 .fileName:not(:last-child) {
   flex: none;
   max-width: 65%;

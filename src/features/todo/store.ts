@@ -8,39 +8,7 @@ import { call, cancelRequestSafe, commands, isTauri, nextRequestId, onIdeEvent }
 import type { RequestId, SearchEvent, SearchQuery, SearchScope } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { onEditorEvent } from "@/editor/api";
-import { buildTodoQuery, DEFAULT_TODO_SETTINGS, itemsFromMatches, type TodoItem, type TodoSettings } from "./model";
-
-const SETTINGS_KEY = "openidea.todo.v1";
-
-function loadSettings(): TodoSettings {
-  try {
-    const raw = globalThis.localStorage?.getItem(SETTINGS_KEY);
-    if (raw) return { ...DEFAULT_TODO_SETTINGS, ...JSON.parse(raw) };
-  } catch {
-    // ignore
-  }
-  return DEFAULT_TODO_SETTINGS;
-}
-
-export const useTodoSettings = create<TodoSettings>(() => loadSettings());
-
-export function updateTodoSettings(patch: Partial<TodoSettings>) {
-  useTodoSettings.setState(patch);
-  try {
-    globalThis.localStorage?.setItem(SETTINGS_KEY, JSON.stringify(useTodoSettings.getState()));
-  } catch {
-    // ignore
-  }
-}
-
-/** Picks up changes saved by another window (the Settings window). */
-export function syncTodoSettingsFromStorage(): () => void {
-  const onStorage = (e: StorageEvent) => {
-    if (e.key === SETTINGS_KEY) useTodoSettings.setState(loadSettings(), true);
-  };
-  window.addEventListener("storage", onStorage);
-  return () => window.removeEventListener("storage", onStorage);
-}
+import { buildTodoQuery, itemsFromMatches, useTodoSettings, type TodoItem } from "@/platform/todo";
 
 interface TodoState {
   /** Results of the last project scan, per absolute path. */

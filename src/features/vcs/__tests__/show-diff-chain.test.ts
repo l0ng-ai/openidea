@@ -8,16 +8,18 @@ import { useVcs } from "../store";
 import { useCommit } from "../commitStore";
 import { initialChangelists, useChangelists } from "../changelists";
 import { useGitLog } from "../logStore";
-import { compareChangeWithLocal } from "../logChanges";
+import { compareChangesWithLocal, type LogChange } from "../logChanges";
 import { chainNeighbour, openVcsDiff, type DiffData } from "../diffInput";
 
 const opened = vi.hoisted(() => vi.fn());
 const diffWindow = vi.hoisted(() => vi.fn());
 const separateWindow = vi.hoisted(() => vi.fn());
 const project = vi.hoisted(() => ({ paths: [] as string[] }));
+const active = vi.hoisted(() => ({ path: null as string | null }));
 vi.mock("@/workbench/contributions", async (original) => ({
   ...(await original<typeof import("@/workbench/contributions")>()),
   editorService: () => ({ openInput: opened }),
+  maybeEditorService: () => (active.path ? { activePath: () => active.path } : undefined),
   projectViewSelection: () => project.paths,
 }));
 vi.mock("../comparePaths", () => ({ showDirectoryWorkingDiff: async () => false }));
@@ -44,6 +46,7 @@ beforeEach(() => {
   diffWindow.mockClear();
   separateWindow.mockClear();
   project.paths = [];
+  active.path = null;
   setContext("activeToolWindow", "");
   const files = [status("z.ts"), status("b.ts"), status("a.ts"), status("other.ts")];
   useVcs.setState({ root: "/repo", roots: ["/repo"], status: files, byPath: new Map(files.map((f) => [f.path, f])) });
@@ -123,8 +126,25 @@ it("shows the selected change rather than a Project view selection kept from ear
 it("shows a Project view selection outside the changes tree", async () => {
   project.paths = ["/repo/z.ts"];
   setContext("activeToolWindow", "project");
-  await getAction("vcs.showDiff")!.run({ arg: undefined, ctx: { vcsAvailable: true } });
+  await getAction("vcs.showDiff")!.run({ arg: undefined, ctx: { vcsAvailable: true, projectViewFocus: true } });
   expect(opened.mock.calls[0]![0].data.path).toBe("/repo/z.ts");
+});
+
+it("shows the active editor file, not a Project view selection kept from earlier", async () => {
+  // ⌃V opens the VCS Operations popup over the editor: the editor keeps no focus, but the
+  // Project view still lists the file the user selected before. Show Diff must target the
+  // editor's file.
+  project.paths = ["/repo/z.ts"];
+  active.path = "/repo/b.ts";
+  await getAction("vcs.showDiff")!.run({ arg: undefined, ctx: { vcsAvailable: true } });
+  expect(opened.mock.calls[0]![0].data.path).toBe("/repo/b.ts");
+});
+
+it("opens the active editor file, not a Project view selection kept from earlier, in a new window", async () => {
+  project.paths = ["/repo/z.ts"];
+  active.path = "/repo/b.ts";
+  await getAction("vcs.showDiffInNewWindow")!.run({ arg: undefined, ctx: { vcsAvailable: true } });
+  expect(separateWindow.mock.calls[0]![0]).toMatchObject({ path: "/repo/b.ts" });
 });
 
 it("opens the front diff window from the modal Local Changes selection (⌘D)", async () => {
@@ -172,9 +192,9 @@ it("openVcsDiff keeps editor tabs without the modal interface", async () => {
   expect(opened).toHaveBeenCalled();
 });
 
-it("Compare with Local opens the front window under the modal interface", async () => {
+it("Compare with Local opens selected files as a chain in the front window under the modal interface", async () => {
   modal();
-  await compareChangeWithLocal({
+  const change: LogChange = {
     path: "b.ts",
     repo: "/repo",
     oldPath: null,
@@ -184,9 +204,16 @@ it("Compare with Local opens the front window under the modal interface", async 
     statsFrom: "p",
     statsTo: "c",
     diff: { path: "/repo/b.ts", left: { type: "rev", rev: "p" }, right: { type: "rev", rev: "c" } },
-  });
+  };
+  await compareChangesWithLocal([change, { ...change, path: "z.ts", after: "def456" }]);
   expect(diffWindow).toHaveBeenCalledTimes(1);
-  expect(diffWindow.mock.calls[0]![0]).toMatchObject({ path: "/repo/b.ts" });
+  const data = diffWindow.mock.calls[0]![0];
+  expect(data).toMatchObject({ path: "/repo/b.ts", left: { rev: "abc123" }, right: { type: "worktree" } });
+  expect(chainNeighbour(data, 1)).toMatchObject({
+    path: "/repo/z.ts",
+    left: { rev: "def456" },
+    right: { type: "worktree" },
+  });
 });
 
 it("keeps the hunk's line when Show Diff opens the front window (gutter popup)", async () => {

@@ -2,8 +2,8 @@
  * IDEA's refactorings and how language-server code actions map onto them:
  * `refactor.extract.*` → Extract Method / Introduce Variable…, `refactor.inline*`
  * → Inline, `refactor.move*` → Move, signature rewrites → Change Signature.
- * Pull Members Up / Push Members Down come from the Java extension, Extract Interface from jdtls
- * requests, not code actions.
+ * Pull Members Up / Push Members Down come from the Java extension, Java's Extract Interface from
+ * jdtls requests, not code actions; tsserver's "Extract to interface / type alias" are code actions.
  * Pure; used by Refactor This (⌃T) and the Refactor menu actions.
  */
 import type { CodeAction } from "@/bindings";
@@ -19,6 +19,7 @@ export type RefactoringId =
   | "extractField"
   | "extractParameter"
   | "extractInterface"
+  | "extractTypeAlias"
   | "inline"
   | "pullMembersUp"
   | "pushMembersDown";
@@ -104,8 +105,17 @@ export const REFACTORINGS: readonly Refactoring[] = [
     action: "refactor.extractInterface",
     label: "Extract Interface…",
     section: EXTRACT,
-    kind: null,
-    reason: () => "Caret should be inside a class",
+    // Java runs it through the dialog; TypeScript through tsserver's "Extract to interface".
+    kind: "refactor.extract",
+    reason: () => "Selected block should represent an object type",
+  },
+  {
+    id: "extractTypeAlias",
+    action: "refactor.extractTypeAlias",
+    label: "Extract Type Alias…",
+    section: EXTRACT,
+    kind: "refactor.extract",
+    reason: () => "Selected block should represent a type",
   },
   {
     id: "inline",
@@ -169,6 +179,9 @@ export function classifyAction(action: Pick<CodeAction, "kind" | "title">): Refa
   if (kindIs(kind, "refactor.extract") || (generic && /^(extract|introduce)\b/i.test(title))) {
     const sub = kind.slice("refactor.extract".length);
     const is = (re: RegExp) => re.test(sub) || re.test(title);
+    // tsserver ("Extract to typedef" is its JSDoc form in JavaScript).
+    if (/^extract to (type alias|typedef)$/i.test(title)) return "extractTypeAlias";
+    if (/^extract to interface$/i.test(title)) return "extractInterface";
     if (
       /^(extract|introduce)( (in)?to)?( an?)? (type\b|typedef|interface|struct|enum|trait|superclass|module)/i.test(
         title,

@@ -205,6 +205,25 @@ describe(".icls schemes", () => {
     expect(scheme.attributes["kotlin.enumEntry"]).toEqual({ foreground: "#c77dbb", bold: false, italic: true });
   });
 
+  it("reads colours written with a leading # or 0x, as IntelliJ does (#5619)", () => {
+    // One Dark writes most of its values as `#rrggbb`.
+    const { scheme } = parseIcls(`<scheme name="One" parent_scheme="Darcula"><colors>
+      <option name="CARET_COLOR" value="#528bff"/>
+      <option name="LINE_NUMBERS_COLOR" value="0x495162"/>
+      </colors><attributes>
+      <option name="DEFAULT_CLASS_NAME"><value><option name="FOREGROUND" value="#E5C07B"/></value></option>
+      <option name="DEFAULT_KEYWORD"><value><option name="FOREGROUND" value="c678dd"/></value></option>
+      <option name="DEFAULT_STRING"><value><option name="FOREGROUND" value="#98c37980"/></value></option>
+      </attributes></scheme>`);
+    const fg = (id: string) => scheme.attributes[id]?.foreground;
+    expect(fg("caret")).toBe("#528bff");
+    expect(fg("lineNumber")).toBe("#495162");
+    expect(fg("className")).toBe("#e5c07b");
+    expect(fg("keyword")).toBe("#c678dd");
+    // No alpha in schemes here: an RRGGBBAA value is left out, with or without `#`.
+    expect(fg("string")).toBeUndefined();
+  });
+
   it("maps WebStorm's JavaScript and TypeScript keys to their page, TypeScript first, then JavaScript", () => {
     const { scheme, applied, skipped } = parseIcls(fixture("webstorm-darcula"));
     const fg = (id: string) => scheme.attributes[id]?.foreground;
@@ -212,19 +231,22 @@ describe(".icls schemes", () => {
     // Language Defaults keep the DEFAULT_* keys.
     expect(fg("keyword")).toBe("#cc7832");
     expect(fg("string")).toBe("#8bb770");
-    // Global functions have their own entry; the member function key colours declarations and calls.
+    // Global functions and instance methods have their own entries (a method's calls use its key).
     expect(fg("javascript.globalFunction")).toBe("#6dacff");
-    expect(fg("javascript.functionDeclaration")).toBe("#e06c75");
-    expect(fg("javascript.functionCall")).toBe("#e06c75");
+    expect(fg("javascript.instanceMethod")).toBe("#e06c75");
+    expect(fg("javascript.functionDeclaration")).toBeUndefined();
     expect(fg("javascript.globalVariable")).toBe("#c678dd");
     expect(fg("javascript.field")).toBe("#ef8a80");
     expect(fg("javascript.constant")).toBe("#c580ea");
-    expect(fg("javascript.className")).toBe("#6fa4e5");
+    // JS.INTERFACE has its own entry; Class name falls back to the shared default.
+    expect(fg("javascript.interface")).toBe("#6fa4e5");
+    expect(fg("javascript.className")).toBeUndefined();
     expect(fg("javascript.docCommentTagValue")).toBe("#e5c07b");
     expect(fg("regexp")).toBe("#56b6c2");
     // Superseded keys and DEFAULT_SEMICOLON are counted as skipped.
     expect(scheme.attributes.operator).toEqual(DARCULA_ATTRIBUTES.operator);
-    expect([applied, skipped]).toEqual([12, 4]);
+    // The member function key no longer also sets the generic function call.
+    expect([applied, skipped]).toEqual([11, 4]);
   });
 
   it("imports WebStorm's decorator and global keys into the JavaScript and TypeScript page (#4059)", () => {
@@ -234,14 +256,45 @@ describe(".icls schemes", () => {
       `<scheme name="W"><attributes>${opt("TS.DECORATOR", "b3ae60")}${opt("JS.DECORATOR", "111111")}${opt(
         "TS.GLOBAL_VARIABLE",
         "c77dba",
-      )}${opt("TS.GLOBAL_FUNCTION", "56a8f5")}</attributes></scheme>`,
+      )}${opt("TS.GLOBAL_FUNCTION", "56a8f5")}${opt("TS.STATIC_MEMBER_FUNCTION", "cf8e6d")}</attributes></scheme>`,
     );
     expect(scheme.attributes["javascript.decorator"]).toEqual({ foreground: "#b3ae60", bold: false, italic: true });
     expect(scheme.attributes["javascript.globalVariable"]?.foreground).toBe("#c77dba");
     expect(scheme.attributes["javascript.globalFunction"]?.foreground).toBe("#56a8f5");
+    expect(scheme.attributes["javascript.staticMethod"]).toEqual({ foreground: "#cf8e6d", bold: false, italic: true });
     // Other languages keep their own colours.
     expect(scheme.attributes.metadata).toBeUndefined();
+  });
+
+  it("imports WebStorm's interface, type alias and type parameter keys into their own entries (#5619)", () => {
+    const opt = (name: string, value: string) =>
+      `<option name="${name}"><value><option name="FOREGROUND" value="${value}"/></value></option>`;
+    const { scheme } = parseIcls(
+      `<scheme name="W"><attributes>${opt("TS.CLASS", "6fa4e5")}${opt("TS.INTERFACE", "4ec9b0")}${opt(
+        "TS.TYPE.ALIAS",
+        "b8d7a3",
+      )}${opt("JS.TYPE_PARAMETER", "20999d")}</attributes></scheme>`,
+    );
+    const fg = (id: string) => scheme.attributes[id]?.foreground;
+    expect(fg("javascript.className")).toBe("#6fa4e5");
+    expect(fg("javascript.interface")).toBe("#4ec9b0");
+    expect(fg("javascript.typeAlias")).toBe("#b8d7a3");
+    expect(fg("javascript.typeParameter")).toBe("#20999d");
     expect(scheme.attributes.globalVariable).toBeUndefined();
+  });
+
+  it("colours TypeScript interfaces with the language default Interface name when no JS./TS. key does (#5619)", () => {
+    const opt = (name: string, value: string) =>
+      `<option name="${name}"><value><option name="FOREGROUND" value="${value}"/></value></option>`;
+    const parse = (...options: string[]) =>
+      parseIcls(`<scheme name="S"><attributes>${options.join("")}</attributes></scheme>`).scheme.attributes;
+    // A Space Day–style scheme: DEFAULT_INTERFACE_NAME and JS.CLASS, no TS.* keys.
+    const spaceDay = parse(opt("DEFAULT_INTERFACE_NAME", "ebcb8b"), opt("JS.CLASS", "8fa1b3"));
+    expect(spaceDay["javascript.interface"]?.foreground).toBe("#ebcb8b");
+    expect(spaceDay["javascript.className"]?.foreground).toBe("#8fa1b3");
+    // An explicit interface key still wins over the default.
+    const explicit = parse(opt("DEFAULT_INTERFACE_NAME", "ebcb8b"), opt("TS.INTERFACE", "4ec9b0"));
+    expect(explicit["javascript.interface"]?.foreground).toBe("#4ec9b0");
   });
 
   it("maps punctuation only from keys that do not spread one colour to other punctuation", () => {
@@ -657,5 +710,38 @@ describe(".icls schemes", () => {
     } finally {
       useProject.setState({ settings: previous });
     }
+  });
+});
+
+describe("annotation colour (#6108)", () => {
+  const opt = (name: string, value: string) =>
+    `<option name="${name}"><value><option name="FOREGROUND" value="${value}"/></value></option>`;
+  const scheme = (parent: string | null, ...options: string[]) =>
+    parseIcls(
+      `<scheme name="A"${parent ? ` parent_scheme="${parent}"` : ""}><attributes>${options.join("")}</attributes></scheme>`,
+    ).scheme;
+
+  it.each([
+    ["Default", "#808000"],
+    ["Darcula", "#bbb529"],
+  ])("keeps %s's own annotation colour when the file only changes DEFAULT_METADATA", (parent, colour) => {
+    // IntelliJ shows Java annotations with the parent's ANNOTATION_NAME_ATTRIBUTES, not the file's default.
+    expect(scheme(parent, opt("DEFAULT_METADATA", "1d8711")).attributes.metadata?.foreground).toBe(colour);
+  });
+
+  it("takes the file's annotation key over its DEFAULT_METADATA", () => {
+    const s = scheme("Default", opt("DEFAULT_METADATA", "1d8711"), opt("ANNOTATION_NAME_ATTRIBUTES", "9e880d"));
+    expect(s.attributes.metadata?.foreground).toBe("#9e880d");
+  });
+
+  it("uses DEFAULT_METADATA without a bundled parent", () => {
+    expect(scheme(null, opt("DEFAULT_METADATA", "1d8711")).attributes.metadata?.foreground).toBe("#1d8711");
+  });
+
+  it("exports the annotation colour under the annotation key, so it survives a re-import", () => {
+    const imported = scheme("Default", opt("ANNOTATION_NAME_ATTRIBUTES", "9e880d"));
+    const xml = exportIcls("custom-a", { "custom-a": imported });
+    expect(xml).toContain('<option name="ANNOTATION_NAME_ATTRIBUTES">');
+    expect(parseIcls(xml).scheme.attributes.metadata?.foreground).toBe("#9e880d");
   });
 });

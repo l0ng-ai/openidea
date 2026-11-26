@@ -44,8 +44,8 @@ use std::sync::LazyLock;
 // Desktop bodies of project-host commands (`#[command(desktop_body = …)]`), which their derived
 // adapters call.
 use app::{
-    close_project, open_project, project_current, project_trust_remove_location, project_trust_set, settings_get,
-    settings_removed_theme, settings_set,
+    close_project, open_project, project_current, project_trust_remove_location, project_trust_set,
+    project_workspace_member_set, project_workspace_members, settings_get, settings_removed_theme, settings_set,
 };
 use doc::doc_edit;
 use plugin::plugin_event_kinds;
@@ -257,5 +257,24 @@ mod tests {
         let mut served = ide_host::rpc::Dispatcher::standard().commands();
         served.sort_unstable();
         assert_eq!(super::routed(), served);
+    }
+
+    /// `openidea-server --web` serves the desktop's shell commands itself: each must be one the
+    /// desktop declares, with the same trust class, so a browser window is gated like a desktop one.
+    #[test]
+    fn web_shell_commands_match_the_desktop_declarations() {
+        let home = tempfile::tempdir().unwrap();
+        let standard = ide_host::rpc::Dispatcher::standard();
+        let mut web = ide_host::rpc::Dispatcher::standard();
+        let shell = ide_host::web_server::commands::WebShellState::new(home.path(), None, false);
+        ide_host::web_server::commands::register(&mut web, std::sync::Arc::new(shell));
+        let mismatched: Vec<_> = web
+            .commands()
+            .into_iter()
+            .filter(|name| standard.trust(name).is_none())
+            .filter(|name| super::trust_of(name) != web.trust(name))
+            .map(|name| (name, web.trust(name), super::trust_of(name)))
+            .collect();
+        assert!(mismatched.is_empty(), "(command, web, desktop): {mismatched:?}");
     }
 }

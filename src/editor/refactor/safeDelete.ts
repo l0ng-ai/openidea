@@ -17,17 +17,21 @@ import type { LocalSymbol, Location, OutlineItem, Pos, Range, SyntaxNode } from 
 import { call, commands, isCancelled, isTauri, nextRequestId, unavailableText } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
 import { basename } from "@/platform/project";
-import { editorsFor, whenSynced, type EditorDocContext } from "@/editor/api";
+import { whenSynced, type EditorDocContext } from "@/editor/api";
 import { structure } from "@/editor/structure";
 import { docOf, isUnavailable, lspRequest } from "@/editor/lsp/lsp";
+import { dedupeLocations } from "@/editor/lsp/navigation";
+import { overriddenMethods, overriddenReferences } from "@/editor/lsp/overriddenReferences";
 import { comparePos, offsetToPos, rangeContains, rangeToOffsets } from "@/editor/lsp/positions";
 import { showHint } from "@/editor/lsp/hint";
 import { confirmChecked } from "@/workbench/messages";
+import { notifications } from "@/workbench/contributions";
 import { openPopup, type PreviewOccurrence } from "@/editor/lsp/popupStore";
 import { cannotPerform } from "./catalog";
 import { cancelled, languageName } from "./query";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 import { askUsagesDetected } from "./SafeDeleteUsages";
+import { fileReferenceUsages, withDocText } from "./fileReferences";
 
 // ---------------------------------------------------------------------------
 // Deletion range (pure)
@@ -247,7 +251,10 @@ async function resolveTarget(view: EditorView, ctx: EditorDocContext): Promise<R
   };
 }
 
-/** LSP references to the target, its own declaration excluded. */
+/**
+ * LSP references to the target, its own declaration excluded. A Python method's usages include the
+ * calls through the bases it overrides: deleting it sends them to the base's method, which may be abstract.
+ */
 async function findUsages(ctx: EditorDocContext, target: SafeDeleteTarget): Promise<Location[]> {
   const outside = (path: string, range: Range) =>
     path !== ctx.path ||
@@ -255,9 +262,16 @@ async function findUsages(ctx: EditorDocContext, target: SafeDeleteTarget): Prom
     comparePos(range.start, target.range.end) > 0;
   if (target.local)
     return target.local.references.filter((r) => outside(ctx.path, r)).map((range) => ({ path: ctx.path, range }));
-  const { locations: refs } = await lspRequest(() =>
-    commands.lspReferences(nextRequestId(), ctx.doc, target.at, false, true, false, new Channel()),
-  );
+  const request = nextRequestId();
+  const references = (doc: number, at: Pos) =>
+    lspRequest(() => commands.lspReferences(request, doc, at, false, true, false, new Channel()));
+  const overridden = overriddenMethods(ctx.path, ctx.doc, target.at);
+  const own = await references(ctx.doc, target.at);
+  const inherited = await overriddenReferences(await overridden, references);
+  // Unsearched calls would let the deletion through unasked, as a failed search of its own would.
+  if (inherited.some((r) => r.incomplete === "serverFailed"))
+    throw new Error("The language server could not search the calls through the base method");
+  const refs = inherited.length ? dedupeLocations([own, ...inherited].flatMap((r) => r.locations)) : own.locations;
   return refs.filter((l) => outside(l.path, l.range));
 }
 
@@ -364,7 +378,7 @@ function previewTextOccurrences(
   });
   openPopup({
     kind: "preview",
-    title: tx`Safe Delete ${target.kind} '${target.name}'`,
+    title: tx`Safe Delete ${txPart(target.kind)} '${target.name}'`,
     summary: {
       files: 1,
       occurrences: occurrences.length,
@@ -409,7 +423,7 @@ export async function safeDelete(view: EditorView): Promise<void> {
     // IDEA always confirms first; usages are searched after OK.
     const confirmed = await confirmChecked({
       title: "Safe Delete",
-      message: tx`Delete ${target.kind} '${target.name}'?`,
+      message: tx`Delete ${txPart(target.kind)} '${target.name}'?`,
       presentation: "form",
       ok: "OK",
       checkbox: "Search in comments and strings",
@@ -427,7 +441,7 @@ export async function safeDelete(view: EditorView): Promise<void> {
     ]);
     if (view.state.doc !== docBefore) return;
     if (usages.length) {
-      const answer = await askUsagesDetected(tx`${target.kind} '${target.name}'`, usages);
+      const answer = await askUsagesDetected(tx`${txPart(target.kind)} '${target.name}'`, usages);
       if (answer === "view") viewUsages(target.name, usages);
       else if (answer === "delete") applyDeletion(view, docBefore, target, comments);
       else view.focus();
@@ -477,19 +491,9 @@ function declaredSymbols(items: readonly OutlineItem[]): OutlineItem[] {
   );
 }
 
-async function withDoc<T>(path: string, fn: (doc: number) => Promise<T>): Promise<T> {
-  const open = editorsFor(path)[0];
-  if (open) return fn(open.ctx.doc);
-  const info = await lspRequest(() => commands.docOpen(path));
-  try {
-    return await fn(info.id);
-  } finally {
-    void commands.docClose(info.id);
-  }
-}
-
 /**
- * References from outside `paths` to the symbols the files declare ({@link declaredSymbols}).
+ * References from outside `paths` to the symbols the files declare ({@link declaredSymbols}), and
+ * the files' own usages: their imports, a Vue component's tags ({@link fileReferenceUsages}).
  * Unsupported when no reference search could run for any of them.
  */
 export async function fileUsages(paths: readonly string[], signal?: AbortSignal): Promise<FileUsages> {
@@ -501,26 +505,37 @@ export async function fileUsages(paths: readonly string[], signal?: AbortSignal)
   for (const path of paths) {
     if (signal?.aborted) throw cancelled();
     try {
-      await withDoc(path, async (doc) => {
+      // oxlint-disable-next-line no-await-in-loop -- paths are searched in order; cancellation is checked per path
+      await withDocText(path, async (doc) => {
+        try {
+          const usages = await fileReferenceUsages(path, signal, doc);
+          if (usages) {
+            searched = true;
+            for (const r of usages)
+              if (!deleted.has(r.path)) found.set(`${r.path}:${r.range.start.line}:${r.range.start.col}`, r);
+          }
+        } catch (e) {
+          if (isCancelled(e)) throw e;
+        }
         const outline = await call(commands.docOutline(doc));
         for (const item of declaredSymbols(outline).slice(0, MAX_SYMBOLS)) {
           if (signal?.aborted) return;
           let refs: Location[];
           try {
             // Every symbol of every file: the server's own scope (a project search each would be too slow).
-            refs = (
-              await lspRequest(() =>
-                commands.lspReferences(
-                  nextRequestId(),
-                  doc,
-                  item.selection_range.start,
-                  false,
-                  false,
-                  false,
-                  new Channel(),
-                ),
-              )
-            ).locations;
+            // oxlint-disable-next-line no-await-in-loop -- symbols searched in order; searched/reason/found are shared
+            const searchedRefs = await lspRequest(() =>
+              commands.lspReferences(
+                nextRequestId(),
+                doc,
+                item.selection_range.start,
+                false,
+                false,
+                false,
+                new Channel(),
+              ),
+            );
+            refs = searchedRefs.locations;
           } catch (e) {
             if (isUnavailable(e)) {
               reason = errorText(e);
@@ -542,4 +557,29 @@ export async function fileUsages(paths: readonly string[], signal?: AbortSignal)
   }
   if (signal?.aborted) throw cancelled();
   return searched ? { status: "ok", usages: [...found.values()] } : { status: "unsupported", reason };
+}
+
+/**
+ * Find Usages (⌥F7) on a file, from the project view or a Vue component's Show component usages:
+ * the usages panel, or a notice when there are none or no server can tell.
+ */
+export async function showFileUsages(path: string): Promise<void> {
+  const name = basename(path);
+  let result;
+  try {
+    result = await fileUsages([path]);
+  } catch (e) {
+    notifications().notify({ level: "error", title: `Cannot find usages of '${name}'`, body: errorText(e) });
+    return;
+  }
+  if (result.status !== "ok")
+    notifications().notify({
+      level: "info",
+      title: `Cannot find usages of '${name}'`,
+      body: result.reason,
+      group: "search",
+    });
+  else if (!result.usages.length)
+    notifications().notify({ level: "info", title: `No usages of '${name}' found`, group: "search" });
+  else viewUsages(name, result.usages);
 }

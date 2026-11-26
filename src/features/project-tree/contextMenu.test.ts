@@ -115,6 +115,38 @@ describe("project view context menu", () => {
     }
   });
 
+  it("passes the selected Project view directory to Commit…", () => {
+    const items = contextMenuItems([node("/p/module", true)]);
+    const git = items.find((item) => item.kind !== "separator" && item.kind !== "header" && item.label === "Git");
+    const commit =
+      git && "submenu" in git
+        ? git.submenu?.find((item) => item.kind !== "separator" && item.kind !== "header" && item.label === "Commit…")
+        : undefined;
+
+    expect(commit).toMatchObject({ kind: "action", action: "vcs.commit", arg: "/p/module" });
+  });
+
+  it("offers the GitHub group in the Git menu, like the editor menus do", () => {
+    const dispose = registerActions(
+      ["github.pullRequests", "github.createPullRequest", "github.checkoutPullRequest", "github.openInBrowser"].map(
+        (id) => ({ id, title: id, when: "projectOpen", run: () => undefined }),
+      ),
+    );
+    try {
+      const git = resolveMenuItems(contextMenuItems([node(`${ROOT}/a.py`)])).find((r) => r.label === "Git")!;
+      const isLabelled = (i: MenuItem): i is Extract<MenuItem, { kind?: "item" }> => "label" in i;
+      const subs = git.submenu!.filter(isLabelled).find((i) => i.label === "GitHub")?.submenu;
+      expect(subs && resolveMenuItems(subs).map((i) => i.key)).toEqual([
+        "github.pullRequests",
+        "github.createPullRequest",
+        "github.checkoutPullRequest",
+        "github.openInBrowser",
+      ]);
+    } finally {
+      dispose();
+    }
+  });
+
   it("lists contributed links in Copy Path/Reference…", () => {
     disposers.push(
       registerMenuGroup({
@@ -134,7 +166,23 @@ describe("project view context menu", () => {
     ]);
   });
 
-  it("follows IDEA's order for a file", () => {
+  it("lists contributed links in Copy Path/Reference… of library files too", () => {
+    disposers.push(
+      registerMenuGroup({
+        id: "test.link",
+        menus: ["copyPath"],
+        items: (_menu, ctx) => [{ label: `Link ${ctx.paths.join()}`, verbatim: true, run: () => undefined }],
+      }),
+    );
+    expect(sub(contextMenuItems([{ ...node("/root/.m2/lib.jar"), readOnly: true }]), "Copy Path/Reference…")).toEqual([
+      "Absolute Path",
+      "File Name",
+      "-",
+      "Link /root/.m2/lib.jar",
+    ]);
+  });
+
+  it("groups clipboard, search, file changes, formatting and history actions for a file", () => {
     const items = contextMenuItems([node(`${ROOT}/src/a.py`)]);
     expect(labels(items)).toEqual([
       "New",
@@ -143,17 +191,18 @@ describe("project view context menu", () => {
       "Copy",
       "Copy Path/Reference…",
       "Paste",
-      "-",
       "Jump to Source",
+      "-",
       "Find Usages",
       "Find in Files…",
       "Replace in Files…",
       "-",
+      "Rename…",
       "Refactor",
+      "Delete…",
       "-",
       "Reformat Code",
       "Optimize Imports",
-      "Delete…",
       "-",
       "Run 'a'",
       "-",
@@ -161,11 +210,11 @@ describe("project view context menu", () => {
       "Open In",
       "-",
       "Local History",
+      "Git",
       "Reload from Disk",
       "-",
-      "Git",
-      "-",
       "Compare With…",
+      "-",
       "File Color",
     ]);
     expect(sub(items, "Refactor")).toEqual(["Rename…", "Move File…", "Copy File…", "-", "Safe Delete…"]);
@@ -270,7 +319,8 @@ describe("project view context menu", () => {
 
   it("shows Mark Directory as for folders, without file-only items", () => {
     const l = labels(contextMenuItems([node(`${ROOT}/src`, true)]));
-    expect(l).toContain("Mark Directory as");
+    expect(l.slice(l.indexOf("Rename…"), l.indexOf("Rename…") + 4)).toEqual(["Rename…", "Refactor", "Delete…", "-"]);
+    expect(l.slice(-4)).toEqual(["Compare With…", "-", "Mark Directory as", "File Color"]);
     expect(sub(contextMenuItems([node(`${ROOT}/src`, true)]), "Refactor")).toContain("Move Directory…");
     for (const fileOnly of ["Find Usages", "Optimize Imports", "Run 'a'", "Open in Right Split"])
       expect(l).not.toContain(fileOnly);
@@ -322,6 +372,7 @@ describe("project view context menu", () => {
   it("keeps the project root menu short and disables what cannot apply", () => {
     const items = contextMenuItems([node(ROOT, true, true)]);
     const l = labels(items);
+    expect(l).not.toContain("Rename…");
     expect(l).not.toContain("Refactor");
     expect(l).not.toContain("Mark Directory as");
     const resolved = resolveMenuItems(items);
@@ -339,6 +390,7 @@ describe("project view context menu", () => {
 
   it("offers Compare Files for two files", () => {
     const l = labels(contextMenuItems([node(`${ROOT}/a.py`), node(`${ROOT}/b.py`)]));
+    expect(l).not.toContain("Rename…");
     expect(l).toContain("Compare Files");
     expect(l).not.toContain("Compare With…");
   });

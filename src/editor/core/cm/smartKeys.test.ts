@@ -8,9 +8,12 @@ import { java } from "@codemirror/lang-java";
 import { javascript } from "@codemirror/lang-javascript";
 import { languages as cmLanguages } from "@codemirror/language-data";
 import { kotlin, csharp } from "@codemirror/legacy-modes/mode/clike";
+import { python } from "@codemirror/legacy-modes/mode/python";
 import { validateEditorExtras } from "@/platform/editorSettings";
 import {
   autoIndentBackspace,
+  skipClosingBracket,
+  enterInStringLiteral,
   insertTab,
   smartBackspace,
   smartBackspaceApplies,
@@ -72,6 +75,44 @@ function show(view: EditorView): string {
       : out.slice(0, r.from) + "[" + out.slice(r.from, r.to) + "]" + out.slice(r.to);
   return out;
 }
+
+describe("Enter in a string literal", () => {
+  const enter = (text: string, language: string, ext: Extension) => {
+    const v = make(text, ext, "    ");
+    const handled = enterInStringLiteral(language)(v);
+    return handled ? show(v) : null;
+  };
+
+  it("splits a Java string into two joined with +, keeping the value", () => {
+    expect(enter('class A {\n    String t = "hello|world";\n}', "java", java())).toBe(
+      'class A {\n    String t = "hello" +\n            "|world";\n}',
+    );
+  });
+
+  it("uses the literal's own quote in JavaScript", () => {
+    expect(enter("const t = 'ab|cd';", "javascript", javascript())).toBe("const t = 'ab' +\n    '|cd';");
+  });
+
+  it("leaves text blocks, escapes, other languages and positions outside the literal alone", () => {
+    expect(enter('String t = """\n  a|b\n  """;', "java", java())).toBeNull();
+    expect(enter('String t = "a\\|nb";', "java", java())).toBeNull();
+    expect(enter('String t = |"ab";', "java", java())).toBeNull();
+    expect(enter('t = "a|b"', "python", [])).toBeNull();
+    expect(enter("char c = 'a|';", "java", java())).toBeNull();
+  });
+
+  it("splits a string of a language without a Lezer string node, and not a multi-line one", () => {
+    const kt = StreamLanguage.define(interpolationParser(kotlin, "Kotlin"));
+    expect(enter('fun f() {\n    val t = "hello|world"\n}', "kotlin", kt)).toBe(
+      'fun f() {\n    val t = "hello" +\n            "|world"\n}',
+    );
+    expect(enter('val t = """\n  a|b\n  """', "kotlin", kt)).toBeNull();
+  });
+
+  it("splits after an escaped backslash", () => {
+    expect(enter('String t = "a\\\\|b";', "java", java())).toBe('String t = "a\\\\" +\n        "|b";');
+  });
+});
 
 describe("tab", () => {
   it("inserts whitespace up to the next indent stop at each caret", () => {
@@ -180,6 +221,107 @@ describe("tab out of pairs", () => {
   });
 });
 
+describe("quote pairs per language", () => {
+  const typed = (language: string, support: Extension, text: string, chars: string) => {
+    const v = make(text, [
+      support,
+      closeBrackets(),
+      prefsExtension({
+        prefs: validateEditorExtras({}),
+        path: "",
+        softWrap: false,
+        showWhitespace: false,
+        hardWrapAt: 120,
+        readOnly: false,
+        language,
+      }),
+    ]);
+    for (const ch of chars) {
+      const tr = insertBracket(v.state, ch);
+      if (tr) v.dispatch(tr);
+      else v.dispatch(v.state.update(v.state.replaceSelection(ch), { userEvent: "input.type" }));
+    }
+    return show(v);
+  };
+
+  it("pairs template literal backticks in TypeScript", () => {
+    expect(typed("typescript", javascript({ typescript: true }), "const g = |", "`")).toBe("const g = `|`");
+  });
+
+  it("pairs Python's prefixed and triple-quoted strings", () => {
+    const py = StreamLanguage.define(python);
+    expect(typed("python", py, "label = f|", '"')).toBe('label = f"|"');
+    expect(typed("python", py, "p = rb|", "'")).toBe("p = rb'|'");
+    expect(typed("python", py, "    |", '"""')).toBe('    """|"""');
+  });
+
+  it("keeps plain quotes for other languages and respects the options", () => {
+    expect(typed("java", java(), "String s = |", '"')).toBe('String s = "|"');
+    expect(typed("java", java(), "String s = |", "`")).toBe("String s = `|");
+  });
+});
+
+describe("typing over a closing bracket", () => {
+  const typed = (support: Extension, text: string, ch: string) => {
+    const v = make(text, [support, skipClosingBracket]);
+    const r = v.state.selection.main;
+    const insert = () => v.state.update(v.state.replaceSelection(ch), { userEvent: "input.type" });
+    if (!v.state.facet(EditorView.inputHandler).some((h) => h(v, r.from, r.to, ch, insert))) v.dispatch(insert());
+    return show(v);
+  };
+  const py = StreamLanguage.define(python);
+
+  it("steps over a bracket that already closes a pair, typed or not", () => {
+    expect(typed(java(), "int v = (1 + 2|);", ")")).toBe("int v = (1 + 2)|;");
+    expect(typed(java(), "var a = new int() {1, 2|};", "}")).toBe("var a = new int() {1, 2}|;");
+    expect(typed(py, "value = f(1, 2|)", ")")).toBe("value = f(1, 2)|");
+    expect(typed(java(), "foo(\n  a\n|);", ")")).toBe("foo(\n  a\n)|;");
+  });
+
+  it("inserts the bracket where the line still lacks one", () => {
+    expect(typed(java(), "f(g(x|);", ")")).toBe("f(g(x)|);");
+    expect(typed(java(), "x = |)", ")")).toBe("x = )|)");
+  });
+});
+
+describe("Rust lifetimes", () => {
+  const typed = (text: string, chars: string) => {
+    const v = make(text, [
+      closeBrackets(),
+      prefsExtension({
+        prefs: validateEditorExtras({}),
+        path: "",
+        softWrap: false,
+        showWhitespace: false,
+        hardWrapAt: 120,
+        readOnly: false,
+        language: "rust",
+      }),
+    ]);
+    for (const ch of chars) {
+      const r = v.state.selection.main;
+      const insert = () => v.state.update(v.state.replaceSelection(ch), { userEvent: "input.type" });
+      if (!v.state.facet(EditorView.inputHandler).some((h) => h(v, r.from, r.to, ch, insert))) {
+        const tr = insertBracket(v.state, ch);
+        v.dispatch(tr ?? insert());
+      }
+    }
+    return show(v);
+  };
+
+  it("keeps a lifetime's apostrophe single", () => {
+    expect(typed("fn borrow<|>() {}", "'a")).toBe("fn borrow<'a|>() {}");
+    expect(typed("fn f(x: &|str) {}", "'a ")).toBe("fn f(x: &'a |str) {}");
+    expect(typed("struct S<'a, |> {}", "'b")).toBe("struct S<'a, 'b|> {}");
+    expect(typed("fn f<T: |>() {}", "'static")).toBe("fn f<T: 'static|>() {}");
+  });
+
+  it("still pairs a char literal", () => {
+    expect(typed("let c = |;", "'")).toBe("let c = '|';");
+    expect(typed("f('a', |)", "'")).toBe("f('a', '|')");
+  });
+});
+
 describe("smart angle brackets", () => {
   /** The real wiring: prefsExtension attaches the `<` handler for the document's language. */
   const prefs = (language: string | undefined, smartKeys: Record<string, unknown> = {}) =>
@@ -218,8 +360,27 @@ describe("smart angle brackets", () => {
   const KOTLIN = StreamLanguage.define(interpolationParser(kotlin, "Kotlin"));
   const CSHARP = StreamLanguage.define(interpolationParser(csharp, "C#"));
   let RUST: LanguageSupport;
+  let CPP: LanguageSupport;
   beforeAll(async () => {
     RUST = (await cmLanguages.find((l) => l.name === "Rust")!.load()) as LanguageSupport;
+    CPP = (await cmLanguages.find((l) => l.name === "C++")!.load()) as LanguageSupport;
+  });
+
+  it("pairs include brackets in C and C++, and template arguments in C++", () => {
+    pair("c", CPP, "#include |", "#include <|>");
+    pair("cpp", CPP, "#include |", "#include <|>");
+    pair("cpp", CPP, "std::vector|", "std::vector<|>");
+    pair("cpp", CPP, "auto p = std::make_unique|", "auto p = std::make_unique<|>");
+    pair("cpp", CPP, "auto n = static_cast|", "auto n = static_cast<|>");
+    pair("cpp", CPP, "template |", "template <|>");
+    pair("cpp", CPP, "Box|", "Box<|>");
+  });
+
+  it("does not pair comparisons, shifts or macros in C and C++", () => {
+    pair("c", CPP, "int f() { return a |", "int f() { return a <|");
+    pair("cpp", CPP, "for (int i = 0; i|", "for (int i = 0; i<|");
+    pair("cpp", CPP, "std::cout |", "std::cout <|");
+    pair("cpp", CPP, "if (x < MAX|", "if (x < MAX<|");
   });
 
   it("pairs after a type name in Java: fields, type arguments and class declarations", () => {
@@ -279,6 +440,20 @@ describe("smart angle brackets", () => {
     pair("kotlin", KOTLIN, "fun |", "fun <|>");
     // Lowercase values are comparisons, not types.
     pair("kotlin", KOTLIN, "fun f() {\n  val c = a |\n}", "fun f() {\n  val c = a <|\n}");
+    pair("kotlin", KOTLIN, "fun f() {\n  val c = count|\n}", "fun f() {\n  val c = count<|\n}");
+    // …but a generic factory call written against its `<` takes type arguments.
+    pair("kotlin", KOTLIN, "fun f() {\n  val v = mutableListOf|\n}", "fun f() {\n  val v = mutableListOf<|>\n}");
+    pair("kotlin", KOTLIN, "fun f() {\n  val m = emptyMap|\n}", "fun f() {\n  val m = emptyMap<|>\n}");
+    pair("kotlin", KOTLIN, "fun f() {\n  val ok = listOf |\n}", "fun f() {\n  val ok = listOf <|\n}");
+  });
+
+  it("pairs a string template's braces", () => {
+    const v = make('fun f() {\n  val s = "$|"\n}', [KOTLIN, prefs("kotlin", {})]);
+    type(v, "{");
+    expect(show(v)).toBe('fun f() {\n  val s = "${|}"\n}');
+    const outside = make("fun f() {\n  val s = $|x\n}", [KOTLIN, prefs("kotlin", {})]);
+    type(outside, "{");
+    expect(show(outside)).toBe("fun f() {\n  val s = ${|x\n}");
   });
 
   it("pairs capitalized type positions in C# (stream parser)", () => {

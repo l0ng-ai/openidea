@@ -1,9 +1,11 @@
-use super::doc::blocking;
+use super::blocking;
 use crate::Host;
 use crate::plugins::{ProviderKind, editor_providers_for as editor_providers};
 use ide_command::command;
 use ide_core::error::ErrorKind;
-use ide_core::{DocId, IdeError, IdeResult, Location, Pos, Range, RequestId, ServerId, TextEdit, WorkspaceEdit};
+use ide_core::{
+    CancellationToken, DocId, IdeError, IdeResult, Location, Pos, Range, RequestId, ServerId, TextEdit, WorkspaceEdit,
+};
 use ide_lsp::types::*;
 use ide_plugin::ProviderDocument;
 use std::path::Path;
@@ -68,25 +70,119 @@ pub async fn lsp_completion(
     pos: Pos,
     trigger: Option<String>,
 ) -> IdeResult<CompletionList> {
-    let lsp = host.project(window)?.lsp.clone();
+    let project = host.project(window)?;
+    // Typing on in a word whose list only some plugins marked incomplete: ask those plugins
+    // again and keep the rest (the language server's list, the other plugins' items).
+    let word = project.documents.snapshot(doc).ok().and_then(|snap| CompletionWord::at(&snap.text, pos));
+    let resumed = match (&word, trigger.is_none()) {
+        (Some(word), true) => project
+            .completion_session
+            .lock()
+            .as_ref()
+            .filter(|s| s.resumes(doc, word))
+            .map(|s| (s.kept.clone(), s.incomplete.clone())),
+        _ => None,
+    };
+    if let Some((kept, only)) = resumed {
+        let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::Completion) else {
+            *project.completion_session.lock() = None;
+            return Ok(CompletionList { is_incomplete: false, items: kept });
+        };
+        let asked = only.clone();
+        let answer = plugin_call(move || plugins.provide_completion_for_editor(&d, pos, None, Some(&asked)))
+            .await
+            .unwrap_or_default();
+        let mut items = kept;
+        items.extend(answer.items.into_iter().map(|(_, item)| plugin_completion(item)));
+        let mut session = project.completion_session.lock();
+        if let Some(s) = session.as_mut().filter(|s| s.incomplete == only) {
+            s.incomplete = answer.incomplete.clone();
+        }
+        return Ok(CompletionList { is_incomplete: !answer.incomplete.is_empty(), items });
+    }
+    *project.completion_session.lock() = None;
+
+    let lsp = project.lsp.clone();
     let (target, cancel) = begin_position_request(host, window, request, doc, pos).await?;
     let result = lsp.completion(target, pos, trigger.clone(), cancel).await;
     host.end_request(request);
     // Plugin providers (`[[contributes.providers]]`) add theirs.
     let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::Completion) else { return result };
-    let (covered, items) = plugin_call(move || plugins.provide_completion_for_editor(&d, pos, trigger.as_deref()))
+    let answer = plugin_call(move || plugins.provide_completion_for_editor(&d, pos, trigger.as_deref(), None))
         .await
         .unwrap_or_default();
-    if items.is_empty() {
-        return if covered {
+    if answer.items.is_empty() && answer.incomplete.is_empty() {
+        return if answer.covered {
             Ok(result.unwrap_or(CompletionList { is_incomplete: true, items: Vec::new() }))
         } else {
             result
         };
     }
     let mut list = result.unwrap_or(CompletionList { is_incomplete: false, items: Vec::new() });
-    list.items.extend(items.into_iter().map(|(_, item)| plugin_completion(item)));
+    let server_complete = !list.is_incomplete;
+    let mut fresh = Vec::new();
+    for (id, item) in answer.items {
+        let item = plugin_completion(item);
+        if answer.incomplete.contains(&id) { fresh.push(item) } else { list.items.push(item) }
+    }
+    if !answer.incomplete.is_empty() {
+        // Only a complete server list can be kept; else typing on asks everyone, as before.
+        if let (true, Some(word)) = (server_complete, word) {
+            *project.completion_session.lock() =
+                Some(CompletionSession { doc, word, kept: list.items.clone(), incomplete: answer.incomplete });
+        }
+        list.is_incomplete = true;
+    }
+    list.items.extend(fresh);
     Ok(list)
+}
+
+/// The word completion is asked in: its line and the line's text before the word.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CompletionWord {
+    line: u32,
+    before: String,
+}
+
+impl CompletionWord {
+    /// The identifier ending at `pos` in `text` (possibly empty, right after a `.`).
+    fn at(text: &str, pos: Pos) -> Option<Self> {
+        let line = text.split('\n').nth(pos.line as usize)?.trim_end_matches('\r');
+        let mut col = 0u32;
+        let mut end = line.len();
+        for (i, c) in line.char_indices() {
+            if col >= pos.col {
+                end = i;
+                break;
+            }
+            col += c.len_utf16() as u32;
+        }
+        if col < pos.col {
+            return None;
+        }
+        let head = &line[..end];
+        let word_len: usize =
+            head.chars().rev().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$').map(char::len_utf8).sum();
+        let before = &head[..head.len() - word_len];
+        Some(Self { line: pos.line, before: before.to_owned() })
+    }
+}
+
+/// A completion whose list some plugins marked incomplete (API 1.16): while the user types on in
+/// the same word, only those plugins are asked again.
+pub(crate) struct CompletionSession {
+    doc: DocId,
+    word: CompletionWord,
+    /// The language server's list (complete) and the other plugins' items.
+    kept: Vec<CompletionItem>,
+    /// The plugins asked again.
+    incomplete: std::collections::BTreeSet<String>,
+}
+
+impl CompletionSession {
+    fn resumes(&self, doc: DocId, word: &CompletionWord) -> bool {
+        self.doc == doc && &self.word == word && !self.incomplete.is_empty()
+    }
 }
 
 /// The plugin host and the document, when some plugin provides `kind`.
@@ -150,7 +246,7 @@ fn merge_language_highlights(
     server
 }
 
-/// Items from plugins carry no server: commands don't apply, and a code
+/// Items from plugins (and the host's own Ruff Optimize Imports) carry no server: commands don't apply, and a code
 /// action is resolved by the plugin named in its `data` ([`PluginActionRef`]).
 const PLUGIN_SERVER: ServerId = ServerId(0);
 
@@ -315,6 +411,31 @@ pub async fn lsp_signature_help(host: &Host, window: &str, doc: DocId, pos: Pos)
         }
         None => server,
     }
+}
+
+/// The Flutter Property Editor's arguments of the call at `pos`.
+#[command(trust = trusted)]
+pub async fn lsp_editable_arguments(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+    pos: Pos,
+) -> IdeResult<Option<EditableArguments>> {
+    host.project(window)?.lsp.editable_arguments(doc, pos).await
+}
+
+/// Sets an argument of the call at `pos`; the edit reaches the document as the server's
+/// `workspace/applyEdit`, undoable like any other.
+#[command(trust = trusted)]
+pub async fn lsp_edit_argument(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+    pos: Pos,
+    name: String,
+    value: Option<ArgumentValue>,
+) -> IdeResult<()> {
+    host.project(window)?.lsp.edit_argument(doc, pos, name, value).await
 }
 
 #[command(trust = trusted)]
@@ -497,6 +618,25 @@ pub async fn plugin_line_markers(
             target: m.target.map(|l| Location { path: l.path.into(), range: l.range, uri: None }),
         })
         .collect())
+}
+
+/// Where other files import the document's file (Find Usages on a file, a Vue component's
+/// usages). Cancel with `cancel_request(request)`.
+#[command(trust = trusted)]
+pub async fn lsp_file_references(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+) -> IdeResult<Vec<Location>> {
+    let lsp = host.project(window)?.lsp.clone();
+    let cancel = host.begin_request(request);
+    let result = tokio::select! {
+        result = lsp.file_references(doc, cancel.clone()) => result,
+        _ = cancel.cancelled() => Err(ide_core::IdeError::cancelled()),
+    };
+    host.end_request(request);
+    result
 }
 
 /// Implementations of the symbols at `positions`, one list per position (the
@@ -909,6 +1049,7 @@ pub async fn lsp_code_actions(
     let target = position_document(host, window, doc, range.start).await?;
     let range = project.lsp.injected_request_range(target, range);
     let result = project.lsp.code_actions(target, range, only.clone()).await;
+    let result = with_ruff_organize_imports(host, window, doc, &only, result, CancellationToken::new()).await;
     let plugin_actions = match plugin_providers(host, window, doc, ProviderKind::CodeActions) {
         Some((plugins, d)) => plugin_call(move || plugins.provide_code_actions(&d, range)).await.unwrap_or_default(),
         None => Vec::new(),
@@ -929,6 +1070,76 @@ pub async fn lsp_code_actions(
         out
     };
     prepare_actions(project, doc, version, actions).await
+}
+
+const ORGANIZE_IMPORTS: &str = "source.organizeImports";
+pub(crate) const RUFF_ORGANIZE_IMPORTS: &str = "source.organizeImports.ruff";
+
+/// `result` and, when organize imports is asked for and no server offers it, Ruff's Optimize
+/// Imports for a Python file: for the editor and for the MCP tools alike.
+async fn with_ruff_organize_imports(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+    only: &[String],
+    result: IdeResult<Vec<CodeAction>>,
+    cancel: CancellationToken,
+) -> IdeResult<Vec<CodeAction>> {
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
+    if !only.iter().any(|k| k == ORGANIZE_IMPORTS) || result.as_ref().is_ok_and(|a| a.iter().any(organizes_imports)) {
+        return result;
+    }
+    // A missing provider permits a fallback. Stale, invalid and cancelled requests must still fail.
+    if result.as_ref().is_err_and(|e| !matches!(e.kind, ErrorKind::NotFound | ErrorKind::Unavailable)) {
+        return result;
+    }
+    match ruff_organize_imports(host, window, doc, cancel).await? {
+        Some(action) => {
+            let mut actions = result.unwrap_or_default();
+            actions.push(action);
+            Ok(actions)
+        }
+        None => result,
+    }
+}
+
+fn organizes_imports(action: &CodeAction) -> bool {
+    action.kind.as_deref().is_some_and(|k| k == ORGANIZE_IMPORTS || k.starts_with("source.organizeImports."))
+}
+
+/// Optimize Imports with Ruff's CLI for a Python file no language server organizes; a missing Ruff
+/// is a disabled action that says so. Like a plugin's, the action carries its edit and is applied as is.
+async fn ruff_organize_imports(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+    cancel: CancellationToken,
+) -> IdeResult<Option<CodeAction>> {
+    let (edit, disabled_reason) = match crate::formatter::python_import_edits(host, window, doc, cancel).await {
+        Ok(None) => return Ok(None),
+        Ok(Some((path, edits))) => {
+            let files = vec![ide_core::FileEdit::Edit { path, edits, version: None }];
+            (Some(WorkspaceEdit { files, preconditions: Vec::new() }), None)
+        }
+        Err(e) if matches!(e.data, Some(ide_core::error::ErrorData::Tool { missing: true, .. })) => {
+            (None, Some("Install Ruff to optimize imports in Python files".to_owned()))
+        }
+        Err(e) => return Err(e),
+    };
+    Ok(Some(CodeAction {
+        title: "Optimize Imports (Ruff)".into(),
+        diagnostics: Vec::new(),
+        original_diagnostics: None,
+        kind: Some(RUFF_ORGANIZE_IMPORTS.into()),
+        is_preferred: true,
+        disabled_reason,
+        edit,
+        command: None,
+        data: None,
+        server: PLUGIN_SERVER,
+    }))
 }
 
 /// Where a plugin's code action may change or open files: the project root and its content
@@ -1063,11 +1274,19 @@ pub async fn lsp_code_action_query(
     let version = blocking(move || documents.version(doc)).await?;
     let (target, cancel) = begin_position_request(host, window, request, doc, range.start).await?;
     let range = project.lsp.injected_request_range(target, range);
-    let result = project.lsp.code_action_query(target, range, only, cancel).await;
+    let result = async {
+        let result = project.lsp.code_action_query(target, range, only.clone(), cancel.clone()).await;
+        let (actions, advertised_kinds) = match result {
+            Ok(query) => (Ok(query.actions), query.advertised_kinds),
+            Err(e) => (Err(e), None),
+        };
+        let actions = with_ruff_organize_imports(host, window, doc, &only, actions, cancel).await?;
+        let actions = prepare_actions(project, doc, version, actions).await?;
+        Ok(CodeActionQuery { actions, advertised_kinds })
+    }
+    .await;
     host.end_request(request);
-    let mut result = result?;
-    result.actions = prepare_actions(project, doc, version, result.actions).await?;
-    Ok(result)
+    result
 }
 
 /// Resolves a code action's edit without applying it (intention preview).
@@ -1092,7 +1311,8 @@ pub async fn lsp_resolve_code_action(
 #[command(trust = trusted)]
 pub async fn lsp_apply_code_action(host: &Host, window: &str, doc: DocId, action: CodeAction) -> IdeResult<()> {
     let project = host.project(window)?;
-    let action = if action.edit.is_none() && action.command.is_none() {
+    // A lazy action may carry a follow-up command beside its unresolved edit (vtsls' refactorings).
+    let action = if action.edit.is_none() && (action.command.is_none() || action.data.is_some()) {
         let documents = project.documents.clone();
         let version = blocking(move || documents.version(doc)).await?;
         let action = resolve_action(host, window, doc, action).await?;
@@ -1173,6 +1393,22 @@ pub async fn lsp_prepare_rename(host: &Host, window: &str, doc: DocId, pos: Pos)
         .await;
     }
     host.project(window)?.lsp.prepare_rename(doc, pos).await
+}
+
+/// The Throwable class the caret at `pos` names, for the exception breakpoint intention.
+#[command(trust = trusted)]
+pub async fn lsp_exception_class_at(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    doc: DocId,
+    pos: Pos,
+) -> IdeResult<Option<ExceptionClassRef>> {
+    let project = host.project(window)?;
+    let cancel = host.begin_request(request);
+    let result = project.lsp.exception_class_at(doc, pos, cancel).await;
+    host.end_request(request);
+    result
 }
 
 /// The class at `pos` and the members Pull Members Up / Push Members Down can move.
@@ -1590,6 +1826,62 @@ pub async fn lsp_format(
 }
 
 #[command(trust = trusted)]
+pub async fn lsp_format_text(
+    host: &Host,
+    window: &str,
+    path: std::path::PathBuf,
+    text: String,
+    options: FormatOptions,
+) -> IdeResult<Vec<TextEdit>> {
+    crate::formatter::format_text(host, window, path, text, options).await
+}
+
+#[command(trust = trusted)]
+pub async fn lsp_source_action_text(
+    host: &Host,
+    window: &str,
+    path: std::path::PathBuf,
+    text: String,
+    kind: String,
+    request: RequestId,
+) -> IdeResult<Vec<TextEdit>> {
+    let project = host.project(window)?;
+    if !path.is_absolute() || path.file_name().is_none() {
+        return Err(IdeError::invalid("a text snapshot requires a file path"));
+    }
+    if text.len() as u64 > ide_vfs::LARGE_FILE_THRESHOLD {
+        return Ok(Vec::new());
+    }
+    let language = project.documents.language_of(&path, text.lines().next()).language;
+    let cancel = host.begin_project_read_request(window, request);
+    let result = project.lsp.source_action_text(&path, &language, &text, &kind, &cancel).await;
+    host.end_request(request);
+    result
+}
+
+#[command(trust = trusted)]
+pub async fn lsp_snapshot_diagnostics(
+    host: &Host,
+    window: &str,
+    path: std::path::PathBuf,
+    text: String,
+    request: RequestId,
+) -> IdeResult<Vec<ide_core::Diagnostic>> {
+    let project = host.project(window)?;
+    if !path.is_absolute() || path.file_name().is_none() {
+        return Err(IdeError::invalid("a text snapshot requires a file path"));
+    }
+    if text.len() as u64 > ide_vfs::LARGE_FILE_THRESHOLD {
+        return Ok(Vec::new());
+    }
+    let language = project.documents.language_of(&path, text.lines().next()).language;
+    let cancel = host.begin_project_read_request(window, request);
+    let result = project.lsp.snapshot_diagnostics(&path, &language, &text, &cancel).await;
+    host.end_request(request);
+    result
+}
+
+#[command(trust = trusted)]
 pub async fn lsp_inlay_hints(host: &Host, window: &str, doc: DocId, range: Range) -> IdeResult<Vec<InlayHint>> {
     let lsp = host.project(window)?.lsp.clone();
     let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::InlayHints) else {
@@ -1678,6 +1970,23 @@ pub async fn lsp_document_links(host: &Host, window: &str, doc: DocId) -> IdeRes
         })
     }));
     Ok(out)
+}
+
+/// Colors in a document from its language servers (Tailwind classes, CSS values…).
+#[command(trust = trusted)]
+pub async fn lsp_document_colors(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec<DocumentColor>> {
+    host.project(window)?.lsp.document_colors(doc).await
+}
+
+/// How the server that reported `color` writes it with new components.
+#[command(trust = trusted)]
+pub async fn lsp_color_presentations(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+    color: DocumentColor,
+) -> IdeResult<Vec<ColorPresentation>> {
+    host.project(window)?.lsp.color_presentations(doc, color).await
 }
 
 #[command(trust = trusted)]
@@ -1983,6 +2292,7 @@ pub async fn plugin_language_visuals(host: &Host, window: &str, doc: DocId) -> I
     let project = host.project(window)?;
     let snap = project.documents.snapshot(doc)?;
     let generation = project.lsp.injection_generation();
+    let root = project.root.clone();
     blocking(move || {
         let d = ProviderDocument {
             path: snap.path.0,
@@ -2002,8 +2312,8 @@ pub async fn plugin_language_visuals(host: &Host, window: &str, doc: DocId) -> I
         {
             out.injections = plugins.provide_injections(&d);
             out.colors = plugins.language_colors(&d);
-            out.gutter_actions = plugins.language_gutter_actions(&d);
-            out.hover_actions = plugins.language_hover_actions(&d);
+            out.gutter_actions = plugins.language_gutter_actions(&d, Some(&root));
+            out.hover_actions = plugins.language_hover_actions(&d, Some(&root));
         }
         project.lsp.set_injections_at(
             doc,
@@ -2053,6 +2363,136 @@ pub fn plugin_formatters() -> IdeResult<Vec<crate::plugins::language_features::F
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_completion_word_is_its_line_and_what_precedes_it() {
+        use super::*;
+        let word = |text: &str, line: u32, col: u32| CompletionWord::at(text, Pos::new(line, col));
+        let before = |text: &str, line: u32, col: u32| word(text, line, col).map(|w| w.before);
+        assert_eq!(before("Book.findByTitle", 0, 16).as_deref(), Some("Book."));
+        // Typing on in the word, or deleting back into it, is the same word.
+        assert_eq!(word("Book.findByTitleA", 0, 17), word("Book.findBy", 0, 11));
+        assert_eq!(word("Book.findBy", 0, 5), word("Book.findBy", 0, 11));
+        // Another line, or a change before the word, is another one.
+        assert_ne!(word("a\nBook.find", 1, 9), word("Book.find\na", 0, 9));
+        assert_ne!(word("Book.find", 0, 9), word("Look.find", 0, 9));
+        // Columns count UTF-16 units; CRLF line ends don't count.
+        assert_eq!(before("😀 x.ab", 0, 7).as_deref(), Some("😀 x."));
+        assert_eq!(before("x.ab\r\nnext", 0, 4).as_deref(), Some("x."));
+        assert_eq!(word("short", 0, 9), None);
+        assert_eq!(word("short", 3, 0), None);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn python_optimize_imports_without_a_server_runs_ruff_on_the_unsaved_text() {
+        use super::*;
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(temp.path()).unwrap();
+        let root = base.join("project");
+        std::fs::create_dir(&root).unwrap();
+        let file = root.join("main.py");
+        std::fs::write(&file, "import os\n").unwrap();
+        std::fs::write(root.join("notes.txt"), "import sys\n").unwrap();
+        // A stand-in Ruff that checks its arguments and removes the unused import.
+        let ruff = base.join("ruff");
+        std::fs::write(
+            &ruff,
+            "#!/bin/sh\n[ \"$1 $2 $3 $4 $5\" = \"check --extend-select I --fixable I,F401\" ] || exit 2\nsed '/^import sys$/d'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&ruff, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let host = crate::Host::new(crate::HostConfig {
+            config_dir: base.join("config"),
+            data_dir: base.join("data"),
+            local_data_dir: base.join("local"),
+            languages: std::sync::Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
+            syntax: std::sync::Arc::default(),
+            sink_for: Box::new(|_| std::sync::Arc::new(|_| {})),
+            owner: |w| w,
+            runtime: tokio::runtime::Handle::current(),
+            project_environment: false,
+        });
+        host.trust.decide(&root, true, false).unwrap();
+        let project = host.open_project("main", &root).unwrap();
+        project
+            .settings
+            .set(
+                ide_workspace::settings::SettingsScope::Project,
+                "languages.ruff.path",
+                ruff.to_string_lossy().into_owned().into(),
+            )
+            .unwrap();
+        let doc = project.documents.open(&file).unwrap().id;
+        project
+            .documents
+            .apply_edits(
+                doc,
+                &[TextEdit { range: Range::new(Pos::default(), Pos::default()), new_text: "import sys\n".into() }],
+            )
+            .unwrap();
+        let cancel = CancellationToken::new();
+        let only = [ORGANIZE_IMPORTS.to_owned()];
+        // A server that offers organize imports keeps the request to itself.
+        let server = CodeAction { kind: Some(ORGANIZE_IMPORTS.into()), ..action_stub() };
+        let kept =
+            with_ruff_organize_imports(&host, "main", doc, &only, Ok(vec![server]), cancel.clone()).await.unwrap();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].server, ServerId(7));
+        // No server: the Ruff action, for the editor and the MCP tools alike.
+        let no_server = Err(ide_core::IdeError::unavailable("no server"));
+        let mut actions =
+            with_ruff_organize_imports(&host, "main", doc, &only, no_server, cancel.clone()).await.unwrap();
+        assert_eq!(actions.len(), 1);
+        let action = actions.remove(0);
+        assert_eq!(action.kind.as_deref(), Some("source.organizeImports.ruff"));
+        assert!(organizes_imports(&action) && action.disabled_reason.is_none());
+        let Some(ide_core::FileEdit::Edit { edits, .. }) = action.edit.unwrap().files.into_iter().next() else {
+            panic!("no edit")
+        };
+        // "import sys\nimport os\n" loses "sys\nimport " and keeps "import os\n".
+        assert_eq!(edits, [TextEdit { range: Range::new(Pos::new(0, 7), Pos::new(1, 7)), new_text: String::new() }]);
+        assert_eq!(std::fs::read_to_string(file).unwrap(), "import os\n");
+        let imports_only = root.join("imports_only.py");
+        std::fs::write(&imports_only, "import sys\n").unwrap();
+        let imports_only = project.documents.open(&imports_only).unwrap().id;
+        let (_, edits) =
+            crate::formatter::python_import_edits(&host, "main", imports_only, cancel.clone()).await.unwrap().unwrap();
+        assert_eq!(edits, [TextEdit { range: Range::new(Pos::default(), Pos::new(1, 0)), new_text: String::new() }]);
+        let text = project.documents.open(&root.join("notes.txt")).unwrap().id;
+        assert!(ruff_organize_imports(&host, "main", text, cancel.clone()).await.unwrap().is_none());
+        assert!(
+            with_ruff_organize_imports(&host, "main", doc, &[], Ok(Vec::new()), cancel.clone())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        for kind in [ErrorKind::Cancelled, ErrorKind::OutOfSync, ErrorKind::InvalidInput] {
+            let error = IdeError::new(kind, "must propagate");
+            let result = with_ruff_organize_imports(&host, "main", doc, &only, Err(error), cancel.clone()).await;
+            assert_eq!(result.unwrap_err().kind, kind);
+        }
+        cancel.cancel();
+        let result = with_ruff_organize_imports(&host, "main", doc, &only, Ok(Vec::new()), cancel).await;
+        assert_eq!(result.unwrap_err().kind, ErrorKind::Cancelled);
+    }
+
+    #[cfg(unix)]
+    fn action_stub() -> CodeAction {
+        CodeAction {
+            title: String::new(),
+            diagnostics: Vec::new(),
+            original_diagnostics: None,
+            kind: None,
+            is_preferred: false,
+            disabled_reason: None,
+            edit: None,
+            command: None,
+            data: None,
+            server: ServerId(7),
+        }
+    }
+
     #[test]
     fn language_features_merge_without_overwriting_lsp_ranges_or_masking_errors() {
         use super::*;
@@ -2782,20 +3222,29 @@ ide_command::domain!(
     lsp_code_action_query,
     lsp_code_actions,
     lsp_code_lens,
+    lsp_color_presentations,
     lsp_completion,
+    lsp_document_colors,
     lsp_document_highlights,
+    lsp_edit_argument,
+    lsp_editable_arguments,
     lsp_document_links,
+    lsp_exception_class_at,
     lsp_execute_code_action,
     lsp_execute_command,
     lsp_extract_interface,
     lsp_extract_interface_info,
     lsp_format,
+    lsp_format_text,
+    lsp_snapshot_diagnostics,
+    lsp_source_action_text,
     lsp_goto,
     lsp_goto_implementation,
     lsp_hierarchy_members,
     lsp_hierarchy_refactor,
     lsp_hover,
     lsp_implementation_locations,
+    lsp_file_references,
     lsp_implementations,
     lsp_inlay_hints,
     lsp_inline_completion,

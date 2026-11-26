@@ -1,9 +1,12 @@
+mod common;
+
 use ide_core::{CancellationToken, Diagnostic, Pos, Range, Severity};
 use ide_host::plugins::{HostWorkspace, PluginWorkspace};
 use ide_host::{Host, HostConfig};
 use ide_plugin::TextQuery;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 struct Harness {
     host: Arc<Host>,
@@ -16,15 +19,8 @@ impl Harness {
         let root = dunce::canonicalize(tmp.path()).unwrap().join("project");
         std::fs::create_dir_all(&root).unwrap();
         let host = Arc::new(Host::new(HostConfig {
-            config_dir: tmp.path().join("config"),
-            data_dir: tmp.path().join("data"),
             local_data_dir: tmp.path().join("local"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
+            ..common::host_config(tmp.path())
         }));
         host.open_project("main", &root).unwrap();
         host.open_project("second", &root).unwrap();
@@ -368,6 +364,364 @@ async fn plugin_run_targets_register_prompt_route_revalidate_and_withdraw() {
     assert_eq!(plugins.run_targets(&f.root).len(), 1);
     f.host.close_project_detached("second");
     assert!(plugins.run_targets(&f.root).is_empty());
+    plugins.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_run_output_mode_precedence_and_disallowed_combinations() {
+    use ide_host::plugins::{Consent, PluginEvent, PluginHost, WindowRequest};
+    use ide_plugin::{Invocation, Limits};
+
+    let f = Harness::new();
+    f.host.set_project_trust(&f.root, true, false).await.unwrap();
+    std::fs::write(f.root.join("execution-output.marker"), "").unwrap();
+
+    let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let captured = events.clone();
+    let plugins = Arc::new(
+        PluginHost::new(
+            f._tmp.path().join("plugins"),
+            Arc::new(move |client: Option<&str>, event: PluginEvent| {
+                captured.lock().push((client.map(str::to_owned), event))
+            }),
+            Limits::default(),
+        )
+        .unwrap(),
+    );
+    plugins.set_workspace(Some(Arc::new(f.workspace())));
+    f.host.set_plugin_host(&plugins);
+
+    let package = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/execution-output");
+    plugins.install_from_dir(&package, &Consent::all()).unwrap();
+    let exe = std::env::current_exe().unwrap();
+    plugins.choose_program("test.execution-output", "process:execution-tool", Some(&f.root), Some(&exe)).unwrap();
+
+    plugins.refresh_run_configurations(&f.root);
+    let detected = plugins.run_detection().detect(&f.root);
+    let by_id =
+        |id: &str| detected.iter().find(|c| c.id == format!("plugin:test.execution-output:{id}")).unwrap().clone();
+    assert!(by_id("detector-pty").extras.emulate_terminal);
+    assert!(!by_id("detector-pipes").extras.emulate_terminal);
+    assert!(by_id("pty-default").extras.emulate_terminal);
+    assert!(!by_id("pipes-default").extras.emulate_terminal);
+    assert!(!by_id("test-pipes").extras.emulate_terminal);
+
+    let invoke = |cmd: &str, arg: &str| {
+        events.lock().clear();
+        let inv =
+            Invocation { client: Some("main".into()), workspace_root: Some(f.root.clone()), ..Default::default() };
+        let res = plugins.run_command("test.execution-output", cmd, Some(arg), inv);
+        let req = events.lock().iter().find_map(|(client, event)| match event {
+            PluginEvent::WindowRequest { request: WindowRequest::Run { config, debug, .. }, .. } => {
+                assert_eq!(client.as_deref(), Some("main"));
+                Some((config.as_ref().clone(), *debug))
+            }
+            _ => None,
+        });
+        (res, req)
+    };
+
+    // 1. Plugin default applies when invocation passes None (including legacy `run.start`).
+    let (res, req) = invoke("start", "pty-default|default|run");
+    assert!(res.is_ok());
+    assert!(req.unwrap().0.extras.emulate_terminal);
+    let (res, req) = invoke("start-legacy", "pty-default");
+    assert!(res.is_ok());
+    assert!(req.unwrap().0.extras.emulate_terminal);
+    let (res, req) = invoke("start", "pipes-default|default|run");
+    assert!(res.is_ok());
+    assert!(!req.unwrap().0.extras.emulate_terminal);
+
+    // 2. Per-invocation override wins over plugin default.
+    let (res, req) = invoke("start", "pty-default|pipes|run");
+    assert!(res.is_ok());
+    assert!(!req.unwrap().0.extras.emulate_terminal);
+    let (res, req) = invoke("start", "pipes-default|pty|run");
+    assert!(res.is_ok());
+    assert!(req.unwrap().0.extras.emulate_terminal);
+
+    // 3. Disallowed combinations: debug + pty, test + pty, stdin_file + pty, remote target + pty.
+    let (res, req) = invoke("start", "pty-default|pty|debug");
+    assert!(res.unwrap_err().message.contains("debugging"));
+    assert!(req.is_none());
+    // Debug without explicit Pty keeps debugging working with pipes.
+    let (res, req) = invoke("start", "pty-default|default|debug");
+    assert!(res.is_ok());
+    let (cfg, debug) = req.unwrap();
+    assert!(debug && !cfg.extras.emulate_terminal);
+
+    let (res, req) = invoke("start", "test-pipes|pty|run");
+    assert!(res.unwrap_err().message.contains("test"));
+    assert!(req.is_none());
+
+    // Redirected stdin rejects PTY, whereas a user-saved Pipes override with stdin_file runs cleanly.
+    let mut stdin_pty = by_id("pty-default");
+    stdin_pty.extras.stdin_file = Some("input.txt".into());
+    ide_run::save_user_configs(&f.root, &[stdin_pty]).unwrap();
+    let (res, req) = invoke("start", "pty-default|default|run");
+    assert!(res.unwrap_err().message.contains("redirected"));
+    assert!(req.is_none());
+
+    let mut stdin_pipes = by_id("pipes-default");
+    stdin_pipes.extras.stdin_file = Some("input.txt".into());
+    ide_run::save_user_configs(&f.root, &[stdin_pipes]).unwrap();
+    let (res, req) = invoke("start", "pipes-default|pty|run");
+    assert!(res.is_ok());
+    assert!(!req.unwrap().0.extras.emulate_terminal);
+
+    // Remote run target rejects PTY.
+    let mut remote_pty = by_id("pty-default");
+    remote_pty.extras.target = Some("ssh:prod".into());
+    ide_run::save_user_configs(&f.root, &[remote_pty]).unwrap();
+    let (res, req) = invoke("start", "pty-default|default|run");
+    assert!(res.unwrap_err().message.contains("target"));
+    assert!(req.is_none());
+
+    // 4. User-saved output-mode override wins over both invocation and plugin default.
+    let mut user_pipes = by_id("pty-default");
+    user_pipes.extras.emulate_terminal = false;
+    let mut user_pty = by_id("pipes-default");
+    user_pty.extras.emulate_terminal = true;
+    ide_run::save_user_configs(&f.root, &[user_pipes, user_pty]).unwrap();
+
+    let (res, req) = invoke("start", "pty-default|pty|run");
+    assert!(res.is_ok());
+    assert!(!req.unwrap().0.extras.emulate_terminal);
+
+    let (res, req) = invoke("start", "pipes-default|pipes|run");
+    assert!(res.is_ok());
+    assert!(req.unwrap().0.extras.emulate_terminal);
+
+    // 5. Removing user overrides restores plugin default behavior; untrusted projects refuse launches.
+    ide_run::save_user_configs(&f.root, &[]).unwrap();
+    let (res, req) = invoke("start", "pty-default|default|run");
+    assert!(res.is_ok());
+    assert!(req.unwrap().0.extras.emulate_terminal);
+
+    f.host.set_project_trust(&f.root, false, false).await.unwrap();
+    assert!(invoke("start", "pty-default|default|run").0.is_err());
+
+    plugins.shutdown();
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_run_output_mode_executes_pty_and_pipes_with_input_exit_and_stop() {
+    use ide_host::plugins::{Consent, PluginEvent, PluginHost, WindowRequest};
+    use ide_plugin::{Invocation, Limits};
+    use std::os::unix::fs::PermissionsExt;
+
+    let f = Harness::new();
+    f.host.set_project_trust(&f.root, true, false).await.unwrap();
+    std::fs::write(f.root.join("execution-output.marker"), "").unwrap();
+
+    let tool = f.root.with_file_name("exec-output-tool");
+    std::fs::write(
+        &tool,
+        "#!/bin/sh\n\
+         if [ \"$1\" = \"wait\" ]; then\n\
+           read line\n\
+           printf 'out:%s\\n' \"$line\"\n\
+           printf 'err:%s\\n' \"$line\" >&2\n\
+           exit 7\n\
+         fi\n\
+         if [ \"$1\" = \"hang\" ]; then\n\
+           trap 'exit 0' INT TERM\n\
+           printf 'ready\\n'\n\
+           while true; do sleep 0.1; done\n\
+         fi\n\
+         printf 'out-line\\n'\n\
+         printf 'err-line\\n' >&2\n\
+         exit 0\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let captured = events.clone();
+    let plugins = Arc::new(
+        PluginHost::new(
+            f._tmp.path().join("plugins"),
+            Arc::new(move |client: Option<&str>, event: PluginEvent| {
+                captured.lock().push((client.map(str::to_owned), event))
+            }),
+            Limits::default(),
+        )
+        .unwrap(),
+    );
+    plugins.set_workspace(Some(Arc::new(f.workspace())));
+    f.host.set_plugin_host(&plugins);
+
+    let package = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/execution-output");
+    plugins.install_from_dir(&package, &Consent::all()).unwrap();
+    plugins.choose_program("test.execution-output", "process:execution-tool", Some(&f.root), Some(&tool)).unwrap();
+    plugins.refresh_run_configurations(&f.root);
+
+    let launch_and_collect = |arg: &str, stdin: Option<&str>, stop_after_ready: bool| {
+        let host = f.host.clone();
+        let plugins = plugins.clone();
+        let events = events.clone();
+        let root = f.root.clone();
+        let arg = arg.to_owned();
+        let stdin = stdin.map(str::to_owned);
+        async move {
+            events.lock().clear();
+            let inv = Invocation { client: Some("main".into()), workspace_root: Some(root), ..Default::default() };
+            let op_id = plugins.run_command("test.execution-output", "start", Some(&arg), inv).unwrap().unwrap();
+            let config = events
+                .lock()
+                .iter()
+                .find_map(|(_, event)| match event {
+                    PluginEvent::WindowRequest { request: WindowRequest::Run { config, .. }, .. } => {
+                        Some(config.as_ref().clone())
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            let chunks = Arc::new(parking_lot::Mutex::new(Vec::<ide_run::OutputChunk>::new()));
+            let out_chunks = chunks.clone();
+            let info = ide_host::ops::run::run_start(
+                &host,
+                "main",
+                config,
+                ide_host::ops::Channel::new(move |c| out_chunks.lock().push(c)),
+                None,
+            )
+            .await
+            .unwrap();
+            if let Some(data) = stdin {
+                ide_host::ops::run::run_stdin(&host, info.id, data).unwrap();
+            }
+            if stop_after_ready {
+                for _ in 0..100 {
+                    if chunks
+                        .lock()
+                        .iter()
+                        .any(|c| matches!(c, ide_run::OutputChunk::Stdout { text } if text.contains("ready")))
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                ide_host::ops::run::run_stop(&host, "main", info.id).unwrap();
+            }
+            for _ in 0..150 {
+                if host.processes.list().iter().any(|r| r.id == info.id && !r.running) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            let exit = host.processes.exit_code(info.id).unwrap();
+            let collected = chunks.lock().clone();
+            (op_id, info, exit, collected)
+        }
+    };
+
+    // PTY run: combined stdout/stderr on stdout stream, stdin works, exit status 7 delivered.
+
+    // Default PTY run (`args: ["pty", "extra"]`): stdout and stderr arrive combined as Stdout chunks.
+    let (_op, info, exit, chunks) = launch_and_collect("pty-default|default|run", None, false).await;
+    assert!(info.pty);
+    assert_eq!(exit, Some(Some(0)));
+    let pty_stdout: String = chunks
+        .iter()
+        .filter_map(|c| match c {
+            ide_run::OutputChunk::Stdout { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    let pty_stderr: String = chunks
+        .iter()
+        .filter_map(|c| match c {
+            ide_run::OutputChunk::Stderr { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(pty_stdout.contains("out-line") && pty_stdout.contains("err-line"), "{pty_stdout:?}");
+    assert!(pty_stderr.is_empty(), "ordinary PTYs combine stdout and stderr: {pty_stderr:?}");
+
+    // Piped run (`args: ["pipes", "extra"]`): stdout and stderr stay separate.
+    let (_op, info, exit, chunks) = launch_and_collect("pipes-default|default|run", None, false).await;
+    assert!(!info.pty);
+    assert_eq!(exit, Some(Some(0)));
+    let pipe_stdout: String = chunks
+        .iter()
+        .filter_map(|c| match c {
+            ide_run::OutputChunk::Stdout { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    let pipe_stderr: String = chunks
+        .iter()
+        .filter_map(|c| match c {
+            ide_run::OutputChunk::Stderr { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(pipe_stdout.contains("out-line"), "{pipe_stdout:?}");
+    assert!(pipe_stderr.contains("err-line"), "{pipe_stderr:?}");
+
+    // Interactive PTY run with input + non-zero exit code + run-exited event.
+    let mut wait_cfg = plugins
+        .run_detection()
+        .detect(&f.root)
+        .into_iter()
+        .find(|c| c.id == "plugin:test.execution-output:pty-default")
+        .unwrap();
+    wait_cfg.args = vec!["wait".into()];
+    ide_run::save_user_configs(&f.root, &[wait_cfg]).unwrap();
+    let (op_wait, info, exit, chunks) = launch_and_collect("pty-default|default|run", Some("hi\n"), false).await;
+    assert!(info.pty);
+    assert_eq!(exit, Some(Some(7)));
+    let combined: String = chunks
+        .iter()
+        .filter_map(|c| match c {
+            ide_run::OutputChunk::Stdout { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(combined.contains("out:hi") && combined.contains("err:hi"), "{combined:?}");
+
+    // Cancellation / stop on PTY run.
+    let mut hang_cfg = plugins
+        .run_detection()
+        .detect(&f.root)
+        .into_iter()
+        .find(|c| c.id == "plugin:test.execution-output:pty-default")
+        .unwrap();
+    hang_cfg.args = vec!["hang".into()];
+    ide_run::save_user_configs(&f.root, &[hang_cfg]).unwrap();
+    let (op_stop, info, _exit, _chunks) = launch_and_collect("pty-default|default|run", None, true).await;
+    assert!(info.pty);
+
+    plugins.flush_events_at(std::time::Instant::now() + Duration::from_secs(3));
+    for _ in 0..50 {
+        if plugins.wait_events(Duration::from_millis(50)) {
+            break;
+        }
+    }
+    let recorded = plugins
+        .run_command(
+            "test.execution-output",
+            "events",
+            None,
+            Invocation { client: Some("main".into()), workspace_root: Some(f.root.clone()), ..Default::default() },
+        )
+        .unwrap()
+        .unwrap();
+    let recorded: serde_json::Value = serde_json::from_str(&recorded).unwrap();
+    let arr = recorded.as_array().unwrap();
+    assert!(arr.iter().any(|e| {
+        e["kind"] == "run-exited"
+            && serde_json::from_str::<serde_json::Value>(e["data"].as_str().unwrap())
+                .is_ok_and(|d| d["id"] == op_wait && d["status"] == 7 && d["killed"] == false)
+    }));
+    assert!(arr.iter().any(|e| {
+        e["kind"] == "run-exited"
+            && serde_json::from_str::<serde_json::Value>(e["data"].as_str().unwrap())
+                .is_ok_and(|d| d["id"] == op_stop && d["killed"] == true)
+    }));
+
     plugins.shutdown();
 }
 

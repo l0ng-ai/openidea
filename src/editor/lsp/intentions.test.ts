@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { EditorState } from "@codemirror/state";
+import { EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { setDiagnostics } from "@codemirror/lint";
 import type { CodeAction, Diagnostic } from "@/bindings";
@@ -54,6 +54,7 @@ const {
   withInspectionControls,
 } = await import("./intentions");
 const { useLspPopup, closePopup } = await import("./popupStore");
+const { asyncIntentionProviders, inspectionControlProviders } = await import("@/editor/api");
 const { setFileDiagnostics, toLintDiagnostics } = await import("./diagnostics");
 const { lspDoc } = await import("./lsp");
 
@@ -195,13 +196,65 @@ describe("⌥↵ popup timing", () => {
   });
 });
 
+describe("context actions a feature finds through the language server", () => {
+  const editor = (...providers: Parameters<typeof asyncIntentionProviders.of>[0][]) => {
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: "f(1);\n",
+        extensions: [
+          lspDoc.of({ doc: 1, path: "/p/A.java", language: "java", uiMode: null, readOnly: false }),
+          ...providers.map((p) => asyncIntentionProviders.of(p)),
+        ],
+      }),
+    });
+    views.push(view);
+    return view;
+  };
+  const labels = () => (useLspPopup.getState().popup as { items: { label: string }[] }).items.map((i) => i.label);
+  const intention = (label: string) => ({ id: label, label, run: () => {} });
+
+  it("waits for them and lists them with the server's actions", async () => {
+    let answer!: (v: ReturnType<typeof intention>[]) => void;
+    const view = editor(() => new Promise((r) => (answer = r)));
+    lspCodeActions.mockResolvedValue({ status: "ok", data: [{ ...resolved, edit: null }] });
+    const shown = showIntentions(view);
+    await Promise.resolve();
+    answer([intention("Create exception breakpoint on Failure")]);
+    await shown;
+    expect(labels()).toEqual(
+      expect.arrayContaining(["Create exception breakpoint on Failure", "Introduce local variable"]),
+    );
+  });
+
+  it("lists them alone when the server has nothing", async () => {
+    const view = editor(async () => [intention("Disable exception breakpoint on Failure")]);
+    lspCodeActions.mockResolvedValue({ status: "ok", data: [] });
+    await showIntentions(view);
+    expect(labels()).toEqual(["Disable exception breakpoint on Failure"]);
+  });
+
+  it("keeps the other rows when one provider fails", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const view = editor(
+      async () => {
+        throw new Error("boom");
+      },
+      async () => [intention("Enable exception breakpoint on Failure")],
+    );
+    lspCodeActions.mockResolvedValue({ status: "ok", data: [] });
+    await showIntentions(view);
+    expect(labels()).toEqual(["Enable exception breakpoint on Failure"]);
+    error.mockRestore();
+  });
+});
+
 describe("inspection controls in ⌥↵ (issue #42)", () => {
-  const editorAt = (path: string) => {
+  const editorAt = (path: string, extra: Extension = []) => {
     const view = new EditorView({
       state: EditorState.create({
         doc: "import os\n",
         selection: { anchor: 8 },
-        extensions: [lspDoc.of({ doc: 1, path, language: "python", uiMode: null, readOnly: false })],
+        extensions: [lspDoc.of({ doc: 1, path, language: "python", uiMode: null, readOnly: false }), extra],
       }),
     });
     views.push(view);
@@ -238,6 +291,24 @@ describe("inspection controls in ⌥↵ (issue #42)", () => {
     expect(items[0]!.submenu).toHaveLength(2);
     setFileDiagnostics("/p/two.py", "ruff", []);
     expect(withInspectionControls(view, [])).toEqual([]);
+  });
+
+  it("adds the rows features contribute for the inspection", () => {
+    setFileDiagnostics("/p/three.py", "ruff", [unused]);
+    const suppress = vi.fn();
+    const view = editorAt(
+      "/p/three.py",
+      inspectionControlProviders.of((_view, id) =>
+        id === "lsp:ruff:F401" ? [{ id: "suppress", label: "Suppress for statement", run: suppress }] : [],
+      ),
+    );
+    const [options] = withInspectionControls(view, []);
+    expect(options!.submenu?.map((s) => ("label" in s ? s.label : "-"))).toEqual([
+      "Edit inspection profile setting",
+      "Disable inspection",
+      "Suppress for statement",
+    ]);
+    setFileDiagnostics("/p/three.py", "ruff", []);
   });
 
   it.each(["info", "warning", "error"] as const)(

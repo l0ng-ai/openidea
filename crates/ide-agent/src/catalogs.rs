@@ -15,6 +15,8 @@ use tokio::time::Instant;
 
 const FRESH_FOR: Duration = Duration::from_secs(15 * 60);
 const COOLDOWN: Duration = Duration::from_secs(30);
+/// Persisted catalog layout version; bump when option classification changes so stale per-model entries re-discover.
+const CATALOG_SCHEMA: u8 = 2;
 
 type Store = Arc<Mutex<HashMap<String, Known>>>;
 type Key = (PathBuf, PathBuf, String);
@@ -80,6 +82,8 @@ impl CatalogData {
 pub(crate) struct SavedCatalog {
     /// An opaque cryptographic digest, never raw launch arguments or credentials.
     fingerprint: String,
+    #[serde(default)]
+    schema: u8,
     #[serde(flatten)]
     catalog: CatalogData,
 }
@@ -111,7 +115,7 @@ impl LaunchContext {
             hash.update(&(value.len() as u64).to_le_bytes());
             hash.update(value);
         }
-        field(&mut hash, b"openidea-model-catalog-v1");
+        field(&mut hash, b"openidea-model-catalog-v2");
         field(
             &mut hash,
             match self.spec.driver {
@@ -200,7 +204,14 @@ impl AgentCatalogs {
         cache
             .get(provider)
             .and_then(|known| known.catalogs.get(&shared.root_key()))
-            .map(|saved| saved.catalog.clone())
+            .map(|saved| {
+                let mut catalog = saved.catalog.clone();
+                if saved.schema < CATALOG_SCHEMA {
+                    catalog.refreshed_at_ms = None;
+                    catalog.thought_levels.clear();
+                }
+                catalog
+            })
             .unwrap_or_default()
     }
 
@@ -228,7 +239,8 @@ impl AgentCatalogs {
         }
         drop(state);
         let cache = shared.known.lock();
-        cache.get(provider)?.catalogs.get(&shared.root_key())?.catalog.thought_levels.get(model).cloned()
+        let saved = cache.get(provider)?.catalogs.get(&shared.root_key())?;
+        (saved.schema >= CATALOG_SCHEMA).then(|| saved.catalog.thought_levels.get(model).cloned()).flatten()
     }
 
     pub(super) async fn load_levels(
@@ -281,7 +293,7 @@ impl AgentCatalogs {
         AgentModelCatalog {
             provider: provider.to_owned(),
             config: shared.config_for_new_task(catalog.config, provider),
-            thought_levels: catalog.thought_levels,
+            thought_levels: shared.thought_levels_for_new_task(catalog.thought_levels, provider),
             refreshing: entry.flight.is_some(),
             refreshed_at_ms: catalog.refreshed_at_ms,
             retry_at_ms: model_failure
@@ -318,7 +330,9 @@ impl AgentCatalogs {
             let generation = state.generation;
             let saved =
                 shared.known.lock().get(&spec.id).and_then(|known| known.catalogs.get(&shared.root_key())).cloned();
-            let matching = saved.as_ref().is_some_and(|saved| saved.fingerprint == context.fingerprint());
+            let matching = saved
+                .as_ref()
+                .is_some_and(|saved| saved.schema >= CATALOG_SCHEMA && saved.fingerprint == context.fingerprint());
             let age = saved
                 .as_ref()
                 .filter(|_| matching)
@@ -489,7 +503,11 @@ impl AgentCatalogs {
                 }
                 known.catalogs.insert(
                     shared.root_key(),
-                    SavedCatalog { fingerprint: entry.context.fingerprint(), catalog: catalog.clone() },
+                    SavedCatalog {
+                        fingerprint: entry.context.fingerprint(),
+                        schema: CATALOG_SCHEMA,
+                        catalog: catalog.clone(),
+                    },
                 );
                 entry.catalog = Some(catalog);
                 shared.persist_known(&cache);

@@ -360,6 +360,9 @@ impl ClientHandler {
         else {
             return;
         };
+        if self.server.redirect_transient_diagnostics(&path, self.generation, params.version, &mut params.diagnostics) {
+            return;
+        }
         if self.server.name == crate::compose::SERVER {
             // Maven resource-filtering placeholders (`@profileActive@`) parse as invalid
             // YAML but are replaced before the file is ever read: their parser error is noise.
@@ -377,9 +380,8 @@ impl ClientHandler {
             return;
         }
         // Files opened only for a request (references search) are not the user's problems.
-        if (self.server.external_diagnostics.load(std::sync::atomic::Ordering::Acquire)
-            && !mgr.docs.lock().values().any(|d| d.path == path))
-            || self.server.suppresses_diagnostics(&path)
+        if self.server.external_diagnostics.load(std::sync::atomic::Ordering::Acquire)
+            && !mgr.docs.lock().values().any(|d| d.path == path)
         {
             return;
         }
@@ -409,6 +411,23 @@ impl ClientHandler {
         let items = crate::flutter_outline::items(&mgr.conv(self.encoding()), &path, params.outline);
         if mgr.set_flutter_outline(&path, &self.server, self.generation, items) {
             mgr.sink().emit(IdeEvent::LspRefresh { server: self.server.id, kind: LspRefreshKind::FlutterOutline });
+        }
+    }
+
+    fn publish_closing_labels(&self, mgr: &LspManager, params: Value) {
+        let params: crate::closing_labels::Params = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::debug!("{}: bad publishClosingLabels: {e}", self.server.name);
+                return;
+            }
+        };
+        let Some(path) = uri_to_path(&params.uri) else { return };
+        if !self.server.is_live(self.generation) {
+            return;
+        }
+        if mgr.set_closing_labels(&path, &self.server, self.generation, self.encoding(), params.labels) {
+            mgr.sink().emit(IdeEvent::LspRefresh { server: self.server.id, kind: LspRefreshKind::InlayHints });
         }
     }
 
@@ -620,6 +639,7 @@ impl Handler for ClientHandler {
             }
             "textDocument/publishDiagnostics" => self.publish_diagnostics(&mgr, params),
             "dart/textDocument/publishFlutterOutline" => self.publish_flutter_outline(&mgr, params),
+            "dart/textDocument/publishClosingLabels" => self.publish_closing_labels(&mgr, params),
             "window/showMessage" => self.show_message(&mgr, &params),
             "window/logMessage" => {
                 let text = params.get("message").and_then(Value::as_str).unwrap_or_default();
@@ -642,6 +662,11 @@ impl Handler for ClientHandler {
                     && text.contains(" to import Gradle project ")
                 {
                     self.show_message(&mgr, &json!({ "type": 1, "message": text.lines().next().unwrap_or(text) }));
+                }
+                if self.server.name == "jdtls"
+                    && let Some(failure) = crate::jdtls::gradle_sync_failure(text)
+                {
+                    mgr.report_gradle_sync_failure(failure);
                 }
                 if self.server.name == "jdtls"
                     && params.get("type").and_then(Value::as_u64) == Some(1)

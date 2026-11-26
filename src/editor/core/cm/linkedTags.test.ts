@@ -68,15 +68,27 @@ function type(view: EditorView, text: string) {
   );
 }
 
-/** One Backspace before every caret. */
+/** One Backspace at every caret, or over every selection. */
 function backspace(view: EditorView) {
   const { state } = view;
   view.dispatch(
-    state.changeByRange((r) => ({
-      changes: { from: Math.max(0, r.head - 1), to: r.head },
-      range: EditorSelection.cursor(Math.max(0, r.head - 1)),
-    })),
+    state.changeByRange((r) => {
+      const from = r.empty ? Math.max(0, r.head - 1) : r.from;
+      return { changes: { from, to: r.to }, range: EditorSelection.cursor(from) };
+    }),
     { userEvent: "delete.backward" },
+  );
+}
+
+/** One Delete after every caret. */
+function deleteForward(view: EditorView) {
+  const { state } = view;
+  view.dispatch(
+    state.changeByRange((r) => ({
+      changes: { from: r.head, to: Math.min(state.doc.length, r.head + 1) },
+      range: EditorSelection.cursor(r.head),
+    })),
+    { userEvent: "delete.forward" },
   );
 }
 
@@ -192,6 +204,84 @@ describe("linked html tags", () => {
     expect(closing.state.doc.toString()).toBe("<div>content</di>v>");
   });
 
+  // #5314: removing a tag piece by piece is a deletion, not a rename. Once its `>` (or `</`)
+  // is gone the tag is incomplete, and the name edits after that must not follow.
+  describe("deleting a whole tag", () => {
+    it("leaves the opening tag alone while the closing tag is backspaced away", () => {
+      const v = make("<div>x</div>|");
+      for (let i = 0; i < "</div>".length; i++) backspace(v);
+      expect(show(v)).toBe("<div>x|");
+    });
+
+    it("leaves the closing tag alone while the opening tag is backspaced away", () => {
+      const v = make("<div>|x</div>");
+      for (let i = 0; i < "<div>".length; i++) backspace(v);
+      expect(show(v)).toBe("|x</div>");
+    });
+
+    it("leaves the opening tag alone when the closing tag is deleted forwards", () => {
+      const v = make("<div>x|</div>\n<p>y</p>");
+      for (let i = 0; i < "</div>".length; i++) deleteForward(v);
+      expect(v.state.doc.toString()).toBe("<div>x\n<p>y</p>");
+    });
+
+    it("leaves the closing tag alone while an opening tag followed by children is backspaced away", () => {
+      const v = make("<div>|\n  <span>y</span>\n</div>");
+      for (let i = 0; i < "<div>".length; i++) backspace(v);
+      expect(show(v)).toBe("|\n  <span>y</span>\n</div>");
+      const inline = make("<div>|<span>y</span></div>");
+      for (let i = 0; i < "<div>".length; i++) backspace(inline);
+      expect(show(inline)).toBe("|<span>y</span></div>");
+    });
+
+    it("leaves the other tag alone when a selection covering a tag is deleted", () => {
+      const v = make("<div>x[</div>]");
+      backspace(v);
+      expect(show(v)).toBe("<div>x|");
+      const open = make("[<div>]x</div>");
+      backspace(open);
+      expect(show(open)).toBe("|x</div>");
+    });
+
+    it("leaves the other tag alone when a cut runs from inside the name past the tag", () => {
+      const v = make("<div>x</d[iv>\n]<p>y</p>");
+      backspace(v);
+      expect(v.state.doc.toString()).toBe("<div>x</d<p>y</p>");
+    });
+
+    it("does not rename into or out of a tag that lost its `>`", () => {
+      const v = make("<div|>x</div");
+      type(v, "s");
+      expect(v.state.doc.toString()).toBe("<divs>x</div");
+      const open = make("<div\n  x</di|v>");
+      backspace(open);
+      expect(open.state.doc.toString()).toBe("<div\n  x</dv>");
+    });
+
+    it("deletes the closing tags at every caret, leaving the opening tags alone", () => {
+      const v = make("<p>a</p>|\n<b>c</b>|");
+      for (let i = 0; i < "</p>".length; i++) backspace(v);
+      expect(show(v)).toBe("<p>a|\n<b>c|");
+    });
+
+    it("undo brings back the deleted closing tag and keeps the opening one", () => {
+      const v = make("<div>x[</div>]", history());
+      backspace(v);
+      expect(v.state.doc.toString()).toBe("<div>x");
+      expect(undo(v)).toBe(true);
+      expect(v.state.doc.toString()).toBe("<div>x</div>");
+    });
+
+    it("still renames after the `>` is typed back", () => {
+      const v = make("<div>x</div|");
+      type(v, ">");
+      expect(v.state.doc.toString()).toBe("<div>x</div>");
+      v.dispatch({ selection: { anchor: "<div".length } });
+      type(v, "s");
+      expect(v.state.doc.toString()).toBe("<divs>x</divs>");
+    });
+  });
+
   it("undoes the pair as one step and redoes it", () => {
     const v = make("<div|></div>", history());
     type(v, "x");
@@ -218,6 +308,12 @@ describe("linked html tags", () => {
         const v = makeWith([language(), linkedTags], '<div| class="a">x</div>');
         type(v, "s");
         expect(v.state.doc.toString()).toBe('<divs class="a">x</divs>');
+      });
+
+      it(`leaves the opening tag alone while the closing tag is backspaced away in ${name}`, () => {
+        const v = makeWith([language(), linkedTags], '<div class="a">x</div>|');
+        for (let i = 0; i < "</div>".length; i++) backspace(v);
+        expect(v.state.doc.toString()).toBe('<div class="a">x');
       });
     }
   });
@@ -259,6 +355,18 @@ describe("linked html tags", () => {
       const f = tsx("const a = <|>x</>;");
       type(f, "p");
       expect(f.state.doc.toString()).toBe("const a = <p>x</>;");
+    });
+
+    it("leaves the other tag alone while a tag is backspaced away", () => {
+      const v = tsx("const a = <div>x</div>|;");
+      for (let i = 0; i < "</div>".length; i++) backspace(v);
+      expect(v.state.doc.toString()).toBe("const a = <div>x;");
+      const m = tsx("const a = (\n  <div>|\n    <span>y</span>\n  </div>\n);");
+      for (let i = 0; i < "<div>".length; i++) backspace(m);
+      expect(m.state.doc.toString()).toBe("const a = (\n  \n    <span>y</span>\n  </div>\n);");
+      const w = tsx("const a = <Foo>|x</Foo>;");
+      for (let i = 0; i < "<Foo>".length; i++) backspace(w);
+      expect(w.state.doc.toString()).toBe("const a = x</Foo>;");
     });
 
     it("undoes both tags in one step", () => {

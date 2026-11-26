@@ -18,6 +18,7 @@ import {
   type ToolEnv,
 } from "./producers";
 import { clearInheritedMain, resolveCandidates, unresolvedCandidates } from "./inheritedMain";
+import { BUILTIN_TYPES, formParams, withParams } from "./types";
 
 afterEach(() => clearInheritedMain());
 
@@ -120,6 +121,38 @@ describe("single-file producers (scratches)", () => {
     expect(produceContext(scratch("hi.js"), env({}))!.missing!.body).toMatch(/Node\.js was not found.*nodejs\.org/);
   });
 
+  it("JavaScript and TypeScript file runs open in the Node.js form and stay editable (#6085)", () => {
+    const node = BUILTIN_TYPES.find((t) => t.id === "node")!;
+    const file = (name: string, e: ToolEnv = ALL) => produceContext(scratch(name), e)!.config!;
+    for (const name of ["hi.js", "hi.mjs", "hi.cjs"]) {
+      const c = file(name);
+      expect(c.kind).toBe("node");
+      expect(formParams(c, node)).toEqual({ interpreter: "/bin/node", nodeOptions: "", file: name, arguments: "" });
+    }
+    const edited = withParams(
+      file("hi.js"),
+      { ...formParams(file("hi.js"), node)!, nodeOptions: "--env-file=.env", arguments: "a 'b c'" },
+      node,
+    );
+    expect(edited).toMatchObject({
+      command: "/bin/node",
+      args: ["--env-file=.env", "hi.js", "a", "b c"],
+      cwd: SCRATCH,
+    });
+    expect(edited.id).toBe(`context:file:${SCRATCH}/hi.js`);
+    // TypeScript through type stripping or tsx keeps its command line in the form.
+    expect(formParams(file("hi.ts", env({ node: "22.6.0" })), node)).toMatchObject({
+      nodeOptions: "--experimental-strip-types",
+      file: "hi.ts",
+    });
+    expect(formParams(file("hi.ts", env({ node: "20.11.0", tsx: null })), node)).toMatchObject({
+      interpreter: "/bin/tsx",
+      file: "hi.ts",
+    });
+    // `npx tsx` (no tool lookup) is edited as a plain command and runs as before.
+    expect(formParams(file("hi.ts", OPTIMISTIC), node)).toBeNull();
+  });
+
   it("type stripping versions", () => {
     expect(nodeTypeStripping("22.5.1")).toBeNull();
     expect(nodeTypeStripping("22.6.0")).toBe("flag");
@@ -207,6 +240,11 @@ describe("single-file producers (scratches)", () => {
       command: "/bin/bash",
       args: ["a.sh"],
     });
+    // Run in a terminal so the script can prompt (`read`) and see a TTY; other interpreters keep pipes.
+    const terminal = (i: ContextInput) => produceContext(i, ALL)!.config!.emulateTerminal;
+    expect(terminal(scratch("a.sh", "#!/usr/bin/env bash\nread x"))).toBe(true);
+    expect(terminal(scratch("a.sh", "read x"))).toBe(true);
+    expect(terminal(scratch("tool", "#!/usr/bin/env ruby\nputs 1"))).toBeFalsy();
     expect(run(scratch("a.sh", "#!/bin/zsh -f\necho"))).toMatchObject({ command: "/bin/zsh", args: ["-f", "a.sh"] });
     expect(run(scratch("a.sh", "echo"))).toMatchObject({ command: "/bin/sh" });
     expect(run(scratch("a.zsh", "echo"))).toMatchObject({ command: "/bin/zsh" });
@@ -742,6 +780,8 @@ describe("single-file producers (scratches)", () => {
         "test",
         "-Dtest=demo.Test#works",
         "-Dsurefire.failIfNoSpecifiedTests=false",
+        "-DskipTests=false",
+        "-Dmaven.test.skip=false",
       ]);
       // No `main`: the file-level context runs the class's tests.
       const noMain = "package demo;\npublic class Test {\n  @Test\n  void works() {\n  }\n}\n";
@@ -751,7 +791,13 @@ describe("single-file producers (scratches)", () => {
       )!;
       expect(tests.config).toMatchObject({ kind: "maven", isTest: true });
       // A reactor module without `Test` must not fail the build before the module that has it.
-      expect(tests.config!.args).toEqual(["test", "-Dtest=Test", "-Dsurefire.failIfNoSpecifiedTests=false"]);
+      expect(tests.config!.args).toEqual([
+        "test",
+        "-Dtest=Test",
+        "-Dsurefire.failIfNoSpecifiedTests=false",
+        "-DskipTests=false",
+        "-Dmaven.test.skip=false",
+      ]);
     });
   });
 
@@ -843,6 +889,25 @@ describe("project producers", () => {
     )!;
     expect(p).toMatchObject({ name: "a.test.ts", scope: "file" });
     expect(p.config!.args).toEqual(["run", "test", "--", "src/a.test.ts"]);
+  });
+
+  it("runs a .NET project file with dotnet run --project (#5635)", () => {
+    const p = produceContext({ path: `${ROOT}/src/App/App.csproj`, root: ROOT, configs: [] }, OPTIMISTIC)!;
+    expect(p).toMatchObject({ name: "App", scope: "file" });
+    expect(p.config).toMatchObject({
+      id: "context:dotnet:src/App/App.csproj",
+      kind: "dotnet",
+      command: "dotnet",
+      args: ["run", "--project", "src/App/App.csproj", "--no-launch-profile"],
+      debugAdapter: "netcoredbg",
+      params: { project: "src/App/App.csproj" },
+    });
+    // A `.csproj.user` is not a project, and a source file has no entry-point production.
+    expect(produceContext({ path: `${ROOT}/src/App/App.csproj.user`, root: ROOT, configs: [] }, OPTIMISTIC)).toBeNull();
+    expect(produceContext({ path: `${ROOT}/src/App/Program.cs`, root: ROOT, configs: [] }, OPTIMISTIC)).toBeNull();
+    // Neither is a solution or a shared props file.
+    expect(produceContext({ path: `${ROOT}/src/App/App.sln`, root: ROOT, configs: [] }, OPTIMISTIC)).toBeNull();
+    expect(produceContext({ path: `${ROOT}/Directory.Build.props`, root: ROOT, configs: [] }, OPTIMISTIC)).toBeNull();
   });
 
   it("⌃⇧R picks the innermost context: test > describe > file", () => {

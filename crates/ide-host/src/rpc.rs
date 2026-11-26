@@ -27,7 +27,23 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 
-pub const PROTOCOL_VERSION: u32 = 2;
+/// 3: binary arguments (`IpcBytes`) are base64 strings, not arrays of numbers.
+/// 4: a running tool's output arrives as `AgentEvent::ToolOutput` appends; a client that
+/// doesn't know the event would show stale output.
+pub const PROTOCOL_VERSION: u32 = 4;
+pub const SESSION_REPLACED: &str = "session_replaced";
+/// What `openidea-server --attach` reports when another build's backend keeps the project
+/// (clients match it to offer stopping that backend).
+pub const OTHER_BUILD_BUSY: &str = "Another build of OpenIDEA still has this project open, is running tasks, or has \
+     unsaved changes. Reconnect with that build, or stop its backend and open the project again.";
+pub const SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+
+/// Advertised only by a persistent backend with an editable idle timeout.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteIdlePolicy {
+    pub override_seconds: Option<u64>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,6 +53,8 @@ pub struct ServerInfo {
     pub os: String,
     pub arch: String,
     pub home: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_policy: Option<RemoteIdlePolicy>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,12 +77,96 @@ pub struct ChannelMessage {
     pub data: Value,
 }
 
+/// Streaming lifecycle signal delivered through a [`ChannelSink`].
+#[derive(Debug, Clone)]
+pub enum ChannelSignal {
+    /// Emitted when a command claims a `{ "$channel": id }` argument.
+    Opened(u64),
+    /// One serialized streaming payload.
+    Data(ChannelMessage),
+    /// Emitted automatically when the last clone of the command's channel emitter is dropped.
+    End(u64),
+}
+
+/// Delivers streaming values and lifecycle signals from a command back to its caller.
+pub type ChannelSink = Arc<dyn Fn(ChannelSignal) + Send + Sync>;
+
+struct ChannelDropGuard {
+    id: u64,
+    sink: ChannelSink,
+}
+
+impl Drop for ChannelDropGuard {
+    fn drop(&mut self) {
+        (self.sink)(ChannelSignal::End(self.id));
+    }
+}
+
+/// Holds the active client [`Peer`]: once for `--stdio` ([`OnceLock<Peer>`]) or
+/// rebound across client reconnects for a persistent daemon ([`PeerSlot`]).
+pub trait PeerHandle: Send + Sync + 'static {
+    fn current(&self) -> Option<Peer>;
+    fn install(&self, peer: Peer) -> (u64, Option<Peer>);
+    fn clear(&self, generation: u64) -> bool;
+}
+
+impl PeerHandle for OnceLock<Peer> {
+    fn current(&self) -> Option<Peer> {
+        self.get().cloned()
+    }
+
+    fn install(&self, peer: Peer) -> (u64, Option<Peer>) {
+        let _ = self.set(peer);
+        (1, None)
+    }
+
+    fn clear(&self, _: u64) -> bool {
+        true
+    }
+}
+
+/// Rebindable client connection slot for a persistent `openidea-server` daemon.
+#[derive(Default)]
+pub struct PeerSlot {
+    inner: parking_lot::RwLock<Option<(u64, Peer)>>,
+    seq: std::sync::atomic::AtomicU64,
+}
+
+impl PeerSlot {
+    #[cfg(unix)]
+    pub(crate) fn remove(&self) -> Option<Peer> {
+        self.inner.write().take().map(|(_, p)| p)
+    }
+}
+
+impl PeerHandle for PeerSlot {
+    fn current(&self) -> Option<Peer> {
+        self.inner.read().as_ref().map(|(_, p)| p.clone())
+    }
+
+    fn install(&self, peer: Peer) -> (u64, Option<Peer>) {
+        let id = self.seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let previous = self.inner.write().replace((id, peer)).map(|(_, p)| p);
+        (id, previous)
+    }
+
+    fn clear(&self, generation: u64) -> bool {
+        let mut guard = self.inner.write();
+        if guard.as_ref().is_some_and(|(id, _)| *id == generation) {
+            *guard = None;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 /// One `invoke`: its arguments and a way to stream values back.
 pub struct Call {
     pub host: Arc<Host>,
     pub window: String,
     pub args: Value,
-    peer: Arc<OnceLock<Peer>>,
+    channel_sink: ChannelSink,
 }
 
 impl Call {
@@ -88,17 +190,24 @@ impl Call {
             .and_then(|v| v.get("$channel"))
             .and_then(Value::as_u64)
             .ok_or_else(|| IdeError::invalid(format!("argument {name}: expected a channel")))?;
-        let peer = self.peer.clone();
-        Ok(Arc::new(move |data: T| {
-            let Some(peer) = peer.get() else { return };
-            match serde_json::to_value(&data) {
-                Ok(data) => {
-                    let _ = peer.notify("channel", ChannelMessage { id, data });
-                }
-                Err(e) => tracing::warn!("channel {id}: {e}"),
-            }
+        let sink = self.channel_sink.clone();
+        sink(ChannelSignal::Opened(id));
+        let guard = ChannelDropGuard { id, sink };
+        Ok(Arc::new(move |data: T| match serde_json::to_value(&data) {
+            Ok(data) => (guard.sink)(ChannelSignal::Data(ChannelMessage { id: guard.id, data })),
+            Err(e) => tracing::warn!("channel {}: {e}", guard.id),
         }))
     }
+}
+
+fn peer_channel_sink(peer: Arc<dyn PeerHandle>) -> ChannelSink {
+    Arc::new(move |signal: ChannelSignal| {
+        if let ChannelSignal::Data(msg) = signal
+            && let Some(peer) = peer.current()
+        {
+            let _ = peer.notify("channel", msg);
+        }
+    })
 }
 
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
@@ -111,21 +220,42 @@ pub struct Dispatcher {
 }
 
 impl Dispatcher {
-    pub fn add<F, Fut, T>(&mut self, name: &'static str, trust: TrustClass, f: F) -> &mut Self
+    fn wrap_handler<F, Fut, T>(f: F) -> HandlerFn
     where
         F: Fn(Call) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = IdeResult<T>> + Send + 'static,
         T: Serialize,
     {
         let f = Arc::new(f);
-        let handler: HandlerFn = Arc::new(move |call| {
+        Arc::new(move |call| {
             let fut = f(call);
             Box::pin(async move {
                 let value = fut.await?;
                 serde_json::to_value(value).map_err(|e| IdeError::internal(e.to_string()))
             })
-        });
+        })
+    }
+
+    pub fn add<F, Fut, T>(&mut self, name: &'static str, trust: TrustClass, f: F) -> &mut Self
+    where
+        F: Fn(Call) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = IdeResult<T>> + Send + 'static,
+        T: Serialize,
+    {
+        let handler = Self::wrap_handler(f);
         assert!(self.handlers.insert(name, (trust, handler)).is_none(), "command {name} is registered twice");
+        self
+    }
+
+    /// Registers or replaces `name` (used by the web server to add shell-level hooks such as recent-project tracking).
+    pub fn replace<F, Fut, T>(&mut self, name: &'static str, trust: TrustClass, f: F) -> &mut Self
+    where
+        F: Fn(Call) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = IdeResult<T>> + Send + 'static,
+        T: Serialize,
+    {
+        let handler = Self::wrap_handler(f);
+        self.handlers.insert(name, (trust, handler));
         self
     }
 
@@ -146,27 +276,77 @@ impl Dispatcher {
         ops::register_domains(&mut d);
         d
     }
+
+    /// Invokes a command asynchronously with trust enforcement and a caller-supplied channel sink.
+    pub async fn invoke(
+        &self,
+        host: Arc<Host>,
+        window: String,
+        cmd: &str,
+        args: Value,
+        channel_sink: ChannelSink,
+    ) -> IdeResult<Value> {
+        let Some((trust, handler)) = self.handlers.get(cmd).cloned() else {
+            return Err(IdeError::unavailable(format!("command {cmd} is not available")));
+        };
+        host.authorize(&window, trust)?;
+        let call = Call { host, window, args, channel_sink };
+        handler(call).await
+    }
 }
 
 /// Serves `host` over `reader` / `writer` until the client disconnects.
 /// `peer` must be the one whose events `host` sends ([`event_sink`]).
-pub async fn serve<R, W>(host: Arc<Host>, dispatcher: Dispatcher, peer: Arc<OnceLock<Peer>>, reader: R, writer: W)
+pub async fn serve<R, W, P>(host: Arc<Host>, dispatcher: Dispatcher, peer: Arc<P>, reader: R, writer: W)
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+    W: tokio::io::AsyncWrite + Unpin + Send + 'static,
+    P: PeerHandle,
+{
+    let slot: Arc<dyn PeerHandle> = peer;
+    let handler = Arc::new(ServerHandler { host: host.clone(), dispatcher, peer: slot.clone(), daemon: None });
+    let p = Peer::connect(reader, writer, handler);
+    let (generation, previous) = slot.install(p.clone());
+    if let Some(old) = previous {
+        old.kill();
+    }
+    p.closed().await;
+    if slot.clear(generation) {
+        // Reports belong to the disconnected desktop, even while the host shuts down.
+        for window in host.projects.read().keys() {
+            host.mcp_reports.forget_window(window);
+        }
+    }
+}
+
+/// The daemon owns the peer and handles replacement and disconnect serially.
+#[cfg(unix)]
+pub(crate) fn connect_persistent<R, W>(
+    host: Arc<Host>,
+    dispatcher: Dispatcher,
+    peer: Arc<PeerSlot>,
+    shutdown: ide_core::CancellationToken,
+    idle_policy: RemoteIdlePolicy,
+    reader: R,
+    writer: W,
+) -> Peer
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    let handler = Arc::new(ServerHandler { host: host.clone(), dispatcher, peer: peer.clone() });
+    // Streaming ids belong to the calling connection, not the next window to attach.
+    let connection = Arc::new(OnceLock::new());
+    let handler =
+        Arc::new(ServerHandler { host, dispatcher, peer: connection.clone(), daemon: Some((shutdown, idle_policy)) });
     let p = Peer::connect(reader, writer, handler);
-    let _ = peer.set(p.clone());
-    p.closed().await;
-    // Reports belong to the disconnected desktop, even while the host shuts down.
-    for window in host.projects.read().keys() {
-        host.mcp_reports.forget_window(window);
-    }
+    let _ = connection.set(p.clone());
+    let (_, previous) = peer.install(p.clone());
+    debug_assert!(previous.is_none());
+    p
 }
 
 /// Sends a window's events to the client as `event` notifications.
-pub fn event_sink(peer: Arc<OnceLock<Peer>>, window: Option<String>) -> ide_core::SharedSink {
+pub fn event_sink<P: PeerHandle>(peer: Arc<P>, window: Option<String>) -> ide_core::SharedSink {
     Arc::new(PeerSink { peer, window })
 }
 
@@ -217,13 +397,13 @@ pub fn client_accepts(event: &IdeEvent, trusted: bool) -> bool {
 }
 
 struct PeerSink {
-    peer: Arc<OnceLock<Peer>>,
+    peer: Arc<dyn PeerHandle>,
     window: Option<String>,
 }
 
 impl ide_core::EventSink for PeerSink {
     fn emit(&self, event: IdeEvent) {
-        if let Some(peer) = self.peer.get() {
+        if let Some(peer) = self.peer.current() {
             let _ = peer.notify("event", EventMessage { window: self.window.clone(), event });
         }
     }
@@ -232,16 +412,18 @@ impl ide_core::EventSink for PeerSink {
 struct ServerHandler {
     host: Arc<Host>,
     dispatcher: Dispatcher,
-    peer: Arc<OnceLock<Peer>>,
+    peer: Arc<dyn PeerHandle>,
+    daemon: Option<(ide_core::CancellationToken, RemoteIdlePolicy)>,
 }
 
-pub fn server_info() -> ServerInfo {
+pub(crate) fn server_info(idle_policy: Option<RemoteIdlePolicy>) -> ServerInfo {
     ServerInfo {
         version: env!("CARGO_PKG_VERSION").into(),
         protocol: PROTOCOL_VERSION,
         os: std::env::consts::OS.into(),
         arch: std::env::consts::ARCH.into(),
         home: dirs::home_dir().map(|h| h.to_string_lossy().into_owned()).unwrap_or_default(),
+        idle_policy,
     }
 }
 
@@ -249,10 +431,16 @@ impl Handler for ServerHandler {
     fn on_notification(&self, _method: &str, _params: Value) {}
 
     fn on_request(&self, method: &str, params: Value) -> Result<Value, (i64, String)> {
+        if self.daemon.as_ref().is_some_and(|(shutdown, _)| shutdown.is_cancelled()) {
+            return Err((codes::INTERNAL_ERROR, "remote backend is stopping".into()));
+        }
         let internal = |e: serde_json::Error| (codes::INTERNAL_ERROR, e.to_string());
         match method {
-            "initialize" => serde_json::to_value(server_info()).map_err(internal),
+            "initialize" => {
+                serde_json::to_value(server_info(self.daemon.as_ref().map(|(_, policy)| *policy))).map_err(internal)
+            }
             "commands" => serde_json::to_value(self.dispatcher.commands()).map_err(internal),
+            "shutdown" => Ok(Value::Null),
             "invoke" => {
                 let call: Invoke =
                     serde_json::from_value(params).map_err(|e| (codes::INVALID_PARAMS, e.to_string()))?;
@@ -260,11 +448,24 @@ impl Handler for ServerHandler {
                     return Err((codes::METHOD_NOT_FOUND, format!("command {} is not available remotely", call.cmd)));
                 };
                 self.host.authorize(&call.window, trust).map_err(error_reply)?;
-                let c = Call { host: self.host.clone(), window: call.window, args: call.args, peer: self.peer.clone() };
+                let c = Call {
+                    host: self.host.clone(),
+                    window: call.window,
+                    args: call.args,
+                    channel_sink: peer_channel_sink(self.peer.clone()),
+                };
                 // Requests run on blocking-capable threads: wait for the command here.
                 self.host.runtime.block_on(handler(c)).map_err(error_reply)
             }
             _ => Err((codes::METHOD_NOT_FOUND, format!("unknown method {method}"))),
+        }
+    }
+
+    fn after_response(&self, method: &str) {
+        if method == "shutdown"
+            && let Some((shutdown, _)) = &self.daemon
+        {
+            shutdown.cancel();
         }
     }
 }

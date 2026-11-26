@@ -19,6 +19,7 @@ import { setFileDiagnostics } from "@/editor/lsp/diagnostics";
 import { showHint } from "@/editor/lsp/hint";
 import type { DbCompletion, DbCompletionTable, DbDriver } from "@/platform/ipc";
 import { formatSql } from "./sql/format";
+import { editorPrefs, sqlCaseStyle } from "@/platform/editorSettings";
 import { SqlResolver, type SqlSymbol } from "./sql/resolve";
 import { useProject } from "@/platform/project";
 import { consoleSchema, consoleSource, revealInTree, sourceById, useDatabase } from "./store";
@@ -210,7 +211,7 @@ function hover(path: string, sql: SqlText): ContributedHover {
 }
 
 function formatter(path: string): ContributedFormatter {
-  return (state, range) => formatSql(state.doc.toString(), sourceOf(path).driver, range);
+  return (state, range) => formatSql(state.doc.toString(), sourceOf(path).driver, range, sqlCaseStyle(editorPrefs()));
 }
 
 /** Inspections, navigation and documentation for the SQL of `path` (and Reformat Code for SQL files). */

@@ -14,6 +14,36 @@ html {
   --fw-code: 400;
   --fw-code-bold: 700;
 }
+/* YaHei also covers kana and bopomofo. Prefer the matching UI faces for those ranges. */
+@font-face {
+  font-family: "Windows UI Kana";
+  src: local("Yu Gothic UI Regular"), local("YuGothicUI-Regular"), local("Meiryo UI");
+  font-weight: 400;
+  unicode-range: U+3040-30FF, U+31F0-31FF, U+FF66-FF9F;
+}
+@font-face {
+  font-family: "Windows UI Kana";
+  src: local("Yu Gothic UI Bold"), local("YuGothicUI-Bold"), local("Meiryo UI Bold");
+  font-weight: 700;
+  unicode-range: U+3040-30FF, U+31F0-31FF, U+FF66-FF9F;
+}
+@font-face {
+  font-family: "Windows UI Bopomofo";
+  src: local("Microsoft JhengHei UI"), local("MicrosoftJhengHeiUIRegular"), local("Microsoft JhengHei");
+  font-weight: 400;
+  unicode-range: U+3100-312F, U+31A0-31BF;
+}
+@font-face {
+  font-family: "Windows UI Bopomofo";
+  src: local("Microsoft JhengHei UI Bold"), local("MicrosoftJhengHeiUIBold"), local("Microsoft JhengHei Bold");
+  font-weight: 700;
+  unicode-range: U+3100-312F, U+31A0-31BF;
+}
+html[data-os="windows"] {
+  --ui-platform-fonts:
+    "Windows UI Kana", "Windows UI Bopomofo", "Microsoft YaHei UI", "Microsoft YaHei", "Microsoft JhengHei UI",
+    "Microsoft JhengHei", "Yu Gothic UI", Meiryo, "Malgun Gothic", var(--ui-system-fonts);
+}
 :root {
   /* Spacing scale on a 4px grid: --space-N = N * 4px. Used for gap. */
   --space-0-5: 2px;
@@ -288,7 +318,8 @@ html {
   /* Nerd Font icons (in agent task titles): an installed Nerd Font, set once the window is
      idle by appearanceRuntime. Last in the UI stack, so only glyphs no text font has use it. */
   --font-icons: sans-serif;
-  --font-ui: "Inter Variable", Inter, system-ui, -apple-system, sans-serif, var(--font-icons);
+  --ui-system-fonts: system-ui, -apple-system, sans-serif;
+  --font-ui: "Inter Variable", Inter, var(--ui-platform-fonts, var(--ui-system-fonts)), var(--font-icons);
   /* Shortcut glyphs (⌘⇧⌥⌃↵) render best in the system UI font, as in macOS menus. */
   --font-keys: -apple-system, BlinkMacSystemFont, "Segoe UI Symbol", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", "JetBrains Mono Variable", ui-monospace, Menlo, monospace;
@@ -328,6 +359,12 @@ html {
   --radius-row: 4px;
   --radius-selection: 5px;
   --radius-control: 4px;
+  /* Combo boxes follow Component.arc 8 (radius 4); ComboBox.padding 1,9,1,6 (left 9, right 6). */
+  --radius-combo: 4px;
+  --combo-pad-start: 9px;
+  --combo-pad-end: 6px;
+  /* EditorTabs.tabInsets -6,8,-6,8: the tab pill's inline padding (8px each side). */
+  --tab-pad-x: 8px;
   --radius-tab: 6px;
   --radius-toolbar-button: 6px;
   /* main toolbar dropdowns (MainToolbar.Dropdown.arc 12): unchanged in compact mode */
@@ -393,6 +430,9 @@ html {
   --bg-island: #191a1c;
   --island-gap: 6px;
   --island-radius: 10px;
+  /* Tree horizontal inset. Together with the island gap it makes JetBrains'
+     Tree.border left/right padding: 6 + 6 = 12px (4 + 4 = 8px in compact). */
+  --tree-inset: 6px;
   --bg-stripe: var(--bg-frame);
   --bg-stripe-hover: #ffffff17;
   --bg-stripe-selected: #ffffff29;
@@ -1529,7 +1569,16 @@ html {
   --fs-chrome: calc(var(--fs-ui) - 1px);
   --island-gap: 4px;
   --island-radius: 8px;
+  /* Compact Tree.border is "2,8,2,8": island gap 4 + tree inset 4 = 8 horizontally. */
+  --tree-inset: 4px;
+  /* ComboBox.arc.compact "4,4,4,4" (radius 2) and padding.compact 1,6,1,6. */
+  --radius-combo: 2px;
+  --combo-pad-start: 6px;
+  --combo-pad-end: 6px;
+  /* EditorTabs.tabInsets.compact -2,6,-2,4: the pill's inline padding shrinks 8→6/4. */
+  --tab-pad-x: 6px;
   --radius-control: 3px;
+  /* MainToolbar.Button.arc 12 → 8 and Button.ToolWindow.arc 12 → 8 (stripe buttons). */
   --radius-toolbar-button: 4px;
 }
 /* Use contrast scrollbars. */

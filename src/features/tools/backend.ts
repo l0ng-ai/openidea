@@ -5,6 +5,7 @@
 import { Channel } from "@tauri-apps/api/core";
 import type { InstallEvent, RequestId, ToolInfo, ToolUpdate } from "@/bindings";
 import { call, commands, IpcError, isTauri } from "@/platform/ipc";
+import { choosePath } from "@/platform/choosePath";
 
 export interface LanguageChoice {
   id: string;
@@ -43,11 +44,7 @@ export const tauriToolsBackend: ToolsBackend = {
   restartServers: async (name) => {
     await call(commands.lspRestartNamed(name));
   },
-  chooseExecutable: async (title, defaultPath) => {
-    const { open } = await import("@/platform/dialog");
-    const picked = await open({ directory: false, multiple: false, title, defaultPath: defaultPath || undefined });
-    return (Array.isArray(picked) ? picked[0] : picked) ?? null;
-  },
+  chooseExecutable: (title, defaultPath) => choosePath({ directory: false, title, defaultPath }),
   languages: async () =>
     (await commands.languages())
       .map((l) => ({ id: l.id, name: l.name, extensions: l.extensions, filenames: l.filenames }))
@@ -195,6 +192,7 @@ export class MemoryToolsBackend implements ToolsBackend {
       });
     onEvent({ type: "line", text: `Installing ${t.displayName} via ${t.installMethod}…` });
     for (const fraction of [0.25, 0.5, 0.75, 1]) {
+      // oxlint-disable-next-line no-await-in-loop -- progress steps and the cancellation check between them are ordered
       await this.wait();
       if (this.cancelled.delete(request)) throw new IpcError({ kind: "cancelled", message: "cancelled" });
       onEvent({ type: "progress", fraction, message: `Downloaded ${(fraction * 8).toFixed(1)} of 8.0 MB` });

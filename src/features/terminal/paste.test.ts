@@ -13,6 +13,7 @@ beforeEach(() => {
   notify.mockClear();
 });
 afterEach(() => {
+  usePlatform.setState({ os: "macos" });
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -181,6 +182,7 @@ function remoteTarget(current = () => true): TerminalPasteTarget {
 }
 
 it.each(["event", "menu"])("rejects oversized %s images before reading or uploading", async (route) => {
+  usePlatform.setState({ os: "windows" }); // the WebView menu path; macOS reads natively
   const read = vi.fn(async () => new ArrayBuffer(0));
   const blob = image(read, 20 * 1024 * 1024 + 1);
   const store = vi.spyOn(commands, "termStoreImage");
@@ -218,7 +220,7 @@ it("allows images at the size limit", async () => {
   const remove = installTerminalPaste(host, paste, () => remoteTarget());
   host.dispatchEvent(imageEvent(image(undefined, 20 * 1024 * 1024)));
   await vi.waitFor(() => expect(paste).toHaveBeenCalledWith("'/remote/image.png'"));
-  expect(store).toHaveBeenCalledWith(42, [1, 2], "image/png");
+  expect(store).toHaveBeenCalledWith(42, "AQI=", "image/png");
   expect(notify).not.toHaveBeenCalled();
   remove();
 });
@@ -238,7 +240,7 @@ it("claims remote image events before xterm and pastes a quoted path only after 
   const event = imageEvent(image());
   host.dispatchEvent(event);
   expect(event.defaultPrevented).toBe(true);
-  await vi.waitFor(() => expect(store).toHaveBeenCalledWith(42, [1, 2], "image/png"));
+  await vi.waitFor(() => expect(store).toHaveBeenCalledWith(42, "AQI=", "image/png"));
   expect(paste).not.toHaveBeenCalled();
   finish({ status: "ok", data: "/tmp/a'b c.png" });
   await vi.waitFor(() => expect(paste).toHaveBeenCalledWith("'/tmp/a'\\''b c.png'"));
@@ -246,6 +248,7 @@ it("claims remote image events before xterm and pastes a quoted path only after 
 });
 
 it("reads an image from the explicit paste menu after text and file recovery", async () => {
+  usePlatform.setState({ os: "windows" }); // the WebView menu path; macOS reads natively
   vi.spyOn(commands, "clipboardFileList").mockResolvedValue({ status: "ok", data: ["/local/stale.png"] });
   const store = vi.spyOn(commands, "termStoreImage").mockResolvedValue({ status: "ok", data: "/remote/image.png" });
   const getType = vi.fn(async () => image());
@@ -256,11 +259,12 @@ it("reads an image from the explicit paste menu after text and file recovery", a
   const paste = vi.fn();
   await pasteTerminalClipboard(paste, () => remoteTarget());
   expect(getType).toHaveBeenCalledWith("image/png");
-  expect(store).toHaveBeenCalledWith(42, [1, 2], "image/png");
+  expect(store).toHaveBeenCalledWith(42, "AQI=", "image/png");
   expect(paste).toHaveBeenCalledWith("'/remote/image.png'");
 });
 
 it("recovers remote menu file paths when image clipboard reading is unavailable", async () => {
+  usePlatform.setState({ os: "windows" }); // the WebView menu path; macOS reads natively
   vi.spyOn(commands, "clipboardFileList").mockResolvedValue({ status: "ok", data: ["/local/file.txt"] });
   const store = vi.spyOn(commands, "termStoreImage");
   Object.defineProperty(navigator, "clipboard", { configurable: true, value: { readText: async () => "" } });
@@ -271,6 +275,7 @@ it("recovers remote menu file paths when image clipboard reading is unavailable"
 });
 
 it("uploads a menu image even if reading clipboard text is rejected", async () => {
+  usePlatform.setState({ os: "windows" }); // the WebView menu path; macOS reads natively
   const store = vi.spyOn(commands, "termStoreImage").mockResolvedValue({ status: "ok", data: "/remote/image.png" });
   Object.defineProperty(navigator, "clipboard", {
     configurable: true,
@@ -283,7 +288,7 @@ it("uploads a menu image even if reading clipboard text is rejected", async () =
   });
   const paste = vi.fn();
   await pasteTerminalClipboard(paste, () => remoteTarget());
-  expect(store).toHaveBeenCalledWith(42, [1, 2], "image/png");
+  expect(store).toHaveBeenCalledWith(42, "AQI=", "image/png");
   expect(paste).toHaveBeenCalledWith("'/remote/image.png'");
   expect(notify).not.toHaveBeenCalled();
 });
@@ -298,12 +303,13 @@ it("uploads image events instead of recovering a local image path", async () => 
   host.dispatchEvent(event);
   expect(event.defaultPrevented).toBe(true);
   await vi.waitFor(() => expect(paste).toHaveBeenCalledWith("'/remote/photo.png'"));
-  expect(store).toHaveBeenCalledWith(42, [1, 2], "image/png");
+  expect(store).toHaveBeenCalledWith(42, "AQI=", "image/png");
   expect(list).not.toHaveBeenCalled();
   remove();
 });
 
 it("does not upload a menu image when the target changes while reading", async () => {
+  usePlatform.setState({ os: "windows" }); // the WebView menu path; macOS reads natively
   let valid = true;
   let finish!: (value: Blob) => void;
   const getType = vi.fn(
@@ -446,6 +452,7 @@ function localTarget(shell = "sh", current = () => true): TerminalPasteTarget {
 }
 
 it.each(["event", "menu"])("stores raw local clipboard media through %s paste", async (route) => {
+  usePlatform.setState({ os: "windows" }); // the WebView menu path; macOS reads natively
   const store = vi.spyOn(commands, "termStoreImage").mockResolvedValue({ status: "ok", data: "/tmp/a'b c.png" });
   const host = document.createElement("div");
   const paste = vi.fn();
@@ -463,7 +470,7 @@ it.each(["event", "menu"])("stores raw local clipboard media through %s paste", 
     await pasteTerminalClipboard(paste, () => localTarget());
   }
   await vi.waitFor(() => expect(paste).toHaveBeenCalledExactlyOnceWith("'/tmp/a'\\''b c.png'"));
-  expect(store).toHaveBeenCalledWith(42, [1, 2], "image/png");
+  expect(store).toHaveBeenCalledWith(42, "AQI=", "image/png");
   expect(notify).not.toHaveBeenCalled();
   remove();
 });
@@ -566,7 +573,7 @@ it.each(["audio/wav", "video/mp4"])("stores raw %s clipboard data", async (type)
   const event = imageEvent({ ...image(), type } as Blob);
   host.dispatchEvent(event);
   await vi.waitFor(() => expect(paste).toHaveBeenCalledExactlyOnceWith("'/tmp/media'"));
-  expect(store).toHaveBeenCalledWith(42, [1, 2], type);
+  expect(store).toHaveBeenCalledWith(42, "AQI=", type);
   remove();
 });
 
@@ -632,7 +639,7 @@ it.each([
   { os: "linux", native: "ls -la", expected: ["ls -la"], execCommand: 0 },
   // An image-only clipboard keeps the WebView paths.
   { os: "linux", native: "", expected: [], execCommand: 1 },
-  { os: "macos", native: "ls -la", expected: ["ls -la"], execCommand: 1 },
+  { os: "macos", native: "ls -la", expected: ["ls -la"], execCommand: 0 },
 ] as const)("menu paste on $os with native text '$native'", async ({ os, native, expected, execCommand }) => {
   usePlatform.setState({ os });
   vi.spyOn(commands, "clipboardText").mockResolvedValue({ status: "ok", data: native });
@@ -650,4 +657,69 @@ it.each([
   }
   expect(exec).toHaveBeenCalledTimes(execCommand);
   expect(paste.mock.calls).toEqual(expected.map((text) => [text]));
+});
+
+// WebKit on macOS shows a "Paste" callout for execCommand("paste") and navigator.clipboard reads
+// outside a paste event: a menu paste reads text, files and images through the backend.
+it.each([
+  { name: "text", text: "ls -la", files: [], png: null, target: localTarget, expected: "ls -la" },
+  {
+    name: "Finder file",
+    text: "a b.txt",
+    files: ["/x/a b.txt"],
+    png: null,
+    target: localTarget,
+    expected: "'/x/a b.txt'",
+  },
+  { name: "screenshot", text: null, files: [], png: "AQI=", target: localTarget, expected: "'/tmp/shot.png'" },
+  { name: "remote screenshot", text: null, files: [], png: "AQI=", target: remoteTarget, expected: "'/tmp/shot.png'" },
+  { name: "empty clipboard", text: null, files: [], png: null, target: localTarget, expected: null },
+  {
+    name: "remote file list",
+    text: "",
+    files: ["/x/a b.txt"],
+    png: null,
+    target: remoteTarget,
+    expected: "/x/a b.txt",
+  },
+])("macOS menu paste of $name never asks WebKit", async ({ text, files, png, target, expected }) => {
+  usePlatform.setState({ os: "macos" });
+  vi.spyOn(commands, "clipboardText").mockResolvedValue({ status: "ok", data: text });
+  vi.spyOn(commands, "clipboardFileList").mockResolvedValue({ status: "ok", data: files });
+  vi.spyOn(commands, "clipboardImage").mockResolvedValue({
+    status: "ok",
+    data: png && `data:image/png;base64,${png}`,
+  });
+  const store = vi.spyOn(commands, "termStoreImage").mockResolvedValue({ status: "ok", data: "/tmp/shot.png" });
+  const web = { readText: vi.fn(async () => "web"), read: vi.fn(async () => []) };
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: web });
+  const exec = vi.fn(() => false);
+  Object.defineProperty(document, "queryCommandSupported", { configurable: true, value: () => true });
+  Object.defineProperty(document, "execCommand", { configurable: true, value: exec });
+  const paste = vi.fn();
+  try {
+    await pasteTerminalClipboard(paste, () => target());
+  } finally {
+    Reflect.deleteProperty(document, "queryCommandSupported");
+    Reflect.deleteProperty(document, "execCommand");
+  }
+  expect(exec).not.toHaveBeenCalled();
+  expect(web.readText).not.toHaveBeenCalled();
+  expect(web.read).not.toHaveBeenCalled();
+  expect(paste.mock.calls).toEqual(expected ? [[expected]] : []);
+  if (png) expect(store).toHaveBeenCalledWith(42, png, "image/png");
+  expect(notify).not.toHaveBeenCalled();
+});
+
+it("keeps the WebView menu paste for a browser on macOS", async () => {
+  vi.unstubAllGlobals();
+  const store = vi.spyOn(commands, "termStoreImage").mockResolvedValue({ status: "ok", data: "/remote/image.png" });
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { readText: async () => "", read: async () => [{ types: ["image/png"], getType: async () => image() }] },
+  });
+  const paste = vi.fn();
+  await pasteTerminalClipboard(paste, () => remoteTarget());
+  expect(store).toHaveBeenCalledWith(42, "AQI=", "image/png");
+  expect(paste).toHaveBeenCalledWith("'/remote/image.png'");
 });

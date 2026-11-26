@@ -273,6 +273,7 @@ describe("ownTerminalInput with xterm", () => {
       } else {
         composition(textarea, step[0], step[1]);
       }
+      // oxlint-disable-next-line no-await-in-loop -- each IME event must settle before the next event is dispatched
       await task();
     }
     await task();

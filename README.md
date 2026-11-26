@@ -33,6 +33,12 @@ its search-everything habits — to a native app with a Rust core.
 Editor, code insight, debugger, Git, terminal, database and HTTP clients,
 for 60+ languages. Builds for macOS, Windows and Linux.
 
+On macOS you can also install it with Homebrew:
+
+```bash
+brew install --cask l0ng-ai/tap/openidea
+```
+
 ## Benchmark
 
 Opening [freqtrade](https://github.com/freqtrade/freqtrade) (Python, ~770 files)
@@ -68,7 +74,7 @@ the [official plugins](plugins/official). The plugin API is still a preview.
 - [Discord](https://discord.gg/2Zy4yn7gP) — questions, feedback and release news.
 - WeChat group — scan to join:
 
-  <img src=".github/assets/wechat-group-3.png" alt="WeChat group QR code" width="200">
+  <img src=".github/assets/wechat-group-4.png" alt="WeChat group QR code" width="200">
 
 - Contributing: see [CONTRIBUTING.md](CONTRIBUTING.md) and the [contributor docs](https://openidea.sh/en/contribute/setup).
 

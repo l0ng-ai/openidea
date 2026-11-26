@@ -31,6 +31,8 @@ export interface CommentEditorAction {
   disabled?: boolean;
 }
 
+const NO_EXTRA_ACTIONS: CommentEditorAction[] = [];
+
 export interface CommentEditorProps {
   initialText?: string;
   /** The primary button: "Comment", "Reply", "Save Changes"… */
@@ -67,7 +69,7 @@ export function CommentEditor({
   onSubmit,
   onCancel,
   noCancelButton,
-  extraActions = [],
+  extraActions = NO_EXTRA_ACTIONS,
   showAvatar,
   variant = "full",
   placeholder,

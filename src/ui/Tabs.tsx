@@ -22,7 +22,7 @@ import { IconButton } from "./Button";
 import { Menu, type MenuItem } from "./Menu";
 import { HiddenTabsPopup } from "./HiddenTabsPopup";
 import { tooltipAttrs } from "./Tooltip";
-import { isOutsideWindow, registerDropTarget, startPointerDrag } from "./pointerDrag";
+import { isOutsideWindow, registerDropTarget, startPointerDrag, type DragData } from "./pointerDrag";
 import { Given } from "./T";
 import styles from "./Tabs.module.css";
 import { tx, useGivenTx } from "@/platform/i18n";
@@ -32,12 +32,11 @@ export interface TabItem {
   label: ReactNode;
   /** Plain text used by the overflow menu and type-ahead when `label` isn't a string. */
   text?: string;
+  /** The label is data (a file, session or result name): shown as written, never looked up in the catalog. */
+  verbatim?: boolean;
   icon?: IconName | (string & {});
   closable?: boolean;
-  /**
-   * Pinned (IDEA's content tabs): with `onTogglePin`, an Unpin button takes the close
-   * button's place, and the strip's close gestures leave the tab alone.
-   */
+  /** With `onTogglePin`, the tab shows Unpin in the action slot. */
   pinned?: boolean;
   /**
    * Visual only: hide this tab's close button without disabling its close
@@ -72,6 +71,9 @@ export interface TabsDnd {
   type: string;
   payload: (id: string) => string;
   onDrop: (payload: string, index: number) => void;
+  /** Extra drag payloads accepted onto this strip (shown with the cross-strip insertion line). */
+  accepts?: (data: DragData) => boolean;
+  onExternalDrop?: (data: DragData, index: number) => void;
   /**
    * A dragged tab released with no accepting target (the pointer left the
    * window): the editor uses it to detach the tab into a new window. Gets the
@@ -129,7 +131,7 @@ export interface TabsProps {
   onClose?: (id: string) => void;
   /** Alt+click on a close button (IDEA: close all other tabs). */
   onCloseOthers?: (id: string) => void;
-  /** Pin / Unpin Tab on the selected tab, from the container (a tool window's content tabs). */
+  /** Toggle the pinned state of a tab. */
   onTogglePin?: (id: string) => void;
   /** Shift+left-click a tab closes it (editor tabs; plain clicks still select). */
   closeOnShiftClick?: boolean;
@@ -150,14 +152,19 @@ export interface TabsProps {
   focusContent?: () => boolean;
   /** Enables drag & drop reordering (and moving between strips of the same type). */
   dnd?: TabsDnd;
-  /** Tabs that don't fit: `scroll` the strip (default), `squeeze` them, or `wrap` into rows. */
-  layout?: "scroll" | "squeeze" | "wrap";
+  /** `fit` keeps each tab within the scrolling strip. `squeeze` shrinks tabs together and `wrap` adds rows. */
+  layout?: "scroll" | "fit" | "squeeze" | "wrap";
   /** For editor strips, show only tabs clipped by the strip in the overflow popup. */
   hiddenTabsOnly?: boolean;
   /** Side of the label the close button sits on. */
   closePosition?: "right" | "left";
   /** `vertical`: a column of tabs (editor tabs placed left / right); always scrolls, `layout` is ignored. */
   orientation?: "horizontal" | "vertical";
+  /**
+   * Clicking a tab leaves keyboard focus where it was (a scope strip under a search field, like the
+   * Find in Files scopes); keyboard navigation of a focused strip is unchanged.
+   */
+  keepFocusOnClick?: boolean;
 }
 
 export function Tabs({
@@ -180,12 +187,15 @@ export function Tabs({
   hiddenTabsOnly = false,
   closePosition = "right",
   orientation = "horizontal",
+  keepFocusOnClick = false,
   ...aria
 }: TabsProps) {
   const vertical = orientation === "vertical";
+  const protectPinned = variant !== "editor" && !!onTogglePin;
   const given = useGivenTx();
   const scrollRef = useRef<HTMLDivElement>(null);
   const tabRefs = useRef(new Map<string, HTMLButtonElement>());
+  const middlePressedTab = useRef<HTMLDivElement | null>(null);
   const [overflow, setOverflow] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const closeMenu = useCallback(() => setMenuOpen(false), [setMenuOpen]);
@@ -194,17 +204,17 @@ export function Tabs({
   const [dragging, setDragging] = useState<string | null>(null);
 
   const register = useContext(TabStripRegistry);
-  const latest = useRef({ items, activeId, onClose, onTogglePin });
+  const latest = useRef({ items, activeId, onClose, onTogglePin, protectPinned });
   useLayoutEffect(() => {
-    latest.current = { items, activeId, onClose, onTogglePin };
+    latest.current = { items, activeId, onClose, onTogglePin, protectPinned };
   });
   useEffect(
     () =>
       register?.({
         closeSelected: () => {
-          const { items, activeId, onClose, onTogglePin } = latest.current;
+          const { items, activeId, onClose, protectPinned } = latest.current;
           const item = items.find((it) => it.id === activeId);
-          if (!item || !onClose || item.closable === false || (item.pinned && onTogglePin)) return false;
+          if (!item || !onClose || !canCloseTab(item, protectPinned)) return false;
           onClose(item.id);
           return true;
         },
@@ -243,12 +253,15 @@ export function Tabs({
       return next ? items.indexOf(next) : items.length;
     };
     return registerDropTarget(el, {
-      accepts: (type) => type === dropState.current.dnd?.type,
+      accepts: (type, data) => type === dropState.current.dnd?.type || !!dropState.current.dnd?.accepts?.(data),
       over: (_, x, y) => setDrop(indexAt(x, y)),
       leave: () => setDrop(null),
       drop: (data, x, y) => {
         setDrop(null);
-        dropState.current.dnd?.onDrop(data.payload, indexAt(x, y));
+        const current = dropState.current.dnd;
+        const at = indexAt(x, y);
+        if (data.type === current?.type) current.onDrop(data.payload, at);
+        else current?.onExternalDrop?.(data, at);
       },
     });
   }, [dndType]);
@@ -290,6 +303,7 @@ export function Tabs({
     };
   }, [tabIds]);
 
+  const observedTabs = layout === "fit" ? tabIds : null;
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -306,8 +320,10 @@ export function Tabs({
     if (typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(measure);
     ro.observe(el);
+    // A renamed tab can move or resize the selected slot without resizing the strip.
+    if (observedTabs) for (const tab of el.children) ro.observe(tab);
     return () => ro.disconnect();
-  }, [items.length, revealTab, vertical, hiddenTabsOnly, closeMenu]);
+  }, [items.length, observedTabs, revealTab, vertical, hiddenTabsOnly, closeMenu]);
 
   useEffect(() => {
     // The whole tab (label + close button) into view, without scrolling any outer container.
@@ -338,7 +354,7 @@ export function Tabs({
         break;
       case "Delete":
       case "Backspace":
-        if (onClose && item.closable !== false && !(item.pinned && onTogglePin)) onClose(item.id);
+        if (onClose && canCloseTab(item, protectPinned)) onClose(item.id);
         else return;
         break;
       case "Tab":
@@ -352,7 +368,10 @@ export function Tabs({
 
   const menuItems: MenuItem[] = items.map((t) => ({
     id: t.id,
-    label: given(t.text ?? (typeof t.label === "string" ? t.label : t.id)),
+    label: t.verbatim
+      ? (t.text ?? (typeof t.label === "string" ? t.label : t.id))
+      : given(t.text ?? (typeof t.label === "string" ? t.label : t.id)),
+    verbatim: true,
     icon: t.icon,
     checked: t.id === activeId ? true : undefined,
     run: () => onSelect(t.id),
@@ -396,8 +415,9 @@ export function Tabs({
           const pinned = !!onTogglePin && !!item.pinned;
           // Whether a tab can be closed at all (gestures and the button). A hidden
           // close button is visual only: middle click, Shift+click and Delete still work.
-          const closable = !!onClose && item.closable !== false && !pinned;
-          const showClose = closable && item.showCloseButton !== false;
+          const closable = !!onClose && canCloseTab(item, protectPinned);
+          const showClose = closable && !pinned && item.showCloseButton !== false;
+          const pinModified = pinned && variant === "editor" && item.modified;
           return (
             <div
               key={item.id}
@@ -456,10 +476,20 @@ export function Tabs({
                   : undefined
               }
               onMouseDown={(e) => {
-                if (e.button === 1 && closable) {
-                  e.preventDefault();
-                  onClose!(item.id);
-                }
+                if (e.button !== 1 || !closable) return;
+                e.preventDefault();
+                middlePressedTab.current = e.currentTarget;
+              }}
+              onMouseLeave={(e) => {
+                if (middlePressedTab.current === e.currentTarget) middlePressedTab.current = null;
+              }}
+              onMouseUp={(e) => {
+                if (e.button !== 1 || middlePressedTab.current !== e.currentTarget) return;
+                middlePressedTab.current = null;
+                if (!closable) return;
+                // WebKitGTK pastes the primary selection on release. Cancel it before closing the tab moves focus.
+                e.preventDefault();
+                onClose!(item.id);
               }}
               onContextMenu={onContextMenu ? (e) => onContextMenu(item.id, e) : undefined}
             >
@@ -473,9 +503,11 @@ export function Tabs({
                 id={panelIdPrefix ? `${panelIdPrefix}-tab-${item.id}` : undefined}
                 aria-controls={panelIdPrefix ? `${panelIdPrefix}-panel-${item.id}` : undefined}
                 aria-selected={selected}
+                aria-label={pinned && variant === "editor" && item.text ? `${item.text} ${tx("Pinned")}` : undefined}
                 tabIndex={selected || (!activeId && index === 0) ? 0 : -1}
                 className={clsx(styles.tabButton, item.dimmed && styles.dimmed)}
                 style={item.color ? { color: item.color } : undefined}
+                onMouseDown={keepFocusOnClick ? (e) => e.preventDefault() : undefined}
                 onClick={(e) => {
                   // Shift+click is mouse-only: a keyboard Enter with Shift held still selects.
                   if (closeOnShiftClick && e.shiftKey && e.detail > 0 && closable) {
@@ -494,10 +526,12 @@ export function Tabs({
               >
                 {item.icon && <Icon name={item.icon} size={14} className={styles.tabIcon} />}
                 <span className={clsx(styles.tabLabel, item.italic && styles.italic, item.error && styles.error)}>
-                  {typeof item.label === "string" ? <Given>{item.label}</Given> : item.label}
+                  {typeof item.label === "string" && !item.verbatim ? <Given>{item.label}</Given> : item.label}
                 </span>
                 {item.trailing}
-                {item.modified && !showClose && <span className={styles.modified} aria-label={tx("Modified")} />}
+                {item.modified && !showClose && !pinModified && (
+                  <span className={styles.modified} aria-label={tx("Modified")} />
+                )}
               </button>
               {pinned && (
                 <span className={styles.closeSlot} data-tab-close>
@@ -513,6 +547,7 @@ export function Tabs({
                       onTogglePin!(item.id);
                     }}
                   />
+                  {pinModified && <span className={styles.pinModified} aria-label={tx("Modified")} />}
                 </span>
               )}
               {showClose && (
@@ -561,6 +596,7 @@ export function Tabs({
                 onSelect={onSelect}
                 onCloseTab={onClose}
                 onCloseOthers={onCloseOthers}
+                onTogglePin={onTogglePin}
                 onDismiss={closeMenu}
               />
             )
@@ -579,6 +615,10 @@ export function Tabs({
       {!vertical && trailing && <div className={styles.trailing}>{trailing}</div>}
     </div>
   );
+}
+
+function canCloseTab(item: TabItem, protectPinned: boolean): boolean {
+  return item.closable !== false && !(protectPinned && item.pinned);
 }
 
 /** Scrolls `scroller` horizontally just enough to show all of `child`. */

@@ -1,12 +1,15 @@
-import { useState } from "react";
-import { Checkbox, Dialog, SearchField, Tree } from "@/ui";
+import { useId, useState } from "react";
+import { Button, Checkbox, Dialog, Icon, Popup, T, Tree, fileIconName } from "@/ui";
 import { projectFs } from "@/features/project-tree/fs";
 import { openDialog } from "./dialogs";
 import { dirName, relTo, stripSlash } from "./model";
 import { repoName, repoOf } from "./store";
 import { call, commands } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
+import { isImeKey } from "@/platform/ime";
+import { formatBinding, hasPrimaryModifier, isMacHost } from "@/platform/keymap";
 import { ipcPath, isSameOrInside } from "@/platform/paths";
+import styles from "./PathFilterDialog.module.css";
 
 interface PathNode {
   path: string;
@@ -30,42 +33,33 @@ export function chooseLogPaths(roots: string[], initial: string[], readOnly = fa
   });
 }
 
-export function editLogPaths(roots: string[], initial: string[]): Promise<string[] | null> {
+function commonRoot(roots: string[]): string | undefined {
   let base = roots[0];
   while (base && !roots.every((root) => isSameOrInside(root, base!))) {
     const parent = dirName(base);
     base = parent || (base.startsWith("/") && base !== "/" ? "/" : undefined);
   }
-  return new Promise((resolve) => {
-    const close = openDialog(() => (
-      <LogPathsEditor
-        roots={roots}
-        initial={initial}
-        base={base}
-        onDone={(value) => {
-          close();
-          resolve(value);
-        }}
-      />
-    ));
-  });
+  return base;
 }
 
-function LogPathsEditor({
+export function LogPathsEditor({
+  anchor,
   roots,
   initial,
-  base,
   onDone,
 }: {
+  anchor: HTMLElement;
   roots: string[];
   initial: string[];
-  base?: string;
   onDone: (value: string[] | null) => void;
 }) {
+  const [base] = useState(() => commonRoot(roots));
   const [text, setText] = useState(() =>
     initial.map((path) => (base ? (path === base ? "." : relTo(stripSlash(base), path)) : path)).join("\n"),
   );
   const [error, setError] = useState(false);
+  const hint = useId();
+  const shortcut = formatBinding(isMacHost() ? "Meta+Enter" : "Ctrl+Enter");
   const apply = () => {
     const paths = text
       .split("\n")
@@ -87,30 +81,62 @@ function LogPathsEditor({
     onDone([...new Set(paths)]);
   };
   return (
-    <Dialog
+    <Popup
       open
-      title="Filter by Paths"
-      width={560}
+      anchor={anchor}
+      aria-label={tx("Filter by Paths")}
+      className={styles.editor}
+      initialSize={{ w: 432, h: 200 }}
+      resizable="both"
+      minWidth={200}
+      minHeight={110}
+      trapFocus
       onClose={() => onDone(null)}
-      buttons={[
-        { label: "OK", role: "default", onClick: apply },
-        { label: "Cancel", role: "cancel" },
-      ]}
     >
-      <SearchField
+      <textarea
         data-autofocus
-        multiline
-        leadingIcon={null}
+        className={styles.pathInput}
+        spellCheck={false}
         value={text}
-        onChange={(value) => {
-          setText(value);
+        onChange={(event) => {
+          setText(event.target.value);
           setError(false);
         }}
-        aria-label="Paths"
-        placeholder="One path per line"
+        onKeyDown={(event) => {
+          if (
+            event.key !== "Enter" ||
+            !hasPrimaryModifier(event) ||
+            event.shiftKey ||
+            event.altKey ||
+            isImeKey(event.nativeEvent)
+          ) {
+            return;
+          }
+          event.preventDefault();
+          event.stopPropagation();
+          apply();
+        }}
+        aria-label={tx("Paths")}
+        aria-describedby={hint}
+        aria-invalid={error || undefined}
       />
-      {error && <div role="alert">{tx("Choose a path inside a repository.")}</div>}
-    </Dialog>
+      {error && (
+        <div className={styles.editorError} role="alert">
+          <T>Choose a path inside a repository.</T>
+        </div>
+      )}
+      <div className={styles.editorFooter}>
+        <span id={hint}>
+          <T>One path per line</T>
+        </span>
+        <span className={styles.apply}>
+          <kbd>{shortcut}</kbd>
+          <Button onClick={apply} size="small" variant="primary">
+            OK
+          </Button>
+        </span>
+      </div>
+    </Popup>
   );
 }
 
@@ -167,15 +193,21 @@ function PathFilterDialog({
     <Dialog
       open
       title="Filter by Paths"
-      width={560}
+      className={styles.chooser}
+      width={432}
+      initialSize={{ w: 432, h: 392 }}
+      resizable="both"
+      minWidth={300}
+      minHeight={220}
       onClose={() => onDone(null)}
       buttons={[
         { label: "OK", role: "default", onClick: () => onDone([...checked]) },
         { label: "Cancel", role: "cancel" },
       ]}
     >
-      <div style={{ height: 320 }}>
+      <div className={styles.content}>
         <Tree<PathNode>
+          className={styles.tree}
           roots={nodes}
           getKey={(n) => n.path}
           getLabel={(n) => n.name}
@@ -183,21 +215,49 @@ function PathFilterDialog({
           isExpandable={(n) => n.directory}
           loadChildren={load}
           renderNode={(n) => (
-            <Checkbox label={n.name} checked={checked.has(n.path)} onChange={(on) => toggle(n.path, on)} />
+            <Checkbox
+              className={styles.choice}
+              label={
+                <span className={styles.entry}>
+                  <Icon name={n.directory ? "folder" : fileIconName(n.name, n.path)} size={16} />
+                  <span className={styles.path} title={n.name}>
+                    {n.name}
+                  </span>
+                </span>
+              }
+              checked={checked.has(n.path)}
+              onChange={(on) => toggle(n.path, on)}
+            />
           )}
           aria-label="Files and folders"
         />
+        {checked.size > 0 && (
+          <div className={styles.selected} role="group" aria-label={tx("Selected paths")}>
+            {[...checked].map((path) => {
+              const root = roots.includes(path) ? path : repoOf(path, roots);
+              const label = root ? (path === root ? repoName(root) : `${repoName(root)}/${relTo(root, path)}`) : path;
+              return (
+                <Checkbox
+                  key={path}
+                  className={styles.choice}
+                  label={
+                    <span className={styles.path} title={label}>
+                      {label}
+                    </span>
+                  }
+                  checked
+                  onChange={(on) => toggle(path, on)}
+                />
+              );
+            })}
+          </div>
+        )}
+        {error && (
+          <div className={styles.error} role="alert">
+            {error}
+          </div>
+        )}
       </div>
-      {checked.size > 0 && (
-        <div style={{ maxHeight: 100, overflow: "auto" }} aria-label="Selected paths">
-          {[...checked].map((path) => {
-            const root = roots.includes(path) ? path : repoOf(path, roots);
-            const label = root ? (path === root ? repoName(root) : `${repoName(root)}/${relTo(root, path)}`) : path;
-            return <Checkbox key={path} label={label} checked onChange={(on) => toggle(path, on)} />;
-          })}
-        </div>
-      )}
-      {error && <div role="alert">{error}</div>}
     </Dialog>
   );
 }

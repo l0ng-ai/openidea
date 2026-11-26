@@ -35,6 +35,8 @@ function results() {
 function Host(props: {
   onRunTests?: (ids: string[], debug: boolean) => void;
   canRunTests?: (ids: string[]) => boolean | Promise<boolean>;
+  onUpdateSnapshots?: (ids: string[]) => void;
+  canUpdateSnapshots?: (ids: string[]) => boolean;
 }) {
   return (
     <>
@@ -52,7 +54,7 @@ function Host(props: {
   );
 }
 
-function moreItem(name: string) {
+function moreItem(name: string | RegExp) {
   const trigger = screen.getByRole("button", { name: "More Actions" });
   if (trigger.getAttribute("aria-expanded") !== "true") fireEvent.click(trigger);
   return screen.getByRole("menuitem", { name });
@@ -98,6 +100,21 @@ describe("TestTreeView", () => {
       "diff.compareTexts",
       expect.objectContaining({ left: { text: "1", label: "Expected" }, right: { text: "2", label: "Actual" } }),
     );
+  });
+
+  it("context menu: Update Snapshot on a snapshot mismatch and its suite, not on other failures", () => {
+    const onUpdateSnapshots = vi.fn();
+    const canUpdateSnapshots = vi.fn((ids: string[]) => ids[0] !== "other");
+    render(<Host onUpdateSnapshots={onUpdateSnapshots} canUpdateSnapshots={canUpdateSnapshots} />);
+    fireEvent.contextMenu(screen.getByText("MathTest"));
+    fireEvent.click(screen.getByText("Update Snapshot"));
+    expect(onUpdateSnapshots).toHaveBeenCalledWith(["MathTest"]);
+    fireEvent.contextMenu(screen.getByText("subs()"));
+    fireEvent.click(screen.getByText("Update Snapshot"));
+    expect(onUpdateSnapshots).toHaveBeenLastCalledWith(["MathTest\u0000subs()"]);
+    canUpdateSnapshots.mockReturnValue(false);
+    fireEvent.contextMenu(screen.getByText("subs()"));
+    expect(screen.queryByText("Update Snapshot")).toBeNull();
   });
 
   it("context menu: Diagnose with Agent passes the selected failure to the agents action (#4716)", async () => {
@@ -152,7 +169,16 @@ describe("TestTreeView", () => {
 });
 
 describe("Previous / Next Failed Test", () => {
-  beforeEach(() => localStorage.clear());
+  const navigate = vi.fn();
+  beforeEach(() => {
+    localStorage.clear();
+    onTestFinished(
+      registerActions([
+        { id: "navigate.prevOccurrence", title: "Previous Occurrence", run: () => void navigate(-1) },
+        { id: "navigate.nextOccurrence", title: "Next Occurrence", run: () => void navigate(1) },
+      ]),
+    );
+  });
   afterEach(() => vi.clearAllMocks());
 
   /** Two suites with failures in a nested suite and between passing tests. */
@@ -187,13 +213,13 @@ describe("Previous / Next Failed Test", () => {
     return step as { key: string; index: number; total: number } | null;
   };
   const selectedName = () => screen.getByRole("treeitem", { selected: true }).textContent;
-  const prev = () => screen.getByRole("button", { name: "Previous Failed Test" });
-  const next = () => screen.getByRole("button", { name: "Next Failed Test" });
+  const prev = () => moreItem(/^Previous Failed Test/);
+  const next = () => moreItem(/^Next Failed Test/);
 
   it("steps through the failed tests in tree order and stops at both ends", () => {
     render(<Nested results={nested()} />);
-    expect(prev()).toBeEnabled();
-    expect(next()).toBeEnabled();
+    expect(prev()).not.toHaveAttribute("aria-disabled", "true");
+    expect(next()).not.toHaveAttribute("aria-disabled", "true");
     expect(go(1)).toMatchObject({ index: 1, total: 3 });
     expect(selectedName()).toContain("rejects()");
     expect(go(1)).toMatchObject({ index: 2, total: 3 });
@@ -201,13 +227,13 @@ describe("Previous / Next Failed Test", () => {
     expect(go(1)).toMatchObject({ index: 3, total: 3 });
     expect(selectedName()).toContain("writes()");
     // IDEA doesn't wrap: Next is unavailable on the last failure, and the selection stays.
-    expect(next()).toBeDisabled();
-    expect(prev()).toBeEnabled();
+    expect(next()).toHaveAttribute("aria-disabled", "true");
+    expect(prev()).not.toHaveAttribute("aria-disabled", "true");
     expect(go(1)).toBeNull();
     expect(selectedName()).toContain("writes()");
     expect(go(-1)).toMatchObject({ index: 2 });
     expect(go(-1)).toMatchObject({ index: 1 });
-    expect(prev()).toBeDisabled();
+    expect(prev()).toHaveAttribute("aria-disabled", "true");
     expect(go(-1)).toBeNull();
     expect(selectedName()).toContain("rejects()");
   });
@@ -236,8 +262,8 @@ describe("Previous / Next Failed Test", () => {
 
   it("is unavailable when no test failed", () => {
     render(<Nested results={nested(false)} />);
-    expect(prev()).toBeDisabled();
-    expect(next()).toBeDisabled();
+    expect(prev()).toHaveAttribute("aria-disabled", "true");
+    expect(next()).toHaveAttribute("aria-disabled", "true");
     expect(go(1)).toBeNull();
     expect(go(-1)).toBeNull();
   });
@@ -245,10 +271,29 @@ describe("Previous / Next Failed Test", () => {
   it("runs Previous / Next Occurrence, so ⌘⌥↑ / ⌘⌥↓ do the same", () => {
     render(<Nested results={nested()} />);
     fireEvent.click(next());
-    expect(actions.executeAction).toHaveBeenCalledWith("navigate.nextOccurrence", undefined);
     fireEvent.click(prev());
-    expect(actions.executeAction).toHaveBeenCalledWith("navigate.prevOccurrence", undefined);
+    expect(navigate.mock.calls).toEqual([[1], [-1]]);
   });
+});
+
+it("remembers hidden row durations across test result sessions", () => {
+  localStorage.clear();
+  onTestFinished(() => localStorage.clear());
+  const results = new TestResults();
+  results.apply([{ type: "result", path: ["TestCheckout"], status: "failed", durationMs: 120 }]);
+  results.finish(1);
+  const view = (
+    <TestTreeView results={results} version={1} cwd="/p" selected={null} onSelect={() => {}} running={false} />
+  );
+  const { unmount } = render(view);
+  expect(screen.getByText("120 ms")).toBeVisible();
+  act(() => testTree.toggleDurations!());
+  expect(screen.queryByText("120 ms")).toBeNull();
+  unmount();
+  expect(testTree.toggleDurations).toBeNull();
+  render(view);
+  expect(screen.queryByText("120 ms")).toBeNull();
+  expect(testTree.showDurations).toBe(false);
 });
 
 describe("Expand All / Collapse All", () => {
@@ -347,7 +392,8 @@ describe("Export Test Results", () => {
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     act(() => testTree.exportResults!());
     expect(screen.getByRole("dialog", { name: "Export Test Results" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Output file")).toHaveValue("/p/Test Results - calc tests.html");
+    expect(screen.getByLabelText("File name")).toHaveValue("Test Results - calc tests.html");
+    expect(screen.getByLabelText("Folder")).toHaveValue("/p");
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("dialog", { name: "Export Test Results" })).toBeNull();
     unmount();
@@ -476,5 +522,139 @@ describe("Sorting Options", () => {
     fireEvent.click(option("Sort Alphabetically"));
     act(() => void occurrenceNavigator("run")!.go(1, false));
     expect(screen.getByRole("treeitem", { selected: true }).textContent).toBe("a()");
+  });
+});
+
+describe("Select First Failed Test When Finished", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    onSelect.mockClear();
+  });
+  afterEach(() => localStorage.clear());
+
+  /** Run order: a passing suite, then a failure nested two suites deep, then a later one. */
+  function run() {
+    const r = new TestResults();
+    r.apply([
+      { type: "result", path: ["ApiTest", "lists()"], status: "passed" },
+      { type: "result", path: ["ApiTest", "Auth", "Tokens", "refreshes()"], status: "failed" },
+      { type: "result", path: ["DbTest", "reads()"], status: "failed" },
+    ]);
+    return r;
+  }
+  const onSelect = vi.fn();
+  function Host({ results, running }: { results: TestResults; running: boolean }) {
+    const [selected, setSelected] = useState<string | null>(null);
+    return (
+      <TestTreeView
+        results={results}
+        version={1}
+        cwd="/p"
+        selected={selected}
+        onSelect={(id) => {
+          onSelect(id);
+          setSelected(id);
+        }}
+        running={running}
+      />
+    );
+  }
+  const selectedRows = () =>
+    screen.queryAllByRole("treeitem", { selected: true }).map((r) => r.textContent!.replace(/[\d.]+ m?s$/, ""));
+  const enable = (on = true) =>
+    localStorage.setItem("openidea.run.testFilters", JSON.stringify({ showPassed: true, selectFirstFailed: on }));
+
+  it("selects the first failure in tree order when the run finishes, opening its collapsed suites", () => {
+    enable();
+    const results = run();
+    const { rerender } = render(<Host results={results} running />);
+    act(() => testTree.collapseAll!());
+    expect(screen.queryByText("refreshes()")).toBeNull();
+    expect(selectedRows()).toEqual([]);
+    results.finish(1);
+    rerender(<Host results={results} running={false} />);
+    expect(selectedRows()).toEqual(["refreshes()"]);
+    expect(results.get(onSelect.mock.lastCall![0])!.name).toBe("refreshes()");
+  });
+
+  it("follows the sort order", () => {
+    localStorage.setItem(
+      "openidea.run.testFilters",
+      JSON.stringify({ showPassed: true, selectFirstFailed: true, sortAlphabetically: true }),
+    );
+    const results = new TestResults();
+    results.apply([
+      { type: "result", path: ["beta", "zeta()"], status: "failed" },
+      { type: "result", path: ["Alpha", "omega()"], status: "failed" },
+    ]);
+    const { rerender } = render(<Host results={results} running />);
+    results.finish(1);
+    rerender(<Host results={results} running={false} />);
+    expect(selectedRows()).toEqual(["omega()"]);
+  });
+
+  it("follows Sort by Duration, which applies in the render where the run finishes", () => {
+    localStorage.setItem(
+      "openidea.run.testFilters",
+      JSON.stringify({ showPassed: true, selectFirstFailed: true, sortByDuration: true }),
+    );
+    const results = new TestResults();
+    results.apply([
+      { type: "result", path: ["fast()"], status: "failed", durationMs: 5 },
+      { type: "result", path: ["slow()"], status: "failed", durationMs: 50 },
+    ]);
+    const { rerender } = render(<Host results={results} running />);
+    results.finish(1);
+    rerender(<Host results={results} running={false} />);
+    expect(selectedRows()).toEqual(["slow()"]);
+  });
+
+  it("keeps opening failed suites by default on the next run when the failure was already in view", () => {
+    enable();
+    const first = run();
+    const { rerender } = render(<Host results={first} running />);
+    first.finish(1);
+    rerender(<Host results={first} running={false} />);
+    expect(selectedRows()).toEqual(["refreshes()"]);
+    const second = new TestResults();
+    second.apply([{ type: "result", path: ["DbTest", "Pool", "reuses()"], status: "failed" }]);
+    rerender(<Host results={second} running />);
+    expect(screen.getByText("reuses()")).toBeVisible();
+  });
+
+  it("is off by default, and selects nothing for a passing run or results that were already finished", () => {
+    let results = run();
+    const { rerender, unmount } = render(<Host results={results} running />);
+    results.finish(1);
+    rerender(<Host results={results} running={false} />);
+    expect(selectedRows()).toEqual([]);
+    unmount();
+
+    enable();
+    results = new TestResults();
+    results.apply([{ type: "result", path: ["ApiTest", "lists()"], status: "passed" }]);
+    const passing = render(<Host results={results} running />);
+    results.finish(0);
+    passing.rerender(<Host results={results} running={false} />);
+    expect(selectedRows()).toEqual([]);
+    passing.unmount();
+
+    results = run();
+    results.finish(1);
+    render(<Host results={results} running={false} />);
+    expect(selectedRows()).toEqual([]);
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("the Test Runner Options toggle is remembered across sessions", () => {
+    const view = <Host results={run()} running={false} />;
+    const { unmount } = render(view);
+    expect(testTree.selectFirstFailed).toBe(false);
+    act(() => testTree.toggleSelectFirstFailed!());
+    expect(testTree.selectFirstFailed).toBe(true);
+    unmount();
+    expect(testTree.toggleSelectFirstFailed).toBeNull();
+    render(view);
+    expect(testTree.selectFirstFailed).toBe(true);
   });
 });

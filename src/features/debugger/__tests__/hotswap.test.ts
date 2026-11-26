@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const executeAction = vi.hoisted(() => vi.fn());
 vi.mock("@/platform/actions", async (importOriginal) => ({
@@ -39,11 +39,15 @@ vi.mock("@/workbench/contributions", async (importOriginal) => {
 import { IpcError, type DebugCapabilities, type DebugSessionId } from "@/platform/ipc";
 import { getContext } from "@/platform/context";
 import { _resetI18nForTests, setLocale } from "@/platform/i18n";
+import { useProject } from "@/platform/project";
+import { notifyBuildCompleted } from "@/workbench/contributions";
 import {
   cancelHotSwapBuild,
   hotSwapMenuItems,
   hotSwapMessage,
+  installBuildHotSwap,
   onHotCodeReplace,
+  onJavaBuildCompleted,
   reloadChangedClasses,
 } from "../hotswap";
 import { publishContext, useDebug, type DebugSession } from "../state";
@@ -83,6 +87,7 @@ function session(id: number, hotCodeReplace: boolean): DebugSession {
 describe("HotSwap", () => {
   beforeEach(() => {
     notes.length = 0;
+    useProject.setState({ project: null, settings: undefined });
     executeAction.mockClear();
     ipc.cancelRequest.mockClear();
     ipc.javaBuildWorkspace.mockClear();
@@ -92,6 +97,10 @@ describe("HotSwap", () => {
     );
     useDebug.setState({ sessions: { 1: session(1, true), 2: session(2, false) }, active: 1 });
     publishContext();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it("is enabled only with a session whose adapter can redefine classes", () => {
@@ -257,6 +266,37 @@ describe("HotSwap", () => {
     }
   });
 
+  it("points a refused structural change to Enhanced class redefinition when the configuration has it off", async () => {
+    const refused = "Failed to redefine classes: add method not implemented";
+    const hint = "turn on Enhanced class redefinition in the run configuration";
+    expect(hotSwapMessage(0, [refused], false, true).body).toContain(hint);
+    expect(hotSwapMessage(0, [refused], false, false).body).toBe(refused);
+    expect(hotSwapMessage(0, ["boom"], false, true).body).toBe("boom");
+
+    const withConfig = (kind: string, params: Record<string, string>) => ({
+      ...session(1, true),
+      runConfig: { id: kind, kind, params } as unknown as NonNullable<DebugSession["runConfig"]>,
+    });
+    ipc.debugRedefineClasses.mockImplementation(() => ipc.ok({ changedClasses: [], errorMessage: refused }));
+    for (const [s, shown] of [
+      [withConfig("application", {}), true],
+      [withConfig("spring-boot", {}), true],
+      [withConfig("application", { enhancedClassRedefinition: "true" }), false],
+      [withConfig("tomcat", {}), false],
+      [session(1, true), false],
+    ] as const) {
+      useDebug.setState({ sessions: { 1: s } });
+      // oxlint-disable-next-line no-await-in-loop -- one reload per session shape; each assertion reads its notification
+      await reloadChangedClasses(false);
+      expect(notes.at(-1)).toMatchObject({ level: "error", title: "Hot Swap failed" });
+      expect(String(notes.at(-1)!.body).includes(hint)).toBe(shown);
+    }
+
+    useDebug.setState({ sessions: { 1: withConfig("application", {}) } });
+    onHotCodeReplace(1 as DebugSessionId, { kind: "hotCodeReplace", changeType: "ERROR", message: refused });
+    expect(notes.at(-1)).toMatchObject({ title: "Hot Swap", body: expect.stringContaining(hint) });
+  });
+
   function pausedFrames(names: string[], restartFrame = true): DebugSession {
     return {
       ...session(1, true),
@@ -360,5 +400,48 @@ describe("HotSwap", () => {
     const before = notes.length;
     onHotCodeReplace(99 as DebugSessionId, { kind: "hotCodeReplace", changeType: "ERROR", message: "not ours" });
     expect(notes.length).toBe(before);
+  });
+
+  it("asks or auto-reloads after Recompile or Java build according to debugger.hotSwapAfterCompile", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 240_000);
+    const off = installBuildHotSwap();
+    try {
+      // Never policy stays silent on both user builds and JDT BUILD_COMPLETE events.
+      useProject.setState({ settings: { debugger: { hotSwapAfterCompile: "never" } } as never });
+      notifyBuildCompleted({ kind: "compileFile", file: "/p/app/src/Main.java", system: "javac", userInitiated: true });
+      onHotCodeReplace(1 as DebugSessionId, { kind: "hotCodeReplace", changeType: "BUILD_COMPLETE", message: "" });
+      expect(notes).toEqual([]);
+      expect(ipc.debugRedefineClasses).not.toHaveBeenCalled();
+
+      // Ask policy prompts with the recompiled filename and allows redefineClasses even if JDT sees a sibling error.
+      useProject.setState({ settings: { debugger: { hotSwapAfterCompile: "ask" } } as never });
+      notifyBuildCompleted({ kind: "compileFile", file: "/p/app/src/Main.java", system: "maven", userInitiated: true });
+      expect(notes.at(-1)).toMatchObject({
+        level: "info",
+        title: "Classes changed",
+        body: "Reload 'Main.java' into the running debug session?",
+      });
+      ipc.javaBuildWorkspace.mockImplementationOnce(() => ipc.ok("withErrors"));
+      notes.at(-1)!.actions![0]!.run();
+      await vi.waitFor(() => expect(ipc.debugRedefineClasses).toHaveBeenCalledWith(1));
+      expect(notes.at(-1)).toMatchObject({ level: "info", title: "2 classes reloaded" });
+
+      // Non-user-initiated or non-Java builds do not prompt.
+      const before = notes.length;
+      onJavaBuildCompleted({ kind: "build", file: null, system: "maven", userInitiated: false });
+      onJavaBuildCompleted({ kind: "build", file: null, system: "cargo", userInitiated: true });
+      expect(notes.length).toBe(before);
+
+      // Always policy reloads immediately without a confirmation prompt.
+      useProject.setState({ settings: { debugger: { hotSwapAfterCompile: "always" } } as never });
+      ipc.javaBuildWorkspace.mockClear();
+      ipc.debugRedefineClasses.mockClear();
+      vi.spyOn(Date, "now").mockReturnValue(Date.now() + 360_000);
+      notifyBuildCompleted({ kind: "build", file: null, system: "gradle", userInitiated: true });
+      await vi.waitFor(() => expect(ipc.debugRedefineClasses).toHaveBeenCalledWith(1));
+      expect(notes.at(-1)).toMatchObject({ level: "info", title: "2 classes reloaded" });
+    } finally {
+      off();
+    }
   });
 });

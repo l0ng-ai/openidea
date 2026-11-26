@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { TargetBranchInput, stripRemotePrefix, suggestRemoteBranches } from "../TargetBranchInput";
+import { recentPushTargets, rememberPushTarget } from "../pushHistory";
 
 const branches = ["main", "feature/login", "fix/error-auth", "release/2.0"];
 
@@ -13,6 +14,8 @@ function Harness(props: { initial?: string; remote?: string | null; branches?: s
       onChange={setValue}
       branches={props.branches ?? branches}
       remote={props.remote === undefined ? "origin" : props.remote}
+      repo="/p"
+      source="main"
     />
   );
 }
@@ -58,6 +61,8 @@ describe("suggestRemoteBranches", () => {
 });
 
 describe("target branch field", () => {
+  beforeEach(() => localStorage.clear());
+
   it("lists the remote branches a typed name matches", () => {
     render(<Harness />);
     fireEvent.change(input(), { target: { value: "log" } });
@@ -103,5 +108,47 @@ describe("target branch field", () => {
     expect(screen.queryByRole("listbox")).toBeTruthy();
     fireEvent.blur(field);
     expect(screen.queryByRole("listbox")).toBeNull();
+  });
+
+  it("ranks recent targets first, labels them and keeps each name unique", () => {
+    rememberPushTarget("/p", { source: "main", remote: "origin", target: "feature/login" });
+    rememberPushTarget("/p", { source: "main", remote: "origin", target: "review/feature" });
+    rememberPushTarget("/p", { source: "other", remote: "origin", target: "feature/other" });
+    rememberPushTarget("/p", { source: "main", remote: "fork", target: "feature/fork" });
+    rememberPushTarget("/other", { source: "main", remote: "origin", target: "feature/unrelated" });
+    render(<Harness branches={["feature/login", "feature/regular"]} />);
+    fireEvent.change(input(), { target: { value: "fea" } });
+    expect(screen.getAllByRole("option").map((row) => row.textContent)).toEqual([
+      "review/featureRecently pushed",
+      "feature/loginRecently pushed",
+      "feature/regular",
+    ]);
+  });
+
+  it("browses recent targets without editing the default and reloads the next time the list opens", () => {
+    render(<Harness />);
+    const field = input();
+    rememberPushTarget("/p", { source: "main", remote: "origin", target: "review/old" });
+    fireEvent.keyDown(field, { key: "ArrowDown" });
+    const old = screen.getByRole("option", { name: /review\/old.*recently pushed/i });
+    expect(field).toHaveAttribute("aria-activedescendant", old.id);
+    expect(field).toHaveValue("main");
+    fireEvent.keyDown(field, { key: "Escape" });
+    rememberPushTarget("/p", { source: "main", remote: "origin", target: "review/new" });
+    fireEvent.keyDown(field, { key: "ArrowDown" });
+    fireEvent.keyDown(field, { key: "Enter" });
+    expect(field).toHaveValue("review/new");
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+
+  it("bounds history per repository across sources and remotes", () => {
+    rememberPushTarget("/other", { source: "main", remote: "origin", target: "review/separate" });
+    rememberPushTarget("/p", { source: "main", remote: "origin", target: "review/old" });
+    for (let i = 0; i < 9; i++) {
+      rememberPushTarget("/p", { source: i % 2 ? "topic" : "main", remote: "fork", target: `review/${i}` });
+    }
+    rememberPushTarget("/p", { source: "main", remote: "origin", target: "review/new" });
+    expect(recentPushTargets("/p", "main", "origin")).toEqual(["review/new"]);
+    expect(recentPushTargets("/other", "main", "origin")).toEqual(["review/separate"]);
   });
 });

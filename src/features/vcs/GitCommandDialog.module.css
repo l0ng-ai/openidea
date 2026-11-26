@@ -41,21 +41,6 @@
   flex: 3 1 208px;
 }
 
-.flags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1);
-}
-
-.flags > code {
-  padding: var(--space-0-5) var(--space-1-5);
-  border-radius: var(--radius-control);
-  background: var(--bg-field);
-  color: var(--fg-secondary);
-  font-family: var(--font-mono);
-  font-size: var(--fs-small);
-}
-
 .message {
   display: flex;
   flex-direction: column;

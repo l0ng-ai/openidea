@@ -39,7 +39,7 @@ export function DownloadJdkDialog({
     if (!isTauri()) return;
     commands
       .jdkDownloadVendors()
-      .then((list) => setVendors(list.map((v) => ({ value: v.id, label: v.name }))))
+      .then((list) => setVendors(list.map((v) => ({ value: v.id, verbatim: true, label: v.name }))))
       .catch(() => {});
     void call(commands.jdkDownloadLocation())
       .then((dir) => setLocation((cur) => cur || dir))

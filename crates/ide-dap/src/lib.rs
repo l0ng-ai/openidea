@@ -27,7 +27,7 @@ use adapter::{AdapterLauncher, AdapterSpec, ProcessLauncher};
 use connection::{Connection, DapError};
 pub use exception_classes::{ExceptionClassBreakpoint, ExceptionClassSupport};
 use futures::future::join_all;
-use ide_core::{DebugSessionId, IdeError, IdeResult, SharedSink};
+use ide_core::{DebugSessionId, IdeError, IdeResult, RunId, SharedSink};
 use ide_language::LanguageRegistry;
 pub use js_cdp::JsResponseRule;
 pub use js_debug::JsResponseBody;
@@ -308,6 +308,14 @@ pub struct SessionInfo {
     pub parent: Option<DebugSessionId>,
 }
 
+/// One owner's breakpoints, kept without a session and sent when one of its sessions starts.
+#[derive(Default)]
+struct OwnerBreakpoints {
+    lines: BTreeMap<PathBuf, Vec<Breakpoint>>,
+    functions: Vec<FunctionBreakpoint>,
+    data: Vec<DataBreakpoint>,
+}
+
 /// Who started a session. Every event of the session, and of the child sessions
 /// its adapter starts, goes to `sink` only; `key` (e.g. a window label) scopes
 /// listings such as [`DebugManager::sessions`].
@@ -336,13 +344,12 @@ pub struct DebugManager {
     sessions: Mutex<HashMap<DebugSessionId, Arc<Session>>>,
     /// Session start order, for "the first session" semantics.
     order: Mutex<Vec<DebugSessionId>>,
-    breakpoints: Mutex<BTreeMap<PathBuf, Vec<Breakpoint>>>,
+    /// Breakpoints by owner (window): each window's sessions get only its own.
+    breakpoints: Mutex<HashMap<String, OwnerBreakpoints>>,
     states: Mutex<HashMap<PathBuf, Vec<BreakpointState>>>,
     /// Explicit exception filter choices (filter id → enabled); unset filters use the adapter default.
     exception_choices: Mutex<BTreeMap<String, bool>>,
     exception_classes: Mutex<Vec<ExceptionClassBreakpoint>>,
-    function_breakpoints: Mutex<Vec<FunctionBreakpoint>>,
-    data_breakpoints: Mutex<Vec<DataBreakpoint>>,
     /// In-flight stops, by session: a second Stop sets `stop_force`, the waiting one kills.
     stopping: Mutex<HashMap<DebugSessionId, Arc<Session>>>,
     jvm_finder: Mutex<jvm_memory::JvmFinder>,
@@ -450,6 +457,21 @@ fn no_session(s: DebugSessionId) -> IdeError {
     IdeError::not_found(format!("no debug session {}", s.0))
 }
 
+/// debugpy hands a subprocess (`subProcess: true`, forked or spawned) over as an `attach` whose
+/// `connect` is its own client listener: the child session is another connection to the running
+/// adapter, as VS Code makes it, not a new adapter that would take that port for a debug server.
+fn subprocess_connection(configuration: &Value, spec: &AdapterSpec) -> Option<(AdapterSpec, u16)> {
+    configuration.get("subProcessId")?;
+    let connect = configuration.get("connect")?;
+    let port = u16::try_from(connect.get("port")?.as_u64()?).ok()?;
+    let mut spec = spec.clone();
+    if let Some(host) = connect.get("host").and_then(Value::as_str) {
+        let loopback = host == "localhost" || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback());
+        spec.server_host = (!loopback).then(|| host.to_owned());
+    }
+    Some((spec, port))
+}
+
 /// The name of a child session: the adapter's, or the parent's when it gives none. js-debug
 /// names a browser page's session after the page the browser starts on, before the URL
 /// loads (`about:blank`, or nothing in a new profile), which says nothing about what is debugged.
@@ -458,6 +480,15 @@ fn child_name(configuration: &Value, parent: &str) -> String {
         Some(name) if !name.trim().is_empty() && name != "about:blank" => name.to_owned(),
         _ => parent.to_owned(),
     }
+}
+
+/// `extra_json` key naming the run whose JVM an attach debugs; IDE-side, never sent to the
+/// adapter.
+pub const RUN_LINK: &str = "__openideaRun";
+
+fn take_run_link(arguments: &mut Value) -> Option<RunId> {
+    let run = arguments.as_object_mut()?.remove(RUN_LINK)?;
+    serde_json::from_value(run).ok()
 }
 
 /// Builds the `launch`/`attach` arguments: our fields first, then `extra_json` merged on top.
@@ -794,8 +825,6 @@ impl DebugManager {
             states: Mutex::default(),
             exception_choices: Mutex::default(),
             exception_classes: Mutex::default(),
-            function_breakpoints: Mutex::default(),
-            data_breakpoints: Mutex::default(),
             stopping: Mutex::default(),
             jvm_finder: Mutex::new(Arc::new(jvm_memory::find_local_jvm)),
         })
@@ -815,8 +844,24 @@ impl DebugManager {
         self.order.lock().iter().filter_map(|id| sessions.get(id).cloned()).collect()
     }
 
-    pub(crate) fn stored_breakpoints(&self, path: &Path) -> Vec<Breakpoint> {
-        self.breakpoints.lock().get(path).cloned().unwrap_or_default()
+    pub(crate) fn stored_breakpoints(&self, owner: &str, path: &Path) -> Vec<Breakpoint> {
+        self.breakpoints.lock().get(owner).and_then(|b| b.lines.get(path).cloned()).unwrap_or_default()
+    }
+
+    fn function_breakpoints(&self, owner: &str) -> Vec<FunctionBreakpoint> {
+        self.breakpoints.lock().get(owner).map(|b| b.functions.clone()).unwrap_or_default()
+    }
+
+    fn data_breakpoints(&self, owner: &str) -> Vec<DataBreakpoint> {
+        self.breakpoints.lock().get(owner).map(|b| b.data.clone()).unwrap_or_default()
+    }
+
+    /// `owner`'s sessions that take breakpoint requests.
+    fn configured_sessions(&self, owner: &str) -> Vec<Arc<Session>> {
+        self.live_sessions()
+            .into_iter()
+            .filter(|s| s.owner.key == owner && s.configured.load(Ordering::Acquire) && !s.conn.is_closed())
+            .collect()
     }
 
     /// Live sessions of `owner` (all owners when `None`).
@@ -888,6 +933,21 @@ impl DebugManager {
         if config.adapter == "rdbg" {
             rdbg_command_line(&mut spec, &config, &cwd)?;
         }
+        // Flutter: a project depending on the Flutter SDK needs `flutter debug_adapter`
+        // (the Dart adapter cannot start a program importing `dart:ui`, and hot reload
+        // is Flutter-only). Plain Dart projects keep the configured `dart`. Before
+        // `custom_command`, which picks the Flutter SDK setting's `flutter`.
+        if config.adapter == "dart" {
+            let program = arguments.get("program").and_then(Value::as_str).map(Path::new);
+            if force_flutter || is_flutter_project(&cwd, program) {
+                if spec.command == "dart" {
+                    spec.command = "flutter".into();
+                }
+                if let Some(device) = flutter_device {
+                    add_flutter_device(&mut arguments, device);
+                }
+            }
+        }
         if let Some(command) = custom_command(&spec.command) {
             spec.command = command;
         }
@@ -901,20 +961,6 @@ impl DebugManager {
             };
             if let Some(python) = python {
                 spec.command = python;
-            }
-        }
-        // Flutter: a project depending on the Flutter SDK needs `flutter debug_adapter`
-        // (the Dart adapter cannot start a program importing `dart:ui`, and hot reload
-        // is Flutter-only). Plain Dart projects keep the configured `dart`.
-        if config.adapter == "dart" {
-            let program = arguments.get("program").and_then(Value::as_str).map(Path::new);
-            if force_flutter || is_flutter_project(&cwd, program) {
-                if spec.command == "dart" {
-                    spec.command = "flutter".into();
-                }
-                if let Some(device) = flutter_device {
-                    add_flutter_device(&mut arguments, device);
-                }
             }
         }
         let id = DebugSessionId::next();
@@ -1022,6 +1068,13 @@ impl DebugManager {
         if let Some(obj) = configuration.as_object_mut() {
             obj.entry("request").or_insert_with(|| request.clone().into());
         }
+        let (spec, port) = match parent.port {
+            Some(port) => (parent.spec.clone(), Some(port)),
+            None => match subprocess_connection(&configuration, &parent.spec) {
+                Some((spec, port)) => (spec, Some(port)),
+                None => (parent.spec.clone(), None),
+            },
+        };
         self.start_session(
             DebugSessionId::next(),
             parent.owner.clone(),
@@ -1030,8 +1083,8 @@ impl DebugManager {
             Some(parent.id),
             request,
             configuration,
-            parent.spec.clone(),
-            parent.port,
+            spec,
+            port,
             None,
         )
         .await
@@ -1047,7 +1100,7 @@ impl DebugManager {
         adapter_name: String,
         parent: Option<DebugSessionId>,
         request: String,
-        arguments: Value,
+        mut arguments: Value,
         spec: AdapterSpec,
         reuse_port: Option<u16>,
         exception_classes: Option<Arc<dyn ide_jvm_inspect::ExceptionClassBreakpoints>>,
@@ -1067,6 +1120,7 @@ impl DebugManager {
             .flatten();
         let mut session = Session::new(id, owner, name, adapter_name, parent, request, conn, spec, io.port, io.child);
         session.exception_classes = exception_classes;
+        session.run = take_run_link(&mut arguments);
         let session = Arc::new(session);
         if let Some(launch_type) = arguments.get("type").and_then(Value::as_str) {
             let _ = session.launch_type.set(launch_type.to_owned());
@@ -1258,8 +1312,10 @@ impl DebugManager {
         let (files, idle): (Vec<_>, Vec<_>) = self
             .breakpoints
             .lock()
-            .iter()
-            .map(|(p, b)| (p.clone(), b.clone()))
+            .get(&s.owner.key)
+            .map(|b| b.lines.iter().map(|(p, b)| (p.clone(), b.clone())).collect::<Vec<_>>())
+            .unwrap_or_default()
+            .into_iter()
             .partition(|(_, b)| b.iter().any(|b| b.enabled));
         let sent = join_all(files.iter().map(|(path, bps)| s.send_breakpoints(path, bps, None))).await;
         // Breakpoint states follow the owner's first session.
@@ -1277,14 +1333,14 @@ impl DebugManager {
                 Err(e) => tracing::debug!("setBreakpoints for {} failed: {e}", path.display()),
             }
         }
-        let functions = self.function_breakpoints.lock().clone();
+        let functions = self.function_breakpoints(&s.owner.key);
         if !functions.is_empty()
             && s.supports("supportsFunctionBreakpoints")
             && let Err(e) = s.send_function_breakpoints(&functions).await
         {
             tracing::debug!("setFunctionBreakpoints failed: {e}");
         }
-        let data = self.data_breakpoints.lock().clone();
+        let data = self.data_breakpoints(&s.owner.key);
         if !data.is_empty()
             && s.supports("supportsDataBreakpoints")
             && let Err(e) = s.send_data_breakpoints(&data).await
@@ -1437,26 +1493,59 @@ impl DebugManager {
         }
     }
 
-    /// Breakpoints are kept per file even without a session and sent on start.
-    /// Returns states from the first live session, or unverified states when none.
+    /// `owner`'s breakpoints are kept per file even without a session and sent when one of
+    /// its sessions starts. Returns states from its first live session, or unverified states.
     pub async fn set_breakpoints(
         &self,
+        owner: &str,
         path: PathBuf,
         breakpoints: Vec<Breakpoint>,
     ) -> IdeResult<Vec<BreakpointState>> {
         {
             let mut store = self.breakpoints.lock();
+            let lines = &mut store.entry(owner.to_owned()).or_default().lines;
             if breakpoints.is_empty() {
-                store.remove(&path);
+                lines.remove(&path);
             } else {
-                store.insert(path.clone(), breakpoints.clone());
+                lines.insert(path.clone(), breakpoints.clone());
             }
         }
+        self.send_file_breakpoints(owner, path, breakpoints).await
+    }
+
+    /// Replaces all of `owner`'s line breakpoints with `files` (the window's whole list), sending
+    /// the files that changed to its sessions. A file the window no longer lists can't stay
+    /// behind and be sent to every later session, whatever made the two lists diverge (#6116).
+    pub async fn replace_breakpoints(&self, owner: &str, files: BTreeMap<PathBuf, Vec<Breakpoint>>) -> IdeResult<()> {
+        let changed: Vec<(PathBuf, Vec<Breakpoint>)> = {
+            let mut store = self.breakpoints.lock();
+            let lines = &mut store.entry(owner.to_owned()).or_default().lines;
+            let files: BTreeMap<_, _> = files.into_iter().filter(|(_, b)| !b.is_empty()).collect();
+            let removed = lines.keys().filter(|p| !files.contains_key(*p)).map(|p| (p.clone(), Vec::new()));
+            let changed = files.iter().filter(|(p, b)| lines.get(*p) != Some(b)).map(|(p, b)| (p.clone(), b.clone()));
+            let changed = removed.chain(changed).collect();
+            *lines = files;
+            changed
+        };
+        for (path, breakpoints) in changed {
+            self.send_file_breakpoints(owner, path, breakpoints).await?;
+        }
+        Ok(())
+    }
+
+    /// Drops `owner`'s breakpoints (its window closed).
+    pub fn forget_breakpoints(&self, owner: &str) {
+        self.breakpoints.lock().remove(owner);
+    }
+
+    async fn send_file_breakpoints(
+        &self,
+        owner: &str,
+        path: PathBuf,
+        breakpoints: Vec<Breakpoint>,
+    ) -> IdeResult<Vec<BreakpointState>> {
         let mut result: Option<Vec<BreakpointState>> = None;
-        for s in self.live_sessions() {
-            if !s.configured.load(Ordering::Acquire) || s.conn.is_closed() {
-                continue;
-            }
+        for s in self.configured_sessions(owner) {
             match s.send_breakpoints(&path, &breakpoints, None).await {
                 Ok(states) => {
                     result.get_or_insert(states);
@@ -1607,16 +1696,39 @@ impl DebugManager {
     }
 
     pub async fn stack_trace(&self, s: DebugSessionId, thread_id: i64) -> IdeResult<Vec<StackFrame>> {
+        const MAX_FRAMES: u64 = 400;
         let session = self.session(s)?;
         session.check_thread(thread_id)?;
-        let body = session
-            .conn
-            .request_timeout(
+        let request = |start: u64, levels: u64| {
+            session.conn.request_timeout(
                 "stackTrace",
-                json!({ "threadId": thread_id, "startFrame": 0, "levels": 400 }),
+                json!({ "threadId": thread_id, "startFrame": start, "levels": levels }),
                 REQUEST_TIMEOUT,
             )
-            .await?;
+        };
+        let frames_of = |mut body: Value| match body.get_mut("stackFrames").map(Value::take) {
+            Some(Value::Array(frames)) => frames,
+            _ => Vec::new(),
+        };
+        let raw = match request(0, MAX_FRAMES).await {
+            Ok(body) => frames_of(body),
+            // java-debug fails the whole request when one frame's source lookup throws (on Windows,
+            // a CGLIB proxy's `<generated>` source against `sourcePaths`): the frames come one at a
+            // time instead, without the ones it cannot describe.
+            // ponytail: one request per frame; page around the failing ones if deep stacks get slow.
+            Err(first @ DapError::Failed { .. }) => {
+                let Ok(top) = request(0, 1).await else { return Err(first.into()) };
+                let total = top.get("totalFrames").and_then(Value::as_u64).unwrap_or(MAX_FRAMES).min(MAX_FRAMES);
+                let mut raw = frames_of(top);
+                for start in 1..total {
+                    if let Ok(body) = request(start, 1).await {
+                        raw.extend(frames_of(body));
+                    }
+                }
+                raw
+            }
+            Err(e) => return Err(e.into()),
+        };
         let kotlin_lsp = session.kotlin_lsp_quirks().is_some();
         let frame = |f: &Value| {
             let mut frame = frame_from(f);
@@ -1628,7 +1740,7 @@ impl DebugManager {
             }
             frame
         };
-        Ok(body.get("stackFrames").and_then(Value::as_array).map(|f| f.iter().map(frame).collect()).unwrap_or_default())
+        Ok(raw.iter().map(frame).collect())
     }
 
     pub async fn scopes(&self, s: DebugSessionId, frame_id: i64) -> IdeResult<Vec<Scope>> {
@@ -1752,9 +1864,7 @@ impl DebugManager {
         let body = session.conn.request_timeout("continue", json!({ "threadId": thread_id }), REQUEST_TIMEOUT).await?;
         // DAP: a response without the flag continued every thread.
         let all = body.get("allThreadsContinued").and_then(Value::as_bool).unwrap_or(true);
-        session.suspended.resumed(ticket, thread_id, all);
-        stream_trace::release_done(&session);
-        session.emit(ide_core::event::DebugEvent::Continued { thread_id, all_threads_continued: all });
+        session.finish_resume(ticket, thread_id, all);
         Ok(())
     }
 
@@ -1801,9 +1911,7 @@ impl DebugManager {
         let sent = session.conn.request_timeout(command, json!({ "threadId": thread_id }), REQUEST_TIMEOUT).await;
         step_settled(&session, sent)?;
         // A step runs its thread; other threads stopped by their own events stay stopped.
-        session.suspended.resumed(ticket, thread_id, false);
-        stream_trace::release_done(&session);
-        session.emit(ide_core::event::DebugEvent::Continued { thread_id, all_threads_continued: false });
+        session.finish_resume(ticket, thread_id, false);
         Ok(())
     }
 
@@ -1824,7 +1932,7 @@ impl DebugManager {
         if force {
             self.suspend_breakpoints(&session, Some(&path)).await?;
         }
-        let stored = self.stored_breakpoints(&path);
+        let stored = self.stored_breakpoints(&session.owner.key, &path);
         let sent: Vec<Breakpoint> =
             if force { stored.iter().map(|b| Breakpoint { enabled: false, ..b.clone() }).collect() } else { stored };
         session.send_breakpoints(&path, &sent, Some(line)).await?;
@@ -1839,10 +1947,15 @@ impl DebugManager {
         let files: Vec<PathBuf> = self
             .breakpoints
             .lock()
-            .iter()
-            .filter(|(path, bps)| Some(path.as_path()) != except && bps.iter().any(|b| b.enabled))
-            .map(|(path, _)| path.clone())
-            .collect();
+            .get(&session.owner.key)
+            .map(|b| {
+                b.lines
+                    .iter()
+                    .filter(|(path, bps)| Some(path.as_path()) != except && bps.iter().any(|b| b.enabled))
+                    .map(|(path, _)| path.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
         let sent = join_all(files.iter().map(|path| session.send_breakpoints(path, &[], None))).await;
         let mut failed = None;
         for (path, result) in files.into_iter().zip(sent) {
@@ -1856,11 +1969,12 @@ impl DebugManager {
         if let Some(e) = failed {
             return Err(e.into());
         }
-        if !self.function_breakpoints.lock().is_empty() && session.supports("supportsFunctionBreakpoints") {
+        if !self.function_breakpoints(&session.owner.key).is_empty() && session.supports("supportsFunctionBreakpoints")
+        {
             session.send_function_breakpoints(&[]).await?;
             session.pending_restore.lock().functions = true;
         }
-        if !self.data_breakpoints.lock().is_empty() && session.supports("supportsDataBreakpoints") {
+        if !self.data_breakpoints(&session.owner.key).is_empty() && session.supports("supportsDataBreakpoints") {
             session.send_data_breakpoints(&[]).await?;
             session.pending_restore.lock().data = true;
         }
@@ -1870,8 +1984,11 @@ impl DebugManager {
     /// Re-sends what [`suspend_breakpoints`](Self::suspend_breakpoints) / run to cursor replaced.
     pub(crate) async fn restore_breakpoints(&self, session: &Arc<Session>) {
         let pending = std::mem::take(&mut *session.pending_restore.lock());
-        let files: Vec<(PathBuf, Vec<Breakpoint>)> =
-            pending.files.into_iter().map(|path| (path.clone(), self.stored_breakpoints(&path))).collect();
+        let files: Vec<(PathBuf, Vec<Breakpoint>)> = pending
+            .files
+            .into_iter()
+            .map(|path| (path.clone(), self.stored_breakpoints(&session.owner.key, &path)))
+            .collect();
         let sent = join_all(files.iter().map(|(path, bps)| session.send_breakpoints(path, bps, None))).await;
         for ((path, _), result) in files.iter().zip(sent) {
             if let Err(e) = result {
@@ -1879,13 +1996,13 @@ impl DebugManager {
             }
         }
         if pending.functions {
-            let functions = self.function_breakpoints.lock().clone();
+            let functions = self.function_breakpoints(&session.owner.key);
             if let Err(e) = session.send_function_breakpoints(&functions).await {
                 tracing::debug!("restoring function breakpoints failed: {e}");
             }
         }
         if pending.data {
-            let data = self.data_breakpoints.lock().clone();
+            let data = self.data_breakpoints(&session.owner.key);
             if let Err(e) = session.send_data_breakpoints(&data).await {
                 tracing::debug!("restoring data breakpoints failed: {e}");
             }
@@ -1913,9 +2030,7 @@ impl DebugManager {
             .request_timeout("stepIn", json!({ "threadId": thread_id, "targetId": target_id }), REQUEST_TIMEOUT)
             .await;
         step_settled(&session, sent)?;
-        session.suspended.resumed(ticket, thread_id, false);
-        stream_trace::release_done(&session);
-        session.emit(ide_core::event::DebugEvent::Continued { thread_id, all_threads_continued: false });
+        session.finish_resume(ticket, thread_id, false);
         Ok(())
     }
 
@@ -1971,6 +2086,41 @@ impl DebugManager {
     ) -> IdeResult<JvmHeapOutcome> {
         let session = self.session(s)?;
         jvm_memory::session_heap_dump(session, dir, cancel).await
+    }
+
+    /// `Thread.print -l` of the session's JVM, taking the session's class-table turn, and on JDK
+    /// 21+ the JSON dump written into `json_dir`. A JVM the debugger holds suspended is asked
+    /// only when it is 17 or later and its listener already runs: otherwise the request would hang
+    /// until the program resumes.
+    pub async fn jvm_thread_dump(&self, s: DebugSessionId, json_dir: Option<PathBuf>) -> IdeResult<JvmThreadsResult> {
+        let session = self.session(s)?;
+        jvm_memory::session_thread_dump(session, json_dir).await
+    }
+
+    /// `Thread.print -l` of `pid`, the JVM of `run`, when a live session debugs it (a build
+    /// tool's run started for Debug, Attach to Process): taken as [`Self::jvm_thread_dump`] takes
+    /// it, under that session's turn and suspension, so a suspended JVM is not asked for the JSON
+    /// dump either. `None` when no session debugs `pid`.
+    pub async fn debugged_jvm_thread_dump(
+        &self,
+        run: RunId,
+        pid: u32,
+        json_dir: Option<PathBuf>,
+    ) -> Option<IdeResult<JvmThreadsResult>> {
+        let session = self.jvm_session_of(run, pid)?;
+        Some(jvm_memory::debugged_run_thread_dump(session, pid, json_dir).await)
+    }
+
+    /// A session attached to `run` first: one whose JVM is not located yet (its attach-time scan
+    /// found no listener) still holds `pid`.
+    fn jvm_session_of(&self, run: RunId, pid: u32) -> Option<Arc<Session>> {
+        let sessions = self.live_sessions();
+        let linked = || sessions.iter().filter(|s| jvm_memory::attached_to_run(s, run, pid));
+        linked()
+            .find(|s| jvm_memory::debugs_jvm(s, pid))
+            .or_else(|| linked().next())
+            .or_else(|| sessions.iter().find(|s| jvm_memory::debugs_jvm(s, pid)))
+            .cloned()
     }
 
     /// Gives the session the backend for [`Self::jvm_memory_instances`] and the debugger's class
@@ -2062,14 +2212,17 @@ impl DebugManager {
         Ok(hot_swap_result(&body))
     }
 
-    /// Stores method breakpoints (kept without a session, sent on start) and sends them to
-    /// every configured session whose adapter supports them. States from the first one.
-    pub async fn set_function_breakpoints(&self, list: Vec<FunctionBreakpoint>) -> IdeResult<Vec<BreakpointState>> {
-        *self.function_breakpoints.lock() = list.clone();
+    /// Stores `owner`'s method breakpoints (kept without a session, sent on start) and sends them
+    /// to each of its configured sessions whose adapter supports them. States from the first one.
+    pub async fn set_function_breakpoints(
+        &self,
+        owner: &str,
+        list: Vec<FunctionBreakpoint>,
+    ) -> IdeResult<Vec<BreakpointState>> {
+        self.breakpoints.lock().entry(owner.to_owned()).or_default().functions = list.clone();
         let mut result = None;
-        for s in self.live_sessions() {
-            if !s.configured.load(Ordering::Acquire) || s.conn.is_closed() || !s.supports("supportsFunctionBreakpoints")
-            {
+        for s in self.configured_sessions(owner) {
+            if !s.supports("supportsFunctionBreakpoints") {
                 continue;
             }
             match s.send_function_breakpoints(&list).await {
@@ -2082,12 +2235,17 @@ impl DebugManager {
         Ok(result.unwrap_or_else(|| unverified(list.iter().map(|b| b.enabled))))
     }
 
-    /// Stores field watchpoints and sends them to every configured session that supports them.
-    pub async fn set_data_breakpoints(&self, list: Vec<DataBreakpoint>) -> IdeResult<Vec<BreakpointState>> {
-        *self.data_breakpoints.lock() = list.clone();
+    /// Stores `owner`'s field watchpoints and sends them to each of its configured sessions that
+    /// supports them.
+    pub async fn set_data_breakpoints(
+        &self,
+        owner: &str,
+        list: Vec<DataBreakpoint>,
+    ) -> IdeResult<Vec<BreakpointState>> {
+        self.breakpoints.lock().entry(owner.to_owned()).or_default().data = list.clone();
         let mut result = None;
-        for s in self.live_sessions() {
-            if !s.configured.load(Ordering::Acquire) || s.conn.is_closed() || !s.supports("supportsDataBreakpoints") {
+        for s in self.configured_sessions(owner) {
+            if !s.supports("supportsDataBreakpoints") {
                 continue;
             }
             match s.send_data_breakpoints(&list).await {

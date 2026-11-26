@@ -87,6 +87,15 @@ pub fn settings_get_global(host: &Host) -> Settings {
     host.with_proxy_password(host.global_settings.effective())
 }
 
+/// Read the same host-wide value for the close dialog and the idle timer: another project's
+/// daemon may have edited the file since this host loaded its settings.
+#[command(trust = always)]
+pub async fn remote_idle_timeout_minutes(host: &Arc<Host>) -> IdeResult<u16> {
+    let h = host.clone();
+    host.blocking(move || Ok(h.global_settings.layer(SettingsScope::Global).remote_development.idle_timeout_minutes))
+        .await
+}
+
 /// The removed built-in theme id a settings file of this window still names, if any:
 /// `settings_get` reports the built-in that stands in for it, so the notice about
 /// a theme that moved to a plugin can address the installs it concerns.
@@ -112,6 +121,9 @@ pub fn settings_set(
     let applied = set_settings(host, window, scope, &key, &value)?;
     if key == "mcpServer" || key.starts_with("mcpServer.") {
         host.mcp.apply(host);
+    }
+    if key == "terminal" || key.starts_with("terminal.") {
+        super::term::apply_output_rate(host, window);
     }
     let sink = host.window_sink(window);
     sink.emit(IdeEvent::SettingsChanged { key });
@@ -140,7 +152,10 @@ pub struct WorkspaceMember {
 }
 
 /// The workspace projects outside the window's project folder, for Mark Directory as there.
-#[command(trust = always)]
+/// Each member's `for_project().layer(Project)` re-parses both settings layers and validates the
+/// merged tree against `Settings`; that stack-hungry work must not run on the IPC (main) thread,
+/// whose 1 MiB stack overflows on project open (STATUS_STACK_OVERFLOW).
+#[command(trust = always, desktop_body = spawn)]
 pub fn project_workspace_members(host: &Host, window: &str) -> IdeResult<Vec<WorkspaceMember>> {
     let project = host.project(window)?;
     Ok(project
@@ -156,7 +171,8 @@ pub fn project_workspace_members(host: &Host, window: &str) -> IdeResult<Vec<Wor
 
 /// Sets a `projectStructure.*` key in the settings of `root`, a project attached to the window's
 /// project (Mark Directory as there). Every open window holding that project follows.
-#[command(trust = always)]
+/// Like `project_workspace_members`, its `for_project` settings re-parse runs off the IPC thread.
+#[command(trust = always, desktop_body = spawn)]
 pub fn project_workspace_member_set(
     host: &Arc<Host>,
     window: &str,
@@ -264,6 +280,36 @@ fn refresh_workspace(project: &Project) {
     project.refresh_index_scope();
     project.refresh_repositories();
     project.sink.emit(ide_core::IdeEvent::ProjectRootsChanged { root: project.root.clone().into() });
+}
+
+/// Records `project` in `recent` (its branch, unless attached to a workspace, and display name).
+pub fn record_recent(recent: &ide_workspace::RecentProjects, project: &Project) -> IdeResult<()> {
+    let info = info(project);
+    let attached = info.workspace.as_ref().is_some_and(|w| !w.is_container(&project.root));
+    let branch = if attached {
+        None
+    } else {
+        project.repos.read().primary().and_then(|r| r.branch_info().ok()).and_then(|b| b.head)
+    };
+    recent.touch(&project.root, branch)?;
+    recent.rename(&project.root, Some(&info.display_name))?;
+    Ok(())
+}
+
+/// File › Rename Project…: the display name of `window`'s project; an empty `name` restores the
+/// folder name. A workspace container renames the workspace, else it is stored in project settings.
+pub fn rename(host: &Host, window: &str, name: &str) -> IdeResult<Arc<Project>> {
+    let project = host.project(window)?;
+    let name = name.trim();
+    if let Some(workspace) = ide_workspace::workspace::Workspace::load(&project.root)?
+        && workspace.is_container(&project.root)
+    {
+        save_workspace(host, window, name, workspace.projects)?;
+    } else {
+        let value = if name.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(name.to_owned()) };
+        project.settings.set(SettingsScope::Project, "general.projectName", value)?;
+    }
+    Ok(project)
 }
 
 /// Attaches a trusted folder without replacing the current project.
@@ -391,6 +437,16 @@ pub fn set_settings(
     if key == "languages" || key == "languages.java" || key.starts_with("languages.java.addedJdks") {
         host.apply_added_jdks();
     }
+    if key == "vcs" || key == "vcs.git" || key == "vcs.git.executable" {
+        host.apply_git_executable();
+    }
+    // `flutter daemon` and DevTools run on the Flutter SDK; the next request starts DevTools again.
+    if ["languages", "languages.flutter", "languages.flutter.sdk"].contains(&key) {
+        for project in affected() {
+            project.flutter.sdk_changed();
+            project.devtools.stop();
+        }
+    }
     if is_proxy {
         host.apply_proxy();
     }
@@ -474,6 +530,7 @@ ide_command::domain!(
     project_trust_status,
     project_workspace_member_set,
     project_workspace_members,
+    remote_idle_timeout_minutes,
     settings_get,
     settings_get_global,
     settings_removed_theme,

@@ -4,21 +4,28 @@
  * `${classpath}` (or `${testClasspath}`) and the `java` launcher are resolved
  * through jdtls when the configuration starts.
  */
+import { Channel } from "@tauri-apps/api/core";
 import {
   call,
   commands,
   IpcError,
+  isCancelled,
+  type BuildEvent,
   type BuildPolicy,
   type JavaLaunchInfo,
+  type JunitLaunch,
   type RunConfig,
   type RequestId,
 } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
+import { projectFolder, relativePath, useProject } from "@/platform/project";
 import { useBuildPresentation } from "@/platform/projectPresentation";
 import { isRemoteWindow } from "@/platform/remote";
 
 export const CLASSPATH = "${classpath}";
 export const TEST_CLASSPATH = "${testClasspath}";
+/** OpenIDEA's JUnit Platform runner (`java/junit-runner`): its jar and the launcher join the test classpath. */
+export const JUNIT_RUNNER_MAIN = "ai.openidea.junit.Runner";
 /** Run configuration kinds launched as a JVM main class. */
 export const JVM_APPLICATION_KINDS = ["application", "spring-boot"];
 
@@ -198,6 +205,7 @@ export async function findJavaModule(config: RunConfig): Promise<string | null> 
 
 /** Module directories (as {@link jvmModuleDir}) of the project's sources declaring the class `binaryName`. */
 export async function classModules(binaryName: string): Promise<string[]> {
+  const root = useProject.getState().project?.root;
   const outer = binaryName.split("$")[0]!;
   const simple = outer.slice(outer.lastIndexOf(".") + 1);
   const pkg = outer.slice(0, Math.max(0, outer.lastIndexOf(".")));
@@ -208,9 +216,10 @@ export async function classModules(binaryName: string): Promise<string[]> {
   const configs = await call(commands.runConfigs());
   const modules = new Set<string>();
   for (const file of matches) {
+    // oxlint-disable-next-line no-await-in-loop -- keep read errors in candidate order and hold only one source text at a time
     const text = await call(commands.fsReadText(file.path));
     const sourcePackage = /^\s*package\s+([\w.]+)\s*[;\r\n]/m.exec(text)?.[1] ?? "";
-    if (sourcePackage === pkg) modules.add(jvmModuleDir(file.relPath, configs));
+    if (sourcePackage === pkg) modules.add(jvmModuleDir(root ? relativePath(root, file.path) : file.relPath, configs));
   }
   return [...modules];
 }
@@ -241,6 +250,40 @@ export interface JavaPreparation {
   policy?: BuildPolicy;
   /** Saves open documents first, as IDEA's Before launch does. */
   saveAll?: () => Promise<void>;
+  /** Follows the build while it runs (status bar, Build tool window); see `followLaunchBuild`. */
+  build?: JavaBuildFollower;
+  /**
+   * A debug launch: a module the Java language server serves is compiled by it, whose classes
+   * java-debug's HotSwap reloads, instead of the IDE's Java build.
+   */
+  debug?: boolean;
+}
+
+/** Receives the events of a launch's build as it runs, then its outcome. */
+export interface JavaBuildFollower {
+  onEvent(e: BuildEvent): void;
+  finish(status: "success" | "failed" | "cancelled"): void;
+}
+
+/** `javaResolveLaunch`, streaming the build's events to `build`, which then gets the outcome. */
+export async function resolveJavaLaunch(
+  module: string,
+  test: boolean,
+  policy: BuildPolicy,
+  request: RequestId,
+  build?: JavaBuildFollower,
+  debug = false,
+): Promise<JavaLaunchInfo> {
+  const channel = new Channel<BuildEvent>();
+  channel.onmessage = (e) => build?.onEvent(e);
+  try {
+    const info = await call(commands.javaResolveLaunch(module, test, debug, policy, request, channel));
+    build?.finish(info.build === "failed" ? "failed" : info.build === "cancelled" ? "cancelled" : "success");
+    return info;
+  } catch (e) {
+    build?.finish(isCancelled(e) ? "cancelled" : "failed");
+    throw e;
+  }
 }
 
 /** The build the launch would do: the configuration's policy, else incremental. */
@@ -257,13 +300,25 @@ export async function prepareJavaLaunch(config: RunConfig, preparation: JavaPrep
   signal.throwIfAborted();
   const parsed = parseJavaArgs(config.args);
   if (!parsed.mainClass) throw new Error(`No main class in '${config.name}'`);
-  report?.(tx`Building and resolving the classpath of ${parsed.mainClass}…` + "\n");
+  const target = parsed.mainClass === JUNIT_RUNNER_MAIN ? config.name : parsed.mainClass;
+  report?.(tx`Building and resolving the classpath of ${target}…` + "\n");
   const started = performance.now();
   const module = await prepareJavaModule(config, preparation.saveAll, signal);
   const moduleMs = performance.now() - started;
-  const info = await call(
-    commands.javaResolveLaunch(module, parsed.classpath === "test", policy, preparation.request),
+  const info = await resolveJavaLaunch(
+    module,
+    parsed.classpath === "test",
+    policy,
+    preparation.request,
+    preparation.build,
+    preparation.debug,
   ).catch((error: unknown) => {
+    if (error instanceof IpcError && error.data?.type === "javaBuildProblems") {
+      const problems = error.data.problems.join("; ");
+      throw new Error(
+        tx`Java module '${module || "."}' could not be imported because its build has errors: ${problems}. Fix them, then reload the Maven or Gradle project.`,
+      );
+    }
     if (
       error instanceof IpcError &&
       error.kind !== "cancelled" &&
@@ -291,5 +346,26 @@ export async function prepareJavaLaunch(config: RunConfig, preparation: JavaPrep
   }
   if (parsed.classpath && !info.classPaths.length)
     throw new Error(tx("The classpath is empty: is the module imported by the Java language server?"));
-  return { module, info, resolved: resolveJavaCommand(config, info) };
+  let junit: JunitLaunch | null = null;
+  if (parsed.mainClass === JUNIT_RUNNER_MAIN) {
+    junit = await call(commands.javaJunitRunner(module, info.classPaths));
+    signal.throwIfAborted();
+    info.classPaths = junit.classPaths;
+    const list = junit.surefire.join(", ");
+    if (list) report?.(tx`Applying the Surefire configuration: ${list}` + "\n");
+  }
+  const resolved = resolveJavaCommand({ ...config, module }, info);
+  // As IDEA's MavenJUnitPatcher: the JVM gets what Surefire would give its fork; the configuration's own settings win.
+  if (junit) {
+    resolved.args = [...junit.vmArgs, ...resolved.args];
+    resolved.env = { ...junit.env, ...resolved.env };
+    if (junit.workingDirectory) resolved.cwd = junit.workingDirectory;
+  }
+  const project = useProject.getState().project;
+  if (resolved.cwd == null && project?.workspace) {
+    const path = /^(?:[A-Za-z]:)?\//.test(module) ? module : `${project.root}/${module}`;
+    const owner = projectFolder(project, path);
+    if (owner && owner.root !== project.root) resolved.cwd = path;
+  }
+  return { module, info, resolved };
 }

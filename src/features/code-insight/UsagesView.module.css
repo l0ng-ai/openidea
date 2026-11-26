@@ -17,8 +17,11 @@
   gap: var(--space-0-5);
   padding: 4px 0;
   border-right: 1px solid var(--border);
+  overflow-y: auto;
+  scrollbar-width: none;
 }
 .toolbarSep {
+  flex: none;
   width: 16px;
   height: 1px;
   margin: 3px 0;
@@ -66,7 +69,6 @@
   flex: 1;
   min-height: 0;
 }
-.body > [role="toolbar"],
 .body > .summary {
   flex: 0 0 auto;
 }
@@ -98,13 +100,13 @@
   flex: none;
   color: var(--fg-subtle);
 }
+.occurrence {
+  gap: var(--space-1);
+}
 .line {
   flex: none;
-  min-width: 3ch;
-  text-align: right;
-  font-family: var(--font-mono);
-  font-size: var(--fs-ui);
-  color: var(--fg-line-number);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-subtle);
 }
 .preview {
   min-width: 0;
@@ -113,6 +115,9 @@
   font-family: var(--font-mono);
   font-size: var(--fs-code);
   color: var(--fg);
+}
+.occurrence .preview {
+  font: inherit;
 }
 .match {
   background: var(--bg-search-match);
@@ -154,7 +159,7 @@
   flex-direction: column;
   font-family: var(--font-mono);
   font-size: var(--fs-code);
-  line-height: 1.45;
+  line-height: var(--lh-code);
 }
 .sourcePreview .sourceText[role="region"] {
   font: inherit;

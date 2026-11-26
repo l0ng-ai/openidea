@@ -31,6 +31,7 @@ import {
   mavenRoots,
   nodeIcon,
   nodeLabel,
+  pluginCoordinates,
   profileChecked,
   withGradleOptions,
   gradleHasTestTask,
@@ -310,6 +311,8 @@ function NodeRow({ node, state }: { node: BuildNode; state: TreeRowState }) {
       </span>
     );
   }
+  const plugin = node.kind === "plugin" ? node.plugin : null;
+  const coordinates = plugin && `(${pluginCoordinates(plugin)})`;
   const detail =
     node.kind === "profiles" && node.projectRoot
       ? node.projectRoot.split("/").pop()
@@ -317,18 +320,28 @@ function NodeRow({ node, state }: { node: BuildNode; state: TreeRowState }) {
         ? `(${node.dependency.scope}${node.dependency.optional ? ", optional" : ""})`
         : node.kind === "dependency" && node.dependency.optional
           ? "(optional)"
-          : node.kind === "task"
-            ? node.task.description
-            : null;
+          : null;
   const skipped =
     (mavenSkipTests && node.kind === "phase" && node.phase === "test") ||
     (gradleSkipTests && node.kind === "task" && node.task.name === "test");
+  const label = (
+    <span className={clsx(styles.label, state.selected && styles.selectedLabel, skipped && styles.skippedGoal)}>
+      {plugin?.prefix ?? nodeLabel(node)}
+    </span>
+  );
   return (
-    <span className={styles.row} title={node.kind === "task" ? (node.task.description ?? undefined) : undefined}>
+    <span className={styles.row}>
       <Icon name={nodeIcon(node)} size={16} className={styles.icon} />
-      <span className={clsx(styles.label, state.selected && styles.selectedLabel, skipped && styles.skippedGoal)}>
-        {nodeLabel(node)}
-      </span>
+      {coordinates ? (
+        <span className={styles.pluginText}>
+          {label}
+          <span className={styles.detail} title={coordinates}>
+            {coordinates}
+          </span>
+        </span>
+      ) : (
+        label
+      )}
       {detail && <span className={styles.detail}>{detail}</span>}
     </span>
   );
@@ -475,6 +488,7 @@ function BuildToolView({ tool }: { tool: BuildTool }) {
           roots={roots}
           getKey={(n) => n.key}
           getLabel={nodeLabel}
+          getTooltip={(n) => (n.kind === "task" ? (n.task.description ?? undefined) : undefined)}
           getChildren={getChildren}
           isExpandable={(n) => !!getChildren(n)?.length}
           expanded={expanded}

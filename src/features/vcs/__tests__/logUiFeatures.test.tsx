@@ -3,7 +3,7 @@ import { ContextMenuHost, hideContextMenu } from "@/ui";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const api = vi.hoisted(() => ({ commits: [] as Commit[], details: vi.fn(), diff: vi.fn() }));
+const api = vi.hoisted(() => ({ commits: [] as Commit[], details: vi.fn(), diff: vi.fn(), invalidate: vi.fn() }));
 vi.mock("@/platform/ipc", async (original) => {
   const real = await original<typeof import("@/platform/ipc")>();
   const ok = <T,>(data: T) => Promise.resolve({ status: "ok" as const, data });
@@ -19,9 +19,10 @@ vi.mock("@/platform/ipc", async (original) => {
       vcsConfigGet: () => ok(null),
       vcsCommitFiles: () => ok([{ path: "src/a.ts", kind: "modified", oldPath: null }]),
       vcsLogDetails: () => api.details(),
+      vcsInvalidateLogSignatures: (...args: unknown[]) => api.invalidate(...args),
       vcsLogDetailsBatch: async (_repo: string, ids: string[]) => ({
         status: "ok",
-        data: await Promise.all(ids.map(async () => (await api.details()).data)),
+        data: await Promise.all(ids.map(async (id) => (await api.details(id)).data)),
       }),
       vcsDiffRevisions: (...args: unknown[]) => api.diff(...args),
     },
@@ -33,6 +34,7 @@ import { LogScope } from "../LogScope";
 import { CommitDetails } from "../log/CommitDetails";
 import { DEFAULT_LOG_OPTIONS, useLogOptions } from "../logOptions";
 import { emptyFilters, openLogTab, reloadLog, selectGitTab, useGitLog } from "../logStore";
+import * as logPresentation from "../logPresentation";
 import { commitKey } from "../multiRoot";
 import { useVcs } from "../store";
 
@@ -49,6 +51,7 @@ const c = (id: string, parents: string[] = [], refs: string[] = []): Commit => (
 });
 
 beforeEach(() => {
+  api.invalidate.mockReset().mockResolvedValue({ status: "ok", data: null });
   api.commits = [c("tip", ["middle"], ["HEAD"]), c("middle", ["base"]), c("base")];
   api.details.mockReset().mockResolvedValue({
     status: "ok",
@@ -147,6 +150,24 @@ describe("log controls", () => {
     expect(screen.getByRole("status")).toHaveTextContent("b");
   });
 
+  it("lays the graph out again only for the options that shape it", async () => {
+    const present = vi.spyOn(logPresentation, "presentLogGraph");
+    render(<LogView />);
+    const list = await screen.findByRole("listbox", { name: "Commits" });
+    await waitFor(() => expect(within(list).getAllByRole("option")).toHaveLength(3));
+    const laidOut = () => present.mock.calls.length;
+    const before = laidOut();
+
+    act(() => useLogOptions.setState({ showAuthor: false, columnWidths: { author: 200 } }));
+    expect(laidOut()).toBe(before);
+
+    act(() => useLogOptions.setState({ longEdges: true }));
+    expect(laidOut()).toBe(before + 1);
+
+    act(() => useGitLog.setState({ commits: [...useGitLog.getState().commits, c("older")] }));
+    expect(laidOut()).toBe(before + 2);
+  });
+
   it("hides the column headers unless View Options shows them", async () => {
     render(<LogView />);
     await screen.findByRole("listbox", { name: "Commits" });
@@ -212,6 +233,22 @@ describe("log controls", () => {
     expect(useLogOptions.getState().columnWidths.hash).toBe(42); // 72 - 30
   });
 
+  it("dragging the first column's divider resizes the Repository column", async () => {
+    useVcs.setState({ roots: ["/repo", "/other"] });
+    useLogOptions.setState({ showColumnHeaders: true, showRepository: true });
+    render(<LogView />);
+    // Commit is first by default; with Repository on its left its divider is live.
+    const handle = await screen.findByRole("separator", { name: "Resize Commit column" });
+    handle.setPointerCapture = vi.fn();
+    handle.hasPointerCapture = () => true;
+    handle.releasePointerCapture = vi.fn();
+    fireEvent.pointerDown(handle, { button: 0, pointerId: 7, clientX: 100 });
+    fireEvent.pointerMove(handle, { pointerId: 7, clientX: 140 });
+    fireEvent.pointerUp(handle, { pointerId: 7, clientX: 140 });
+    expect(useLogOptions.getState().columnWidths.repository).toBe(140); // 100 + 40
+    expect(screen.getByText("Repository").style.width).toBe("140px");
+  });
+
   it("hides column dividers by default and shows them via the option", async () => {
     useLogOptions.setState({ showColumnHeaders: true, showColumnDividers: false });
     const { rerender } = render(<LogView />);
@@ -239,6 +276,48 @@ describe("log controls", () => {
     fireEvent.contextMenu(author, { bubbles: true, clientX: 10, clientY: 10 });
     fireEvent.click(await screen.findByRole("menuitem", { name: "Hide Column" }));
     expect(useLogOptions.getState().showAuthor).toBe(false);
+  });
+
+  it.each([
+    ["first column", ["author", "subject", "date"]],
+    ["first shown column, after a hidden one", ["hash", "author", "subject", "date"]],
+  ])("without headers, a row strip of the %s resizes the Repository column", async (_, columnOrder) => {
+    useVcs.setState({ roots: ["/repo", "/other"] });
+    const tip = { ...c("tip"), repo: "/repo" };
+    api.commits = [tip];
+    useLogOptions.setState({ showRepository: true, showHash: false, columnOrder });
+    render(<LogView />);
+    const rows = await within(screen.getByRole("listbox", { name: "Commits" })).findAllByRole("option");
+    const strip = rows[0]!.querySelector<HTMLElement>('[class*="columnResize"]')!;
+    strip.setPointerCapture = vi.fn();
+    strip.hasPointerCapture = () => true;
+    strip.releasePointerCapture = vi.fn();
+    // Author is first and Repository is on its left: the pair trades width.
+    fireEvent.pointerDown(strip, { button: 0, pointerId: 9, clientX: 100 });
+    fireEvent.pointerMove(strip, { pointerId: 9, clientX: 130 });
+    fireEvent.pointerUp(strip, { pointerId: 9, clientX: 130 });
+    expect(useLogOptions.getState().columnWidths.repository).toBe(130);
+    expect(rows[0]!.querySelector<HTMLElement>('[class*="colRepository"]')!.style.width).toBe("130px");
+  });
+
+  it("without headers, a row strip on a leading Commit cell resizes the Repository column", async () => {
+    useVcs.setState({ roots: ["/repo", "/other"] });
+    const tip = { ...c("tip"), repo: "/repo" };
+    api.commits = [tip];
+    // Defaults: headers hidden, Commit first.
+    useLogOptions.setState({ showRepository: true });
+    render(<LogView />);
+    const rows = await within(screen.getByRole("listbox", { name: "Commits" })).findAllByRole("option");
+    const strip = rows[0]!.querySelector<HTMLElement>('[class*="colSubject"] > [class*="columnResize"]')!;
+    strip.setPointerCapture = vi.fn();
+    strip.hasPointerCapture = () => true;
+    strip.releasePointerCapture = vi.fn();
+    fireEvent.pointerDown(strip, { button: 0, pointerId: 9, clientX: 100 });
+    fireEvent.pointerMove(strip, { pointerId: 9, clientX: 130 });
+    fireEvent.pointerUp(strip, { pointerId: 9, clientX: 130 });
+    expect(useLogOptions.getState().columnWidths.repository).toBe(130);
+    // The strip swallows the press, so the row is not selected.
+    expect(useGitLog.getState().selected).toBeNull();
   });
 
   it("exposes a full-height column divider on data rows", async () => {
@@ -397,6 +476,47 @@ describe("log controls", () => {
 });
 
 describe("commit details", () => {
+  it("checks visible signatures again when the log is refreshed", async () => {
+    api.commits = [c("refresh-signature")];
+    let signature = "E";
+    api.details.mockImplementation(async () => ({
+      status: "ok",
+      data: { signature, signer: "", fingerprint: "" },
+    }));
+    api.invalidate.mockImplementation(async () => {
+      signature = "G";
+      return { status: "ok", data: null };
+    });
+    useLogOptions.setState({ showSignature: true });
+    render(<LogView />);
+    const list = await screen.findByRole("listbox", { name: "Commits" });
+    expect(await within(list).findByRole("img", { name: "Could not verify" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(await within(list).findByRole("img", { name: "Verified" })).toBeVisible();
+    expect(api.invalidate).toHaveBeenCalledExactlyOnceWith("/repo");
+  });
+
+  it("shows verification icons with signer details and leaves unsigned rows empty", async () => {
+    api.commits = [c("verified-tip", ["unsigned-parent"]), c("unsigned-parent")];
+    api.details.mockImplementation(async (id: string) => ({
+      status: "ok",
+      data: {
+        signature: id === "verified-tip" ? "G" : "N",
+        signer: id === "verified-tip" ? "Test Signer" : "",
+        fingerprint: id === "verified-tip" ? "test-fingerprint" : "",
+      },
+    }));
+    useLogOptions.setState({ showSignature: true });
+    render(<LogView />);
+    const list = await screen.findByRole("listbox", { name: "Commits" });
+    const verified = await within(list).findByRole("img", { name: "Verified" });
+    expect(verified.parentElement).toHaveAttribute(
+      "title",
+      "Verified\nSigned by Test Signer\nKey fingerprint test-fingerprint",
+    );
+    expect(within(list).queryByText("Unsigned")).not.toBeInTheDocument();
+  });
+
   it("loads a full body, containing branches, and signature only when details are visible", async () => {
     useGitLog.setState({ selected: "/repo\0tip", selection: ["/repo\0tip"] });
     render(<LogView />);

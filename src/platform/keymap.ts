@@ -5,14 +5,16 @@
  * `Meta+Shift+O`, `Alt+F7`, `F8`. Space separates chord strokes
  * (`Meta+K Meta+C`). A modifier pressed twice is `Shift Shift` (IDEA's double
  * Shift, `Ctrl Ctrl`…); pressed twice and held, then a key, `Alt Alt+Up`.
- * Keys are matched by physical position (`KeyboardEvent.code`), so ⌥-letter
- * combos work on macOS where `event.key` would be a symbol. Mouse shortcuts
+ * Keys match by the typed character for letters and unshifted punctuation (so
+ * AZERTY's ⌘, records `Meta+,`, not `Meta+M`), and by physical position
+ * (`KeyboardEvent.code`) when Shift or Alt are held, so ⌥-letter combos work on
+ * macOS where `event.key` would be a symbol. Mouse shortcuts
  * name the button 1-based (`Button1` = left, `Button4` = back side button, `Button5` = forward),
- * optionally with modifiers (`Alt+Button4`); they are single strokes.
+ * or the wheel direction (`WheelUp`, `WheelDown`), optionally with modifiers.
  */
 import { create } from "zustand";
-import { executeAction, executeActionFrom, getAction, isActionKeyEnabled } from "./actions";
-import { evaluateWhen, getContext } from "./context";
+import { executeAction, executeActionFrom, getAction, isActionEnabled, isActionKeyEnabled } from "./actions";
+import { evaluateWhen, getContext, type ContextKeys } from "./context";
 import { intellijMacos } from "./keymaps/intellij-macos";
 import { intellijWindows } from "./keymaps/intellij-windows";
 import { eclipseMacos } from "./keymaps/eclipse-macos";
@@ -79,24 +81,45 @@ interface KeymapState {
 export const useKeymap = create<KeymapState>(() => ({ preset: defaultPreset(), overrides: {}, extensions: {} }));
 
 const MOUSE_KEY_RE = /^Button(\d+)$/i;
+const WHEEL_KEY_RE = /^Wheel(Up|Down)$/i;
+type ModifierKeys = Pick<MouseEvent, "metaKey" | "ctrlKey" | "altKey" | "shiftKey">;
 
-/** A mouse shortcut (`Button4`, `Shift+Button5`) rather than a keystroke. */
+export function isWheelBinding(binding: string): boolean {
+  const b = binding.trim();
+  return !/\s/.test(b) && WHEEL_KEY_RE.test(b.split("+").pop()!);
+}
+
+/** A mouse button or wheel shortcut. */
 export function isMouseBinding(binding: string): boolean {
   const b = binding.trim();
-  return !/\s/.test(b) && MOUSE_KEY_RE.test(b.split("+").pop()!);
+  const key = b.split("+").pop()!;
+  return !/\s/.test(b) && (MOUSE_KEY_RE.test(key) || WHEEL_KEY_RE.test(key));
+}
+
+/** Editor mouse-selection actions require a button and pointer position. */
+export function supportsWheelShortcut(actionId: string): boolean {
+  return actionId !== "editor.createRectangularSelectionOnMouseDrag" && actionId !== "editor.addOrRemoveCaret";
+}
+
+function modifiedStroke(e: ModifierKeys, key: string): string {
+  const mods = [e.ctrlKey && "Ctrl", e.altKey && "Alt", e.shiftKey && "Shift", e.metaKey && "Meta"].filter(Boolean);
+  return [...mods, key].join("+");
 }
 
 /**
  * Middle/side buttons, or a left click with Ctrl/Alt/Meta. Plain and Shift-only
  * left clicks keep selection semantics; right clicks keep the context menu.
  */
-export function mouseStrokeOf(
-  e: Pick<MouseEvent, "button" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey">,
-): string | null {
+export function mouseStrokeOf(e: Pick<MouseEvent, "button"> & ModifierKeys): string | null {
   if (!Number.isInteger(e.button) || e.button < 0) return null;
   if (e.button === 2 || (e.button === 0 && !(e.ctrlKey || e.altKey || e.metaKey))) return null;
-  const mods = [e.ctrlKey && "Ctrl", e.altKey && "Alt", e.shiftKey && "Shift", e.metaKey && "Meta"].filter(Boolean);
-  return [...mods, `Button${e.button + 1}`].join("+");
+  return modifiedStroke(e, `Button${e.button + 1}`);
+}
+
+/** Recognizes vertical wheel input for both capture and dispatch. */
+export function wheelStrokeOf(e: Pick<WheelEvent, "deltaX" | "deltaY"> & ModifierKeys): string | null {
+  if (!e.deltaY || Math.abs(e.deltaY) < Math.abs(e.deltaX)) return null;
+  return modifiedStroke(e, e.deltaY < 0 ? "WheelUp" : "WheelDown");
 }
 
 const STROKE_RE = /^(?:(?:Ctrl|Alt|Shift|Meta)\+)*[^\s+]+$|^(?:(?:Ctrl|Alt|Shift|Meta)\+)*\+$/i;
@@ -118,8 +141,9 @@ export function parseDoubleModifier(binding: string): { modifier: Modifier; key:
 export function isValidBinding(binding: unknown): binding is string {
   if (typeof binding !== "string") return false;
   const b = binding.trim();
-  if (parseDoubleModifier(b)) return true;
   const strokes = b.split(/\s+/);
+  if (strokes.some(isWheelBinding)) return strokes.length === 1 && STROKE_RE.test(b);
+  if (parseDoubleModifier(b)) return true;
   if (strokes.some((s) => /swipe(left|right)$/i.test(s))) {
     return strokes.length === 1 && /^swipe(left|right)$/i.test(b);
   }
@@ -193,6 +217,11 @@ export function suspendKeyboardDispatch(): () => void {
     done = true;
     suspended--;
   };
+}
+
+/** Whether dispatch is suspended (e.g. a shortcut recorder holds the keymap). */
+export function keyboardDispatchSuspended(): boolean {
+  return suspended > 0;
 }
 
 /** Linux reserves middle paste by default; explicit overrides bypass this filter. */
@@ -298,8 +327,10 @@ export function normalizeBinding(binding: string): string {
       const key = parts.pop()!;
       const mods = MOD_ORDER.filter((m) => parts.some((p) => p.toLowerCase() === m.toLowerCase()));
       const mouse = MOUSE_KEY_RE.exec(key);
+      const wheel = WHEEL_KEY_RE.exec(key);
       const swipe = /^swipe(left|right)$/i.exec(key);
       if (swipe) return `Swipe${swipe[1]!.toLowerCase() === "left" ? "Left" : "Right"}`;
+      if (wheel) return [...mods, wheel[1]!.toLowerCase() === "up" ? "WheelUp" : "WheelDown"].join("+");
       return [...mods, mouse ? `Button${mouse[1]}` : key.length === 1 ? key.toUpperCase() : key].join("+");
     })
     .join(" ");
@@ -351,23 +382,32 @@ export function letterOf(e: Pick<KeyboardEvent, "code" | "key"> & { altKey?: boo
   return null;
 }
 
+/** A printable ASCII character other than a letter, digit or space. */
+const ASCII_PUNCTUATION = /^[!-/:-@[-`{-~]$/;
+
 /** Converts a keydown event into a canonical stroke, or null for bare modifiers. */
 export function strokeOf(
   e: Pick<KeyboardEvent, "code" | "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey">,
 ): string | null {
   let key: string | undefined;
-  const letter = letterOf(e);
-  if (letter) key = letter;
+  if (/^[a-zA-Z]$/.test(e.key) && !e.altKey) key = e.key.toUpperCase();
   else if (/^Digit\d$/.test(e.code)) key = e.code.slice(5);
   else if (/^Numpad\d$/.test(e.code)) key = e.code.slice(6);
   else if (/^F\d{1,2}$/.test(e.code)) key = e.code;
-  else key = CODE_NAMES[e.code];
+  else if (/^Numpad/.test(e.code)) key = CODE_NAMES[e.code];
+  // Unshifted ASCII punctuation follows the layout, not the QWERTY position
+  // (AZERTY's comma sits on KeyM, so ⌘, must record `Meta+,` not `Meta+M`).
+  // Shift-held events keep the physical key — presets are written
+  // `Meta+Shift+]` — and so do Alt-held ones, since ⌥ on macOS and AltGr type
+  // symbols. Other characters (Cyrillic, Greek, accented letters) keep the
+  // physical key too, so Ctrl+C stays Ctrl+C on those layouts.
+  else if (!e.altKey && !e.shiftKey && ASCII_PUNCTUATION.test(e.key)) key = e.key;
+  else key = letterOf(e) ?? CODE_NAMES[e.code];
   if (!key) {
     if (["Shift", "Meta", "Control", "Alt"].includes(e.key)) return null;
     key = e.key.length === 1 ? e.key.toUpperCase() : e.key;
   }
-  const mods = [e.ctrlKey && "Ctrl", e.altKey && "Alt", e.shiftKey && "Shift", e.metaKey && "Meta"].filter(Boolean);
-  return [...mods, key].join("+");
+  return modifiedStroke(e, key);
 }
 
 const SYMBOLS: Record<string, string> = {
@@ -404,8 +444,12 @@ export function formatBinding(binding: string, mac = isMacHost()): string {
   if (isMouseBinding(binding)) {
     const parts = normalizeBinding(binding).split("+");
     const key = parts.pop();
-    const button = key === "Button1" ? "Left Click" : key === "Button2" ? tx("Middle Click") : `${key} Click`;
-    return mac ? parts.map((p) => SYMBOLS[p] ?? p).join("") + button : [...parts, button].join("+");
+    let label = `${key} Click`;
+    if (key === "WheelUp") label = tx("Wheel Up");
+    if (key === "WheelDown") label = tx("Wheel Down");
+    if (key === "Button1") label = "Left Click";
+    if (key === "Button2") label = tx("Middle Click");
+    return mac ? parts.map((p) => SYMBOLS[p] ?? p).join("") + label : [...parts, label].join("+");
   }
   if (!mac)
     return normalizeBinding(binding)
@@ -444,6 +488,13 @@ const CHORD_TIMEOUT = 2000;
 const DOUBLE_TAP_STEP_MS = 300;
 /** A modifier tap this soon after typing another key is part of typing, not a gesture. */
 const DOUBLE_TAP_TYPING_GUARD_MS = 100;
+const WHEEL_GESTURE_GAP_MS = 150;
+
+function isDiscreteWheelEvent(e: WheelEvent): boolean {
+  // WebViews also send mouse notches in pixel mode, with legacy ticks in units of 120.
+  const ticks = (e as WheelEvent & { wheelDeltaY?: number }).wheelDeltaY;
+  return e.deltaMode !== WheelEvent.DOM_DELTA_PIXEL || (!!ticks && ticks % 120 === 0);
+}
 
 const KEY_MODIFIER: Record<string, Modifier> = { Shift: "Shift", Control: "Ctrl", Alt: "Alt", Meta: "Meta" };
 
@@ -521,6 +572,24 @@ function isPlainTextField(target: EventTarget | null): boolean {
   return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable;
 }
 
+/**
+ * A popup keeps text actions enabled so Find Action can run them. A key pressed outside the
+ * editor belongs to the control that has focus: Ctrl/Cmd+Enter commits or pushes instead of
+ * splitting a line in the editor behind the dialog. `keyWhen` still sees the real context.
+ */
+function whenContextForKey(e: KeyboardEvent, ctx: ContextKeys): ContextKeys {
+  const node = e.composedPath()[0] ?? e.target;
+  const el = node instanceof Element ? node : null;
+  if (el?.closest(".cm-editor")) return ctx;
+  if (!isPlainTextField(node) && !ctx.popupOpen) return ctx;
+  return { ...ctx, editorTextFocus: false, diffEditorFocus: false, suspendEditorKeys: true };
+}
+
+function actionEnabledForKey(action: NonNullable<ReturnType<typeof getAction>>, e: KeyboardEvent): boolean {
+  const ctx = getContext();
+  return isActionEnabled(action, whenContextForKey(e, ctx)) && evaluateWhen(action.keyWhen, ctx);
+}
+
 function isTextTarget(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null;
   if (!el || !el.tagName) return false;
@@ -534,12 +603,13 @@ function isTextTarget(target: EventTarget | null): boolean {
  */
 export function isAltGrTyping(
   e: Pick<KeyboardEvent, "key" | "code" | "target" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey"> & {
+    composedPath?: KeyboardEvent["composedPath"];
     getModifierState?: (key: string) => boolean;
   },
 ): boolean {
   if (isMacHost() || !e.getModifierState?.("AltGraph")) return false;
   if (e.key !== "Dead" && e.key.length !== 1) return false;
-  if (!isTextTarget(e.target)) return false;
+  if (!isTextTarget(e.composedPath?.()[0] ?? e.target)) return false;
   // Ctrl+Alt+L on a layout with no AltGr character there still reports `l`: that is a shortcut.
   const key = strokeOf(e)?.split("+").pop();
   return e.key === "Dead" || e.key.toUpperCase() !== key;
@@ -631,6 +701,7 @@ export const FORWARDABLE_ACTIONS: ReadonlySet<string> = new Set([
   "toolwindow.debug",
   "toolwindow.hideActive",
   "toolwindow.hideAll",
+  "toolwindow.hideSide",
   "toolwindow.jumpToLast",
   "toolwindow.focusEditor",
   "toolwindow.maximize",
@@ -646,6 +717,19 @@ export const FORWARDABLE_ACTIONS: ReadonlySet<string> = new Set([
 
 const restrictedKeys = new WeakSet<Event>();
 
+function isForwardableAction(id: string, target: EventTarget | null): boolean {
+  if (FORWARDABLE_ACTIONS.has(id)) return true;
+  const el = target instanceof Element ? target : null;
+  // A frame rendered inside an already-open tool window may always toggle that enclosing pane,
+  // and a plugin frame may toggle its own contributed `toolwindow.plugin.<pluginId>.*` windows.
+  const hostToolWindow = el?.closest("[data-toolwindow]")?.getAttribute("data-toolwindow");
+  if (hostToolWindow && hostToolWindow !== "terminal" && id === `toolwindow.${hostToolWindow}`) {
+    return true;
+  }
+  const hostPlugin = el?.getAttribute("data-plugin-webview");
+  return !!hostPlugin && id.startsWith(`toolwindow.plugin.${hostPlugin}.`);
+}
+
 /**
  * Dispatches on `target` a shortcut that a plugin's sandboxed frame says was pressed in it and left
  * alone, for the keymap. The page can post one at any time, so unless the plugin may run any IDE
@@ -659,6 +743,49 @@ export function dispatchForwardedKey(target: EventTarget, init: KeyboardEventIni
 }
 
 /**
+ * Runs the actions bound to a mouse `stroke`: later presets / overrides win,
+ * the first enabled match runs. Shared by the workbench dispatcher and the
+ * standalone Settings-window mouse shortcuts.
+ */
+function runMouseBinding(stroke: string): boolean {
+  const ids = effectiveBindings()
+    .filter(([b]) => b === stroke)
+    .map(([, id]) => id);
+  for (const id of ids.reverse()) if (runIfEnabled(id)) return true;
+  return false;
+}
+
+/**
+ * Mouse side-button shortcuts alone, for windows without the workbench
+ * dispatcher (the native Settings window): a press of buttons 4+ runs its
+ * binding (e.g. the default Button4 = navigate.back), and both press and
+ * release are swallowed so the webview does not navigate its own history.
+ */
+export function installMouseShortcuts(target: Window = window): () => void {
+  const onDown = (e: MouseEvent) => {
+    if (e.button < 3 || suspended > 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const stroke = mouseStrokeOf(e);
+    if (stroke) runMouseBinding(stroke);
+  };
+  /** The release of a side button: swallowed so the webview doesn't navigate its own history. */
+  const onUp = (e: MouseEvent) => {
+    if (e.button < 3) return;
+    e.preventDefault();
+    e.stopPropagation();
+  };
+  target.addEventListener("mousedown", onDown, true);
+  target.addEventListener("mouseup", onUp, true);
+  target.addEventListener("auxclick", onUp, true);
+  return () => {
+    target.removeEventListener("mousedown", onDown, true);
+    target.removeEventListener("mouseup", onUp, true);
+    target.removeEventListener("auxclick", onUp, true);
+  };
+}
+
+/**
  * Installs the global keydown dispatcher (capture phase, so IDE shortcuts win
  * over CodeMirror defaults). Returns an uninstall function. `now` is the clock
  * for the double-modifier gestures.
@@ -669,6 +796,7 @@ export function installKeyboardDispatcher(
 ): () => void {
   let pending: string[] = [];
   let pendingTimer: ReturnType<typeof setTimeout> | undefined;
+  let wheelGesture: { direction: number; at: number; binding: string | null } | null = null;
   const doubleModifier = createDoubleModifierRecognizer(now);
 
   const reset = () => {
@@ -683,7 +811,7 @@ export function installKeyboardDispatcher(
       .map(([, id]) => id);
     for (const id of ids.reverse()) {
       const action = getAction(id);
-      if (!action || !isActionKeyEnabled(action)) continue;
+      if (!action || !actionEnabledForKey(action, e)) continue;
       return () => {
         e.preventDefault();
         e.stopPropagation();
@@ -712,9 +840,10 @@ export function installKeyboardDispatcher(
     if (!chord) {
       if (isAltGrTyping(e)) return;
       const hasCommandMod = e.metaKey || e.ctrlKey || e.altKey;
-      if (isPlainTextField(e.target)) {
+      const target = e.composedPath()[0] ?? e.target;
+      if (isPlainTextField(target)) {
         // Native deletion stays in the field; Shift bindings and terminal keys keep their own routing.
-        if ((e.key === "Backspace" || e.key === "Delete") && !e.shiftKey && !(e.target as Element).closest?.(".xterm"))
+        if ((e.key === "Backspace" || e.key === "Delete") && !e.shiftKey && !(target as Element).closest?.(".xterm"))
           return;
         if (!hasCommandMod && !/^(Shift\+)?(F\d{1,2}|Escape)$/.test(stroke)) return;
       }
@@ -755,7 +884,7 @@ export function installKeyboardDispatcher(
     }
     for (const id of [...preferred, ...fallback]) {
       const action = getAction(id);
-      if (action && isActionKeyEnabled(action, ctx) && (!restricted || FORWARDABLE_ACTIONS.has(id))) {
+      if (action && actionEnabledForKey(action, e) && (!restricted || isForwardableAction(id, e.target))) {
         e.preventDefault();
         e.stopPropagation();
         reset();
@@ -813,10 +942,40 @@ export function installKeyboardDispatcher(
     e.preventDefault();
     e.stopPropagation();
     reset();
-    const ids = effectiveBindings()
-      .filter(([b]) => b === stroke)
-      .map(([, id]) => id);
-    for (const id of ids.reverse()) if (runIfEnabled(id)) return;
+    runMouseBinding(stroke);
+  };
+
+  const onWheel = (e: WheelEvent) => {
+    doubleModifier.reset();
+    if (suspended > 0 || e.defaultPrevented) {
+      wheelGesture = null;
+      return;
+    }
+    const stroke = wheelStrokeOf(e);
+    if (!stroke) return;
+    const consume = () => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    const direction = Math.sign(e.deltaY);
+    // Treat a continuous burst as one gesture, including momentum. Modifiers pressed
+    // during the burst must not turn an ordinary scroll into a shortcut.
+    if (wheelGesture?.direction === direction && e.timeStamp - wheelGesture.at <= WHEEL_GESTURE_GAP_MS) {
+      wheelGesture.at = e.timeStamp;
+      if (wheelGesture.binding === stroke) consume();
+      return;
+    }
+    wheelGesture = isDiscreteWheelEvent(e) ? null : { direction, at: e.timeStamp, binding: null };
+    const match = effectiveBindings().findLast(([binding, id]) => {
+      if (binding !== stroke || !supportsWheelShortcut(id)) return false;
+      const action = getAction(id);
+      return !!action && isActionKeyEnabled(action);
+    });
+    if (!match) return;
+    if (wheelGesture) wheelGesture.binding = stroke;
+    consume();
+    reset();
+    void executeActionFrom("keyboard", match[1]);
   };
 
   /** The release of a side button: swallowed so the webview doesn't navigate its own history. */
@@ -832,6 +991,7 @@ export function installKeyboardDispatcher(
   const onBlur = () => {
     reset();
     doubleModifier.reset();
+    wheelGesture = null;
   };
 
   const onSwipe = (event: Event) => {
@@ -848,6 +1008,7 @@ export function installKeyboardDispatcher(
   target.addEventListener("keydown", onKeyDown, true);
   target.addEventListener("keyup", onKeyUp, true);
   target.addEventListener("mousedown", onMouseDown, true);
+  target.addEventListener("wheel", onWheel, { capture: true, passive: false });
   target.addEventListener("mouseup", onMouseRelease, true);
   target.addEventListener("auxclick", onMouseRelease, true);
   target.addEventListener("webkitmouseforcewillbegin", onForceWillBegin, true);
@@ -857,6 +1018,7 @@ export function installKeyboardDispatcher(
     target.removeEventListener("keydown", onKeyDown, true);
     target.removeEventListener("keyup", onKeyUp, true);
     target.removeEventListener("mousedown", onMouseDown, true);
+    target.removeEventListener("wheel", onWheel, true);
     target.removeEventListener("mouseup", onMouseRelease, true);
     target.removeEventListener("auxclick", onMouseRelease, true);
     target.removeEventListener("webkitmouseforcewillbegin", onForceWillBegin, true);

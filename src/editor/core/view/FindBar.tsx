@@ -8,12 +8,13 @@
  * Exclude with Preserve Case, Esc closes. `FindPanel` is the bar itself, for
  * any CodeMirror view (the diff viewer's sides); `FindBar` is it on an editor pane.
  */
+import { SearchHistoryMenu } from "@/ui/SearchHistoryMenu";
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { create } from "zustand";
 import clsx from "clsx";
 import type { EditorView } from "@codemirror/view";
 import { Button, IconButton, Menu, SearchField, T, type MenuItem } from "@/ui";
-import { SEARCH_CONTEXTS, rememberSearch, searchHistory } from "@/platform/search";
+import { SEARCH_CONTEXTS, rememberSearch } from "@/platform/search";
 import { editorController, useFindBars, useTabs } from "../controller";
 import {
   countMatches,
@@ -277,6 +278,44 @@ export function searchAgain(target: FindTarget, forward: boolean): boolean {
   else findPrevious(view);
   if (target.isOpen()) recount(target);
   return true;
+}
+
+/** Java identifier characters, which IDEA's Find Word at Caret reads as the word. */
+const IDENTIFIER_CHAR = /[\p{L}\p{Nl}\p{Nd}\p{Mn}\p{Mc}\p{Pc}\p{Sc}]/u;
+
+/** IDEA's Find Word at Caret / Find Previous Word at Caret on the active editor of `paneId`. */
+export function findWordAtCaretInPane(paneId: string, forward: boolean) {
+  const tabId = activeTab(paneId);
+  if (tabId) findWordAtCaret(tabTarget(tabId), forward);
+}
+
+/**
+ * Searches for the selected text, or the identifier around the caret, from the caret as IDEA does:
+ * case-sensitive, not whole words, not a regex, anywhere in the whole file. It becomes the last search
+ * (Find Next goes on with it) and the query of the open bar. False without a word at the caret.
+ */
+export function findWordAtCaret(target: FindTarget, forward: boolean): boolean {
+  const view = target.view();
+  if (!view) return false;
+  const { state } = view;
+  let { from, to } = state.selection.main;
+  if (from === to) {
+    const line = state.doc.lineAt(from);
+    let start = from - line.from;
+    let end = start;
+    while (start > 0 && IDENTIFIER_CHAR.test(line.text[start - 1]!)) start--;
+    while (end < line.length && IDENTIFIER_CHAR.test(line.text[end]!)) end++;
+    from = line.from + start;
+    to = line.from + end;
+  }
+  if (from === to || to - from >= MAX_QUERY) return false;
+  const search = state.sliceDoc(from, to);
+  const patch = { search, caseSensitive: true, wholeWord: false, regexp: false, context: "any" as const };
+  if (useFindSessions.getState()[target.id]) updateOptions(target.id, () => patch);
+  else useFindOptions.setState(patch);
+  rememberSearch("find", search);
+  if (state.field(findScope, false)) view.dispatch({ effects: setFindScope.of(null) });
+  return searchAgain(target, forward);
 }
 
 /** Toggles "In Selection": limit to the selection the bar was opened over (or the current one). */
@@ -557,19 +596,6 @@ export function FindPanel({ target, version, replace, seq, onReplaceShown, onClo
         ? "0 results"
         : `${count.current || "?"}/${count.total}${count.capped ? "+" : ""}`;
 
-  const historyItems = (kind: "find" | "replace"): MenuItem[] => {
-    const h = searchHistory(kind);
-    return h.length
-      ? [
-          { kind: "header", label: kind === "find" ? "Recent Searches" : "Recent Replacements" },
-          ...h.map((q) => ({
-            label: q.replace(/\n/g, "⏎"),
-            verbatim: true,
-            run: () => setOpts(kind === "find" ? { search: q } : { replace: q }),
-          })),
-        ]
-      : [{ label: kind === "find" ? "No recent searches" : "No recent replacements", disabled: true }];
-  };
   const filterItems: MenuItem[] = [
     {
       label: "Search In Selection",
@@ -652,6 +678,7 @@ export function FindPanel({ target, version, replace, seq, onReplaceShown, onClo
             aria-label="Find"
             invalid={invalid || none}
             multiline
+            maxRows={3}
             onHistory={() => setHistoryMenu("find")}
             onKeyDown={(e) => onKeyDown(e, "find")}
             className={styles.findInput}
@@ -710,8 +737,8 @@ export function FindPanel({ target, version, replace, seq, onReplaceShown, onClo
             onClick={() => setFilterMenu(true)}
           />
           <IconButton ref={moreRef} icon="more" title="More" size="small" onClick={() => setMoreMenu(true)} />
+          <IconButton icon="close" title="Close" shortcut="⎋" size="small" onClick={close} />
         </div>
-        <IconButton icon="close" title="Close" shortcut="⎋" size="small" className={styles.findClose} onClick={close} />
         {replace && (
           <>
             <div ref={replaceBoxRef} className={styles.replaceField}>
@@ -722,6 +749,7 @@ export function FindPanel({ target, version, replace, seq, onReplaceShown, onClo
                 placeholder="Replace"
                 aria-label="Replace"
                 multiline
+                maxRows={3}
                 onHistory={() => setHistoryMenu("replace")}
                 onKeyDown={(e) => onKeyDown(e, "replace")}
                 toggles={[
@@ -765,12 +793,10 @@ export function FindPanel({ target, version, replace, seq, onReplaceShown, onClo
             </div>
           </>
         )}
-        <Menu
-          open={historyMenu !== null}
+        <SearchHistoryMenu
+          kind={historyMenu}
           anchor={historyMenu === "replace" ? replaceBoxRef : findBoxRef}
-          items={historyMenu ? historyItems(historyMenu) : []}
-          placement="bottom-start"
-          aria-label="Recent searches"
+          onSelect={(value) => setOpts(historyMenu === "replace" ? { replace: value } : { search: value })}
           onClose={() => setHistoryMenu(null)}
         />
         <Menu

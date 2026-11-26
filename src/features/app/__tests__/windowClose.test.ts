@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as ipc from "@/platform/ipc";
 import { useProject } from "@/platform/project";
+import { disableRemote, enableRemote } from "@/platform/remote";
 import * as services from "@/workbench/contributions";
 import type { MessageRequest as PromptRequest } from "@/workbench/messages";
 import { installCloseGuard, quitApp, type CloseDeps } from "../closeGuard";
@@ -29,17 +30,28 @@ let uninstall: (() => void) | undefined;
 let deps: CloseDeps;
 const forget = vi.fn();
 const keep = vi.fn();
+const flushSession = vi.fn();
 
 beforeEach(() => {
   vi.spyOn(ipc, "isTauri").mockReturnValue(true);
   vi.spyOn(ipc, "onIdeEvent").mockReturnValue(() => {});
-  vi.spyOn(ipc.commands, "windowCloseContext").mockResolvedValue({ quitting: false, windows: 1 });
+  vi.spyOn(ipc.commands, "windowCloseContext").mockResolvedValue({
+    quitting: false,
+    windows: 1,
+    hasDocumentWindows: false,
+    batch: false,
+  });
+  vi.spyOn(ipc.commands, "windowBeginPrompt").mockResolvedValue(true);
+  vi.spyOn(ipc.commands, "windowEndPrompt").mockResolvedValue(undefined);
+  vi.spyOn(ipc.commands, "windowReadyToClose").mockResolvedValue(true);
   vi.spyOn(ipc.commands, "windowGroupCancelClose").mockResolvedValue(undefined);
   vi.spyOn(ipc.commands, "appCancelQuit").mockResolvedValue(undefined);
   vi.spyOn(ipc.commands, "closeProject").mockResolvedValue(undefined);
+  vi.spyOn(ipc.commands, "remoteStopBackend").mockResolvedValue({ status: "ok", data: null });
   vi.spyOn(services, "maybeEditorService").mockReturnValue({
     forgetSavedTabs: forget,
     keepSavedTabs: keep,
+    flushSession,
     dirtyDocumentIds: () => [],
     cancelClose: vi.fn(),
   } as never);
@@ -57,6 +69,7 @@ afterEach(() => {
   uninstall?.();
   uninstall = undefined;
   native.close = undefined;
+  disableRemote();
   useProject.setState(initialProject, true);
   vi.restoreAllMocks();
   vi.clearAllMocks();
@@ -84,7 +97,12 @@ describe("native window close", () => {
   });
 
   it.each([1, 2])("closes one of %s windows when opted in", async (windows) => {
-    vi.mocked(ipc.commands.windowCloseContext).mockResolvedValue({ quitting: false, windows });
+    vi.mocked(ipc.commands.windowCloseContext).mockResolvedValue({
+      quitting: false,
+      windows,
+      hasDocumentWindows: false,
+      batch: false,
+    });
     const prevented = await close({ closeWithoutWelcome: true, closeTabsWithWindow: true });
     expect(prevented).not.toHaveBeenCalled();
     expect(ipc.commands.closeProject).not.toHaveBeenCalled();
@@ -92,7 +110,12 @@ describe("native window close", () => {
   });
 
   it("closes a nonlast window with defaults and keeps its saved tabs", async () => {
-    vi.mocked(ipc.commands.windowCloseContext).mockResolvedValue({ quitting: false, windows: 2 });
+    vi.mocked(ipc.commands.windowCloseContext).mockResolvedValue({
+      quitting: false,
+      windows: 2,
+      hasDocumentWindows: false,
+      batch: false,
+    });
     const prevented = await close({});
     expect(prevented).not.toHaveBeenCalled();
     expect(ipc.commands.closeProject).not.toHaveBeenCalled();
@@ -121,7 +144,12 @@ describe("native window close", () => {
   });
 
   it("stays open when an untitled buffer's Save As is cancelled", async () => {
-    vi.mocked(ipc.commands.windowCloseContext).mockResolvedValue({ quitting: false, windows: 2 });
+    vi.mocked(ipc.commands.windowCloseContext).mockResolvedValue({
+      quitting: false,
+      windows: 2,
+      hasDocumentWindows: false,
+      batch: false,
+    });
     vi.mocked(services.maybeEditorService).mockReturnValue({
       forgetSavedTabs: forget,
       keepSavedTabs: keep,
@@ -144,6 +172,33 @@ describe("native window close", () => {
     expect(forget).toHaveBeenCalledOnce();
     expect(keep).toHaveBeenCalledOnce();
     expect(deps.onSaveFailed).toHaveBeenCalledOnce();
+  });
+
+  it("flushes saved editor tabs and leaves remote processes running when closing a remote window", async () => {
+    enableRemote({
+      target: { kind: "ssh", config: "devbox" },
+      root: "/project",
+      host: "coder@devbox:22",
+      os: "linux",
+      commands: [],
+    });
+    vi.mocked(ipc.commands.windowCloseContext).mockResolvedValue({
+      quitting: false,
+      windows: 2,
+      hasDocumentWindows: false,
+      batch: false,
+    });
+    vi.mocked(deps.ask).mockResolvedValueOnce({ button: "keep", checked: false });
+    const terminate = vi.fn(async () => {});
+    deps.runningProcesses = vi.fn(async () => ["docker compose up"]);
+    deps.terminate = terminate;
+
+    const prevented = await close({});
+    expect(prevented).not.toHaveBeenCalled();
+    expect(deps.runningProcesses).not.toHaveBeenCalled();
+    expect(terminate).not.toHaveBeenCalled();
+    expect(ipc.commands.remoteStopBackend).not.toHaveBeenCalled();
+    expect(flushSession).toHaveBeenCalledOnce();
   });
 });
 
@@ -194,7 +249,12 @@ describe("quitting from outside the window", () => {
   });
 
   it("leaves a window with nothing to ask where it is while the app quits", async () => {
-    vi.mocked(ipc.commands.windowCloseContext).mockResolvedValue({ quitting: true, windows: 2 });
+    vi.mocked(ipc.commands.windowCloseContext).mockResolvedValue({
+      quitting: true,
+      windows: 2,
+      hasDocumentWindows: false,
+      batch: true,
+    });
     deps.runningProcesses = async () => [];
     const { d, asked } = recordingDeps("cancel");
     useProject.setState({
@@ -207,10 +267,17 @@ describe("quitting from outside the window", () => {
     await native.close!({ preventDefault: vi.fn() });
     expect(asked).toEqual([]);
     expect(native.order).toEqual([]);
+    expect(ipc.commands.windowBeginPrompt).not.toHaveBeenCalled();
+    expect(ipc.commands.windowReadyToClose).toHaveBeenCalledOnce();
   });
 
   it("raises each window before the prompts a quit makes it show", async () => {
-    vi.mocked(ipc.commands.windowCloseContext).mockResolvedValue({ quitting: true, windows: 2 });
+    vi.mocked(ipc.commands.windowCloseContext).mockResolvedValue({
+      quitting: true,
+      windows: 2,
+      hasDocumentWindows: false,
+      batch: true,
+    });
     deps.runningProcesses = async () => ["server.js"];
     const { d } = recordingDeps("cancel");
     useProject.setState({
@@ -222,6 +289,48 @@ describe("quitting from outside the window", () => {
     await vi.waitFor(() => expect(native.close).toBeDefined());
     await native.close!({ preventDefault: vi.fn() });
     expect(native.order.slice(0, 4)).toEqual(["unminimize", "show", "setFocus", "ask"]);
+    expect(ipc.commands.windowBeginPrompt).toHaveBeenCalledOnce();
+    expect(ipc.commands.windowEndPrompt).toHaveBeenCalledOnce();
     expect(ipc.commands.appCancelQuit).toHaveBeenCalledOnce();
+  });
+
+  it("restores saved tabs and stays open when a peer cancels the batch at the close barrier", async () => {
+    vi.mocked(ipc.commands.windowCloseContext).mockResolvedValue({
+      quitting: true,
+      windows: 2,
+      hasDocumentWindows: false,
+      batch: true,
+    });
+    vi.mocked(ipc.commands.windowReadyToClose).mockResolvedValueOnce(false);
+    const prevented = await close({ closeTabsWithWindow: true });
+    expect(prevented).toHaveBeenCalledOnce();
+    expect(forget).toHaveBeenCalledOnce();
+    expect(keep).toHaveBeenCalledOnce();
+    expect(ipc.commands.appCancelQuit).not.toHaveBeenCalled();
+  });
+
+  it("skips prompting when a peer already cancelled the batch while waiting for the prompt turn", async () => {
+    vi.mocked(ipc.commands.windowCloseContext).mockResolvedValue({
+      quitting: true,
+      windows: 2,
+      hasDocumentWindows: false,
+      batch: true,
+    });
+    vi.mocked(ipc.commands.windowBeginPrompt).mockResolvedValueOnce(false);
+    deps.runningProcesses = async () => ["server.js"];
+    const { d, asked } = recordingDeps("terminate");
+    useProject.setState({
+      project: { root: "/project", name: "project" },
+      lightEdit: false,
+      settings: { general: {} },
+    } as never);
+    uninstall = installCloseGuard(d);
+    await vi.waitFor(() => expect(native.close).toBeDefined());
+    const preventDefault = vi.fn();
+    await native.close!({ preventDefault });
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(asked).toEqual([]);
+    expect(native.order).toEqual([]);
+    expect(ipc.commands.appCancelQuit).not.toHaveBeenCalled();
   });
 });

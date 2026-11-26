@@ -1,16 +1,11 @@
 use crate::Host;
+use crate::ops::blocking;
 use ide_command::command;
-use ide_core::{DocId, IdeError, IdeResult, OutlineItem, Range};
+use ide_core::{DocId, IdeResult, OutlineItem, Range, TextEdit};
 use ide_language::{FoldRange, SyntaxHighlights};
 use ide_text::LineEnding;
 use ide_workspace::{DocumentEncoding, DocumentInfo, DocumentLanguage, HistoryEntry};
 use std::path::PathBuf;
-
-/// Runs blocking work (disk I/O, parsing, large copies) on the blocking pool,
-/// keeping it off the main thread and the async runtime's workers.
-pub async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send + 'static) -> IdeResult<T> {
-    tokio::task::spawn_blocking(f).await.map_err(|e| IdeError::internal(e.to_string()))?
-}
 
 /// Opens a read-only virtual document (see `lsp_virtual_document`) as an
 /// editor buffer, so syntax features and language-server requests work in it.
@@ -86,8 +81,8 @@ pub async fn doc_set_line_ending(host: &Host, window: &str, doc: DocId, line_end
 
 /// Structure view: LSP document symbols when available (with tree-sitter
 /// visibility and type-alias kinds), tree-sitter otherwise.
-/// Tree-sitter answers come from the per-document tree cache (incremental
-/// re-parse); large documents get no syntax structure.
+/// Normal files reuse the per-document tree cache. Large Markdown files use
+/// the syntax parser's size limit for heading outlines.
 #[command(trust = always)]
 pub async fn doc_outline(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec<OutlineItem>> {
     let project = host.project(window)?;
@@ -123,7 +118,7 @@ pub async fn doc_outline(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec
                 }
                 items
             }
-            None if snap.large => Vec::new(),
+            None if snap.large && snap.language.as_str() != "markdown" => Vec::new(),
             None => syntax(),
         })
     })
@@ -195,6 +190,29 @@ pub async fn doc_python_facts(host: &Host, window: &str, doc: DocId) -> IdeResul
     blocking(move || Ok(syntax.python_facts(&snap.language, &snap.text))).await
 }
 
+/// Rearrange Code: the edits that put the document's class members in arrangement order (Python
+/// for now); none when they already are or the language has no arrangement.
+#[command(trust = always)]
+pub async fn doc_rearrange(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec<TextEdit>> {
+    let project = host.project(window)?;
+    let syntax = host.syntax();
+    let snap = project.documents.text_snapshot(doc)?;
+    blocking(move || {
+        let Some(rearranged) = syntax.rearranged(&snap.language, &snap.text) else { return Ok(Vec::new()) };
+        let text = ide_text::Document::new(&snap.text);
+        Ok(text
+            .diff(&rearranged)
+            .changes
+            .into_iter()
+            .map(|c| TextEdit {
+                range: Range::new(text.offset_to_pos(c.from), text.offset_to_pos(c.to)),
+                new_text: c.insert,
+            })
+            .collect())
+    })
+    .await
+}
+
 /// Extend Selection (⌥↑): syntax ranges around `offset`, innermost first.
 /// Large documents fall back to word / line / document ranges.
 #[command(trust = always)]
@@ -244,6 +262,7 @@ ide_command::domain!(
     doc_open_virtual,
     doc_outline,
     doc_python_facts,
+    doc_rearrange,
     doc_selection_ranges,
     doc_set_bom,
     doc_set_encoding,

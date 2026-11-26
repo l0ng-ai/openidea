@@ -1,3 +1,5 @@
+mod common;
+
 use ide_core::{CancellationToken, ChangeSet, Diagnostic, IdeEvent, Pos, Range, Severity, TextChange};
 use ide_host::mcp::{BackgroundProjects, FileProblems, FocusedEditor, Registry};
 use ide_host::{Host, HostConfig};
@@ -25,18 +27,12 @@ impl Harness {
         let events = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = events.clone();
         let host = Arc::new(Host::new(HostConfig {
-            config_dir: tmp.path().join("config"),
-            data_dir: tmp.path().join("data"),
-            local_data_dir: tmp.path().join("local"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
             sink_for: Box::new(move |_| {
                 let events = sink.clone();
                 Arc::new(move |e| events.lock().unwrap().push(e))
             }),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
+            local_data_dir: tmp.path().join("local"),
+            ..common::host_config(tmp.path())
         }));
         host.open_project("main", &root).unwrap();
         Self { host, root, tmp, events }
@@ -114,7 +110,16 @@ impl Harness {
         let discovery = ide_mcp::discovery_path(self.tmp.path());
         let registry = Arc::new(Registry::new(self.host.clone()));
         let runtime = tokio::runtime::Handle::current();
-        (ide_mcp::McpServer::start(registry, Some(discovery.clone()), &runtime).unwrap(), discovery)
+        (
+            ide_mcp::McpServer::start_with(
+                registry,
+                Some(discovery.clone()),
+                &runtime,
+                ide_mcp::ServerOptions::default(),
+            )
+            .unwrap(),
+            discovery,
+        )
     }
 }
 impl Drop for Harness {
@@ -265,10 +270,11 @@ async fn project_path_argument_routes_to_another_open_project() {
     std::fs::write(second.join("unique.txt"), "second project").unwrap();
     h.host.open_project("second", &second).unwrap();
     let discovery = ide_mcp::discovery_path(h.tmp.path());
-    let _server = ide_mcp::McpServer::start(
+    let _server = ide_mcp::McpServer::start_with(
         Arc::new(Registry::new(h.host.clone())),
         Some(discovery.clone()),
         &tokio::runtime::Handle::current(),
+        ide_mcp::ServerOptions::default(),
     )
     .unwrap();
     let request = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file","arguments":{
@@ -296,6 +302,10 @@ async fn trusted_attached_projects_are_writable_and_reach_the_window_they_are_at
     )
     .unwrap();
     h.host.trust.decide(&attached, true, false).unwrap();
+
+    // The workspace's roots: the project and the attached project it trusts.
+    let roots: serde_json::Value = serde_json::from_str(&h.call("get_workspace_roots", json!({})).await).unwrap();
+    assert_eq!(roots, json!({ "projectRoot": h.root, "roots": [h.root, attached] }));
 
     // Outside the project folder, by absolute path.
     let file = attached.join("new.txt");
@@ -763,6 +773,42 @@ async fn execute_reports_output_exit_code_and_requires_confirmation() {
     let (result, ()) = tokio::join!(run, allow);
     assert_eq!(result["exitCode"], 7);
     assert!(result["output"].as_str().unwrap().contains("captured-output"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_configuration_left_running_is_stopped_by_its_run_id() {
+    let h = Harness::new();
+    h.trust().await;
+    let config = ide_run::RunConfig {
+        id: "server".into(),
+        name: "Server".into(),
+        kind: "shell".into(),
+        command: if cfg!(windows) { "ping -n 60 127.0.0.1" } else { "sleep 60" }.into(),
+        args: vec![],
+        cwd: None,
+        env: Default::default(),
+        detected: false,
+        is_test: false,
+        debug_adapter: None,
+        allow_parallel: false,
+        extras: Default::default(),
+    };
+    ide_run::save_user_configs(&h.root, &[config]).unwrap();
+    h.host.mcp_requests.set_ready("main", true);
+    let run = h.json("execute_run_configuration", json!({"configurationName":"Server","waitForExit":false}));
+    let allow = async {
+        let id = h.request().await;
+        h.host.mcp_requests.answer("main", id, true, None).unwrap();
+    };
+    let (result, ()) = tokio::join!(run, allow);
+    assert!(result.get("exitCode").is_none());
+    let id = result["runId"].as_u64().expect("a run left running carries its id");
+
+    let user_run = id + 1000;
+    assert!(h.error("stop_run", json!({"runId": user_run})).await.contains("started by execute_run_configuration"));
+    let stopped = h.json("stop_run", json!({"runId": id, "force": true, "timeout": 10000})).await;
+    assert_eq!(stopped["state"], "stopped", "{stopped}");
+    assert!(h.error("stop_run", json!({"runId": id})).await.contains("started by execute_run_configuration"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1562,7 +1608,7 @@ async fn a_run_started_without_confirmation_works_in_a_background_project_and_ho
         id: "serve".into(),
         name: "serve stock".into(),
         kind: "shell".into(),
-        command: "sleep 30".into(),
+        command: "cat".into(),
         args: vec![],
         cwd: None,
         env: Default::default(),
@@ -1588,11 +1634,11 @@ async fn a_run_started_without_confirmation_works_in_a_background_project_and_ho
         // The call still waits for the run: it holds the project first, the run second.
         let held = h.host.mcp_background.snapshot(&h.host, std::time::Instant::now()).remove(0);
         assert_eq!(held.kept_open_by, Some(ide_host::mcp::McpBackgroundHold::Request));
-        h.host.processes.stop(run.id).unwrap();
+        h.host.processes.close_stdin(run.id).unwrap();
     };
     let (result, ()) = tokio::join!(call, observe);
     let result: Value = serde_json::from_str(&result.unwrap()).unwrap();
-    assert!(result["exitCode"].is_number() || result["exitCode"].is_null(), "{result}");
+    assert_eq!(result["exitCode"], 0, "{result}");
     let loaded = h.host.mcp_background.snapshot(&h.host, std::time::Instant::now()).remove(0);
     assert_eq!(loaded.kept_open_by, None, "the call is over and the run has exited");
 }

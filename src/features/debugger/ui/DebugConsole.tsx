@@ -21,12 +21,13 @@ import { logLineColor } from "@/ui/logColors";
 import { compileConsoleRules, matchConsoleRules, styleSpans, type ConsoleRuleMatch } from "@/ui/consoleRules";
 import { useConsoleRules } from "@/workbench/contributions";
 import { ConsoleFindBar } from "@/ui/ConsoleFindBar";
-import { DEFAULT_FIND_OPTIONS, findInLines, type FindOptions, type FindResult } from "@/ui/consoleFind";
+import { DEFAULT_FIND_OPTIONS, findInCutLines, marksByRow, type FindOptions, type FindResult } from "@/ui/consoleFind";
 import {
   appendConsole,
   clearConsole,
   evaluate,
   isLive,
+  MAX_LINE_LENGTH,
   readsProgramInput,
   sendProgramInput,
   useDebug,
@@ -42,6 +43,8 @@ import styles from "./DebugToolWindow.module.css";
 import { WidestColumns } from "@/platform/consoleColumns";
 
 const EMPTY_FIND: FindResult = { matches: [], overflow: false, invalid: false };
+/** A full row without a line break was cut at MAX_LINE_LENGTH: the next row continues its line. */
+const cut = (line: ConsoleLine) => line.text.length >= MAX_LINE_LENGTH && !line.text.endsWith("\n");
 
 const MARK_COLOR = "var(--bg-search-match)";
 const CURRENT_MARK_COLOR = "var(--bg-search-match-current)";
@@ -81,6 +84,7 @@ const DebugLine = memo(
           const marked = seg.mark ? { "data-find-match": "", "data-find-current": seg.current ? "" : undefined } : {};
           return seg.link ? (
             <a
+              // oxlint-disable-next-line react/no-array-index-key -- segments repeat; position in an immutable line is stable
               key={i}
               href={seg.link.kind === "url" ? seg.link.url : undefined}
               className={styles.link}
@@ -93,10 +97,12 @@ const DebugLine = memo(
               {seg.text}
             </a>
           ) : seg.mark ? (
+            // oxlint-disable-next-line react/no-array-index-key -- segments repeat; position in an immutable line is stable
             <mark key={i} className={styles.findMatch} style={style} {...marked}>
               {seg.text}
             </mark>
           ) : (
+            // oxlint-disable-next-line react/no-array-index-key -- segments repeat; position in an immutable line is stable
             <span key={i} style={style}>
               {seg.text}
             </span>
@@ -119,6 +125,8 @@ export function DebugServiceConsole({ sessionId }: { sessionId: number }) {
 
 export function DebugConsole({ session, interactive = true }: { session: DebugSession; interactive?: boolean }) {
   const lines = useDebug((s) => s.console[session.id]);
+  const dropped = useDebug((s) => s.consoleDropped[session.id] ?? 0);
+  const count = dropped.toLocaleString();
   const scroller = useRef<HTMLDivElement>(null);
   const inner = useRef<HTMLDivElement>(null);
   // Scroll to End: follows new output; scrolling up turns it off, back to the end turns it on.
@@ -189,21 +197,15 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
 
   // Find (⌘F): search the whole buffer, not just the rendered rows.
   const found = useMemo(
-    () => (findOpen ? findInLines(lines ?? [], query, findOptions) : EMPTY_FIND),
+    () => (findOpen ? findInCutLines(lines ?? [], cut, query, findOptions) : EMPTY_FIND),
     [findOpen, lines, query, findOptions],
   );
   const activeIndex = found.matches.length ? Math.min(Math.max(activeMatchIndex, 0), found.matches.length - 1) : -1;
   const current = activeIndex >= 0 ? found.matches[activeIndex] : undefined;
-  const marksByLine = useMemo(() => {
-    const byLine = new Map<number, SegmentMark[]>();
-    found.matches.forEach((match, i) => {
-      const mark: SegmentMark = { start: match.start, end: match.end, current: i === activeIndex };
-      const marks = byLine.get(match.line);
-      if (marks) marks.push(mark);
-      else byLine.set(match.line, [mark]);
-    });
-    return byLine;
-  }, [found, activeIndex]);
+  const marksByLine = useMemo(
+    () => marksByRow(found.matches, activeIndex, lines ?? [], cut),
+    [found, activeIndex, lines],
+  );
 
   // The line at the top of the viewport: typing searches from there, as IDEA does.
   const topLine = () => {
@@ -314,6 +316,7 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
     const items: MenuItem[] = history.current.length
       ? history.current.slice(0, 30).map((h, i) => ({
           id: String(i),
+          verbatim: true,
           label: h.length > 120 ? `${h.slice(0, 120)}…` : h,
           run: () => {
             setInput(h);
@@ -447,6 +450,7 @@ export function DebugConsole({ session, interactive = true }: { session: DebugSe
             onClose={closeFind}
           />
         )}
+        {dropped > 0 && <div className={styles.consoleNotice}>{tx`${count} earlier lines were discarded`}</div>}
         <div
           ref={scroller}
           className={clsx(styles.consoleOutput, !softWrap && styles.noWrap)}

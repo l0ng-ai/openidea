@@ -5,17 +5,14 @@ use super::{
     PluginInfo, PluginStatusItem, WorkbenchEvent,
 };
 use crate::Host;
+use crate::ops::blocking;
 use ide_command::command;
-use ide_core::{IdeError, IdeResult, RequestId};
+use ide_core::{IdeResult, RequestId};
 use ide_plugin::Invocation;
 use ide_workspace::settings::SettingsScope;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-
-async fn blocking<T: Send + 'static>(f: impl FnOnce() -> IdeResult<T> + Send + 'static) -> IdeResult<T> {
-    tokio::task::spawn_blocking(f).await.map_err(|e| IdeError::internal(e.to_string()))?
-}
 
 /// Runs a plugin command in the context of this window's project and focused editor.
 #[allow(clippy::too_many_arguments)]
@@ -52,6 +49,53 @@ pub async fn plugin_run_command(
         host.end_request(request);
     }
     result
+}
+
+/// Run Anything entries of the plugin declaring `prefix` for the field's `text` (API 1.18).
+#[command(trust = trusted)]
+pub async fn plugin_run_anything_suggest(
+    host: &Host,
+    plugins: &Arc<PluginHost>,
+    window: &str,
+    plugin_id: String,
+    prefix: String,
+    text: String,
+) -> IdeResult<Vec<ide_plugin::RunAnythingItem>> {
+    let (plugins, window_id) = (plugins.clone(), window.to_owned());
+    let root = host.project(window).ok().map(|p| p.root.clone());
+    host.blocking(move || plugins.run_anything_suggest(&plugin_id, &window_id, root, &prefix, &text)).await
+}
+
+/// Runs a Run Anything line starting with the plugin's `prefix` (API 1.18): whether
+/// the plugin claimed it.
+#[command(trust = trusted)]
+pub async fn plugin_run_anything_run(
+    host: &Host,
+    plugins: &Arc<PluginHost>,
+    window: &str,
+    plugin_id: String,
+    prefix: String,
+    line: String,
+) -> IdeResult<bool> {
+    let (plugins, window_id) = (plugins.clone(), window.to_owned());
+    let root = host.project(window).ok().map(|p| p.root.clone());
+    host.blocking(move || plugins.run_anything_run(&plugin_id, &window_id, root, &prefix, &line)).await
+}
+
+/// Completions for a field of a plugin's own run configuration (API 1.18).
+#[command(trust = trusted)]
+pub async fn plugin_run_configuration_complete(
+    host: &Host,
+    plugins: &Arc<PluginHost>,
+    window: &str,
+    config_id: String,
+    field: String,
+    text: String,
+    caret: u32,
+) -> IdeResult<Vec<ide_plugin::RunConfigCompletion>> {
+    let (plugins, window_id) = (plugins.clone(), window.to_owned());
+    let root = host.project(window)?.root.clone();
+    host.blocking(move || plugins.run_configuration_complete(&window_id, &root, &config_id, &field, &text, caret)).await
 }
 
 /// The UI language (BCP 47) that plugin code reads with `ui.locale()`.
@@ -110,10 +154,16 @@ pub fn plugin_answer_commit(plugins: &Arc<PluginHost>, request_id: String, answe
     plugins.answer_commit(&request_id, answer)
 }
 
-/// The UI reports the focused editor's file (`editor-focused` events).
+/// The UI reports the focused editor's file (`editor-focused` events), with its
+/// caret so plugins can scope line labels without re-reading the document.
 #[command(trust = always)]
-pub fn plugin_set_active_file(plugins: &Arc<PluginHost>, window: &str, path: Option<String>) {
-    plugins.set_active_file(window, path);
+pub fn plugin_set_active_file(
+    plugins: &Arc<PluginHost>,
+    window: &str,
+    path: Option<String>,
+    #[default] editor: Option<PluginEditor>,
+) {
+    plugins.set_active_file(window, path, editor);
 }
 
 /// The invoking window's reply to a plugin command request.
@@ -313,7 +363,10 @@ ide_command::domain!(
     plugin_post_events,
     plugin_prepare_debug_run,
     plugin_program,
+    plugin_run_anything_run,
+    plugin_run_anything_suggest,
     plugin_run_command,
+    plugin_run_configuration_complete,
     plugin_select_tests,
     plugin_set_active_file,
     plugin_set_ui_locale,

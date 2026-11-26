@@ -168,11 +168,12 @@ async fn discovery_reads_effort_and_fast_from_session_new_then_stops_the_agent()
     assert_eq!(calls.iter().map(|(m, _)| m.as_str()).collect::<Vec<_>>(), ["initialize", "session/new"]);
     assert_eq!(calls[1].1["mcpServers"], json!([]));
     let cursor = mgr.providers().into_iter().find(|p| p.id == "cursor").unwrap();
-    let fast = cursor.config.iter().find(|o| o.id == "fast").expect("fast option");
+    // Per-model options (`effort`, `fast`, `context`) belong to the session's model, not provider-wide config.
+    assert!(!cursor.config.iter().any(|o| o.id == "fast"));
+    assert_eq!(cursor.thought_levels.keys().collect::<Vec<_>>(), ["m1"]);
+    let fast = cursor.thought_levels["m1"].iter().find(|o| o.id == "fast").expect("fast option");
     assert_eq!(fast.category.as_deref(), Some("model_config"));
     assert_eq!(fast.current.as_deref(), Some("false"));
-    // The effort option belongs to the session's model; m2 may offer other levels.
-    assert_eq!(cursor.thought_levels.keys().collect::<Vec<_>>(), ["m1"]);
     assert!(cursor.thought_levels["m1"].iter().any(|o| o.category.as_deref() == Some("thought_level")));
 }
 

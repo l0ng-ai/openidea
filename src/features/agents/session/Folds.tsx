@@ -1,4 +1,5 @@
-import { createContext, useContext, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
+import { createContext, useContext, useRef, useState, type ReactElement, type ReactNode } from "react";
+import { flushSync } from "react-dom";
 
 /** Set while Find in Conversation is open: folded sections render their content, so it is found. */
 export const FoldedContent = createContext(false);
@@ -9,8 +10,8 @@ export const FoldedContent = createContext(false);
  */
 export const OpenFolds = createContext<Map<string, boolean> | null>(null);
 
-/** Scrolls a section the reader just opened into view (`Stream`). */
-export const RevealFold = createContext<((el: HTMLElement) => void) | null>(null);
+/** Puts a section's header back at `top` (viewport px) after the reader opened or closed it (`Stream`). */
+export const KeepFoldHeader = createContext<((header: HTMLElement, top: number) => void) | null>(null);
 
 /**
  * A collapsed section that renders its content only once opened: most of a long conversation
@@ -35,29 +36,38 @@ export function Fold({
 }) {
   const always = useContext(FoldedContent);
   const remembered = useContext(OpenFolds);
-  const reveal = useContext(RevealFold);
+  const keepHeader = useContext(KeepFoldHeader);
   const [expanded, setExpanded] = useState(() => !!open || !!defaultOpen || (!!id && !!remembered?.get(id)));
   const ref = useRef<HTMLDetailsElement>(null);
-  const opened = useRef(false);
-  // Once its content is laid out, so its height is known.
-  useLayoutEffect(() => {
-    if (!expanded || !opened.current) return;
-    opened.current = false;
-    if (ref.current) reveal?.(ref.current);
-  }, [expanded, reveal]);
+  const remember = (now: boolean) => {
+    if (!id || !remembered) return;
+    if (now) remembered.set(id, true);
+    else remembered.delete(id);
+  };
   return (
     <details
       ref={ref}
       className={className}
       open={open || ((!!id || defaultOpen) && expanded) || undefined}
+      // Toggle here rather than natively: the content renders in the same frame, and the header
+      // is put back where it was before anything paints.
+      onClick={(e) => {
+        const details = ref.current;
+        const header = e.target instanceof Element ? e.target.closest("summary") : null;
+        if (e.defaultPrevented || !details || !header || header.parentElement !== details) return;
+        if ((e.target as Element).closest("a, button, input, select, textarea, label") !== null) return;
+        e.preventDefault();
+        const top = header.getBoundingClientRect().top;
+        const now = !details.open;
+        details.open = now;
+        remember(now);
+        flushSync(() => setExpanded(now));
+        keepHeader?.(header, top);
+      }}
       onToggle={(e) => {
         const now = e.currentTarget.open;
-        opened.current = now;
         setExpanded(now);
-        if (id && remembered) {
-          if (now) remembered.set(id, true);
-          else remembered.delete(id);
-        }
+        remember(now);
       }}
     >
       {summary}

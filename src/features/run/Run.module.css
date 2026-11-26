@@ -26,7 +26,6 @@
   background: none;
   color: var(--fg-muted);
   font: inherit;
-  cursor: pointer;
 }
 .agentArchive:hover {
   background: var(--bg-hover);
@@ -140,6 +139,9 @@
   color: var(--link-hover);
   text-decoration: underline;
 }
+.noticeLink + .noticeLink {
+  margin-left: var(--space-3);
+}
 
 /* Console */
 
@@ -212,7 +214,7 @@
   top: 0;
   left: 0;
   min-width: 100%;
-  padding: 0 12px;
+  padding: 0 var(--space-3);
   line-height: inherit;
   white-space: pre;
   tab-size: 4;
@@ -245,6 +247,10 @@
   color: var(--link-hover);
   text-decoration-color: currentColor;
 }
+/* The link Up / Down the Stack Trace stepped to (IDEA selects it). */
+.currentLink {
+  background: var(--bg-editor-selection);
+}
 
 /* Test runner */
 
@@ -258,37 +264,53 @@
 .testStatusBar {
   flex: none;
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   min-height: 28px;
   border-bottom: 1px solid var(--border);
 }
 .testToolbar {
-  gap: var(--space-0-5);
+  flex-wrap: wrap;
+  gap: var(--space-1);
   padding: var(--space-0-5) var(--space-1);
 }
+
+.testFilters {
+  display: flex;
+  gap: var(--space-0-5);
+  padding-inline-end: var(--space-1);
+  border-inline-end: 1px solid var(--border);
+}
 .testStatusBar {
-  gap: var(--space-0-5) var(--space-2);
+  gap: var(--space-2);
   padding: var(--space-0-5) var(--space-2);
+  border-block-end-width: var(--space-0-5);
   font-size: var(--fs-ui);
   color: var(--fg-secondary);
 }
+.testStatusBar[data-outcome="passed"] {
+  border-block-end-color: var(--success);
+}
+.testStatusBar[data-outcome="skipped"] {
+  border-block-end-color: var(--warning);
+}
+.testStatusBar[data-running] {
+  border-block-end-color: var(--accent);
+}
+.testStatusBar[data-outcome="failed"] {
+  border-block-end-color: var(--danger);
+}
 .testCounts {
-  flex: 1 1 auto;
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-0-5) var(--space-2);
   min-width: 0;
   white-space: nowrap;
 }
-.testStatus,
-.testTotalDuration {
+.testStatus {
   flex: none;
 }
 .testTotalDuration {
-  margin-left: auto;
   color: var(--fg-subtle);
-  font-size: var(--fs-small);
   font-variant-numeric: tabular-nums;
 }
 .testTree {
@@ -454,8 +476,16 @@
   padding: 6px 8px;
   border-bottom: 1px solid var(--border-popup);
 }
+/* The list fills what is left of the viewport once the popup is capped by the window, not its full height. */
 .chooserViewport {
+  display: flex;
+  flex-direction: column;
   min-height: 0;
+}
+.chooserViewport > .chooserList {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
 }
 .chooserList {
   height: 100%;
@@ -526,6 +556,17 @@
   padding: 6px 10px 0;
   color: var(--fg-secondary);
   font-weight: 500;
+}
+.typeChooser {
+  width: 280px;
+}
+.typeChooser .chooserCaption {
+  padding: var(--space-2) var(--space-3) 0;
+  color: var(--fg-strong);
+  font-weight: 600;
+}
+.typeChooser .chooserSearch {
+  padding: var(--space-1) var(--space-3);
 }
 .chooserMnemonic {
   flex: none;
@@ -658,21 +699,38 @@
   gap: var(--space-2);
 }
 .configFields {
+  flex: 1;
+  min-height: 0;
   display: grid;
   grid-template-columns: fit-content(40%) minmax(0, 1fr);
+  grid-template-rows: [notice] auto [header] auto [options] minmax(0, 1fr);
   column-gap: var(--space-3);
-  row-gap: var(--space-2);
-  align-content: start;
   min-width: 0;
 }
-.configFields > * {
+.configFields > *,
+.formSettings > * {
   grid-column: 1 / -1;
   min-width: 0;
 }
-.configFields:not(.configFieldsTomcat) > .field,
+.configFields > .notice {
+  grid-row: notice;
+}
+.configFields:not(.configFieldsTomcat) > .notice,
+.configFields:not(.configFieldsTomcat) > .formHeader {
+  margin-bottom: var(--space-2);
+}
 .configFields:not(.configFieldsTomcat) > .formHeader,
-.configFields:not(.configFieldsTomcat) > .formHeader > .field {
+.configFields:not(.configFieldsTomcat) > .formHeader > .field,
+.formSettings > .field {
   grid-template-columns: subgrid;
+}
+.formSettings {
+  display: grid;
+  grid-row: options;
+  grid-template-columns: subgrid;
+  row-gap: var(--space-2);
+  align-content: start;
+  overflow: auto;
 }
 .formHeader > .field {
   grid-column: 1 / -1;
@@ -681,8 +739,6 @@
   overflow: hidden;
 }
 .configFieldsTomcat {
-  flex: 1;
-  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
@@ -786,6 +842,7 @@
 }
 .formHeader {
   display: grid;
+  grid-row: header;
   grid-template-columns: minmax(0, 1fr);
   align-items: center;
   gap: var(--space-4);
@@ -862,27 +919,43 @@
   outline: none;
 }
 .textareaWithButton {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-1-5);
+  position: relative;
   min-width: 0;
 }
 .textareaWithButton > textarea {
-  flex: 1;
-  min-width: 0;
+  display: block;
+  width: 100%;
+  padding-inline-end: calc(var(--space-3) + var(--space-4));
 }
 .textareaWithButton > button {
-  flex-shrink: 0;
+  position: absolute;
+  inset-block-start: var(--space-1);
+  inset-inline-end: var(--space-1);
+}
+.expandedEditor {
+  width: 512px;
+  height: 272px;
+}
+.expandedEditorBody {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: var(--space-2);
+  gap: var(--space-2);
 }
 /* One visual line per line of text: a long argument scrolls instead of wrapping. */
 .expandedTextarea {
-  width: 100%;
-  height: 100%;
-  min-height: 160px;
-  box-sizing: border-box;
+  flex: 1;
+  min-height: 0;
   resize: none;
   white-space: pre;
   overflow: auto;
+}
+.expandedEditorActions {
+  display: flex;
+  justify-content: flex-end;
+  flex: none;
+  gap: var(--space-2);
 }
 .textarea:focus {
   box-shadow: inset 0 0 0 1px var(--focus-ring);
@@ -909,10 +982,43 @@
 .taskRow > :first-child {
   min-width: 0;
 }
-.taskActions {
+.beforeLaunchTasks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+}
+.taskTag {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-0-5);
+  gap: var(--space-1);
+  min-width: 0;
+  max-width: 100%;
+  min-height: var(--h-list-row);
+  padding-inline: var(--space-2) var(--space-1);
+  border-radius: var(--radius-small);
+  background: var(--bg-elev);
+  color: var(--fg);
+  font-size: var(--fs-ui);
+}
+.taskName {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  min-height: var(--h-list-row);
+  text-align: start;
+}
+.taskName:hover {
+  color: var(--fg-strong);
+}
+.taskOrder {
+  flex: none;
+  color: var(--fg-muted);
+}
+.taskTag .taskCommand {
+  width: 24ch;
+  height: var(--h-control-small);
 }
 .taskLabel {
   overflow: hidden;
@@ -1085,16 +1191,46 @@
   gap: var(--space-2);
   padding: 12px 16px;
 }
-.exportFormats {
+.exportReport {
   display: flex;
-  align-items: center;
-  gap: var(--space-4);
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4) var(--space-1);
+  font-size: var(--fs-ui);
 }
-.exportField {
+
+.exportFormats,
+.exportOutput {
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.exportReport legend {
+  margin-block-end: var(--space-2);
+  padding: 0;
+  color: var(--fg-strong);
+  font-weight: 600;
+}
+
+.exportFormats {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  justify-items: start;
+  gap: var(--space-1);
+}
+
+.exportOutput {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
   align-items: center;
   gap: var(--space-2);
+}
+
+.exportOutput > label {
+  max-inline-size: 120px;
+  overflow-wrap: anywhere;
+  color: var(--fg);
 }
 
 /* Folded console lines ("<N internal lines>"). */
@@ -1105,22 +1241,24 @@
   border-radius: 3px;
   padding: 0 6px;
   font: inherit;
-  cursor: pointer;
 }
 .fold:hover {
   color: var(--fg);
 }
 .foldToggle {
-  display: inline-flex;
-  align-items: center;
-  margin-left: 6px;
-  padding: 0 2px;
+  position: sticky;
+  inset-inline-start: 0;
+  z-index: 1;
+  display: inline-grid;
+  place-items: center;
+  width: var(--space-3);
+  margin-inline-start: calc(-1 * var(--space-3));
+  padding: 0;
   border: none;
-  border-radius: 3px;
-  background: none;
+  border-radius: var(--radius-small);
+  background: var(--bg-app);
   color: var(--fg-faint);
-  vertical-align: middle;
-  cursor: pointer;
+  vertical-align: top;
 }
 .foldToggle:hover {
   color: var(--fg);
@@ -1202,6 +1340,11 @@
   align-items: center;
   gap: 10px;
 }
+.tomcatFieldError {
+  margin-left: 136px;
+  color: var(--danger);
+  font-size: var(--fs-small);
+}
 .tomcatRowLabel {
   color: var(--fg-secondary);
   font-size: var(--fs-ui);
@@ -1249,7 +1392,6 @@
   box-shadow: inset 0 0 0 1px var(--border-button);
   color: var(--fg);
   font-size: var(--fs-ui);
-  cursor: pointer;
   flex: none;
 }
 .tomcatDotsBtn:hover {
@@ -1504,9 +1646,6 @@
   font-size: var(--fs-small);
   border-bottom: 1px solid var(--border-popup);
 }
-.tomcatLogRow {
-  cursor: pointer;
-}
 .tomcatLogRow:hover {
   background: var(--bg-hover);
 }
@@ -1605,7 +1744,6 @@
   color: var(--fg-secondary);
   font-size: var(--fs-ui);
   font-weight: 500;
-  cursor: pointer;
 }
 .addServerDialogBody {
   display: flex;
@@ -1629,4 +1767,44 @@
 .addServerErrorIcon {
   color: var(--danger);
   flex: none;
+}
+
+/* Completion popup of a plugin run configuration's Arguments field. */
+.argsPopup {
+  min-width: 260px;
+  max-width: min(640px, 70vw);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.argsListWrap {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 4px 0;
+  box-sizing: content-box;
+}
+.argsList {
+  flex: 1;
+}
+.argsRow {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.argsLabel {
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.argsDetail {
+  margin-left: auto;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }

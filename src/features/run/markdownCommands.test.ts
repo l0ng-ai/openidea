@@ -1,6 +1,16 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { EditorView } from "@codemirror/view";
+import { iconAreaExtension } from "@/editor/core/cm/iconArea";
+import * as actions from "@/platform/actions";
 import { useProject } from "@/platform/project";
-import { commandMenuItems, markdownCommands, trimPrompt, type CommandEntry } from "./markdownCommands";
+import * as ui from "@/ui";
+import {
+  commandMenuItems,
+  markdownCommandGutter,
+  markdownCommands,
+  trimPrompt,
+  type CommandEntry,
+} from "./markdownCommands";
 
 const accepts = (line: string) => /^(mvn|\.\/gradlew) /.test(line);
 
@@ -66,5 +76,42 @@ describe("Markdown command menu", () => {
     expect((await commandMenuItems(block, "/p/docs/README.md")).map((i) => "label" in i && i.label)).toEqual([
       "Run in Terminal",
     ]);
+  });
+});
+
+describe("Markdown command gutter", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    useProject.setState({ project: null, settings: null });
+  });
+
+  it("runs a block's current commands after it is edited", async () => {
+    useProject.setState({
+      project: { root: "/p", name: "p", settings: {}, trusted: true, isGit: false },
+      settings: {} as never,
+    });
+    const show = vi.spyOn(ui, "showContextMenu").mockImplementation(() => {});
+    const run = vi.spyOn(actions, "executeAction").mockResolvedValue(undefined as never);
+    const view = new EditorView({
+      doc: "```sh\nls\n```",
+      parent: document.body,
+      extensions: [
+        iconAreaExtension,
+        markdownCommandGutter({ doc: 1, path: "/p/README.md", language: "markdown", uiMode: null, readOnly: false }),
+      ],
+    });
+    const button = () => view.dom.querySelector<HTMLButtonElement>('button[aria-label="Run in Terminal"]');
+    try {
+      await vi.waitFor(() => expect(button()).not.toBeNull());
+      view.dispatch({ changes: { from: 6, to: 8, insert: "pwd" } });
+      await new Promise((r) => setTimeout(r, 400));
+      button()!.click();
+      await vi.waitFor(() => expect(show).toHaveBeenCalled());
+      const [item] = show.mock.calls[0]![1];
+      (item as { run: () => void }).run();
+      expect(run).toHaveBeenCalledWith("terminal.runLines", { lines: ["pwd"], cwd: "/p" });
+    } finally {
+      view.destroy();
+    }
   });
 });

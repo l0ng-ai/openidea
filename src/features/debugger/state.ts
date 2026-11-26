@@ -3,6 +3,7 @@
  * (threads, frames, locals) after each stop.
  */
 import { tx } from "@/platform/i18n";
+import { logError } from "@/platform/errorLog";
 import { workflowSettings } from "@/platform/workflowSettings";
 import { executeAction, getAction } from "@/platform/actions";
 import { create } from "zustand";
@@ -20,6 +21,7 @@ import {
   type LaunchConfig,
   type RunId,
   type RunConfig,
+  type Scope,
   type StackFrame,
   type ThreadInfo,
   type Variable,
@@ -76,6 +78,8 @@ export interface DebugSession {
   programInput?: boolean;
   /** Process the session is attached to (a Run tab's build tool); stopped with the session. */
   process: RunId | null;
+  /** Stable Debug-tab slot; a restarted session inherits it even though its backend id changes. */
+  tabOrder?: number;
   /** Pinned tab (root sessions): once finished, a later session opens a new tab instead of taking its place. */
   pinned?: boolean;
   /** Started in place from the Services tool window (root sessions): its stops show it there, not in the Debug window. */
@@ -94,6 +98,8 @@ export interface DebugSession {
   threads: ThreadInfo[];
   selectedThread: number | null;
   frames: StackFrame[];
+  /** Why the selected thread's frames could not be loaded (Threads & Variables offers a retry). */
+  framesError?: string | null;
   selectedFrame: number | null;
   /** Breakpoint hits in this session. */
   hits: number;
@@ -136,6 +142,8 @@ interface DebugState {
   /** Session shown in the Debug tool window / title bar. */
   active: DebugSessionId | null;
   console: Record<number, ConsoleLine[]>;
+  /** Lines of a session's console dropped from the front, as the Run console counts them. */
+  consoleDropped: Record<number, number>;
   watches: string[];
   /** Incremented on every stop; views re-pull data when it changes. */
   stopSeq: number;
@@ -150,10 +158,40 @@ export const useDebug = create<DebugState>(() => ({
   sessions: {},
   active: null,
   console: {},
+  consoleDropped: {},
   watches: [],
   stopSeq: 0,
   variablesEpoch: 0,
 }));
+
+let tabOrderSeq = 0;
+
+/** Allocates a Debug-tab slot that is independent of the backend's session ids. */
+function allocateTabOrder() {
+  return ++tabOrderSeq;
+}
+
+/** Visible order key; test fixtures without a slot retain their former id order. */
+export function tabOrderOf(s: Pick<DebugSession, "id" | "tabOrder">): number {
+  return s.tabOrder ?? s.id;
+}
+
+/** Sessions as their Debug tabs show: by their root's slot, so children stay next to their parent. */
+export function inTabOrder<T extends Pick<DebugSession, "id" | "parent" | "tabOrder">>(sessions: readonly T[]): T[] {
+  const byId = new Map(sessions.map((s) => [s.id, s]));
+  const root = (s: T) => {
+    let cur = s;
+    for (let p = byId.get(cur.parent!); cur.parent != null && p; p = byId.get(cur.parent!)) cur = p;
+    return cur;
+  };
+  return [...sessions].sort(
+    (a, b) => tabOrderOf(root(a)) - tabOrderOf(root(b)) || tabOrderOf(a) - tabOrderOf(b) || a.id - b.id,
+  );
+}
+
+function sessionsInTabOrder(sessions: Record<number, DebugSession>): DebugSession[] {
+  return inTabOrder(Object.values(sessions));
+}
 
 /** Execution point of the selected frame, plus the frame's locals for inline values. */
 interface ExecutionPoint {
@@ -176,6 +214,14 @@ export const useExecutionPoint = create<ExecutionPoint>(() => ({
 
 /** Console buffer: at most this many physical lines per session. */
 const MAX_CONSOLE_LINES = 50_000;
+/** Longer lines are broken up, as in the Run console, so one blob can't stall rendering. */
+export const MAX_LINE_LENGTH = 8_000;
+/**
+ * Output of one session waiting for the next frame, in characters. A program printing faster
+ * than the console parses keeps only the newest output (the rest would be trimmed anyway), so
+ * the backlog and each frame's work stay bounded instead of growing with the flood.
+ */
+const MAX_PENDING_CHARS = 4 * 1024 * 1024;
 let lineSeq = 0;
 /** ANSI state per session and output category (a colour can span several output events). */
 const ansiStreams = new Map<DebugSessionId, Map<string, AnsiStream>>();
@@ -188,6 +234,8 @@ interface PendingOutput {
 }
 const pendingOutput: PendingOutput[] = [];
 let outputFlushHandle: { raf: number; timeout: number } | null = null;
+/** When the console last showed queued output (`performance.now()`). */
+let lastOutputFlush = -Infinity;
 
 function cancelOutputFlush() {
   if (!outputFlushHandle) return;
@@ -248,7 +296,7 @@ function patch(id: DebugSessionId, p: Partial<DebugSession>) {
   publishContext();
 }
 
-function blank(id: DebugSessionId, p: Partial<DebugSession> = {}): DebugSession {
+function blank(id: DebugSessionId, { tabOrder = allocateTabOrder(), ...p }: Partial<DebugSession> = {}): DebugSession {
   return {
     id,
     name: "Debug",
@@ -257,6 +305,7 @@ function blank(id: DebugSessionId, p: Partial<DebugSession> = {}): DebugSession 
     parent: null,
     launch: null,
     process: null,
+    tabOrder,
     status: "starting",
     stoppedThread: null,
     stopReason: null,
@@ -307,14 +356,28 @@ function ownSession(id: DebugSessionId, event: DebugEvent): DebugSession | null 
   const st = useDebug.getState();
   const existing = st.sessions[id];
   if (existing) return existing;
-  if (owned.has(id)) return null;
+  // `started` is a session's first event, sent once when the backend creates it: never a late event
+  // of a forgotten session, though its id may be one (another backend numbers from 1 again).
+  if (owned.has(id) && event.kind !== "started") return null;
   if (event.kind === "started" && event.parent != null) {
     if (!st.sessions[event.parent]) return null;
     return adoptSession(id, { name: event.name, adapter: event.adapter, parent: event.parent });
   }
   if (pendingStarts === 0) return null;
   provisional.add(id);
-  return event.kind === "started" ? adoptSession(id, { name: event.name, adapter: event.adapter }) : adoptSession(id);
+  // The new root session takes the tab it replaces now, not once `debugStart` returns.
+  const replaced = pendingReplacements[0];
+  const slot = replaced ? { tabOrder: replaced.tabOrder, pinned: replaced.pinned } : {};
+  const s =
+    event.kind === "started"
+      ? adoptSession(id, { name: event.name, adapter: event.adapter, ...slot })
+      : adoptSession(id, slot);
+  if (replaced) {
+    takeReplacement(replaced);
+    useDebug.setState({ active: id });
+    publishContext();
+  }
+  return s;
 }
 
 /**
@@ -346,28 +409,61 @@ function settleStart(id: DebugSessionId | null, discard = false) {
 
 /** The session being rerun: its tab is the one the new session takes, pinned or not. */
 let rerunOf: DebugSessionId | null = null;
+/** Sessions whose Rerun is in progress: their tab stays selected when they terminate. */
+const rerunning = new Set<DebugSessionId>();
+
+interface ReplacedTab {
+  pinned?: boolean;
+  tabOrder?: number;
+  /** The finished tab, kept until the new session takes its place (`defer`). */
+  session?: DebugSessionId;
+}
+
+/** Finished tabs whose starting replacements have no session yet, oldest start first. */
+const pendingReplacements: ReplacedTab[] = [];
+
+/** The new session is shown: the finished tab it replaces gives way. */
+function takeReplacement(r: ReplacedTab | undefined) {
+  if (!r) return;
+  const i = pendingReplacements.indexOf(r);
+  if (i >= 0) pendingReplacements.splice(i, 1);
+  if (r.session != null && useDebug.getState().sessions[r.session]) removeSession(r.session);
+  r.session = undefined;
+}
 
 /**
  * As IDEA reuses run content: a new session takes the place of one finished tab (with its
- * children) that isn't pinned, preferring one named like it, then the selected one; other
- * finished tabs stay. Returns whether the new tab is pinned: as the tab it replaced on a
- * rerun, else per the settings.
+ * children) that isn't pinned, preferring the same configuration id, then its display name,
+ * then the selected one; other finished tabs stay. The returned slot lets the new backend
+ * session keep the tab where the replaced one was.
  */
-function replaceFinished(name: string): boolean | undefined {
+function replaceFinished(name: string, configId?: string, defer = false): ReplacedTab {
   const { sessions, active } = useDebug.getState();
   const own = rerunOf != null ? sessions[rerunOf] : undefined;
   rerunOf = null;
-  if (own && !isLive(own)) {
+  // Rerun's Stop waits for the adapter, even if this window has not handled its terminated event yet.
+  if (own) {
+    const tabOrder = tabOrderOf(own);
+    if (defer) return { pinned: own.pinned, tabOrder, session: own.id };
     removeSession(own.id);
-    return own.pinned;
+    return { pinned: own.pinned, tabOrder };
   }
-  const finished = Object.values(sessions).filter((s) => s.parent == null && !isLive(s) && !s.pinned);
+  const finished = sessionsInTabOrder(sessions).filter(
+    (s) => s.parent == null && !isLive(s) && !s.pinned && !pendingReplacements.some((r) => r.session === s.id),
+  );
   const selected = active != null ? sessions[active] : undefined;
   const ordered =
     selected && finished.includes(selected) ? [selected, ...finished.filter((s) => s !== selected)] : finished;
-  const reused = ordered.find((s) => s.name === name) ?? ordered[0];
-  if (reused) removeSession(reused.id);
-  return workflowSettings().run.pinTabs || undefined;
+  const reused =
+    (configId == null ? undefined : ordered.find((s) => s.runConfig?.id === configId)) ??
+    ordered.find((s) => s.name === name) ??
+    ordered[0];
+  const pinned = workflowSettings().run.pinTabs || undefined;
+  if (!reused) return { pinned };
+  const tabOrder = tabOrderOf(reused);
+  if (defer) return { pinned, tabOrder, session: reused.id };
+  removeSession(reused.id);
+  return { pinned, tabOrder };
 }
 
 /**
@@ -386,7 +482,7 @@ export function justDetached(process: RunId | null | undefined): boolean {
 
 export function publishContext() {
   const s = activeSession();
-  const retained = Object.values(useDebug.getState().sessions);
+  const retained = sessionsInTabOrder(useDebug.getState().sessions);
   useDebugRunSessions.setState({
     serviceSessions: retained.flatMap((session) => {
       if (session.parent != null || !session.runConfig) return [];
@@ -412,7 +508,7 @@ export function publishContext() {
         },
       ];
     }),
-    sessions: Object.values(useDebug.getState().sessions)
+    sessions: retained
       .filter((session) => session.parent == null && isLive(session))
       .map((session) => {
         const paused = Object.values(useDebug.getState().sessions).find(
@@ -510,8 +606,13 @@ export function appendConsole(session: DebugSessionId, category: string, raw: st
     const prev = s.console[session] ?? [];
     const next = [...prev];
     appendConsoleLines(next, category, spans);
-    trimConsole(next);
-    return { console: { ...s.console, [session]: next } };
+    const trimmed = trimConsole(next);
+    return {
+      console: { ...s.console, [session]: next },
+      ...(trimmed
+        ? { consoleDropped: { ...s.consoleDropped, [session]: (s.consoleDropped[session] ?? 0) + trimmed } }
+        : {}),
+    };
   });
   republishForPorts();
 }
@@ -529,21 +630,55 @@ export function appendConsoleQueued(session: DebugSessionId, category: string, r
   } else {
     pendingOutput.push({ session, category, raw });
   }
+  capPendingOutput(session);
   if (outputFlushHandle === null) {
-    outputFlushHandle = {
-      raf: requestAnimationFrame(flushConsoleOutput),
-      timeout: window.setTimeout(flushConsoleOutput, 100),
-    };
+    // Next frame, or later when Settings › Tools › Terminal › Max FPS asks for fewer frames (#5897).
+    const fps = Number(workflowSettings().terminal.maxFps);
+    const since = performance.now() - lastOutputFlush;
+    const wait = fps > 0 && since >= 0 ? Math.round(1000 / fps) - since : 0;
+    outputFlushHandle =
+      wait > 16
+        ? { raf: 0, timeout: window.setTimeout(flushConsoleOutput, wait) }
+        : { raf: requestAnimationFrame(flushConsoleOutput), timeout: window.setTimeout(flushConsoleOutput, 100) };
+  }
+}
+
+/** Lines dropped from the front of the pending output, per session, until the next flush. */
+const pendingDropped = new Map<DebugSessionId, number>();
+
+/** Drops the oldest pending output of `session` past [MAX_PENDING_CHARS], whole lines at a time. */
+function capPendingOutput(session: DebugSessionId) {
+  let total = 0;
+  for (const chunk of pendingOutput) if (chunk.session === session) total += chunk.raw.length;
+  let excess = total - MAX_PENDING_CHARS;
+  while (excess > 0) {
+    const at = pendingOutput.findIndex((chunk) => chunk.session === session);
+    const chunk = pendingOutput[at]!;
+    // Up to the end of the line that holds the excess; a chunk without a later newline goes whole.
+    const end = chunk.raw.indexOf("\n", Math.min(excess, chunk.raw.length) - 1);
+    const cut = end < 0 ? chunk.raw.length : end + 1;
+    let lines = 0;
+    for (let i = chunk.raw.indexOf("\n"); i >= 0 && i < cut; i = chunk.raw.indexOf("\n", i + 1)) lines++;
+    pendingDropped.set(session, (pendingDropped.get(session) ?? 0) + lines);
+    if (cut >= chunk.raw.length) pendingOutput.splice(at, 1);
+    else chunk.raw = chunk.raw.slice(cut);
+    excess -= cut;
   }
 }
 
 function flushConsoleOutput() {
   cancelOutputFlush();
   if (pendingOutput.length === 0) return;
+  lastOutputFlush = performance.now();
   const chunks = pendingOutput.splice(0);
+  const dropped = new Map(pendingDropped);
+  pendingDropped.clear();
   const printed: Array<[DebugSessionId, string]> = [];
   useDebug.setState((s) => {
     const consoleBySession = { ...s.console };
+    const droppedBySession = { ...s.consoleDropped };
+    for (const [session, count] of dropped)
+      if (s.sessions[session]) droppedBySession[session] = (droppedBySession[session] ?? 0) + count;
     for (const { session, category, raw } of chunks) {
       if (!s.sessions[session]) continue;
       const spans = outputSpans(session, category, raw);
@@ -553,10 +688,11 @@ function flushConsoleOutput() {
       const prev = consoleBySession[session] ?? [];
       const next = [...prev];
       appendConsoleLines(next, category, spans);
-      trimConsole(next);
+      const trimmed = trimConsole(next);
+      if (trimmed) droppedBySession[session] = (droppedBySession[session] ?? 0) + trimmed;
       consoleBySession[session] = next;
     }
-    return { console: consoleBySession };
+    return { console: consoleBySession, consoleDropped: droppedBySession };
   });
   republishForPorts();
   for (const [session, text] of printed) debugServerPage(session, text);
@@ -696,15 +832,28 @@ function appendConsoleLines(lines: ConsoleLine[], category: string, spans: Span[
           line.spans = [];
         }
       }
-      line.text += piece;
-      line.spans = appendSpans(line.spans, [{ ...span, text: piece }]);
-      if (piece === "\n") line = undefined;
+      let rest = piece;
+      while (rest) {
+        if (!line) {
+          line = { id: ++lineSeq, category, text: "", spans: [] };
+          lines.push(line);
+        }
+        const room = piece === "\n" ? 1 : MAX_LINE_LENGTH - line.text.length;
+        const part = rest.slice(0, Math.max(room, 0));
+        rest = rest.slice(part.length);
+        if (part) {
+          line.text += part;
+          line.spans = appendSpans(line.spans, [{ ...span, text: part }]);
+        }
+        // A full line continues on the next one.
+        if (rest || piece === "\n") line = undefined;
+      }
     }
   }
 }
 
-/** Drops the oldest lines once past the line or configured character cap. */
-function trimConsole(lines: ConsoleLine[]) {
+/** Drops the oldest lines once past the line or configured character cap; returns how many. */
+function trimConsole(lines: ConsoleLine[]): number {
   let drop = 0;
   if (lines.length > MAX_CONSOLE_LINES) {
     drop = lines.length - MAX_CONSOLE_LINES + Math.ceil(MAX_CONSOLE_LINES / 10);
@@ -722,12 +871,17 @@ function trimConsole(lines: ConsoleLine[]) {
     }
   }
   if (drop > 0) lines.splice(0, drop);
+  return drop;
 }
 
 export function clearConsole(session: DebugSessionId) {
   flushConsoleOutput();
   ansiStreams.delete(session);
-  useDebug.setState((s) => ({ console: { ...s.console, [session]: [] } }));
+  pendingDropped.delete(session);
+  useDebug.setState((s) => ({
+    console: { ...s.console, [session]: [] },
+    consoleDropped: { ...s.consoleDropped, [session]: 0 },
+  }));
 }
 
 // --- lifecycle ---------------------------------------------------------------
@@ -745,7 +899,7 @@ export async function startPreparedSession(
   const controller = new AbortController();
   preparations.set(id, controller);
   // The new tab takes the place of a finished one while its build runs, not once the adapter starts.
-  const pinned = replaceFinished(config.name);
+  const reused = replaceFinished(config.name, config.id);
   useDebug.setState((s) => ({
     sessions: {
       ...s.sessions,
@@ -753,11 +907,13 @@ export async function startPreparedSession(
         name: config.name,
         adapter: config.debugAdapter ?? "",
         runConfig: config,
-        pinned,
+        pinned: reused.pinned,
+        ...(reused.tabOrder == null ? {} : { tabOrder: reused.tabOrder }),
         inPlace: options.show === false,
       }),
     },
     console: { ...s.console, [id]: [] },
+    consoleDropped: { ...s.consoleDropped, [id]: 0 },
     active: id,
   }));
   publishContext();
@@ -808,7 +964,10 @@ export async function startSession(
   // Attaching to a JVM that may be gone: the finished session stays until the attach succeeds.
   const afterDetach = justDetached(options.process);
   const previousActive = useDebug.getState().active;
-  let pinned = !afterDetach && !options.preparation ? replaceFinished(launch.name) : undefined;
+  // The finished tab stays in place until the new session appears there.
+  let replaced =
+    !afterDetach && !options.preparation ? replaceFinished(launch.name, options.runConfig?.id, true) : undefined;
+  if (replaced?.session != null) pendingReplacements.push(replaced);
   try {
     if (options.show !== false && workflowSettings().run.showOnStart) toolWindowService().show("debug");
   } catch {
@@ -823,7 +982,7 @@ export async function startSession(
     const id = await call(commands.debugStart(launch));
     console.info("Debug adapter started", { name: launch.name, ms: performance.now() - adapterStarted });
     owned.add(id);
-    if (afterDetach && !options.preparation) pinned = replaceFinished(launch.name);
+    if (afterDetach && !options.preparation) replaced = replaceFinished(launch.name, options.runConfig?.id);
     if (options.preparation?.signal.aborted) {
       await call(commands.debugStop(id)).catch(() => undefined);
       settleStart(id);
@@ -831,6 +990,7 @@ export async function startSession(
       return null;
     }
     flushConsoleOutput();
+    takeReplacement(replaced);
     const preparation = options.preparation && useDebug.getState().sessions[options.preparation.id];
     useDebug.setState((s) => {
       const cur = s.sessions[id] ?? blank(id, { status: "running" });
@@ -855,7 +1015,8 @@ export async function startSession(
             adapter: cur.adapter || launch.adapter,
             launch: options.rerunnable === false ? null : launch,
             process: options.process ?? null,
-            pinned: preparation ? preparation.pinned : pinned,
+            pinned: preparation ? preparation.pinned : replaced?.pinned,
+            tabOrder: preparation?.tabOrder ?? replaced?.tabOrder ?? cur.tabOrder ?? allocateTabOrder(),
             inPlace: options.show === false,
             status: cur.status === "starting" ? "running" : cur.status,
           },
@@ -873,6 +1034,7 @@ export async function startSession(
     void syncSpecial();
     return id;
   } catch (e) {
+    takeReplacement(replaced);
     settleStart(null, afterDetach);
     if (afterDetach) {
       // The JVM that announced the port ended as its previous debugger detached.
@@ -987,16 +1149,16 @@ export function removeSession(id: DebugSessionId) {
   const gone = new Set<DebugSessionId>([id]);
   for (let added = true; added;) {
     added = false;
-    for (const s of Object.values(st.sessions))
+    for (const s of sessionsInTabOrder(st.sessions))
       if (s.parent != null && gone.has(s.parent) && !gone.has(s.id)) {
         gone.add(s.id);
         added = true;
       }
   }
 
-  const order = Object.values(st.sessions).map((s) => s.id);
+  const order = sessionsInTabOrder(st.sessions).map((s) => s.id);
   const sessions: Record<number, DebugSession> = {};
-  for (const s of Object.values(st.sessions)) if (!gone.has(s.id)) sessions[s.id] = s;
+  for (const s of sessionsInTabOrder(st.sessions)) if (!gone.has(s.id)) sessions[s.id] = s;
   const console = { ...st.console };
   for (const goneId of gone) delete console[goneId];
   const at = order.indexOf(id);
@@ -1028,16 +1190,18 @@ export async function rerunSession(id: DebugSessionId, options: { show?: boolean
   const root = rootOf(s);
   const launch = root.launch;
   if (!root.runConfig && !launch) return;
-  if (isLive(root)) await stopSession(root.id);
-  rerunOf = root.id;
-  // A session debugged in place from Services reruns there too.
-  const show = options.show ?? (root.inPlace ? false : undefined);
+  rerunning.add(root.id);
   try {
+    if (isLive(root)) await stopSession(root.id);
+    rerunOf = root.id;
+    // A session debugged in place from Services reruns there too.
+    const show = options.show ?? (root.inPlace ? false : undefined);
     if (root.runConfig)
       await executeAction("run.debugConfig", show === false ? { config: root.runConfig, show: false } : root.runConfig);
     else await startSession(launch!, { show });
   } finally {
     rerunOf = null;
+    rerunning.delete(root.id);
   }
 }
 
@@ -1086,9 +1250,9 @@ function markTerminated(id: DebugSessionId) {
   if (serverPages.delete(id) && page != null) void stopSession(page);
   patch(id, { status: "terminated", endedAt: Date.now(), frames: [], selectedFrame: null, stoppedThread: null });
   const st = useDebug.getState();
-  if (st.active === id) {
+  if (st.active === id && !rerunning.has(id)) {
     // Prefer another live session (e.g. the parent of a finished child).
-    const other = Object.values(st.sessions).find(isLive);
+    const other = sessionsInTabOrder(st.sessions).find(isLive);
     if (other) useDebug.setState({ active: other.id });
   }
   if (!Object.values(useDebug.getState().sessions).some(isLive)) {
@@ -1136,16 +1300,19 @@ export function selectFrame(id: DebugSessionId, frameId: number, reveal = true) 
 
 /** `newStop`: false when returning to an earlier stop, whose breakpoint hit was handled when it happened. */
 async function loadFrames(id: DebugSessionId, threadId: number, reveal: boolean, newStop = true) {
+  if (useDebug.getState().sessions[id]?.framesError) patch(id, { framesError: null });
   const before = useDebug.getState().sessions[id];
   let frames: StackFrame[] = [];
+  let framesError: string | null = null;
   try {
     frames = await call(commands.debugStackTrace(id, threadId));
   } catch (e) {
-    console.warn("stackTrace failed", e);
+    logError("Debugger stack trace", e);
+    framesError = e instanceof Error ? e.message : String(e);
   }
   const s = useDebug.getState().sessions[id];
   if (!s || s.status !== "paused" || s.selectedThread !== threadId || s.frames !== before?.frames) return;
-  patch(id, { frames });
+  patch(id, { frames, framesError });
   const top = topFrame(frames);
   if (newStop && top?.path && (s.stopReason === "breakpoint" || s.stopReason === "function breakpoint")) {
     void logSuspendingHit(id, top);
@@ -1163,6 +1330,7 @@ async function logSuspendingHit(id: DebugSessionId, frame: StackFrame) {
   const bp = breakpointsOf(frame.path!).find((b) => b.line === frame.line && b.enabled);
   if (!bp || !suspends(bp)) return;
   for (const part of logParts(bp, frame.path!)) {
+    // oxlint-disable-next-line no-await-in-loop -- console lines must be appended in log-part order
     const text = await interpolateLog(part, async (expr) => {
       const v = await call(commands.debugEvaluateIn(id, frame.id, expr, "repl"));
       return v.value;
@@ -1180,22 +1348,48 @@ async function loadThreads(id: DebugSessionId) {
   }
 }
 
+export interface FrameLocals {
+  scopes: Scope[];
+  /** Variables of the first non-expensive scope. */
+  locals: Variable[];
+}
+
+let frameLocalsMemo: { key: string; frames: readonly StackFrame[] | undefined; value: Promise<FrameLocals> } | null =
+  null;
+
+/**
+ * Scopes and first-scope variables of `frameId` at the current stop. Inline values and the Variables view
+ * ask for the same frame on every stop; they share one request, since an adapter may take seconds to
+ * format a large local (#6170).
+ */
+export function frameLocals(id: DebugSessionId, frameId: number): Promise<FrameLocals> {
+  const { stopSeq, variablesEpoch, sessions } = useDebug.getState();
+  const key = `${id}:${frameId}:${stopSeq}:${variablesEpoch}`;
+  // Every stop loads a new stack: a stop counter that starts over cannot hand out an old answer.
+  const frames = sessions[id]?.frames;
+  if (frameLocalsMemo?.key !== key || frameLocalsMemo.frames !== frames) {
+    const value = (async () => {
+      const scopes = await call(commands.debugScopes(id, frameId));
+      const scope = scopes.find((sc) => !sc.expensive);
+      const locals = scope ? await call(commands.debugVariables(id, scope.variablesReference)) : [];
+      return { scopes, locals };
+    })();
+    frameLocalsMemo = { key, frames, value };
+  }
+  return frameLocalsMemo.value;
+}
+
 /** Locals of `frameId` (first non-expensive scope) for inline values. */
 async function loadLocals(id: DebugSessionId, frameId: number) {
   const frames = useDebug.getState().sessions[id]?.frames;
   const values: Record<string, string> = Object.create(null);
   const variables: Record<string, Variable> = Object.create(null);
   try {
-    const scopes = await call(commands.debugScopes(id, frameId));
-    const scope = scopes.find((sc) => !sc.expensive);
-    if (scope) {
-      const vars = await call(commands.debugVariables(id, scope.variablesReference));
-      for (const v of vars)
-        if (v.name && !Object.hasOwn(values, v.name)) {
-          values[v.name] = v.value;
-          variables[v.name] = v;
-        }
-    }
+    for (const v of (await frameLocals(id, frameId)).locals)
+      if (v.name && !Object.hasOwn(values, v.name)) {
+        values[v.name] = v.value;
+        variables[v.name] = v;
+      }
   } catch {
     // No inline values.
   }
@@ -1532,7 +1726,8 @@ export function resetSessions() {
   ansiStreams.clear();
   announcedPorts.clear();
   serverPages.clear();
-  useDebug.setState({ sessions: {}, active: null, console: {}, stopSeq: 0, variablesEpoch: 0 });
+  pendingDropped.clear();
+  useDebug.setState({ sessions: {}, active: null, console: {}, consoleDropped: {}, stopSeq: 0, variablesEpoch: 0 });
   useExecutionPoint.setState({ path: null, line: 0, top: true, values: {}, variables: {} });
   publishContext();
 }

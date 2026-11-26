@@ -129,6 +129,7 @@ function SyncComparison({
         const entry = entries[i]!;
         try {
           if (entry.local && entry.remote) {
+            // oxlint-disable-next-line no-await-in-loop -- each result is checked for abort, recorded and published as progress before the next comparison starts; suggest() also mutates shared sync state.
             const equal = await comparison.equal(entry, abort.signal);
             if (abort.signal.aborted) return;
             verified[entry.path] = equal;

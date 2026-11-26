@@ -283,6 +283,7 @@ export async function scriptMenuItems(entry: ScriptEntry, path: string, content:
   return [
     {
       label: tx`Run '${label}'`,
+      preserveLabelEnd: true,
       icon: "run",
       shortcut: shortcutLabel("run.runContext"),
       run: () =>
@@ -292,6 +293,7 @@ export async function scriptMenuItems(entry: ScriptEntry, path: string, content:
     },
     {
       label: tx`Debug '${label}'`,
+      preserveLabelEnd: true,
       icon: "debug",
       shortcut: shortcutLabel("run.debugContext"),
       run: () => void executeAction("run.debugConfig", config),
@@ -307,6 +309,8 @@ const setEntries = StateEffect.define<Placed[]>();
 
 type EntryMenu = (entry: ScriptEntry, path: string, content: string) => Promise<MenuItem[]>;
 
+const entryKey = (entry: ScriptEntry) => JSON.stringify({ ...entry, pos: undefined });
+
 class ScriptMarker extends GutterMarker {
   constructor(
     readonly entry: ScriptEntry,
@@ -317,7 +321,8 @@ class ScriptMarker extends GutterMarker {
     super();
   }
   override eq(other: GutterMarker): boolean {
-    return other instanceof ScriptMarker && other.entry.name === this.entry.name;
+    // The whole entry, not just its name: a Markdown block keeps its name while its commands change.
+    return other instanceof ScriptMarker && entryKey(other.entry) === entryKey(this.entry);
   }
   override toDOM(view: EditorView): Node {
     const el = document.createElement("button");

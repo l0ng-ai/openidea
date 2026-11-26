@@ -101,12 +101,16 @@ export function ChatItem({
  */
 export function rich(template: string, values: Record<string, ReactNode>): ReactNode {
   const parts = template.split(/\{(\w+)\}/);
-  return parts.map((p, i) => <Fragment key={i}>{i % 2 ? (values[p] ?? `{${p}}`) : p}</Fragment>);
+  return parts.map((p, i) => (
+    // oxlint-disable-next-line react/no-array-index-key -- template parts can repeat; position is the identity
+    <Fragment key={i}>{i % 2 ? (values[p] ?? `{${p}}`) : p}</Fragment>
+  ));
 }
 
 /** Nodes joined with ", " (IntelliJ's `joinToString`). */
 export function joined(nodes: ReactNode[]): ReactNode {
   return nodes.map((n, i) => (
+    // oxlint-disable-next-line react/no-array-index-key -- joined nodes can repeat; position is the identity
     <Fragment key={i}>
       {i > 0 && ", "}
       {n}

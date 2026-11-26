@@ -96,7 +96,12 @@
               },
               {
                 "group": "Remote development",
-                "pages": ["en/guide/remote/ssh", "en/guide/remote/server", "en/guide/remote/containers"]
+                "pages": [
+                  "en/guide/remote/ssh",
+                  "en/guide/remote/server",
+                  "en/guide/remote/containers",
+                  "en/guide/web-server"
+                ]
               },
               {
                 "group": "Customize",
@@ -320,7 +325,12 @@
               },
               {
                 "group": "远程开发",
-                "pages": ["zh/guide/remote/ssh", "zh/guide/remote/server", "zh/guide/remote/containers"]
+                "pages": [
+                  "zh/guide/remote/ssh",
+                  "zh/guide/remote/server",
+                  "zh/guide/remote/containers",
+                  "zh/guide/web-server"
+                ]
               },
               {
                 "group": "定制",

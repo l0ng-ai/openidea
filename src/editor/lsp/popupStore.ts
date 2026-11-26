@@ -38,8 +38,8 @@ export interface ListPopupItem {
   run: () => void | Promise<void>;
   /** IDEA's right-arrow menu of the row (inspection options of a fix). */
   submenu?: MenuItem[];
-  /** Called when the row becomes the selected one (e.g. highlight what it would act on). */
-  onActive?: () => void;
+  /** Called on selection. May return a cleanup for when the row is no longer active. */
+  onActive?: () => void | (() => void);
 }
 
 /** Side panel content for the selected row of a list popup (intention preview). */
@@ -104,6 +104,8 @@ export type LspPopup =
       anchor: PopupPoint | "center";
       title: string;
       items: ListPopupItem[];
+      /** The resizable Copy Path/Reference chooser with trailing path previews. */
+      layout?: "copyPath";
       /** Rows 1-9 get a number; typing it runs the row (IDEA's numbered popups). */
       numbered?: boolean;
       /** Compact action list, with room for icons only when a row has one. */

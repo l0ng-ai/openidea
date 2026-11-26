@@ -41,7 +41,7 @@ import { ACCENT_PRESETS, LIMITS, type ThemeId } from "../model/schema";
 import type { PageSpec } from "./spec";
 import { HTTP_PROXY_PAGE } from "./httpProxy";
 import styles from "./Behavior.module.css";
-import { LOCALES, SUPPORTED_LOCALES, tx, useT, useTx } from "@/platform/i18n";
+import { LOCALES, SUPPORTED_LOCALES, tx, txPart, useT, useTx } from "@/platform/i18n";
 import { BUILTIN_THEMES, useContributedIconThemes } from "@/platform/themes";
 import { currentThemeChoice, originDetail, previewTheme, themeSelectOptions, useThemeChoices } from "@/workbench/theme";
 import { themePreview } from "@/workbench/quickSwitch";
@@ -212,7 +212,13 @@ function AccentRow() {
   return (
     <Indented>
       <Row label="Accent color">
-        <ColorSwatches value={accent} presets={ACCENT_PRESETS} onChange={setAccent} aria-label="Accent color" />
+        <ColorSwatches
+          value={accent}
+          presets={ACCENT_PRESETS}
+          onChange={setAccent}
+          aria-label="Accent color"
+          useColorPicker
+        />
       </Row>
     </Indented>
   );
@@ -875,14 +881,14 @@ function NotificationGroups() {
             value={value.display}
             options={DISPLAY_OPTIONS}
             onChange={(display) => update({ display })}
-            aria-label={tx`${title} popup type`}
+            aria-label={tx`${txPart(title)} popup type`}
           />
         </Row>
         <Checkbox
           checked={value.log}
           onChange={(log) => update({ log })}
           label={<SearchLabel text="Show in tool window" />}
-          aria-label={tx`Show ${title} in tool window`}
+          aria-label={tx`Show ${txPart(title)} in tool window`}
         />
       </section>
     </div>
@@ -957,6 +963,12 @@ export const BEHAVIOR_PAGES: PageSpec[] = [
             key: "appearance.redGreenVision",
             label: "Adjust colors for red-green vision deficiency",
             hint: "For protanopia and deuteranopia.",
+          },
+          {
+            kind: "toggle",
+            key: "appearance.reduceMotion",
+            label: "Reduce motion",
+            hint: "Turns off animations and transitions, such as spinners and popup fades. Always on when the system asks for reduced motion.",
           },
         ],
       },

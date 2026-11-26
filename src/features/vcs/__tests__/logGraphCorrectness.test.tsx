@@ -60,6 +60,29 @@ describe("graph projections", () => {
     expect(rows[0]!.down[0]!.dashed).toBe(true);
   });
 
+  it("keeps a filtered merge narrow while its older matches are still below the page", () => {
+    // The first page of an author-filtered log: the merge's hidden parent projects onto
+    // older matches that are not loaded yet, while its real parent leads there too (#5345).
+    const row = (id: string, realParents: string[], graphParents: string[], dashed: boolean[]) => ({
+      ...commit(id, realParents),
+      repo: "/repo",
+      graphParents,
+      graphDashed: dashed,
+    });
+    const page = [
+      row("merge", ["a3", "hidden3"], ["a3", "root", "a1", "a2"], [false, true, true, true]),
+      row("a3", ["a2"], ["a2"], [false]),
+    ];
+    const { rows, graph } = presentLogGraph(
+      page,
+      DEFAULT_LOG_OPTIONS,
+      { expanded: new Set(), collapsed: new Set(), merges: new Set() },
+      new Set(),
+    );
+    expect(graph[0]!.parents).toEqual([commitKey({ id: "a3", repo: "/repo" })]);
+    expect(rows[0]!.width).toBe(1);
+  });
+
   it("preserves filter dashes even when collapse hides no additional commits", () => {
     const c = { ...commit("tip", ["base"]), dashed: [true] };
     const collapsed = collapseLinear([c, commit("base")], new Set(["tip"]));
@@ -104,6 +127,55 @@ describe("graph projections", () => {
     rerender(<GraphCell row={up} onNavigate={navigate} targetTitle={(i) => `Go to ${i}`} />);
     fireEvent.keyDown(screen.getByRole("button", { name: "Go to 0" }), { key: " " });
     expect(navigate).toHaveBeenLastCalledWith(0, "base");
+  });
+
+  it("shares a passing lane's straight segment between rows", () => {
+    const rows = computeGraph([
+      commit("tip", ["main", "side"]),
+      commit("side", ["base"]),
+      commit("side2", ["base"]),
+      commit("main", ["base"]),
+      commit("base"),
+    ]).rows;
+    const passing = (row: number) => rows[row]!.down.find((s) => s.from === 0 && s.to === 0);
+    expect(passing(1)).toBeDefined();
+    expect(passing(2)).toBe(passing(1));
+    expect(rows[2]!.up.find((s) => s.from === 0 && s.to === 0)).toBe(passing(1));
+  });
+
+  it("keeps each arrow and target when multiple long edges cross the same rows", () => {
+    const chain = (prefix: string) =>
+      Array.from({ length: 40 }, (_, i) => commit(`${prefix}${i}`, i < 39 ? [`${prefix}${i + 1}`] : []));
+    const commits = [
+      commit("left", ["left-base"]),
+      ...chain("a"),
+      commit("right", ["right-base"]),
+      ...chain("b"),
+      commit("left-base"),
+      ...chain("c"),
+      commit("right-base"),
+    ];
+    const rows = hideLongEdges(computeGraph(commits).rows);
+    const arrows = rows.flatMap((row) =>
+      (
+        [
+          ["up", row.up, row.upTargets],
+          ["down", row.down, row.downTargets],
+        ] as const
+      ).flatMap(([direction, segments, targets]) =>
+        segments.flatMap((segment, index) =>
+          segment.arrow === direction ? [[direction, targets![index], segment.targetRow]] : [],
+        ),
+      ),
+    );
+    expect(arrows).toEqual([
+      ["down", "left-base", 82],
+      ["down", "right-base", 123],
+      ["up", "left-base", 0],
+      ["up", "right-base", 41],
+    ]);
+    expect(rows[60]!.upTargets).toEqual(["b18"]);
+    expect(rows[60]!.downTargets).toEqual(["b19"]);
   });
 
   it("keeps a referenced branch's colour when an unrelated head is inserted ahead of it", () => {

@@ -1011,6 +1011,7 @@ describe("modifier-hover navigation recovery", () => {
     const view = editor("driver-class-name: example.Driver", language);
     for (const pos of [1, 6, 8, 12, 15]) {
       move(view, pos);
+      // oxlint-disable-next-line no-await-in-loop -- each caret move reuses the one-shot server answer and must be checked before the next
       await vi.waitFor(() => expect(view.dom.querySelector(".cm-lsp-link")?.textContent).toBe("driver-class-name"));
     }
     await gotoTargets(view, "definition", 14);

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { EditorSelection, EditorState, StateEffect } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { installWebKitClipboardGuard } from "./webkitClipboard";
+import { installMiddleClickPasteGuard, installWebKitClipboardGuard } from "./webkitClipboard";
 
 const views: EditorView[] = [];
 let dispose: () => void;
@@ -168,5 +168,31 @@ describe("WebKitGTK clipboard events", () => {
     clipboard(view.contentDOM);
     dispose();
     expect(clipboard(view.contentDOM)).toBe("second");
+  });
+});
+
+describe("installMiddleClickPasteGuard", () => {
+  function release(target: Element, button: number) {
+    const event = new MouseEvent("mouseup", { bubbles: true, cancelable: true, button });
+    target.dispatchEvent(event);
+    return event.defaultPrevented;
+  }
+
+  it("stops the primary-selection paste unless the middle button is released over editable content", () => {
+    const disposeGuard = installMiddleClickPasteGuard();
+    const view = editor();
+    const tab = document.createElement("button");
+    const input = document.createElement("input");
+    const readOnly = document.createElement("div");
+    readOnly.setAttribute("contenteditable", "false");
+    document.body.append(tab, input, readOnly);
+
+    expect(release(tab, 1)).toBe(true);
+    expect(release(readOnly, 1)).toBe(true);
+    expect(release(view.contentDOM.querySelector(".cm-line")!, 1)).toBe(false);
+    expect(release(input, 1)).toBe(false);
+    expect(release(tab, 0)).toBe(false);
+    disposeGuard();
+    expect(release(tab, 1)).toBe(false);
   });
 });

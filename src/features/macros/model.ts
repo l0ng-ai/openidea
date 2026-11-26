@@ -172,12 +172,14 @@ export async function playSteps(
     for (const step of macroSteps) {
       const ok =
         step.kind === "action"
-          ? await run.action(step.id, step.arg)
+          ? // oxlint-disable-next-line no-await-in-loop -- steps run one after another and stop at the first failure.
+            await run.action(step.id, step.arg)
           : step.kind === "text"
             ? run.text(step.text)
             : run.key(step.key);
       if (!ok) return false;
       // Let the UI settle (popups open, editors mount) before the next step.
+      // oxlint-disable-next-line no-await-in-loop -- the settle delay must finish before the next step starts.
       await new Promise((r) => setTimeout(r, 0));
     }
     return true;

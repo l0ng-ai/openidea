@@ -1,4 +1,6 @@
 //! The API 1.4 fixture exercises every kind through the real component runtime and editor ops.
+mod common;
+
 use ide_core::{CancellationToken, Pos, Range, RequestId};
 use ide_host::plugins::{Consent, HostWorkspace, PluginHost, set_editor_providers};
 use ide_host::{Host, HostConfig, ops};
@@ -78,17 +80,8 @@ async fn editor_ops_merge_the_fixture_format_selection_and_execute_owned_command
     let tmp = tempfile::tempdir().unwrap();
     let root = dunce::canonicalize(tmp.path()).unwrap().join("project");
     std::fs::create_dir(&root).unwrap();
-    let host = Arc::new(Host::new(HostConfig {
-        config_dir: tmp.path().join("config"),
-        data_dir: tmp.path().join("data"),
-        local_data_dir: tmp.path().join("local"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(ide_core::NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    }));
+    let host =
+        Arc::new(Host::new(HostConfig { local_data_dir: tmp.path().join("local"), ..common::host_config(tmp.path()) }));
     host.open_project("main", &root).unwrap();
     let p = plugins(tmp.path());
     p.set_workspace(Some(Arc::new(HostWorkspace(Arc::downgrade(&host)))));
@@ -382,4 +375,64 @@ async fn injected_lsp(host: &Host, plugins: &PluginHost, root: &Path, remote: &i
     for peer in peers.lock().drain(..) {
         peer.kill();
     }
+}
+
+/// Two open projects, one inside the other.
+struct Nested {
+    roots: Vec<std::path::PathBuf>,
+}
+impl ide_host::plugins::PluginWorkspace for Nested {
+    fn projects(&self) -> Vec<std::path::PathBuf> {
+        self.roots.clone()
+    }
+    fn buffer_text(&self, _: &Path) -> Option<String> {
+        None
+    }
+    fn document(&self, _: &Path) -> Option<(u64, String)> {
+        None
+    }
+    fn apply_edits(&self, _: &Path, _: u64, _: &[ide_core::TextEdit], _: bool) -> Result<u64, ide_plugin::HostError> {
+        Err(ide_plugin::HostError::NotFound("not open".into()))
+    }
+    fn trusted(&self, _: &Path) -> bool {
+        true
+    }
+    fn project_of(&self, _: &str) -> Option<std::path::PathBuf> {
+        None
+    }
+    fn publish_diagnostics(
+        &self,
+        _: &str,
+        _: &Path,
+        _: Vec<ide_core::Diagnostic>,
+    ) -> Result<(), ide_plugin::HostError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn gutter_actions_see_the_editors_window_project() {
+    let tmp = tempfile::tempdir().unwrap();
+    let outer = dunce::canonicalize(tmp.path()).unwrap().join("outer");
+    let inner = outer.join("inner");
+    std::fs::create_dir_all(&inner).unwrap();
+    let p = plugins(tmp.path());
+    p.set_workspace(Some(Arc::new(Nested { roots: vec![outer.clone(), inner.clone()] })));
+    let doc = ProviderDocument {
+        path: inner.join("Taskfile.txt"),
+        language: "text".into(),
+        version: 1,
+        text: "build\n".into(),
+    };
+    let argument = |project: Option<&Path>| {
+        let actions = p.language_gutter_actions(&doc, project);
+        assert_eq!(actions.len(), 1);
+        actions[0].1.argument.clone().unwrap()
+    };
+    // The outer project's window: the file is its, though the inner project holds it too.
+    assert_eq!(argument(Some(&outer)), outer.to_string_lossy());
+    assert_eq!(argument(Some(&inner)), inner.to_string_lossy());
+    // No window, or a root that is no open project: no invoking project.
+    assert_eq!(argument(None), "gutter");
+    assert_eq!(argument(Some(&tmp.path().join("elsewhere"))), "gutter");
 }

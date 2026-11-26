@@ -8,15 +8,23 @@
 .group {
   flex: 1;
 }
-.group:has(> :global([data-separator="active"])) * {
-  cursor: col-resize !important;
-}
 .editor {
   flex: 1;
   min-height: 0;
   min-width: 0;
   display: flex;
   flex-direction: column;
+}
+/* Keep the thumb clear of the side-by-side divider's mouse hit area. */
+.mode-split
+  .group:has(> :global([data-separator][aria-orientation="vertical"]))
+  .editor
+  :global(.cm-openidea-overviewThumb) {
+  right: 5px;
+}
+/* Only the scrollbar lane runs alongside every wrapped source line. */
+.mode-split .editor :global(.cm-lineWrapping .cm-line) {
+  padding-right: var(--cm-overview-width, 0px);
 }
 .mode-preview > :global([data-group]) > :global([data-panel]:first-child) {
   display: none !important;
@@ -34,7 +42,15 @@
   height: var(--h-floating-toolbar-button);
 }
 
+.previewPane {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
 .preview {
+  contain: strict;
   flex: 1;
   min-height: 0;
   min-width: 0;
@@ -54,6 +70,13 @@
   font-size: calc(var(--markdown-preview-font-size, 14px) + var(--markdown-font-zoom, 0px));
   line-height: 1.6;
   overflow-wrap: break-word;
+}
+/* Offscreen blocks keep their last settled width between resize events. Their SVGs stay painted. */
+.preview > :global([data-preview-blocks]) > :global([data-line]:not([data-in-viewport])) {
+  width: var(--markdown-block-width, auto);
+}
+.preview[data-constrain-blocks] > :global([data-preview-blocks]) {
+  overflow-x: clip;
 }
 .preview :global(h1),
 .preview :global(h2) {
@@ -89,7 +112,7 @@
 .preview :global(h3) {
   font-size: 1.25em;
 }
-.preview > :global(div:first-child) > :first-child {
+.preview > :global([data-preview-blocks]) > :global(div:first-child) > :first-child {
   margin-top: 0;
 }
 .preview :global(p),
@@ -128,11 +151,74 @@
   background: none;
   font-size: 0.93em;
 }
+.codeBlock {
+  position: relative;
+  margin: 0 0 1em;
+}
+.codeBlock > :global(pre) {
+  margin: 0;
+  padding-inline-start: 34px;
+}
+.codeCopy {
+  position: absolute;
+  inset-block-start: 4px;
+  inset-inline-start: 4px;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-small);
+  background: var(--bg-elev);
+  color: var(--fg-secondary);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.codeBlock:hover > .codeCopy,
+.preview :global([data-mermaid]):hover > .codeCopy,
+.codeCopy:focus-visible,
+.codeCopy[data-copied] {
+  opacity: 1;
+  pointer-events: auto;
+}
+.codeCopy:hover {
+  background: var(--bg-toolbar-hover);
+}
+.codeCopy:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.codeCopy[data-copied] {
+  color: var(--success);
+}
 .preview :global(blockquote) {
   padding: 0 1em;
   border-left: 3px solid var(--border-strong);
   color: var(--fg-editor, var(--fg-secondary));
   opacity: 0.8;
+}
+.preview :global([data-math-svg]) {
+  position: relative;
+}
+.preview :global([data-math-svg="display"]) {
+  display: block;
+  margin: 1em 0;
+  overflow: auto hidden;
+  padding: 2px 0;
+  text-align: center;
+}
+.preview :global(mjx-assistive-mml) {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  user-select: none;
 }
 .preview :global(table) {
   display: block;
@@ -212,6 +298,9 @@
 }
 .preview :global([data-mermaid] > pre) {
   margin: 0;
+}
+.preview :global([data-mermaid]):has(> .codeCopy) > :global(pre) {
+  padding-inline-start: 34px;
 }
 .preview :global([data-mermaid-state="ok"] > pre) {
   display: none;

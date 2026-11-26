@@ -30,6 +30,8 @@ When a server is missing, opening a C# or F# file shows a "csharp-ls is not inst
 | FsAutoComplete | `dotnet tool install --tool-path` into the IDE's tools folder                                                             |
 | netcoredbg     | Downloaded from the `Samsung/netcoredbg` GitHub releases. Prebuilt for macOS arm64, Linux x64 and arm64, and Windows x64. |
 
+Before it installs csharp-ls or FsAutoComplete, the IDE compares the newest SDK in `dotnet --list-sdks` with the .NET version the tool's latest release on nuget.org targets. When the SDK is older, it installs the newest release that runs on it, or tells you which SDK to install.
+
 A `csharp-ls`, `fsautocomplete` or `netcoredbg` already on your `PATH` (for example a global `dotnet tool install --global csharp-ls`) is used as is.
 
 ## The .NET tool window

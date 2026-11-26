@@ -13,6 +13,7 @@ import {
   SUPPORTED_LOCALES,
   t,
   tx,
+  txPart,
   txTemplate,
   useI18n,
 } from "./i18n";
@@ -98,6 +99,8 @@ describe("t / locales", () => {
     expect(resolveLocale("pl-PL")).toBe("pl");
     expect(resolveLocale("es-MX")).toBe("es");
     expect(resolveLocale("es_MX")).toBe("es");
+    expect(resolveLocale("ru-RU")).toBe("ru");
+    expect(resolveLocale("ru_RU")).toBe("ru");
     expect(resolveLocale("xx")).toBe("en");
     expect(resolveLocale(undefined)).toBe(resolveLocale(navigator.language));
   });
@@ -123,6 +126,10 @@ describe("t / locales", () => {
     await setLocale("pt-BR");
     expect(t("app.keymap.count", { count: 1 })).toBe("1 atalho");
     expect(t("app.keymap.count", { count: 5 })).toBe("5 atalhos");
+    await setLocale("ru-RU");
+    expect(t("app.keymap.count", { count: 1 })).toBe("1 сочетание");
+    expect(t("app.keymap.count", { count: 2 })).toBe("2 сочетания");
+    expect(t("app.keymap.count", { count: 5 })).toBe("5 сочетаний");
   });
 
   it("switches to Korean", async () => {
@@ -195,12 +202,17 @@ describe("t / locales", () => {
     expect(txTemplate(built)).toBe("运行 'orders'");
     const zh = tx`Run '${name}'`;
     expect(zh).toBe("运行 'orders'");
-    // Substituted text is translated when the catalog has it.
-    expect(tx`Run '${"Retry"}'`).toBe(`运行 '${tx("Retry")}'`);
+    // Values are inserted as written, even when the catalog has an entry for them…
+    expect(tx`Rename directory '${"tasks"}' and its usages to:`).toBe("将目录“tasks”及其用法重命名为：");
+    expect(tx`Run '${"Retry"}'`).toBe("运行 'Retry'");
+    // …unless they are marked as UI text, which is translated again after a locale change.
+    const marked = tx`Run '${txPart("Retry")}'`;
+    expect(marked).toBe(`运行 '${tx("Retry")}'`);
     // Values are inserted as they are, braces included.
     expect(tx`Drop ${"stash@{0}"}? This cannot be undone.`).toBe("是否丢弃 stash@{0}？此操作无法撤消。");
     await setLocale("en");
     expect(tx(zh)).toBe("Run 'orders'");
+    expect(tx(marked)).toBe("Run 'Retry'");
   });
 
   it("loads the Portuguese catalogs", async () => {
@@ -272,6 +284,11 @@ describe("catalogs", () => {
   /** Product names intentionally kept as written in every locale. */
   const SAME_AS_ENGLISH = new Set([
     "Flutter DevTools",
+    // Pub / Flutter command names on the pubspec.yaml banner.
+    "Pub get",
+    "Pub upgrade",
+    "Pub outdated",
+    "Flutter doctor",
     "4096 MB",
     "6144 MB",
     "8192 MB",
@@ -282,6 +299,7 @@ describe("catalogs", () => {
     "ID:",
     "Code Vision",
     "JUnit",
+    "HotSwap",
     "⌘Enter",
     "Fork",
     "Shell",
@@ -290,6 +308,8 @@ describe("catalogs", () => {
     "Java",
     "Python",
     "Python {short}",
+    "Flutter {framework}",
+    "Dart {dart}",
     "C/C++",
     "C#",
     "Go",
@@ -298,6 +318,10 @@ describe("catalogs", () => {
     "Claude Code",
     "GitHub Copilot",
     "Codex",
+    "SKILL.md",
+    "context: fork",
+    "paths ({count})",
+    "paths",
     "Cursor",
     "PHP",
     "SQL",
@@ -335,6 +359,12 @@ describe("catalogs", () => {
     expect(translated.length).toBeGreaterThan(0);
     expect(Object.keys(translations).sort()).toEqual(translated);
     expect(Object.keys(texts).sort()).toEqual([...SUPPORTED_LOCALES].sort());
+  });
+
+  it("are the locales the backend picks from the OS language on first launch", () => {
+    const rust = readFileSync(join(LOCALES_DIR, "../../../crates/ide-workspace/src/settings.rs"), "utf8");
+    const list = /pub const UI_LOCALES: &\[&str\] = &\[([^\]]*)\]/.exec(rust)?.[1] ?? "";
+    expect([...list.matchAll(/"([^"]+)"/g)].map((m) => m[1]).sort()).toEqual([...SUPPORTED_LOCALES].sort());
   });
 
   it("list every key once", () => {

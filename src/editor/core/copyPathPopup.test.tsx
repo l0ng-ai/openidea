@@ -100,6 +100,13 @@ describe("editor Copy Path/Reference chooser", () => {
     expect(hint).toHaveBeenCalledWith({ text: `Copied ${path}` });
   });
 
+  it("registers Copy Absolute Path with Line Number in Find Action", () => {
+    expect(getAction("editor.copyAbsolutePathWithLineNumber")).toMatchObject({
+      title: "Copy Absolute Path with Line Number",
+      category: "Edit",
+    });
+  });
+
   it("opens at the caret without copying, with every preview and assigned shortcut", async () => {
     vi.spyOn(ctrl.activeSlot!.view!, "coordsAtPos").mockReturnValue({ left: 120, right: 121, top: 80, bottom: 100 });
     useKeymap.setState({ overrides: { "project.copyFileName": ["Meta+Alt+N"] } });
@@ -109,6 +116,7 @@ describe("editor Copy Path/Reference chooser", () => {
     expect(popup().anchor).toEqual({ x: 120, y: 100 });
     expect(popup().items.map(({ label, preview }) => [label, preview])).toEqual([
       ["Absolute Path", path],
+      ["Absolute Path with line number", `${path}:2`],
       ["File Name", "A.java"],
       ["Path From Content Root", "src/A.java"],
       ["Path From Source Root", "A.java"],
@@ -116,11 +124,12 @@ describe("editor Copy Path/Reference chooser", () => {
       ["Reference", "com.acme.A"],
     ]);
     for (const item of popup().items) expect(item.shortcut).toBe(shortcutLabel(item.id));
-    expect(popup().items[1]!.shortcut).toBeTruthy();
+    expect(popup().items.find((item) => item.id === "project.copyFileName")!.shortcut).toBeTruthy();
   });
 
   it.each([
     "project.copyAbsolutePath",
+    "editor.copyAbsolutePathWithLineNumber",
     "project.copyFileName",
     "project.copyRelativePath",
     "project.copySourceRootPath",
@@ -147,23 +156,28 @@ describe("editor Copy Path/Reference chooser", () => {
     useProjectTree.setState({ root: null });
     useContextKeys.setState({ projectOpen: false });
     await executeAction("editor.copyPathReference");
-    expect(popup().items.find((item) => item.id === "editor.copyPathWithLineNumber")?.preview).toBe(`${path}:2`);
+    for (const id of ["editor.copyPathWithLineNumber", "editor.copyAbsolutePathWithLineNumber"])
+      expect(popup().items.find((item) => item.id === id)?.preview).toBe(`${path}:2`);
     await popup()
       .items.find((item) => item.id === "project.copyRelativePath")!
       .run();
     expect(writeText).toHaveBeenCalledExactlyOnceWith(path);
   });
 
-  it("copies a selection over several lines as path:first-last", async () => {
+  it("copies relative and absolute selections over several lines as path:first-last", async () => {
     const view = ctrl.activeSlot!.view!;
     view.dispatch({ selection: { anchor: 0, head: documentText.indexOf("A {}") } });
     await executeAction("editor.copyPathReference");
     const item = popup().items.find((item) => item.id === "editor.copyPathWithLineNumber")!;
     expect(item.preview).toBe("src/A.java:1-2");
+    const absolute = popup().items.find((item) => item.id === "editor.copyAbsolutePathWithLineNumber")!;
+    expect(absolute.preview).toBe(`${path}:1-2`);
     // A selection that ends at the start of a line leaves that line out.
     view.dispatch({ selection: { anchor: 0, head: documentText.indexOf("class") } });
     await executeAction("editor.copyPathWithLineNumber");
     await vi.waitFor(() => expect(writeText).toHaveBeenLastCalledWith("src/A.java:1"));
+    await executeAction("editor.copyAbsolutePathWithLineNumber");
+    await vi.waitFor(() => expect(writeText).toHaveBeenLastCalledWith(`${path}:1`));
   });
 
   it("uses path:line off a symbol and ignores stale reference resolution", async () => {
@@ -178,6 +192,18 @@ describe("editor Copy Path/Reference chooser", () => {
     expect(popup().items).toEqual([]);
   });
 
+  it.each([
+    ["editor.copyPathWithLineNumber", "src/A.java:2"],
+    ["editor.copyAbsolutePathWithLineNumber", `${path}:2`],
+  ])("copies the %s preview even if the caret moves afterwards", async (id, expected) => {
+    await executeAction("editor.copyPathReference");
+    const item = popup().items.find((item) => item.id === id)!;
+    expect(item.preview).toBe(expected);
+    ctrl.activeSlot!.view!.dispatch({ selection: { anchor: 0 } });
+    await item.run();
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledExactlyOnceWith(expected));
+  });
+
   it("copies the reference preview even if the caret moves afterwards", async () => {
     await executeAction("editor.copyPathReference");
     await vi.waitFor(() => expect(popup().items.at(-1)?.disabled).toBeNull());
@@ -190,11 +216,11 @@ describe("editor Copy Path/Reference chooser", () => {
   it("supports keyboard selection and Escape through the existing list popup", async () => {
     await executeAction("editor.copyPathReference");
     render(<LspPopups />);
-    expect(screen.getAllByRole("option")).toHaveLength(6);
+    expect(screen.getAllByRole("option")).toHaveLength(7);
     expect(screen.getByTitle(path)).toBeInTheDocument();
     fireEvent.keyDown(screen.getByRole("listbox"), { key: "ArrowDown" });
     fireEvent.keyDown(screen.getByRole("listbox"), { key: "Enter" });
-    await vi.waitFor(() => expect(writeText).toHaveBeenCalledExactlyOnceWith("A.java"));
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledExactlyOnceWith(`${path}:2`));
     expect(useLspPopup.getState().popup).toBeNull();
     await act(() => executeAction("editor.copyPathReference"));
     fireEvent.keyDown(screen.getByRole("listbox"), { key: "Escape" });

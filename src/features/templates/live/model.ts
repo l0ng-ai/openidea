@@ -162,6 +162,11 @@ export const camelCase = (s: string) =>
     .map((w, i) => (i ? capitalize(w.toLowerCase()) : w.toLowerCase()))
     .join("");
 export const pascalCase = (s: string) => capitalize(camelCase(s));
+/** A component / class name from a file name: kept when already PascalCase (`APIClient`), prefixed when it starts with a digit. */
+export const componentName = (s: string) => {
+  const name = /^[A-Z][A-Za-z0-9]*$/.test(s) ? s : pascalCase(s);
+  return /^[0-9]/.test(name) ? `Component${name}` : name;
+};
 export const snakeCase = (s: string) =>
   words(s)
     .map((w) => w.toLowerCase())
@@ -204,6 +209,7 @@ const PURE_FUNCTIONS: TemplateFunctions = {
   decapitalize,
   camelCase,
   pascalCase,
+  componentName,
   snakeCase,
   lowercaseAndDash: kebabCase,
   kebabCase,

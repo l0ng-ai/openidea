@@ -4,7 +4,8 @@ use super::theme::ThemeDef;
 use ide_extension::package::PluginIcon;
 use ide_extension::{CapabilityInfo, ContributionInfo, UiContribution};
 pub use ide_plugin::{
-    ActionPerformed, ActionSource, EventKind, NotificationLevel, PickItem, Prompt, StatusItem, WorkbenchEvent,
+    ActionPerformed, ActionSource, CaretMoved, EventKind, NotificationLevel, PickItem, Prompt, StatusItem,
+    WorkbenchEvent,
 };
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -69,6 +70,10 @@ pub struct PluginJavaAgent {
     pub jdk: Option<String>,
     /// The jar still has the hash recorded when `java.agent` was granted.
     pub approved: bool,
+    /// The title of the executor the agent is bound to (API 1.18): "Run with <title>" and
+    /// "Debug with <title>" launch with it; other launches leave it out.
+    #[serde(default)]
+    pub executor: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]

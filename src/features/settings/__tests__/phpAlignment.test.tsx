@@ -1,3 +1,4 @@
+import { useMemo, type ComponentType } from "react";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useProject } from "@/platform/project";
@@ -27,15 +28,19 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
+function CodeStylePage({ id, Page }: { id: string; Page: ComponentType }) {
+  const value = useMemo(() => ({ pageId: id, scope: "global" as const }), [id]);
+  return (
+    <PageContext.Provider value={value}>
+      <Page />
+    </PageContext.Provider>
+  );
+}
+
 async function page(language: string) {
   const pages = await codeStyleLanguagePages();
   const spec = pages.find((p) => p.id === `editor.codeStyle.${language}`)!;
-  const Page = spec.component!;
-  render(
-    <PageContext.Provider value={{ pageId: spec.id, scope: "global" }}>
-      <Page />
-    </PageContext.Provider>,
-  );
+  render(<CodeStylePage id={spec.id} Page={spec.component!} />);
   return spec;
 }
 const value = () => stagedValue(useSettingsDialog.getState(), "global", "editor.codeStyle.languages");

@@ -7,16 +7,18 @@ Everything a plugin runs goes through a `process:<program>` capability: the user
 the program, the IDE pins it by absolute path and content hash, and checks it again before
 every start. On top of that, a plugin can:
 
-| Goal                                                                   | Use                                                               | API       |
-| ---------------------------------------------------------------------- | ----------------------------------------------------------------- | --------- |
-| Offer a fixed command when the project has a marker file               | `[[contributes.runDetectors]]` (no code)                          | 1.0       |
-| Compute the project's configurations in code                           | `[[contributes.runConfigurations]]` + `run-configurations` export | 1.4       |
-| Give configurations an environment and a debugger                      | `launch-configurations` export                                    | 1.9       |
-| Turn test output into the IDE's test tree                              | `test-results` export, `framework = "plugin"`                     | 1.4       |
-| Start one of its configurations from a command                         | `host::start_run` (WIT `run.start`)                               | 1.4       |
-| Make every run of the project go through a wrapper (DDEV, a container) | `host::register_run_target` (WIT `run-targets`)                   | 1.4       |
-| Check the wrapper's runtime before each launch                         | `run-target-validation` export                                    | 1.5       |
-| Run a program and read its output                                      | `Project::run_process`, `host::run_command`, `host::start`        | 1.0 / 1.3 |
+| Goal                                                                   | Use                                                               | API        |
+| ---------------------------------------------------------------------- | ----------------------------------------------------------------- | ---------- |
+| Offer a fixed command when the project has a marker file               | `[[contributes.runDetectors]]` (no code)                          | 1.0        |
+| Compute the project's configurations in code                           | `[[contributes.runConfigurations]]` + `run-configurations` export | 1.4        |
+| Give configurations an environment and a debugger                      | `launch-configurations` export                                    | 1.9        |
+| Set a default PTY or piped output mode on configurations               | `execution-configurations` export / `runDetectors.outputMode`     | 1.18       |
+| Complete the Arguments field of its configurations                     | `run-configuration-completion` export                             | 1.18       |
+| Turn test output into the IDE's test tree                              | `test-results` export, `framework = "plugin"`                     | 1.4        |
+| Start one of its configurations from a command                         | `host::start_run` / `host::start_run_with_options` (`run` WIT)    | 1.4 / 1.18 |
+| Make every run of the project go through a wrapper (DDEV, a container) | `host::register_run_target` (WIT `run-targets`)                   | 1.4        |
+| Check the wrapper's runtime before each launch                         | `run-target-validation` export                                    | 1.5        |
+| Run a program and read its output                                      | `Project::run_process`, `host::run_command`, `host::start`        | 1.0 / 1.3  |
 
 ## Run detectors
 
@@ -189,6 +191,37 @@ and on rerun. Debug uses the debugger of the source file named in the arguments 
 one chosen on the saved configuration) and returns `invalid` without one. Only valid from a
 command or event, not from activation or a provider.
 
+### Piped vs. PTY output (API 1.18)
+
+By default, plugin run configurations use separate `stdout` and `stderr` pipes in the Run
+console (`OutputMode::Pipes`), including for all pre-1.18 plugins. Plugins on API 1.18+ can:
+
+- Declare `outputMode = "pty"` on a non-test `[[contributes.runDetectors]]` entry, or export
+  `execution-configurations` (`ExecutionConfigurations`, registered as `execution_configurations`)
+  to set `output_mode` per `PluginExecutionConfiguration`.
+- Pass a per-launch override with `host::start_run_with_options(config, &args, &RunStartOptions { debug, output_mode })`.
+
+Precedence at launch: a user-saved override in **Run | Edit Configurations…** wins over the
+per-invocation `output_mode`, which wins over the plugin's configured default. Disallowed
+combinations (`test` configurations, `debug` launches requesting `Pty`, remote run targets,
+and `stdin` file redirection) are rejected with `Invalid`.
+
+## Completing arguments
+
+Export `run-configuration-completion` (`RunConfigurationCompletion`, registered as
+`run_configuration_completion`) to complete the Arguments field of your configurations in
+**Run | Edit Configurations…**, such as task names for a task runner. The IDE passes the
+configuration's id, `field = "arguments"`, the text and a UTF-16 caret offset while the user
+types (or presses Ctrl+Space). Each item replaces the UTF-16 range it names, so the other
+options, quoted values and arguments after `--` stay as typed. Answer from what the plugin
+already knows: the IDE keeps 200 items and drops answers slower than 300 ms or for text that
+has changed since.
+
+<Note>
+  Ordinary pseudo-terminals (PTYs) combine `stdout` and `stderr` into a single output stream and can change buffering,
+  input handling, and terminal behavior (line endings, echo, and ANSI control sequences).
+</Note>
+
 ## Run targets
 
 A run target is a project-scoped wrapper: every run, test, script and interpreter launch
@@ -297,12 +330,14 @@ launching as before.
 
 ## Running programs
 
-| Function                                             | What it does                                                                                     |
-| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `Project::run_process(program, &args, stdin)`        | Runs the pinned program in the project root and waits: `{ status, stdout, stderr }`, 4 MiB each. |
-| `host::run_command(&Command, Some(&project), stdin)` | API 1.3: the same, with environment variables added by `Command::env`.                           |
-| `host::start(&Command, Some(&project))`              | API 1.3: a `Child` left running: `poll`, `write`, `close_stdin`, `wait`, `kill`. At most 8.      |
-| `host::open_terminal(title, program, &args)`         | A Terminal tab running the program (see [Views](/en/plugins/guides/views)).                      |
+| Function                                                       | What it does                                                                                                             |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `Project::run_process(program, &args, stdin)`                  | Runs the pinned program in the project root and waits: `{ status, stdout, stderr }`, 4 MiB each.                         |
+| `host::run_command(&Command, Some(&project), stdin)`           | API 1.3: the same, with environment variables added by `Command::env`.                                                   |
+| `host::run_captured(&Command, Some(&project), stdin, options)` | API 1.15: configurable output limit (up to 128 MiB per stream); errors explicitly if either stdout or stderr overflows.  |
+| `host::start(&Command, Some(&project))`                        | API 1.3: a `Child` left running: `poll`, `write`, `close_stdin`, `wait`, `kill`. At most 8.                              |
+| `host::start_stream(&Command, Some(&project), options)`        | API 1.15: lossless streaming with backpressure and bounded buffer, terminating with an explicit error on total overflow. |
+| `host::open_terminal(title, program, &args)`                   | A Terminal tab running the program (see [Views](/en/plugins/guides/views)).                                              |
 
 ```rust
 use openidea_plugin::host::{self, Command};
@@ -319,8 +354,12 @@ let out = host::run_command(&Command::new("forge").arg("build").env("FOUNDRY_PRO
   inside `host::begin_task`. Dropping a `Child` kills it, and disabling or reclaiming the
   plugin ends its children.
 - A `Child`'s `poll` and `wait` return what it printed since the last read. `status` comes
-  with the chunk that holds the last of its output, so read until it is set. Output nobody
-  reads keeps only its last 1 MiB per stream: for the whole output of a command that ends,
-  use `run_command`.
+  with the chunk that holds the last of its output, so read until it is set. For commands started
+  with `start`, unread output keeps only its last 1 MiB per stream (tail mode). For lossless
+  streaming without head data loss or output race conditions, use `start_stream` with `ProcessOptions`
+  (defaults to 256 KiB buffer per stream with OS pipe backpressure, and 32 MiB total limit).
+- When a command exceeds output limits in `run_process`, `run_command`, or `run_captured`, or
+  when total stream output exceeds the ceiling in `start_stream`, the IDE produces an explicit
+  error rather than silently truncating stdout or stderr.
 - In **Settings › Plugins** the user can choose the executable of a `process:` grant
   globally or per project; the plugin keeps calling its declared program name.

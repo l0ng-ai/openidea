@@ -3,7 +3,7 @@ import type { AgentProvider } from "@/bindings";
 import type { tx as Tx } from "@/platform/i18n";
 import type { SelectOption } from "@/ui";
 
-/** Picker entry that opens Settings › Tools › Agents instead of choosing an agent. */
+/** Picker entry that opens Settings › Agents › Agent Setup. */
 export const ADD_AGENT = "__addAgent__";
 
 /**
@@ -20,9 +20,23 @@ export function providerOptions(
   const installed = providers.filter((p) => p.installed);
   const missing = providers.filter((p) => !p.installed);
   return [
-    ...installed.map((p) => ({ value: p.id, label: p.name, icon: icon(p.id), detail: version(p) })),
+    ...installed.map((p) => ({
+      value: p.id,
+      verbatim: true,
+      verbatimDetail: true,
+      label: p.name,
+      icon: icon(p.id),
+      detail: version(p),
+    })),
     ...(missing.length ? [{ value: "__missing__", label: tx("Not installed"), section: true }] : []),
-    ...missing.map((p) => ({ value: p.id, label: p.name, icon: icon(p.id), detail: p.command })),
+    ...missing.map((p) => ({
+      value: p.id,
+      verbatim: true,
+      verbatimDetail: true,
+      label: p.name,
+      icon: icon(p.id),
+      detail: p.command,
+    })),
     { value: ADD_AGENT, label: tx("More agents…") },
   ];
 }
