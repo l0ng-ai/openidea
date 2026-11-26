@@ -5760,6 +5760,7 @@
   "Stopped highlighting unpicked commits from '{source}' after the branch filter changed": "分支筛选已更改，停止高亮 '{source}' 中未拣选的提交",
   "Checkout and Rebase": "签出并变基",
   "Checkout and Rebase onto Current": "签出并变基到当前分支",
+  "Checkout and Update": "签出并更新",
   "Checkout and Rebase failed": "签出并变基失败",
   "Checkout and Rebase requires an existing commit": "签出并变基需要已有提交",
   "Checked out and rebased '{branchName}'": "已签出并变基 '{branchName}'",

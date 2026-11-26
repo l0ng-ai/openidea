@@ -5616,6 +5616,7 @@
   "Stopped highlighting unpicked commits from '{source}' after the branch filter changed": "Подсветка неперенесённых коммитов из '{source}' остановлена после изменения фильтра веток",
   "Checkout and Rebase": "Переключиться и перебазировать",
   "Checkout and Rebase onto Current": "Переключиться и перебазировать на текущую",
+  "Checkout and Update": "Переключиться и обновить",
   "Checkout and Rebase failed": "Не удалось переключиться и перебазировать",
   "Checkout and Rebase requires an existing commit": "Для переключения и перебазирования требуется существующий коммит",
   "Checked out and rebased '{branchName}'": "Выполнено переключение и перебазирование '{branchName}'",
