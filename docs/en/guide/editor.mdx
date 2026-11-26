@@ -59,6 +59,8 @@ Choose **Inspect Element**, then click an element in the page. Review its select
 
 **Move Caret to Page Top** / **Bottom** put the caret on the first / last line the editor shows in full, in the same column, without scrolling; with `⇧` / `Shift` added they select up to it.
 
+**Move Caret Forward a Paragraph** / **Backward a Paragraph** jump each caret over a run of non-blank lines to the blank line after or before it (a line of only spaces or tabs counts as blank), or to the end or start of the file; their **with Selection** variants select up to there. They have no default shortcut.
+
 **Edit › Sort Lines** and **Edit › Reverse Lines** reorder the selected lines (the whole file without a selection); they have no default shortcut. Sort Lines orders by character code, so uppercase letters come before lowercase ones.
 
 **Cut up to Line End** cuts from each caret to the end of its line, together with the line break when only whitespace is left (or the caret is already at the line end), so pressing it again on the same caret cuts the next line too; those repeated cuts collect into one clipboard entry. **Delete to Line Start** and **Delete to Line End** delete the same way without copying (to the line start, or the line break before the caret at the line start), or delete the selection. They have no default shortcut except in the Eclipse keymaps (`⇧⌘⌦` / `Ctrl+Shift+Delete` for Delete to Line End).
