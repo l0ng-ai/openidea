@@ -3,16 +3,7 @@ import { tx } from "@/platform/i18n";
 import { shortcutLabel } from "@/platform/keymap";
 import { menuGroupItems, type MenuGroupContext } from "@/workbench/contributions";
 import { openPopup, type ListPopupItem, type LspPopup, type PopupPoint } from "@/editor/lsp/popupStore";
-
-export interface CopyPathRow {
-  /** The action whose shortcut the row shows. */
-  id: string;
-  /** English label, translated here. */
-  label: string;
-  /** The copied text; a row without one is left out. */
-  preview: string | null;
-  run: () => void;
-}
+import type { CopyPathRow } from "@/editor/api";
 
 /** The chooser's popup: `rows`, then the rows contributed to the `copyPath` menu for `ctx`. */
 export function copyPathPopup(
@@ -51,7 +42,7 @@ export function copyPathPopup(
   };
 }
 
-/** Opens the chooser for files outside an editor (the Project view's selection). */
+/** Opens the chooser for files outside an editor (`openCopyPathChooser` of `@/editor/api`). */
 export function openCopyPathChooser(
   anchor: PopupPoint | "center",
   rows: readonly CopyPathRow[],

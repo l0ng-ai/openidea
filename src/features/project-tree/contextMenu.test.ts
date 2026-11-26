@@ -9,6 +9,10 @@ import { contextMenuItems, keyLabel, revealLabel } from "./contextMenu";
 import type { ProjectNode } from "./model";
 import { useProjectTree } from "./store";
 import { closePopup, useLspPopup } from "@/editor/lsp/popupStore";
+import { _provideCopyPathChooser } from "@/editor/api";
+import { openCopyPathChooser } from "@/editor/core/copyPathChooser";
+
+_provideCopyPathChooser(openCopyPathChooser);
 
 vi.mock("@/platform/ipc", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/platform/ipc")>()),
