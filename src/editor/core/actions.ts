@@ -19,6 +19,7 @@ import {
   deleteLine,
   duplicateEntireLines,
   duplicateLineOrSelection,
+  inDifferentHumpsMode,
   joinLines,
   moveStatementDown,
   moveStatementUp,
@@ -920,6 +921,18 @@ export function registerEditorActions(): () => void {
       category: "Editor Actions",
       keyWhen: "editorTextFocus || diffEditorFocus",
     }),
+    edit(
+      "code.deleteToWordStartInDifferentHumpsMode",
+      'Delete to Word Start in Different "CamelHumps" Mode',
+      (v) => inDifferentHumpsMode("deleteToStart", editorPrefs().smartKeys.camelHumps)(v),
+      { category: "Editor Actions", keyWhen: "editorTextFocus || diffEditorFocus" },
+    ),
+    edit(
+      "code.deleteToWordEndInDifferentHumpsMode",
+      'Delete to Word End in Different "CamelHumps" Mode',
+      (v) => inDifferentHumpsMode("deleteToEnd", editorPrefs().smartKeys.camelHumps)(v),
+      { category: "Editor Actions", keyWhen: "editorTextFocus || diffEditorFocus" },
+    ),
     edit("code.moveLineUp", "Move Line Up", (v) => moveLineUp(v)),
     edit("code.moveLineDown", "Move Line Down", (v) => moveLineDown(v)),
     edit("code.moveElementLeft", "Move Element Left", (v) => moveElementLeft(v), {
@@ -1081,6 +1094,30 @@ export function registerEditorActions(): () => void {
       "editor.paragraphBackwardWithSelection",
       "Move Caret Backward a Paragraph with Selection",
       (v) => selectParagraphBackward(v),
+      { category: "Editor Actions" },
+    ),
+    caret(
+      "editor.nextWordInDifferentHumpsMode",
+      'Move Caret to Next Word in Different "CamelHumps" Mode',
+      (v) => inDifferentHumpsMode("right", editorPrefs().smartKeys.camelHumps)(v),
+      { category: "Editor Actions" },
+    ),
+    caret(
+      "editor.previousWordInDifferentHumpsMode",
+      'Move Caret to Previous Word in Different "CamelHumps" Mode',
+      (v) => inDifferentHumpsMode("left", editorPrefs().smartKeys.camelHumps)(v),
+      { category: "Editor Actions" },
+    ),
+    caret(
+      "editor.nextWordInDifferentHumpsModeWithSelection",
+      'Move Caret to Next Word in Different "CamelHumps" Mode with Selection',
+      (v) => inDifferentHumpsMode("selectRight", editorPrefs().smartKeys.camelHumps)(v),
+      { category: "Editor Actions" },
+    ),
+    caret(
+      "editor.previousWordInDifferentHumpsModeWithSelection",
+      'Move Caret to Previous Word in Different "CamelHumps" Mode with Selection',
+      (v) => inDifferentHumpsMode("selectLeft", editorPrefs().smartKeys.camelHumps)(v),
       { category: "Editor Actions" },
     ),
     text("editor.contextInfo", "Context Info", (v) => showContextInfo(v), {

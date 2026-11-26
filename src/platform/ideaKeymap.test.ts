@@ -145,6 +145,18 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(k.unknownActions).toEqual([]);
   });
 
+  it('maps the word moves and deletes in Different "CamelHumps" Mode', () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="H" parent="$default"><action id="EditorNextWordInDifferentHumpsMode"><keyboard-shortcut first-keystroke="control alt RIGHT"/></action><action id="EditorPreviousWordInDifferentHumpsModeWithSelection"><keyboard-shortcut first-keystroke="control alt shift LEFT"/></action><action id="EditorDeleteToWordStartInDifferentHumpsMode"><keyboard-shortcut first-keystroke="control alt BACK_SPACE"/></action></keymap>`,
+    );
+    expect(k.overrides["editor.nextWordInDifferentHumpsMode"]).toEqual([normalizeBinding("Ctrl+Alt+Right")]);
+    expect(k.overrides["editor.previousWordInDifferentHumpsModeWithSelection"]).toEqual([
+      normalizeBinding("Ctrl+Alt+Shift+Left"),
+    ]);
+    expect(k.overrides["code.deleteToWordStartInDifferentHumpsMode"]).toEqual([normalizeBinding("Ctrl+Alt+Backspace")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
   it("maps Swap Selection Boundaries", () => {
     const k = parseIdeaKeymap(
       `<keymap name="S" parent="$default"><action id="EditorSwapSelectionBoundaries"><keyboard-shortcut first-keystroke="control X" second-keystroke="control X"/></action></keymap>`,
