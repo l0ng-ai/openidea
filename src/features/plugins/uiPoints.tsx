@@ -11,6 +11,7 @@
  * - `customEditors`: files opening in a plugin editor sharing the text document, in its own tab or
  *   beside the text editor;
  * - `editorPanels`: a web page at the right edge of every editor group, following its text editor;
+ * - `overlays`: a web page floating over the workbench that never takes the focus;
  * - `fileIcons`: icons for the files a plugin knows, whatever icon theme is in use;
  * - `fileTemplates`: entries of the New menu;
  * - `commitChecks`: before-commit checks listed in Commit Options, run by the plugin's code.
@@ -57,6 +58,7 @@ import {
 } from "./views/customEditor";
 import { layoutActions, layoutWrapper } from "./views/editorLayout";
 import { editorPanelUpdates, projectEditorPanel, type EditorPanelDecl } from "./views/editorPanel";
+import { projectOverlay, type OverlayDecl } from "./views/overlay";
 import { registerContentActions } from "./views/contentActions";
 import {
   PluginContentEditor,
@@ -510,6 +512,10 @@ export function defineViewUiPoints(): () => void {
     defineUiPoint<EditorPanelDecl>("editorPanels", {
       title: "Editor Panels",
       project: ({ pluginId, decl }) => projectEditorPanel(pluginId, decl),
+    }),
+    defineUiPoint<OverlayDecl>("overlays", {
+      title: "Overlays",
+      project: ({ pluginId, decl }) => projectOverlay(pluginId, decl),
     }),
     defineUiPoint<MarkerIconDecl>("markerIcons", {
       title: "Marker Icons",

@@ -36,7 +36,7 @@ sdk/rust/openidea-plugin/     # the Rust SDK (host API, Plugin trait, mock host)
 crates/ide-plugin/tests/fixtures/  # test plugins: hello, jobs, language-toy, misbehave, semantic-tokens, hover, commit, inlay-hints, decorations
 ```
 
-The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.17.0`, world
+The plugin API is defined in [`wit/`](../wit/) (`openidea:plugin@1.18.0`, world
 `plugin`).
 
 ## 1. Quick start
@@ -157,6 +157,7 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 | `views`             | `id`, `title`, `icon?` (an icon name or a package SVG), `location` (`left`, `right`, `bottom`, `services`), `web?` (_Web views_), `frames?` (API 1.16), `group?`, `when?` (API 1.3)                                                    | without `web` |
 | `customEditors`     | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`, `frames?`, `binary?` (API 1.16)                                                                                                           | without `web` |
 | `editorPanels`      | `id`, `web`, `width` (pixels, 40–400), `when?`, `frames?` (API 1.16) — needs `editor.read` (API 1.9; _Editor panels_)                                                                                                                  | no            |
+| `overlays`          | `id`, `web`, `width`, `height` (pixels, 40–800), `anchor?`, `when?`, `interactive?` — floats over the workbench, never takes the focus (API 1.18; _Overlays_)                                                                          | no            |
 | `fileIcons`         | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                                                                                                                               | no            |
 | `fileTemplates`     | `id`, `name`, `extension`, `path`; API 1.3: `fileName`, `variables = [{ name, prompt }]` — New menu                                                                                                                                    | no            |
 | `commitChecks`      | `id`, `title` — a before-commit check in Commit Options (see _Commits_)                                                                                                                                                                | yes           |
@@ -431,9 +432,19 @@ are always available. Calling a gated function without its capability returns
 
 ## 3. Writing code (Rust SDK)
 
+### API 1.18
+
+API 1.18.0 is in development on `main`. Use `engines.openidea = "^1.18"` and the
+matching SDK. Plugins for 1.17 and earlier keep working. New in 1.18:
+
+- **Overlays (`[[contributes.overlays]]`).** A web page of the package floats over
+  the workbench at one of nine anchors while its `when` holds, without ever taking
+  the keyboard focus — a mascot, a reaction, a timer. The page moves and resizes
+  itself with `openidea.overlay`. No code or capability needed. See [Overlays](#overlays).
+
 ### API 1.17
 
-API 1.17.0 is in development on `main`. Use `engines.openidea = "^1.17"` and the
+API 1.17.0 shipped with OpenIDEA 0.1.53. Use `engines.openidea = "^1.17"` and the
 matching SDK. Plugins for 1.16 and earlier keep working. New in 1.17:
 
 - [Editor decorations](#editor-and-project-snapshots-api-14):
@@ -2289,6 +2300,46 @@ older IDEs. Outside the visible area the editor estimates wrapped rows from the
 line's length until it lays the line out; `onLayout` follows when it does.
 `crates/ide-plugin/tests/fixtures/editor-panel` is a minimal minimap (each line
 2 px, its frame draggable, problems marked at its right edge, folded lines left out, the selected lines and the caret's line tinted, VCS changes at its left edge) to install and try.
+
+#### Overlays
+
+With API 1.18 (`engines.openidea = "^1.18"`), a web page can float over the
+workbench — over the editor, tool windows and all — without ever taking the
+keyboard focus: a mascot reacting to your work, a timer, a reaction GIF. It needs
+no code and no capability, since it sees nothing of the IDE:
+
+```toml
+[[contributes.overlays]]
+id = "stage"
+web = "web/stage.html"        # the same rules as a web view's page
+width = 320                   # pixels, 40–800
+height = 240
+anchor = "bottom-right"       # optional: top-left, top-center, top-right, middle-left,
+                              # center, middle-right, bottom-left, bottom-center, bottom-right
+when = "plugin.<id>.showing"  # optional: the plugin's own key through `host::set_context`
+interactive = true            # optional: false lets every click through to the IDE
+```
+
+The overlay is in the window while `when` holds (always, without one), clear of
+the title and status bars, under dialogs, popups and notifications. Its frame is
+out of the tab order and is never focused when it appears, so typing carries on in
+the editor; a click in an interactive overlay goes to its page, as any click does.
+With `interactive = false` the frame lets every click through. The frame is
+transparent: draw only what should show. When the page can't be loaded (the
+plugin was disabled meanwhile), the overlay shows nothing.
+
+The page gets `openidea.overlay` (only an overlay's page has it), besides
+`postMessage` / `onMessage` to the plugin's code and the theme:
+
+| `openidea.overlay`                    | What it does                                                                                                                                        |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `get()`                               | `{ anchor, width, height }`: where the overlay is and its size, the declaration's until the page changes them                                       |
+| `place({ anchor?, width?, height? })` | Moves the overlay to another anchor and/or resizes it (sizes clamped to 40–800 and to the window); resolves with `get()`, rejects an unknown anchor |
+
+The placement lasts while the overlay is shown; the next time `when` holds it
+starts again from the declaration. To fit a picture, the page measures it and
+places the overlay at that size. `crates/ide-plugin/tests/fixtures/overlay` is a
+minimal card that moves itself around the window.
 
 ### Web frame PTYs (API 1.3)
 
