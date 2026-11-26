@@ -2294,6 +2294,11 @@ export const commands = {
 	vcsWritePatch: (path: string, patch: string, encoding: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("vcs_write_patch", { path, patch, encoding })),
 	/**  The browsers installed on this machine. */
 	webBrowsers: () => typedError<Browser[], IdeError>(__TAURI_INVOKE("web_browsers")),
+	/**
+	 *  Custom properties declared in `doc` (from its current text, first) and in the project's
+	 *  other stylesheets (from the index, so kept up to date as files change).
+	 */
+	webCssVariables: (doc: DocId) => typedError<CssVariable[], IdeError>(__TAURI_INVOKE("web_css_variables", { doc })),
 	/**  The web reference at `pos` of `doc` and its targets; `None` when there is no reference. */
 	webGoto: (doc: DocId, pos: Pos) => typedError<{
 	reference: WebReference,
@@ -5011,6 +5016,14 @@ export type CreateRequest = {
 	name: string,
 	git: boolean,
 	values: { [key in string]: string },
+};
+
+/**  A custom property declaration (`--accent: #3b82f6`), for `var(--…)` completion and hover. */
+export type CssVariable = {
+	name: string,
+	/**  The declared value, whitespace collapsed. */
+	value: string | null,
+	location: Location,
 };
 
 /**
