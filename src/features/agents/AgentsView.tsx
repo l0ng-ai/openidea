@@ -16,7 +16,6 @@ import {
   registerDropTarget,
   showContextMenu,
   startPointerDrag,
-  type IconName,
   type TreeHandle,
 } from "@/ui";
 import {
@@ -97,12 +96,10 @@ function keysOf(task: AgentTask): string[] {
 function GroupRow({
   label,
   count,
-  icon,
   onDropTask,
 }: {
   label: ReactNode;
   count: number;
-  icon?: IconName;
   onDropTask?: (task: string) => void;
 }) {
   const ref = useRef<HTMLSpanElement>(null);
@@ -122,7 +119,6 @@ function GroupRow({
   }, [onDropTask]);
   return (
     <span ref={ref} className={clsx(styles.row, over && styles.dropOver)}>
-      {icon && <Icon name={icon} size={12} />}
       <span className={styles.groupLabel}>{label}</span>
       <span className={styles.count}>{count}</span>
     </span>
@@ -387,12 +383,7 @@ export function AgentsView() {
           switch (n.kind) {
             case "pinned":
               return (
-                <GroupRow
-                  icon="pin"
-                  label={<T>Pinned</T>}
-                  count={n.tasks.length}
-                  onDropTask={(task) => pinTasks([task], true)}
-                />
+                <GroupRow label={<T>Pinned</T>} count={n.tasks.length} onDropTask={(task) => pinTasks([task], true)} />
               );
             case "custom":
               return (
