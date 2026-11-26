@@ -81,8 +81,8 @@ pub async fn doc_set_line_ending(host: &Host, window: &str, doc: DocId, line_end
 
 /// Structure view: LSP document symbols when available (with tree-sitter
 /// visibility and type-alias kinds), tree-sitter otherwise.
-/// Tree-sitter answers come from the per-document tree cache (incremental
-/// re-parse); large documents get no syntax structure.
+/// Normal files reuse the per-document tree cache. Large Markdown files use
+/// the syntax parser's size limit for heading outlines.
 #[command(trust = always)]
 pub async fn doc_outline(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec<OutlineItem>> {
     let project = host.project(window)?;
@@ -118,7 +118,7 @@ pub async fn doc_outline(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec
                 }
                 items
             }
-            None if snap.large => Vec::new(),
+            None if snap.large && snap.language.as_str() != "markdown" => Vec::new(),
             None => syntax(),
         })
     })

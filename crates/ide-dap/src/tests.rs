@@ -126,6 +126,8 @@ struct Script {
     child_request: Option<Value>,
     ignore_configuration_done: bool,
     source_path: Option<String>,
+    /// Fail each `stackTrace` request whose frames include this one (java-debug, one frame's source lookup throwing).
+    failing_frame: Option<u64>,
     /// Report this process id in the adapter's `process` event (the program being debugged).
     debuggee_pid: Option<u32>,
     /// java-debug's spelling of the same event.
@@ -206,6 +208,7 @@ impl Default for Script {
             child_request: None,
             ignore_configuration_done: false,
             source_path: None,
+            failing_frame: None,
             debuggee_pid: None,
             java_process_id: false,
             output_after_terminate: false,
@@ -518,6 +521,20 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                     ok!(msg, json!({"threads": []}));
                 } else {
                     ok!(msg, json!({"threads": [{"id": 1, "name": "MainThread"}]}));
+                }
+            }
+            "stackTrace" if let Some(bad) = script.failing_frame => {
+                let start = msg["arguments"]["startFrame"].as_u64().unwrap();
+                let end = (start + msg["arguments"]["levels"].as_u64().unwrap()).min(3);
+                if (start..end).contains(&bad) {
+                    send!(
+                        json!({"type": "response", "request_seq": msg["seq"], "command": "stackTrace", "success": false, "message": "Illegal char <<> at index 21: C:\\p\\com\\x\\<generated>"})
+                    );
+                } else {
+                    let frames: Vec<Value> = (start..end)
+                        .map(|i| json!({"id": 10 + i, "name": format!("f{i}"), "line": 1, "column": 1}))
+                        .collect();
+                    ok!(msg, json!({"stackFrames": frames, "totalFrames": 3}));
                 }
             }
             "stackTrace" => ok!(
@@ -2330,6 +2347,21 @@ async fn kotlin_official_release_ten_no_delay_runs() {
         h.manager.stop(id).await.unwrap();
         println!("Run {run}/10: breakpoint Main.kt:6, i=0, step Main.kt:5; stopped");
     }
+}
+
+#[tokio::test]
+async fn stack_trace_leaves_out_a_frame_the_adapter_cannot_describe() {
+    let h = harness(Script { failing_frame: Some(1), ..Script::default() });
+    let id = h.start(config()).await.unwrap();
+    let frames = h.manager.stack_trace(id, 1).await.unwrap();
+    assert_eq!(frames.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["f0", "f2"]);
+    h.manager.stop(id).await.unwrap();
+
+    let h = harness(Script { failing_frame: Some(0), ..Script::default() });
+    let id = h.start(config()).await.unwrap();
+    let error = h.manager.stack_trace(id, 1).await.unwrap_err();
+    assert!(error.message.contains("<generated>"), "{error:?}");
+    h.manager.stop(id).await.unwrap();
 }
 
 #[cfg(windows)]

@@ -594,8 +594,8 @@ export const commands = {
 	/**
 	 *  Structure view: LSP document symbols when available (with tree-sitter
 	 *  visibility and type-alias kinds), tree-sitter otherwise.
-	 *  Tree-sitter answers come from the per-document tree cache (incremental
-	 *  re-parse); large documents get no syntax structure.
+	 *  Normal files reuse the per-document tree cache. Large Markdown files use
+	 *  the syntax parser's size limit for heading outlines.
 	 */
 	docOutline: (doc: DocId) => typedError<OutlineItem[], IdeError>(__TAURI_INVOKE("doc_outline", { doc })),
 	/**  Python class facts for the inheritance inspections: tree-sitter, no language server. */
@@ -1162,6 +1162,8 @@ export const commands = {
 	 *  disabled in place (no rebuild).
 	 */
 	menuSetDisabled: (ids: string[]) => __TAURI_INVOKE<void>("menu_set_disabled", { ids }),
+	/**  The Remote Development projects of the frontend's recent list, for Open Recent. */
+	menuSetRemoteRecent: (projects: RemoteRecent[]) => __TAURI_INVOKE<void>("menu_set_remote_recent", { projects }),
 	/**
 	 *  Index definitions named `name` within the roots `from` may navigate into (its own root
 	 *  plus its configured dependencies).
@@ -6430,8 +6432,8 @@ export type DocumentInfo = {
 	 */
 	canReloadEncoding: boolean,
 	/**
-	 *  Larger than `ide_vfs::LARGE_FILE_THRESHOLD`: language servers, syntax
-	 *  structure and folding are disabled; the editor should drop heavy features.
+	 *  Marks files above `ide_vfs::LARGE_FILE_THRESHOLD` for reduced editor
+	 *  features such as disabling language servers and folding.
 	 */
 	large?: boolean,
 	/**  Effective `.editorconfig` properties, when any section applies. */
@@ -12164,6 +12166,19 @@ export type RemoteProject_Serialize = {
 	/**  Commands routed to the server (the rest run locally). */
 	commands: string[],
 	project: ProjectInfo_Serialize,
+};
+
+/**
+ *  A recent Remote Development project (SSH, WSL, Dev Container), kept by the frontend: Open
+ *  Recent lists it among the local projects, as Manage Projects does.
+ */
+export type RemoteRecent = {
+	/**  `ssh://host/path`, `wsl://Ubuntu/path`…: what `file.openRecentProject` gets back. */
+	location: string,
+	name: string,
+	/**  Where it lives, as shown after the name (`me@host:/srv/app`). */
+	detail: string,
+	openedAtMs: number | null,
 };
 
 export type RemoteSession = RemoteSession_Serialize | RemoteSession_Deserialize;

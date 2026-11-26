@@ -10,6 +10,7 @@ import { formatBinding, hostBinding } from "@/platform/keymap";
 import { basename, useProject } from "@/platform/project";
 import { call, commands, isTauri, type Scope, type Variable } from "@/platform/ipc";
 import {
+  Button,
   EmptyState,
   Icon,
   IconButton,
@@ -476,6 +477,14 @@ function FramesPane({ session }: { session: DebugSession }) {
           </div>
         )}
         {stopNote(session) && <div className={styles.note}>{stopNote(session)}</div>}
+        {paused && session.framesError && session.selectedThread != null && (
+          <div className={clsx(styles.note, styles.framesError)} role="alert">
+            <span>{tx`Could not load the frames: ${session.framesError}`}</span>
+            <Button size="small" onClick={() => void selectThread(session.id, session.selectedThread!)}>
+              Retry
+            </Button>
+          </div>
+        )}
         {items.map((item) =>
           item.kind === "hidden" ? (
             <button
