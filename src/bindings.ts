@@ -6870,7 +6870,9 @@ export type ErrorKind = "notFound" | "alreadyExists" | "permissionDenied" | "inv
 /**  Kinds of workbench events a plugin can subscribe to (`on-event:<kind>`). */
 export type EventKind = "document-changed" | "websocket-ready" | "file-closed" | "settings-changed" | "input-mode-changed" | "run-exited" | "terminal-exited" | "content-tab-action" | "extensions-changed" | "file-opened" | "file-saved" | "files-changed" | "editor-focused" | "caret-moved" | "action-performed" | "vcs-changed" | 
 /**  Problems of the window's files changed (a language server or a report). */
-"problems-changed" | "scheduled";
+"problems-changed" | 
+/**  A project was closed (or its window closed): the project root path. */
+"project-closed" | "scheduled";
 
 export type ExceptionClassBreakpoint = {
 	id: string,
@@ -7316,6 +7318,10 @@ export type FileTypeAssociation = {
 
 /**  Debounced worktree changes. Paths use the same absolute form as `file-saved`. */
 export type FilesChanged = {
+	/**  Canonical absolute root of the project where changes occurred (API 1.18). */
+	project?: string | null,
+	/**  Project state generation at the time this batch was emitted (API 1.18). */
+	generation?: number | null,
 	created: string[],
 	modified: string[],
 	removed: string[],
@@ -14545,7 +14551,9 @@ export type WorkbenchEvent = { kind: "documentChanged"; value: DocumentChanged }
 /**  Ids of extension points the receiving plugin declares whose contributions changed. */
 { kind: "extensionsChanged"; value: string[] } | { kind: "inputModeChanged"; value: InputMode } | { kind: "fileOpened"; value: string } | { kind: "fileSaved"; value: string } | { kind: "filesChanged"; value: FilesChanged } | { kind: "editorFocused"; value: string | null } | { kind: "caretMoved"; value: CaretMoved } | { kind: "actionPerformed"; value: ActionPerformed } | { kind: "vcsChanged"; value: string } | 
 /**  Problems of the window's files changed; plugins re-read `problems`. */
-{ kind: "problemsChanged" } | { kind: "scheduled" };
+{ kind: "problemsChanged" } | 
+/**  A project closed (API 1.18); payload is the canonical absolute root path. */
+{ kind: "projectClosed"; value: string } | { kind: "scheduled" };
 
 export type WorkingTreeChange = {
 	path: string,
