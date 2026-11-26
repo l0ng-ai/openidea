@@ -380,13 +380,25 @@ fn match_java_debug_encoding(mut config: LaunchConfig, windows: bool) -> LaunchC
     config
 }
 
+/// This window's breakpoints of `path`.
 #[command(trust = trusted)]
 pub async fn debug_set_breakpoints(
     host: &Host,
+    window: &str,
     path: PathBuf,
     breakpoints: Vec<Breakpoint>,
 ) -> IdeResult<Vec<BreakpointState>> {
-    host.debugger.set_breakpoints(path, breakpoints).await
+    host.debugger.set_breakpoints(host.owner_window(window), path, breakpoints).await
+}
+
+/// Replaces all of this window's line breakpoints with `files`.
+#[command(trust = trusted)]
+pub async fn debug_replace_breakpoints(
+    host: &Host,
+    window: &str,
+    files: std::collections::BTreeMap<PathBuf, Vec<Breakpoint>>,
+) -> IdeResult<()> {
+    host.debugger.replace_breakpoints(host.owner_window(window), files).await
 }
 
 #[command(trust = trusted)]
@@ -629,18 +641,20 @@ pub fn debug_capabilities(host: &Host, session: DebugSessionId) -> IdeResult<Deb
 #[command(trust = trusted)]
 pub async fn debug_set_function_breakpoints(
     host: &Host,
+    window: &str,
     breakpoints: Vec<FunctionBreakpoint>,
 ) -> IdeResult<Vec<BreakpointState>> {
-    host.debugger.set_function_breakpoints(breakpoints).await
+    host.debugger.set_function_breakpoints(host.owner_window(window), breakpoints).await
 }
 
 /// Field watchpoints; states aligned with `breakpoints`.
 #[command(trust = trusted)]
 pub async fn debug_set_data_breakpoints(
     host: &Host,
+    window: &str,
     breakpoints: Vec<DataBreakpoint>,
 ) -> IdeResult<Vec<BreakpointState>> {
-    host.debugger.set_data_breakpoints(breakpoints).await
+    host.debugger.set_data_breakpoints(host.owner_window(window), breakpoints).await
 }
 
 #[command(trust = trusted)]
@@ -962,6 +976,7 @@ ide_command::domain!(
     debug_listen_for_jvm,
     debug_pause,
     debug_redefine_classes,
+    debug_replace_breakpoints,
     debug_resolve_variable,
     debug_restart_frame,
     debug_resume,
