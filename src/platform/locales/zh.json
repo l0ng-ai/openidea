@@ -1,4 +1,5 @@
 {
+  "vcs.imageDiff.changedPixels": "{count} 个像素发生更改",
   "app.about.build": "构建",
   "app.about.configDir": "配置目录",
   "app.about.copyInfo": "复制信息",
@@ -190,6 +191,7 @@
   "menu.editor.splitDown": "向下拆分",
   "menu.editor.splitRight": "向右拆分",
   "menu.editor.toggleZen": "{distractionFree, select, on {退出无干扰模式} other {进入无干扰模式}}",
+  "menu.view.toggleZenMode": "{zenMode, select, on {退出 Zen 模式} other {进入 Zen 模式}}",
   "menu.editor.unsplit": "取消拆分",
   "menu.file": "文件",
   "menu.fileProperties": "文件属性",

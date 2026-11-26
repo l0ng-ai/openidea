@@ -152,6 +152,12 @@ export const intellijMacos: Record<string, string[]> = {
   "editor.paragraphBackward": [],
   "editor.paragraphForwardWithSelection": [],
   "editor.paragraphBackwardWithSelection": [],
+  "editor.nextWordInDifferentHumpsMode": [],
+  "editor.previousWordInDifferentHumpsMode": [],
+  "editor.nextWordInDifferentHumpsModeWithSelection": [],
+  "editor.previousWordInDifferentHumpsModeWithSelection": [],
+  "code.deleteToWordStartInDifferentHumpsMode": [],
+  "code.deleteToWordEndInDifferentHumpsMode": [],
   "editor.contextInfo": ["Ctrl+Shift+Q"],
   "navigate.customRegion": ["Meta+Alt+."],
   "code.expandToLevel1": ["Meta+* 1"],
@@ -292,6 +298,8 @@ export const intellijMacos: Record<string, string[]> = {
   // (ToggleDistractionFreeMode has no default). ⌃⌘D is macOS's system-wide
   // "Look Up in Dictionary" hotkey, which never reaches the webview.
   "editor.toggleZen": [],
+  // ToggleZenMode has no default.
+  "view.toggleZenMode": [],
   "editor.toggleLineNumbers": [],
   "editor.toggleIndentGuides": [],
   "editor.toggleStickyLines": [],

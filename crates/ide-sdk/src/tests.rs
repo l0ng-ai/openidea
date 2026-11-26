@@ -3512,6 +3512,44 @@ fn vue_module_resolution_plugin_follows_the_vue_plugin() {
 }
 
 #[test]
+fn vtsls_gets_the_path_alias_plugin_for_vite_aliases() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (root, data) = (tmp.path().join("app"), tmp.path().join("data"));
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let mut cfg = server("vtsls");
+    cfg.tsserver_project = true;
+    assert!(!crate::apply::configure_path_aliases(&mut cfg, &root, &data), "no bundler configuration");
+    std::fs::write(
+        root.join("vite.config.js"),
+        "import path from 'path';\nexport default { resolve: { alias: { '@': path.resolve(__dirname, 'src') } } };",
+    )
+    .unwrap();
+    let mut other = server("typescript-language-server");
+    other.tsserver_project = true;
+    assert!(!crate::apply::configure_path_aliases(&mut other, &root, &data));
+    // TypeScript 7's native server hosts no plugins.
+    let mut native = server("vtsls");
+    assert!(!crate::apply::configure_path_aliases(&mut native, &root, &data));
+    crate::apply::merge_init_options(
+        &mut cfg,
+        serde_json::json!({ "vtsls": { "tsserver": { "globalPlugins": [crate::vue::tsserver_plugin(Path::new("/vue"))] } } }),
+    );
+    for _ in 0..2 {
+        assert!(crate::apply::configure_path_aliases(&mut cfg, &root, &data));
+        let init = serde_json::to_value(cfg.initialization_options.as_ref().unwrap()).unwrap();
+        let names: Vec<_> = init
+            .pointer("/vtsls/tsserver/globalPlugins")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["name"].clone())
+            .collect();
+        assert_eq!(names, ["@vue/typescript-plugin", "openidea-path-aliases"], "kept once, after the others");
+    }
+}
+
+#[test]
 fn without_the_vue_plugin_the_module_resolution_plugin_stays_out() {
     let tmp = tempfile::tempdir().unwrap();
     let mut cfg = server("vtsls");

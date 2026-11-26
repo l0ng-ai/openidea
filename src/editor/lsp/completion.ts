@@ -62,6 +62,7 @@ import { iconNode } from "@/ui/iconNode";
 import { parameterInfoOrLeave, triggerSignatureHelp } from "./signature";
 import { featureBackoff } from "./availability";
 import { pathCompletionSource, pathContext, pathLike } from "./fileReferences";
+import { cssVariablePrefix, cssVariableSource, STYLESHEETS, type VariableOption } from "./cssVariables";
 import { editorPrefs } from "@/platform/editorSettings";
 import { tx } from "@/platform/i18n";
 import { showHint } from "./hint";
@@ -619,8 +620,17 @@ function cancelInflight() {
   inflight = null;
 }
 
+/** Inside a stylesheet's `var(`, where `cssVariableSource` lists the project's custom properties instead of the server or the document's words. */
+function inVarCall(ctx: CompletionContext): boolean {
+  const language = ctx.state.facet(lspDoc)?.language ?? "";
+  if (!STYLESHEETS.has(language) || !isTauri()) return false;
+  const line = ctx.state.doc.lineAt(ctx.pos);
+  return cssVariablePrefix(line.text.slice(0, ctx.pos - line.from)) !== null;
+}
+
 /** Language-data completion sources (keywords etc.), used when no server answers. */
 async function fallback(ctx: CompletionContext): Promise<CompletionResult | null> {
+  if (inVarCall(ctx)) return null;
   const sources = ctx.state.languageDataAt<CompletionSource | readonly (string | Completion)[]>(
     "autocomplete",
     ctx.pos,
@@ -756,6 +766,7 @@ async function lspCompletionSource(ctx: CompletionContext): Promise<CompletionRe
       ? list.items.filter((it) => matchesCase(it.filterText ?? it.label, typed, prefs.caseSensitivity))
       : list.items,
   );
+  if (inVarCall(ctx)) items = items.filter((it) => !it.label.startsWith("--"));
   // A server snippet named like a live template (jdtls `sout`, `fori`) would be listed twice; the template wins.
   if (items.some((it) => it.kind === "snippet")) {
     const own = await contributedSource(ctx);
@@ -1052,6 +1063,13 @@ export function explicitCompletion(view: EditorView): boolean {
 // Rendering
 
 function kindBadge(c: Completion): Node | null {
+  const swatch = (c as VariableOption).swatch;
+  if (swatch) {
+    const span = document.createElement("span");
+    span.className = "cm-lsp-kind cm-lsp-swatch";
+    span.style.setProperty("--swatch", swatch);
+    return span;
+  }
   if (!isLsp(c) && "icon" in c) {
     const icon = (c as RichCompletion).icon;
     if (icon) return iconNode(icon, 16, "cm-lsp-kind");
@@ -1185,7 +1203,12 @@ export function completionExtension() {
     smartLookup,
     endSmartLookup,
     autocompletion({
-      override: [gated(claimingLspSource), gated(contributedSource), gated(pathFallbackSource)],
+      override: [
+        gated(claimingLspSource),
+        gated(contributedSource),
+        gated(pathFallbackSource),
+        gated(cssVariableSource),
+      ],
       icons: false,
       addToOptions: [
         { render: kindBadge, position: 20 },

@@ -43,6 +43,7 @@ agent_respond                                trusted            project_host bin
 agent_rollback                               trusted            project_host bindings async
 agent_rollback_changes                       trusted            project_host bindings async
 agent_send_queued_now                        trusted            project_host bindings async
+agent_set_additional_args                    trusted            project_host bindings sync
 agent_set_command                            trusted            project_host bindings sync
 agent_set_config                             trusted            project_host bindings async
 agent_set_env                                trusted            project_host bindings sync
@@ -751,6 +752,7 @@ vcs_has_commit                               always             project_host bin
 vcs_has_hook                                 always             project_host bindings async
 vcs_ignore_blame_revision                    trusted            project_host bindings async
 vcs_ignored_files                            always             project_host bindings async
+vcs_image_at                                 always             project_host bindings async
 vcs_init                                     always             project_host bindings async
 vcs_inspect_push                             trusted            project_host bindings async
 vcs_invalidate_log_signatures                always             project_host bindings async
@@ -832,6 +834,7 @@ vcs_worktree_include                         always             project_host bin
 vcs_worktrees                                always             project_host bindings async
 vcs_write_patch                              always             project_host bindings async
 web_browsers                                 always             desktop      bindings async
+web_css_variables                            always             project_host bindings async
 web_goto                                     always             project_host bindings async
 web_open                                     always             desktop      bindings async
 web_serves_page                              trusted            desktop      bindings async

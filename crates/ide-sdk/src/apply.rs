@@ -905,7 +905,7 @@ pub fn native_tsdk(root: &Path, s: &Settings) -> Option<PathBuf> {
 const PYTHON_SERVERS: [&str; 8] =
     ["basedpyright", "pyright", "ty", "pyrefly", "pylsp", "jedi-language-server", "ruff", "djlsp"];
 
-pub(crate) fn merge(base: &mut Value, layer: Value) {
+pub fn merge(base: &mut Value, layer: Value) {
     match (base, layer) {
         (Value::Object(base), Value::Object(layer)) => {
             for (k, v) in layer {
@@ -1513,7 +1513,10 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
         && !server_root.ancestors().any(|d| d.join("tsconfig.json").is_file() || d.join("jsconfig.json").is_file())
     {
         let node = node_dir(root, s).map(|d| d.join(exe("node"))).filter(|p| p.is_file()).or_else(|| which("node"));
-        cfg.tsserver_project_extras.paths = vue::cli_paths(server_root, node.as_deref());
+        let mut paths = vue::cli_paths(server_root, node.as_deref());
+        // The project's own Vite / Rollup / esbuild aliases replace the Vue template's `@`.
+        paths.extend(crate::path_aliases::paths(server_root));
+        cfg.tsserver_project_extras.paths = paths;
     }
     if name == vue::SERVER {
         configure_vue_typescript(cfg, root, server_root, s);
@@ -1603,6 +1606,42 @@ pub fn configure_vue_module_resolution(cfg: &mut LanguageServerConfig, data_dir:
         Some(at) => plugins[at] = plugin,
         None => plugins.insert(vue_at + 1, plugin),
     }
+    match toml::Value::try_from(current) {
+        Ok(v) => cfg.initialization_options = Some(v),
+        Err(e) => tracing::warn!("{}: cannot apply settings to initialization options: {e}", cfg.name),
+    }
+    true
+}
+
+/// Registers the tsserver plugin that adds the Vite / Rollup / esbuild path aliases of each
+/// package under `server_root` to that package's tsserver projects' `paths`, below
+/// tsconfig.json / jsconfig.json's own (#6020). Only vtsls hosts tsserver plugins (not
+/// TypeScript 7's native server). No-op without aliases.
+pub fn configure_path_aliases(cfg: &mut LanguageServerConfig, server_root: &Path, data_dir: &Path) -> bool {
+    if cfg.name != "vtsls" || !cfg.tsserver_project {
+        return false;
+    }
+    let packages = crate::path_aliases::packages(server_root);
+    if packages.is_empty() {
+        return false;
+    }
+    let Some(plugin) = crate::path_aliases::tsserver_plugin(data_dir, server_root, &packages) else {
+        return false;
+    };
+    let mut current =
+        cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).unwrap_or_else(|| json!({}));
+    let mut node = &mut current;
+    for key in ["vtsls", "tsserver"] {
+        node = object_entry(node, key);
+    }
+    let plugins =
+        node.as_object_mut().expect("made an object above").entry("globalPlugins").or_insert_with(|| json!([]));
+    if !plugins.is_array() {
+        *plugins = json!([]);
+    }
+    let plugins = plugins.as_array_mut().expect("made an array above");
+    plugins.retain(|p| p.get("name").and_then(Value::as_str) != Some(crate::path_aliases::PLUGIN));
+    plugins.push(plugin);
     match toml::Value::try_from(current) {
         Ok(v) => cfg.initialization_options = Some(v),
         Err(e) => tracing::warn!("{}: cannot apply settings to initialization options: {e}", cfg.name),

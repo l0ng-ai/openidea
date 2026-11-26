@@ -97,6 +97,8 @@ pub(super) struct ModelInfo {
     /// `(effort, description)`.
     pub efforts: Vec<(String, String)>,
     pub default_effort: Option<String>,
+    pub fast_tier: Option<String>,
+    pub default_service_tier: Option<String>,
     pub is_default: bool,
     pub hidden: bool,
 }
@@ -123,6 +125,22 @@ pub(super) fn models_of(list: &Value) -> Vec<ModelInfo> {
                     })
                     .collect(),
                 default_effort: str_of(m, "defaultReasoningEffort"),
+                fast_tier: m
+                    .get("serviceTiers")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|tier| tier.get("id").and_then(Value::as_str))
+                    .chain(
+                        m.get("additionalSpeedTiers")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .filter_map(Value::as_str),
+                    )
+                    .find(|tier| is_fast_tier(tier))
+                    .map(str::to_owned),
+                default_service_tier: str_of(m, "defaultServiceTier"),
                 is_default: m.get("isDefault").and_then(Value::as_bool) == Some(true),
                 hidden: m.get("hidden").and_then(Value::as_bool) == Some(true),
                 id,
@@ -137,6 +155,9 @@ pub(super) struct Settings {
     /// A model id from `model/list`, or the one the thread reported.
     pub model: String,
     pub effort: Option<String>,
+    pub service_tier: Option<String>,
+    /// No choice preserves the runtime's default; false explicitly selects Standard.
+    pub fast_override: Option<bool>,
     pub mode: Mode,
     /// Codex's Default/Plan collaboration mode. It is sent with each turn because it is
     /// part of the turn contract rather than the sandbox permission mode above.
@@ -158,6 +179,12 @@ impl Settings {
         let mut s = Settings {
             model,
             effort: str_of(result, "reasoningEffort"),
+            service_tier: match result.get("serviceTier") {
+                // A live thread can explicitly report Standard even when the catalog defaults to Fast.
+                Some(Value::Null) => Some("default".into()),
+                _ => str_of(result, "serviceTier"),
+            },
+            fast_override: None,
             mode: Mode::of(
                 result.get("approvalPolicy").unwrap_or(&Value::Null),
                 result.get("sandbox").unwrap_or(&Value::Null),
@@ -205,6 +232,16 @@ impl Settings {
                 }
                 self.effort = Some(value.to_owned());
             }
+            SERVICE_TIER => {
+                if !models.iter().any(|m| m.id == self.model && m.fast_tier.is_some()) {
+                    return Err(format!("{} has no Fast mode", self.model));
+                }
+                self.fast_override = Some(match value {
+                    "true" => true,
+                    "false" => false,
+                    _ => return Err(format!("unknown Fast mode {value}")),
+                });
+            }
             MODE => self.mode = Mode::parse(value).ok_or_else(|| format!("unknown mode {value}"))?,
             COLLABORATION_MODE => {
                 if !matches!(value, DEFAULT_COLLABORATION_MODE | PLAN_COLLABORATION_MODE) {
@@ -217,16 +254,32 @@ impl Settings {
         }
         Ok(())
     }
+
+    /// `turn/start.serviceTier`: omission inherits; "default" explicitly resets Fast.
+    pub fn service_tier_override<'a>(&self, models: &'a [ModelInfo]) -> Option<&'a str> {
+        match self.fast_override {
+            Some(true) => Some(
+                models.iter().find(|m| m.id == self.model).and_then(|m| m.fast_tier.as_deref()).unwrap_or("default"),
+            ),
+            Some(false) => Some("default"),
+            None => None,
+        }
+    }
 }
 
 pub(super) const MODEL: &str = "model";
 pub(super) const EFFORT: &str = "reasoning_effort";
+pub(super) const SERVICE_TIER: &str = "service_tier";
 pub(super) const MODE: &str = "mode";
 pub(super) const COLLABORATION_MODE: &str = "collaboration_mode";
 pub(super) const DEFAULT_COLLABORATION_MODE: &str = "default";
 pub(super) const PLAN_COLLABORATION_MODE: &str = "plan";
 
-/// ACP `configOptions`: model, reasoning effort (for models that have it) and mode.
+fn is_fast_tier(tier: &str) -> bool {
+    matches!(tier, "fast" | "priority")
+}
+
+/// ACP `configOptions`: model, its supported settings and session modes.
 pub(super) fn config_options(models: &[ModelInfo], s: &Settings) -> Value {
     let mut model_values: Vec<Value> = models
         .iter()
@@ -251,6 +304,16 @@ pub(super) fn config_options(models: &[ModelInfo], s: &Settings) -> Value {
         out.push(json!({
             "id": EFFORT, "name": "Reasoning", "category": "thought_level", "type": "select",
             "currentValue": effort, "options": values,
+        }));
+    }
+    if let Some(model) = models.iter().find(|m| m.id == s.model && m.fast_tier.is_some()) {
+        let fast = s.fast_override.unwrap_or_else(|| {
+            s.service_tier.as_deref().or(model.default_service_tier.as_deref()).is_some_and(is_fast_tier)
+        });
+        out.push(json!({
+            "id": SERVICE_TIER, "name": "Fast", "category": "model_config", "type": "select",
+            "currentValue": if fast { "true" } else { "false" },
+            "options": [select_value("false", "Standard", None), select_value("true", "Fast", None)],
         }));
     }
     out.push(json!({

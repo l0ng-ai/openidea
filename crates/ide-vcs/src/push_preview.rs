@@ -288,6 +288,13 @@ pub(crate) fn outgoing_commits(
 ) -> Option<OutgoingCommits> {
     let name = source.shorten().to_str_lossy();
     let remote = repo.find_remote(default_push_remote(repo, remotes, Some(&name))?).ok()?;
+    // As in IDEA, only a destination the branch is set up with: its upstream or a push refspec.
+    // The remote branch of the same name is only what Push proposes for a new branch.
+    if repo.branch_remote_ref_name(source, gix::remote::Direction::Fetch).is_none()
+        && configured_destination(repo, source, &name, remote.refspecs(gix::remote::Direction::Push)).is_none()
+    {
+        return None;
+    }
     let target = branch_push_target(repo, source, &remote).ok()?.selection;
     if target.special_ref {
         return None;

@@ -450,6 +450,10 @@ struct TaskFile {
     /// The user named the task: its agent's own title updates no longer replace it.
     #[serde(default, skip_serializing_if = "is_false")]
     title_renamed: bool,
+    /// [`NewAgentTask::ephemeral`]: the task file is never written, and new sessions ask the
+    /// agent not to save their history.
+    #[serde(default, skip_serializing_if = "is_false")]
+    ephemeral: bool,
     /// Start the first session as a fork of a recorded native one (once).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pending_native_fork: Option<ForkStart>,
@@ -479,6 +483,9 @@ fn canonical_uuid(value: &str) -> bool {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct PendingModel {
+    /// Native Codex intent, including when this model cannot expose a Fast control.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    retained_service_tier: Option<AgentConfigChoice>,
     model: AgentConfigChoice,
     candidate: Option<AgentConfigValue>,
     options: Vec<AgentConfigOption>,
@@ -494,6 +501,11 @@ impl PendingModel {
         });
         wanted.push(self.model.clone());
         wanted.extend(self.choices.iter().cloned());
+        if let Some(choice) = &self.retained_service_tier
+            && !wanted.iter().any(|c| c.id == choice.id)
+        {
+            wanted.push(choice.clone());
+        }
     }
 }
 
@@ -527,6 +539,8 @@ struct TaskState {
     pending_rollback: u32,
     /// The user named the task; see `TaskFile::title_renamed`.
     title_renamed: bool,
+    /// [`NewAgentTask::ephemeral`].
+    ephemeral: bool,
     /// See `TaskFile::pending_native_fork`: cleared once a session is established.
     pending_native_fork: Option<ForkStart>,
     /// A turn is running or about to (prompts arriving now are queued).
@@ -554,7 +568,12 @@ impl TaskState {
             }
             task.config.retain(|o| !config::is_per_model_option(o));
             task.config.extend(pending.options.iter().cloned().map(|mut option| {
-                if let Some(choice) = pending.choices.iter().find(|choice| choice.id == option.id) {
+                if let Some(choice) = pending
+                    .choices
+                    .iter()
+                    .chain(pending.retained_service_tier.iter())
+                    .find(|choice| choice.id == option.id)
+                {
                     option.current = Some(choice.value.clone());
                 }
                 option
@@ -805,6 +824,14 @@ impl AgentManager {
         provider::set_builtin_command(&dir, self.shared.env_secrets(), id, command.as_deref())
     }
 
+    /// Sets the extra arguments of a directly launched built-in ACP agent; empty resets them.
+    pub fn set_builtin_additional_args(&self, id: &str, args: Vec<String>) -> IdeResult<()> {
+        let Some(dir) = self.shared.paths.custom_agents_dir.as_deref() else {
+            return Err(IdeError::unavailable("there is no custom agents directory"));
+        };
+        provider::set_builtin_additional_args(dir, self.shared.env_secrets(), id, args)
+    }
+
     /// Sets the environment variables built-in `id` starts with; empty clears them.
     pub fn set_builtin_env(&self, id: &str, env: std::collections::BTreeMap<String, String>) -> IdeResult<()> {
         let Some(dir) = self.shared.paths.custom_agents_dir.clone() else {
@@ -1050,6 +1077,7 @@ impl AgentManager {
             subagents: Vec::new(),
             pending_rollback: 0,
             title_renamed: true,
+            ephemeral: false,
             pending_native_fork: None,
         };
         let handle = Task::restore(file, self.shared.clone());
@@ -1135,6 +1163,7 @@ impl AgentManager {
             subagents: Vec::new(),
             pending_rollback: 0,
             title_renamed: true,
+            ephemeral: false,
             pending_native_fork: Some(ForkStart { source: session_id.to_owned(), target }),
         };
         let handle = Task::restore(file, self.shared.clone());
@@ -1264,6 +1293,7 @@ impl AgentManager {
             subagents: Vec::new(),
             pending_rollback: 0,
             title_renamed: false,
+            ephemeral: req.ephemeral,
             pending_native_fork: None,
         };
         let handle = Task::restore(file, self.shared.clone());
@@ -1630,6 +1660,7 @@ impl AgentManager {
                 subagents: s.conversation.saved_subagents(),
                 pending_rollback: total - keep,
                 title_renamed: s.title_renamed,
+                ephemeral: s.ephemeral,
                 pending_native_fork: None,
             }
         };
@@ -2501,7 +2532,7 @@ impl Task {
             turns.push(Some(Arc::new(last)));
         }
         let mut wanted = file.wanted;
-        let pending_model = file.pending_switch.or_else(|| {
+        let mut pending_model = file.pending_switch.or_else(|| {
             let id = file.pending_model?;
             let index = wanted.iter().position(|choice| choice.id == id)?;
             let model = wanted.remove(index);
@@ -2516,8 +2547,14 @@ impl Task {
                 .and_then(|o| o.values.iter().find(|v| v.value == model.value))
                 .cloned();
             let options = catalog.thought_levels.get(&model.value).cloned().unwrap_or_default();
-            Some(PendingModel { model, candidate, options, choices: Vec::new() })
+            Some(PendingModel { model, candidate, options, choices: Vec::new(), retained_service_tier: None })
         });
+        if let Some(pending) = &mut pending_model
+            && pending.retained_service_tier.is_none()
+            && shared.spec(&task.provider).is_some_and(|spec| spec.driver == provider::Driver::Codex)
+        {
+            pending.retained_service_tier = wanted.iter().find(|c| c.id == "service_tier").cloned();
+        }
         Arc::new(Self {
             id: task.id.clone(),
             shared,
@@ -2535,6 +2572,7 @@ impl Task {
                 turns,
                 pending_rollback: file.pending_rollback,
                 title_renamed: file.title_renamed,
+                ephemeral: file.ephemeral,
                 pending_native_fork: file.pending_native_fork,
                 busy: false,
                 background_tasks: Vec::new(),
@@ -2791,7 +2829,9 @@ impl Task {
         let mut file = self.file.lock();
         // Read before the copy: whatever was asked for up to now is in it.
         let asked = self.saves_asked.load(Ordering::Acquire);
-        if file.deleted || file.saved >= asked {
+        // A throwaway task is never written: one its caller couldn't delete (a window closed
+        // while it ran) is gone after a restart.
+        if file.deleted || file.saved >= asked || self.state.lock().ephemeral {
             return;
         }
         let copy = {
@@ -2811,6 +2851,7 @@ impl Task {
                 subagents: s.conversation.saved_subagents(),
                 pending_rollback: s.pending_rollback,
                 title_renamed: s.title_renamed,
+                ephemeral: s.ephemeral,
                 pending_native_fork: s.pending_native_fork.clone(),
             }
         };
@@ -3092,7 +3133,13 @@ impl Task {
                 .filter(|pending| pending.model.value == value)
                 .map(|pending| pending.choices)
                 .unwrap_or_default();
+            let retained_service_tier = self
+                .shared
+                .spec(&provider)
+                .filter(|spec| spec.driver == provider::Driver::Codex)
+                .and_then(|_| s.wanted.iter().find(|c| c.id == "service_tier").cloned());
             s.pending_model = Some(PendingModel {
+                retained_service_tier,
                 model: AgentConfigChoice { id: target.id, value },
                 candidate: Some(candidate),
                 options,
@@ -3476,6 +3523,21 @@ impl Task {
         let cwd_s = dunce::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf()).to_string_lossy().into_owned();
         let pending_native_fork = self.state.lock().pending_native_fork.clone();
 
+        let mut opening_params = session_params(&cwd_s, &mcp_servers, skills_delivery.as_ref(), &roots);
+        if spec.driver == provider::Driver::Codex {
+            let s = self.state.lock();
+            let mut wanted = s.wanted.clone();
+            if let Some(pending) = pending_model {
+                pending.apply(&mut wanted, &s.task.config);
+            }
+            // Restore intent even when the resumed model cannot expose the Fast control.
+            if let Some(fast) =
+                wanted.iter().find(|c| c.id == "service_tier").and_then(|c| c.value.parse::<bool>().ok())
+            {
+                opening_params["_meta"]["openidea"]["codexFast"] = json!(fast);
+            }
+        }
+
         let mut tried_auth = false;
         let mut session = None;
         if let Some(fork) = pending_native_fork {
@@ -3485,7 +3547,7 @@ impl Task {
                     allow_acp_fallback: false,
                 });
             }
-            let mut params = session_params(&cwd_s, &mcp_servers, skills_delivery.as_ref(), &roots);
+            let mut params = opening_params.clone();
             params["sessionId"] = json!(&fork.source);
             if let Some(target) = &fork.target {
                 match params["_meta"].as_object_mut() {
@@ -3522,7 +3584,7 @@ impl Task {
                 // The replay goes before what this turn already showed (the user's message).
                 let shown = self.adopts_replay().then(|| self.take_entries());
                 self.replaying.store(true, Ordering::Release);
-                let mut params = session_params(&cwd_s, &mcp_servers, skills_delivery.as_ref(), &roots);
+                let mut params = opening_params.clone();
                 params["sessionId"] = json!(&id);
                 let loaded = self.request_with_auth(&peer, &init, &mut tried_auth, "session/load", params).await;
                 tokio::time::sleep(REPLAY_GRACE).await;
@@ -3576,7 +3638,10 @@ impl Task {
         let (session_id, result) = match session {
             Some(s) => s,
             None => {
-                let params = session_params(&cwd_s, &mcp_servers, skills_delivery.as_ref(), &roots);
+                let mut params = opening_params;
+                if self.state.lock().ephemeral {
+                    mark_ephemeral(&mut params);
+                }
                 let v = self.request_with_auth(&peer, &init, &mut tried_auth, "session/new", params).await.map_err(
                     |e| match self.sign_in_error(&e, Some(&sign_in_message)) {
                         Some(msg) => SessionOpenError { message: msg, allow_acp_fallback: false },
@@ -3687,7 +3752,10 @@ impl Task {
             if config::is_per_model_option(&o) && !model_options {
                 continue;
             }
-            let already = (known || explicit) && o.current.as_deref() == Some(choice.value.as_str());
+            // A displayed tier can be inherited. Preserve an explicit Fast/Standard choice
+            // even when it currently looks the same, so subsequent turns receive the override.
+            let already =
+                o.id != "service_tier" && (known || explicit) && o.current.as_deref() == Some(choice.value.as_str());
             if already || !o.values.iter().any(|v| v.value == choice.value) {
                 continue;
             }
@@ -4634,6 +4702,15 @@ fn session_params(cwd: &str, mcp: &McpForSession, skills: Option<&skills::Delive
         params["_meta"] = json!({ "openidea": meta });
     }
     params
+}
+
+/// `_meta.openidea.ephemeral` of `session/new`: the native drivers start the session without
+/// saving it (Claude Code `--no-session-persistence`, Codex `ephemeral` threads).
+fn mark_ephemeral(params: &mut Value) {
+    if !params["_meta"]["openidea"].is_object() {
+        params["_meta"]["openidea"] = json!({});
+    }
+    params["_meta"]["openidea"]["ephemeral"] = json!(true);
 }
 
 fn is_false(b: &bool) -> bool {

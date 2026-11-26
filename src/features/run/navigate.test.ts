@@ -6,6 +6,8 @@ const files: Record<string, string> = {
   "/p/src/main/java/com/acme/Util.java": "package com.acme;\nclass Util {}",
   "/p/other/Util.java": "package org.other;\nclass Util {}",
   "/p/src/main/kotlin/Orders.kt": "package com.acme.orders\nfun main() {}",
+  "/p/cypress/e2e/cart.cy.ts":
+    'describe("cart", () => {\n  it("adds", () => {});\n  context("totals", () => {\n    it("adds", () => {});\n  });\n});',
 };
 const symbols = vi.hoisted(() => ({ list: [] as unknown[] }));
 
@@ -27,7 +29,16 @@ vi.mock("@/platform/ipc", () => ({
   },
 }));
 
-const { resolveTarget } = await import("./navigate");
+const { declarationLine, resolveTarget } = await import("./navigate");
+
+describe("JS tests without a line", () => {
+  it("are found in their file by describe chain and name", async () => {
+    expect(await declarationLine("/p/cypress/e2e/cart.cy.ts", ["cart", "totals", "adds"])).toBe(4);
+    expect(await declarationLine("/p/cypress/e2e/cart.cy.ts", ["cart", "adds"])).toBe(2);
+    expect(await declarationLine("/p/cypress/e2e/cart.cy.ts", ["cart", "gone"])).toBeUndefined();
+    // The first call loads the run targets' parsers.
+  }, 60_000);
+});
 
 describe("JVM stack frame resolution", () => {
   afterEach(() => {
