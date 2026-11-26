@@ -106,6 +106,7 @@ export const intellijMacos: Record<string, string[]> = {
   "code.deleteToLineEnd": [],
   "code.cutLineEnd": ["Ctrl+K"],
   "code.hungryBackspace": [],
+  "editor.swapSelectionBoundaries": [],
   "code.moveLineUp": ["Alt+Shift+Up"],
   "code.moveLineDown": ["Alt+Shift+Down"],
   "code.moveStatementUp": ["Meta+Shift+Up"],
@@ -128,6 +129,7 @@ export const intellijMacos: Record<string, string[]> = {
   "code.selectAllOccurrences": ["Ctrl+Meta+G"],
   "code.unselectOccurrence": ["Ctrl+Shift+G"],
   "code.addCaretsToLineEnds": ["Alt+Shift+G"],
+  "editor.selectLine": [],
   "code.startNewLine": ["Shift+Enter"],
   "code.startNewLineBefore": ["Meta+Alt+Enter"],
   // Before the HTTP / SQL consoles' ⌘↵ (Run), which wins there.

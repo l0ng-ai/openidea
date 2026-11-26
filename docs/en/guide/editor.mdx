@@ -5,14 +5,6 @@ description: "Carets and selections, line editing, the clipboard history, foldin
 
 The editor follows IntelliJ IDEA's behaviour and default keymap. Shortcuts below are the defaults of the **macOS** keymap on macOS and the **Windows** keymap on Windows and Linux; you can change any of them in **Settings › Keymap** (see [Keymaps](/en/guide/keymap)). Every command is also available from **Find Action** (`⇧⌘A` / `Ctrl+Shift+A`).
 
-## Browse a local development server
-
-In a trusted local project, use **Find Action › Open Local Browser**. Enter a loopback HTTP or HTTPS URL, then choose **Open**. Links, **Back**, **Forward**, and **Reload** operate on the page in the panel. Hiding the panel preserves the page and its history; **Close** ends the session. Navigation stays on the original origin. To switch development servers or ports, close the session and open the new address.
-
-Clicking a URL in a Run or Debug console still opens it in the external browser. To open a localhost URL in the panel instead, right-click it and choose **Open in Browser Tool Window**.
-
-Choose **Inspect Element**, then click an element in the page. Review its selector, opening tag and styles before choosing **Add to Agent Draft**. This appends to the draft without sending it. Press **Escape** in the page to return to normal browsing without selecting anything.
-
 ## Carets and selections
 
 | Action                                   | macOS      | Windows / Linux    |
@@ -32,6 +24,8 @@ Choose **Inspect Element**, then click an element in the page. Review its select
 - **Add Selection for Next Occurrence** selects the word at the caret first, then adds the next match on every press. When nothing more is found, a hint appears; press again to continue from the top of the file.
 - Drag with `⌥` / `Alt` held (or with the middle mouse button on macOS and Windows) to make a rectangular selection without switching modes.
 - **Extend Selection** grows the selection to the enclosing word, expression, statement and block, using the syntax tree.
+- **Swap Selection Boundaries** moves the caret of each selection to its other end and keeps the text selected, so `⇧` / `Shift` with the arrow keys then extends or shrink it from that side. It has no default shortcut.
+- **Select Line at Caret** selects the whole line at each caret together with its line break; a selection grows to the whole lines it touches. It has no default shortcut.
 
 ## Editing lines and code
 

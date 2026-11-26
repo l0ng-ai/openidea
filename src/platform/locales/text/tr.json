@@ -2947,6 +2947,7 @@
   "Toggle Case": "Büyük/Küçük Harfi Değiştir",
   "Cycle Identifier Case": "Tanımlayıcı Büyük/Küçük Harflerini Döndür",
   "Add Carets to Ends of Selected Lines": "Seçili Satırların Sonuna İmleç Ekle",
+  "Select Line at Caret": "İmlecin Bulunduğu Satırı Seç",
   "Unselect Occurrence": "Eşleşmenin Seçimini Kaldır",
   "Paste from History…": "Geçmişten Yapıştır…",
   "Sort Lines": "Satırları Sırala",

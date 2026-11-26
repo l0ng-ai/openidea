@@ -110,6 +110,7 @@
   "Toggle Case": "Alternar maiúsculas/minúsculas",
   "Cycle Identifier Case": "Alternar o caso do identificador",
   "Add Carets to Ends of Selected Lines": "Adicionar cursores ao final das linhas selecionadas",
+  "Select Line at Caret": "Selecionar a linha do cursor",
   "Unselect Occurrence": "Desmarcar ocorrência",
   "Paste from History…": "Colar do histórico…",
   "Sort Lines": "Ordenar linhas",
