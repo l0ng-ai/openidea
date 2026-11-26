@@ -1,4 +1,5 @@
 {
+  "vcs.imageDiff.changedPixels": "{count, plural, one {# changed pixel} other {# changed pixels}}",
   "app.about.build": "Build",
   "app.about.configDir": "Configuration",
   "app.about.copyInfo": "Copy Info",

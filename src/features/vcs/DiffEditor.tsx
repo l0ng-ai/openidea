@@ -1,6 +1,8 @@
 /** Diff viewer editor tab (side-by-side / unified) built on @codemirror/merge. */
 import { focusedDiffNavigator, setFocusedDiffNavigator, type DiffNavigator } from "./diffNavigator";
 import { StagingDiff } from "./StagingDiff";
+import { ImageDiffHost } from "./ImageDiffHost";
+import { imageDiffKind } from "./imageDiffInput";
 import {
   useCallback,
   useEffect,
@@ -404,18 +406,65 @@ export function DiffEditor(props: DiffEditorProps) {
 }
 
 export function ResolvedDiffEditor({
-  diff: { data, entries, loading },
+  diff: { data, entries, loading, versions },
   ...props
 }: DiffEditorProps & { diff: ReturnType<typeof useGitDiffEntries> }) {
   const input = data === props.input.data ? props.input : { ...props.input, data };
-  if (data.middle) return <StagingDiff key={input.key} {...props} input={input} metadataLoading={loading} />;
-  return (
+  const [source, setSource] = useState<{ key: string; visible: boolean }>();
+  const imageData = useMemo(() => (versions ? { ...data, ...versions } : data), [data, versions]);
+  const regularFiles = !entries?.some((entry) => entry && !entry.mode.startsWith("100"));
+  const kind = regularFiles && !hasGitlink(data) ? imageDiffKind(imageData) : null;
+  const openedSource = kind === "svg" && source?.key === input.key;
+  const showSource = openedSource && source.visible;
+  if (kind && loading && !openedSource) return <Spinner size={14} />;
+  const image = kind && !showSource && (
+    <ImageDiffHost
+      key={input.key}
+      {...props}
+      data={imageData}
+      onSource={kind === "svg" ? () => setSource({ key: input.key, visible: true }) : undefined}
+    />
+  );
+  if (image && !openedSource) return image;
+
+  const preview = openedSource && (
+    <Button size="small" onClick={() => setSource({ key: input.key, visible: false })}>
+      <T>Image preview</T>
+    </Button>
+  );
+  const toolbarActions = openedSource ? (
+    <>
+      {preview}
+      {props.toolbarActions}
+    </>
+  ) : (
+    props.toolbarActions
+  );
+  const text = data.middle ? (
+    <StagingDiff key={input.key} {...props} input={input} toolbarActions={toolbarActions} metadataLoading={loading} />
+  ) : (
     <TwoPaneDiff
       {...props}
       input={input}
+      toolbarActions={toolbarActions}
       metadataLoading={loading}
       gitModes={entries ? [entries[0]?.mode ?? null, entries[2]?.mode ?? null] : undefined}
     />
+  );
+  if (!openedSource) return text;
+  // Unmounting an editable staged diff can save its draft. Switching views must preserve it.
+  return (
+    <>
+      {image}
+      <div
+        hidden={!showSource}
+        inert={!showSource}
+        className={showSource ? clsx(styles.root, props.fit && styles.fit) : undefined}
+      >
+        {props.fit && !data.middle && preview}
+        {text}
+      </div>
+    </>
   );
 }
 

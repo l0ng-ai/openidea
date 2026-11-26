@@ -752,6 +752,7 @@ vcs_has_commit                               always             project_host bin
 vcs_has_hook                                 always             project_host bindings async
 vcs_ignore_blame_revision                    trusted            project_host bindings async
 vcs_ignored_files                            always             project_host bindings async
+vcs_image_at                                 always             project_host bindings async
 vcs_init                                     always             project_host bindings async
 vcs_inspect_push                             trusted            project_host bindings async
 vcs_invalidate_log_signatures                always             project_host bindings async

@@ -24,8 +24,8 @@ pub use archive::{
     read_archive_entry, split_archive_path,
 };
 pub use bytes::{
-    ByteRange, FileProbe, MAX_RANGE_LEN, base64, content_path_allowed, image_mime, on_local_drive, probe,
-    read_data_url, read_range, same_share,
+    ByteRange, FileProbe, MAX_IMAGE_SIZE, MAX_RANGE_LEN, base64, content_path_allowed, image_mime, on_local_drive,
+    probe, read_data_url, read_range, same_share,
 };
 pub use compare::{
     DirectoryCompareEntry, DirectoryCompareMode, DirectoryCompareProgress, DirectoryCompareStatus, DirectorySyncAction,
