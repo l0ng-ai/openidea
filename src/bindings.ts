@@ -1226,6 +1226,11 @@ export const commands = {
 	 */
 	pluginAnswerPrompt: (promptId: string, answer: string[] | null) => __TAURI_INVOKE<boolean>("plugin_answer_prompt", { promptId, answer }),
 	pluginAnswerRunTarget: (id: string, useTarget: boolean) => typedError<Settings_Serialize, IdeError>(__TAURI_INVOKE("plugin_answer_run_target", { id, useTarget })),
+	/**
+	 *  Approves `host` for the plugin's `net:setting:<key>` grant (applied in
+	 *  Settings, or the pending row); refused when the setting no longer holds it.
+	 */
+	pluginApproveNetSetting: (id: string, setting: string, http: boolean, host: string) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_approve_net_setting", { id, setting, http, host })),
 	/**  Validated assets of a plugin whose id starts with `prefix` (icon theme mapping and SVGs). */
 	pluginAssets: (pluginId: string, prefix: string) => typedError<([string, string])[], IdeError>(__TAURI_INVOKE("plugin_assets", { pluginId, prefix })),
 	/**  Cancels a plugin task (`taskStarted` with `cancellable`). */
@@ -1258,6 +1263,11 @@ export const commands = {
 	pluginEventKinds: () => __TAURI_INVOKE<EventKind[]>("plugin_event_kinds"),
 	/**  Reports exactly one completion from the operation's launching window. */
 	pluginFinishOperation: (id: string, status: number | null, stopped: boolean) => typedError<boolean, IdeError>(__TAURI_INVOKE("plugin_finish_operation", { id, status, stopped })),
+	/**
+	 *  Drops the approved host of a `net:setting:<key>` grant (revoked, or the
+	 *  setting's value cleared).
+	 */
+	pluginForgetNetSetting: (id: string, setting: string, http: boolean) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_forget_net_setting", { id, setting, http })),
 	pluginFormatters: () => typedError<FormatterChoice[], IdeError>(__TAURI_INVOKE("plugin_formatters")),
 	/**  Confirms a plugin waiting for consent (project plugins, new capabilities). */
 	pluginGrant: (id: string, consent: Consent) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_grant", { id, consent })),
@@ -1297,6 +1307,11 @@ export const commands = {
 	pluginNavigationIndex: (paths: string[], request: RequestId) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_navigation_index", { paths, request })),
 	pluginNavigationInvalidate: (paths: string[] | null) => typedError<null, IdeError>(__TAURI_INVOKE("plugin_navigation_invalidate", { paths })),
 	pluginNavigationMarkers: (paths: string[]) => typedError<FileMarkers[], IdeError>(__TAURI_INVOKE("plugin_navigation_markers", { paths })),
+	/**
+	 *  The host a `net:setting:` grant derives from `value` (a bare host or a
+	 *  URL), validated with the manifest host rules; an error refuses the value.
+	 */
+	pluginNetSettingHost: (id: string, setting: string, value: string) => typedError<string, IdeError>(__TAURI_INVOKE("plugin_net_setting_host", { id, setting, value })),
 	/**  Parses one batch of an owned test configuration's output. */
 	pluginParseTestResults: (config: string, chunk: string) => typedError<PluginTestEvent[] | null, IdeError>(__TAURI_INVOKE("plugin_parse_test_results", { config, chunk })),
 	/**  Workbench events from this window (only the kinds of `plugin_event_kinds`). */
@@ -11086,6 +11101,8 @@ export type PluginInfo = {
 	 *  none of them declared by the manifest; each can be revoked.
 	 */
 	netHosts: string[],
+	/**  Setting-derived hosts (`net:setting:`), approved in Settings, listed next to the `net:ask` ones. */
+	netSettings: PluginNetSetting[],
 	/**  What it contributes while live (point + label). */
 	contributions: ContributionInfo[],
 	/**  `activation` events of the manifest. */
@@ -11140,6 +11157,18 @@ export type PluginLanguageVisuals = {
 export type PluginLocation = {
 	path: string,
 	range: Range,
+};
+
+/**  A `net:setting:` grant's host for Settings › Plugins: the approved one while the setting holds it, else the pending one. */
+export type PluginNetSetting = {
+	/**  The setting key the host comes from (`server` of `net:setting:server`). */
+	setting: string,
+	/**  Plain HTTP (`net.http:setting:`) instead of HTTPS (and loopback HTTP). */
+	http: boolean,
+	/**  The approved host, while the setting still holds it. */
+	host: string | null,
+	/**  The host the setting holds now when it is not the approved one. */
+	pending: string | null,
 };
 
 /**  A line a view's `process` body printed. */

@@ -456,6 +456,7 @@ plugin_answer_command                        trusted            project_host bin
 plugin_answer_commit                         trusted            project_host bindings sync
 plugin_answer_prompt                         trusted            project_host bindings sync
 plugin_answer_run_target                     trusted            project_host bindings async
+plugin_approve_net_setting                   outside_restricted desktop      bindings async
 plugin_assets                                always             desktop      bindings async
 plugin_cancel_task                           trusted            project_host bindings sync
 plugin_catalog                               always             desktop      bindings async
@@ -470,6 +471,7 @@ plugin_decoration_sets                       trusted            project_host bin
 plugin_endpoints                             trusted            project_host bindings async
 plugin_event_kinds                           trusted            project_host bindings async
 plugin_finish_operation                      trusted            project_host bindings sync
+plugin_forget_net_setting                    outside_restricted desktop      bindings async
 plugin_formatters                            trusted            project_host bindings sync
 plugin_grant                                 outside_restricted desktop      bindings async
 plugin_install_dir                           outside_restricted desktop      bindings async
@@ -487,6 +489,7 @@ plugin_navigation_goto                       trusted            project_host bin
 plugin_navigation_index                      trusted            project_host bindings async
 plugin_navigation_invalidate                 trusted            project_host bindings sync
 plugin_navigation_markers                    trusted            project_host bindings async
+plugin_net_setting_host                      always             desktop      bindings async
 plugin_parse_test_results                    trusted            project_host bindings async
 plugin_post_events                           trusted            project_host bindings sync
 plugin_prepare_debug_run                     trusted            project_host bindings async

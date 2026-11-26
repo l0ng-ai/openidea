@@ -1,0 +1,17 @@
+id = "netsetting"
+name = "Setting-derived network grants"
+version = "0.1.0"
+engines.openidea = "^1.18"
+wasm = "dist/plugin.wasm"
+activation = ["on-command:*"]
+
+[capabilities]
+required = ["storage"]
+optional = ["net:setting:server", "net.http:setting:server"]
+
+[contributes.settings]
+schema = "settings.json"
+
+[[contributes.commands]]
+id = "fetch"
+title = "fetch"

@@ -15,6 +15,7 @@ import type {
   MarketPlugin,
   PluginIcon as PluginIconData,
   PluginInfo,
+  PluginNetSetting,
   PluginStatus,
 } from "@/bindings";
 import {
@@ -56,6 +57,8 @@ import {
   setAllInstalledEnabled,
   setPluginCapability,
   revokePluginNetHost,
+  approvePluginNetSetting,
+  forgetPluginNetSetting,
   setPluginEnabled,
   uninstallPlugin,
   updateAllPlugins,
@@ -567,7 +570,7 @@ function ProgramPermission({ plugin, cap, disabled }: { plugin: PluginInfo; cap:
 }
 
 function CapabilityList({ plugin, busy }: { plugin: PluginInfo; busy: boolean }) {
-  if (plugin.capabilities.length === 0 && plugin.netHosts.length === 0) {
+  if (plugin.capabilities.length === 0 && plugin.netHosts.length === 0 && plugin.netSettings.length === 0) {
     return (
       <div className={styles.muted}>
         <T>No special permissions.</T>
@@ -600,7 +603,70 @@ function CapabilityList({ plugin, busy }: { plugin: PluginInfo; busy: boolean })
       {plugin.netHosts.map((host) => (
         <NetHostRow key={host} plugin={plugin} host={host} disabled={busy || !confirmed} />
       ))}
+      {plugin.netSettings.map((entry) => (
+        <NetSettingRow
+          key={`${entry.setting}:${entry.http}`}
+          plugin={plugin}
+          entry={entry}
+          disabled={busy || !confirmed}
+        />
+      ))}
     </ul>
+  );
+}
+
+/** A host a `net:setting:<key>` grant approved in Settings, or the pending one to approve. */
+function NetSettingRow({
+  plugin,
+  entry,
+  disabled,
+}: {
+  plugin: PluginInfo;
+  entry: PluginNetSetting;
+  disabled: boolean;
+}) {
+  const label = entry.http ? `net.http:setting:${entry.setting}` : `net:setting:${entry.setting}`;
+  const pending = entry.pending;
+  return (
+    <li className={styles.capabilityItem}>
+      <div className={styles.capabilityHeader}>
+        <span className={styles.mono}>{label}</span>
+        <Badge tone={RISK_LABEL.medium.tone}>{RISK_LABEL.medium.label}</Badge>
+      </div>
+      {pending ? (
+        <>
+          <p className={styles.capabilityDescription}>
+            {entry.http
+              ? tx`The “${entry.setting}” setting now holds ${entry.pending}. Approving connects over unencrypted HTTP.`
+              : tx`The “${entry.setting}” setting now holds ${entry.pending}. Approve it to let the plugin connect.`}
+          </p>
+          <div className={styles.programPermission}>
+            <Button
+              disabled={disabled}
+              onClick={() => void approvePluginNetSetting(plugin.id, entry.setting, entry.http, pending)}
+            >
+              {tx("Approve")}
+            </Button>
+          </div>
+        </>
+      ) : (
+        entry.host && (
+          <>
+            <p className={styles.capabilityDescription}>
+              {tx`The host set in the “${entry.setting}” setting, on any port. Remove it to leave it unapproved.`}
+            </p>
+            <div className={styles.programPermission}>
+              <Button
+                disabled={disabled}
+                onClick={() => void forgetPluginNetSetting(plugin.id, entry.setting, entry.http)}
+              >
+                {tx("Remove")}
+              </Button>
+            </div>
+          </>
+        )
+      )}
+    </li>
   );
 }
 

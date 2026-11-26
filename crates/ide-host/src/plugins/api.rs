@@ -686,6 +686,9 @@ pub(super) struct Shared {
     net_prompts: Mutex<HashMap<String, Option<Instant>>>,
     pub net_hosts_session_only: AtomicBool,
     session_net_hosts: Mutex<HashMap<String, BTreeSet<String>>>,
+    /// Setting-derived approvals kept for the session only (remote hosts),
+    /// plugin → `net:setting:` grant → its approved host.
+    pub(super) session_setting_hosts: Mutex<HashMap<String, BTreeMap<String, String>>>,
     pub(super) next_prompt: AtomicU64,
     pub(super) run_configurations: super::run_detectors::DynamicConfigurations,
     pub(super) run_targets: Mutex<super::run_targets::Targets>,
@@ -733,6 +736,29 @@ pub(super) struct Shared {
 /// A window's log tabs of one plugin: key → what it runs, oldest first.
 type LogTabs = Vec<(String, ide_plugin::ServiceLog)>;
 
+/// The settings key a `net:setting:` grant derives its host from.
+fn setting_key(cap: &Capability) -> String {
+    match cap {
+        Capability::NetSetting { key, .. } => key.clone(),
+        _ => String::new(),
+    }
+}
+
+/// The host a setting value names: a bare host, or a URL the user pasted
+/// (`https://jira.corp.example/`), checked with the manifest host rules — a `*`
+/// is refused. `Ok(None)` when the value is empty (the setting is cleared).
+pub(super) fn setting_host(value: &str) -> Result<Option<String>, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let host =
+        if value.contains("://") { ide_plugin::net_host(value)? } else { value.trim_end_matches('.').to_owned() };
+    ide_extension::manifest_host(&host)
+        .map(Some)
+        .map_err(|_| format!("{value:?} is not a host (example.com) or a URL (https://example.com/)"))
+}
+
 /// Log tabs a plugin's code may have open in one window; opening more forgets
 /// the oldest (that tab can no longer start its program).
 const MAX_LOG_TABS: usize = 32;
@@ -771,6 +797,7 @@ impl Shared {
             net_prompts: Mutex::default(),
             net_hosts_session_only: AtomicBool::new(false),
             session_net_hosts: Mutex::default(),
+            session_setting_hosts: Mutex::default(),
             next_prompt: AtomicU64::new(1),
             run_configurations: Arc::default(),
             run_targets: Mutex::default(),
@@ -1038,6 +1065,7 @@ impl Shared {
         self.withdraw_prompts(plugin);
         self.net_prompts.lock().remove(plugin);
         self.session_net_hosts.lock().remove(plugin);
+        self.session_setting_hosts.lock().remove(plugin);
         let removed: Vec<(Option<String>, String)> = {
             let mut contexts = self.contexts.lock();
             let keys: Vec<_> = contexts.keys().filter(|(_, p, _)| p == plugin).cloned().collect();
@@ -1554,6 +1582,51 @@ fn project_subdirectory(root: &Path, cwd: &str) -> Result<PathBuf, HostError> {
         return Err(invalid("not a directory"));
     }
     Ok(dir)
+}
+
+impl PluginApi {
+    /// The value of `key` the user set for this plugin, as a plain string
+    /// (`None` when unset or not a string).
+    pub(super) fn setting_value(&self, key: &str) -> Option<String> {
+        let raw = self.setting(None, key)?;
+        serde_json::from_str::<String>(&raw).ok()
+    }
+
+    /// The plugin's `net:setting:` grants with their hosts: the approved host
+    /// while the setting still holds it, and the pending one to approve
+    /// otherwise (`None` when the value is unset or not a host).
+    pub(super) fn net_setting_hosts(&self, subject: &Subject) -> Vec<(Capability, Option<String>, Option<String>)> {
+        let derived: Vec<Capability> = self
+            .pkg
+            .manifest
+            .capabilities
+            .all()
+            .filter(|c| matches!(c, Capability::NetSetting { .. }))
+            .cloned()
+            .collect();
+        if derived.is_empty() {
+            return Vec::new();
+        }
+        let ledger = self.shared.ledger.lock();
+        let grant = ledger.get(subject).filter(|g| g.confirmed);
+        let session = self.shared.session_setting_hosts.lock().get(self.id()).cloned().unwrap_or_default();
+        derived
+            .into_iter()
+            .map(|cap| {
+                let current = self.setting_value(&setting_key(&cap)).and_then(|v| setting_host(&v).ok()).flatten();
+                let record = grant.and_then(|g| g.setting_hosts.get(&cap.to_string())).map(String::as_str);
+                let session_host = session.get(&cap.to_string()).map(String::as_str);
+                // An approval covers requests only while the setting still holds it.
+                let approved = [record, session_host]
+                    .into_iter()
+                    .flatten()
+                    .find(|host| current.as_deref() == Some(host))
+                    .map(str::to_owned);
+                let pending = current.filter(|host| approved.as_deref() != Some(host));
+                (cap, approved, pending)
+            })
+            .collect()
+    }
 }
 
 impl HostApi for PluginApi {
@@ -2798,6 +2871,16 @@ impl HostApi for PluginApi {
             return Ok(None);
         }
         let host = host.trim_end_matches('.').to_ascii_lowercase();
+        // A host the plugin derives from a setting is approved in Settings,
+        // not asked about here: pending or revoked, it stays denied without a
+        // dialog (#3809).
+        if self.pkg.manifest.capabilities.all().any(|cap| {
+            matches!(cap, Capability::NetSetting { http: false, key: _ })
+                && self.setting_value(&setting_key(cap)).and_then(|v| setting_host(&v).ok()).flatten().as_deref()
+                    == Some(host.as_str())
+        }) {
+            return Ok(None);
+        }
         {
             let ledger = self.shared.ledger.lock();
             if let Some(grant) = ledger.get(subject)

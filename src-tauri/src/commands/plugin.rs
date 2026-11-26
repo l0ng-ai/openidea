@@ -252,6 +252,52 @@ pub async fn plugin_revoke_net_host(state: State<'_, AppState>, id: String, host
     blocking(move || plugins.revoke_net_host(&id, &host)).await
 }
 
+/// The host a `net:setting:` grant derives from `value` (a bare host or a
+/// URL), validated with the manifest host rules; an error refuses the value.
+#[desktop_command(trust = always)]
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_net_setting_host(
+    state: State<'_, AppState>,
+    id: String,
+    setting: String,
+    value: String,
+) -> IdeResult<String> {
+    let plugins = state.plugins.clone();
+    blocking(move || plugins.net_setting_host(&id, &setting, &value)).await
+}
+
+/// Approves `host` for the plugin's `net:setting:<key>` grant (applied in
+/// Settings, or the pending row); refused when the setting no longer holds it.
+#[desktop_command(trust = outside_restricted)]
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_approve_net_setting(
+    state: State<'_, AppState>,
+    id: String,
+    setting: String,
+    http: bool,
+    host: String,
+) -> IdeResult<PluginInfo> {
+    let plugins = state.plugins.clone();
+    blocking(move || plugins.approve_net_setting(&id, &setting, http, &host)).await
+}
+
+/// Drops the approved host of a `net:setting:<key>` grant (revoked, or the
+/// setting's value cleared).
+#[desktop_command(trust = outside_restricted)]
+#[tauri::command]
+#[specta::specta]
+pub async fn plugin_forget_net_setting(
+    state: State<'_, AppState>,
+    id: String,
+    setting: String,
+    http: bool,
+) -> IdeResult<PluginInfo> {
+    let plugins = state.plugins.clone();
+    blocking(move || plugins.forget_net_setting(&id, &setting, http)).await
+}
+
 /// Links a development plugin folder (`openidea-plugin link` does the same from a terminal).
 #[desktop_command(trust = trusted)]
 #[tauri::command]
@@ -650,8 +696,10 @@ pub fn plugin_set_theme_frame(state: State<'_, AppState>, color: Option<String>)
 
 ide_command::desktop_domain!(
     plugin_activation_event,
+    plugin_approve_net_setting,
     plugin_assets,
     plugin_catalog,
+    plugin_forget_net_setting,
     plugin_grant,
     plugin_install_dir,
     plugin_installed_intellij_themes,
@@ -661,6 +709,7 @@ ide_command::desktop_domain!(
     plugin_market,
     plugin_market_download,
     plugin_market_url,
+    plugin_net_setting_host,
     plugin_preview_install,
     plugin_read_intellij_theme,
     plugin_reload,
