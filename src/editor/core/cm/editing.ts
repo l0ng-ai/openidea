@@ -1124,6 +1124,41 @@ export const addCaretsToLineEnds: Command = (view) => {
   return true;
 };
 
+/** Swap Selection Boundaries: moves each selection's caret to its other end, keeping the selection. */
+export const swapSelectionBoundaries: Command = (view) => {
+  const { selection } = view.state;
+  if (selection.ranges.every((r) => r.empty)) return false;
+  view.dispatch({
+    selection: EditorSelection.create(
+      selection.ranges.map((r) => EditorSelection.range(r.head, r.anchor)),
+      selection.mainIndex,
+    ),
+    scrollIntoView: true,
+    userEvent: "select",
+  });
+  return true;
+};
+
+/**
+ * IDEA's Select Line at Caret: each caret or selection grows to the whole lines it touches,
+ * with the line break after them; a folded region's lines go together with the line it is shown on.
+ */
+export const selectLineAtCaret: Command = (view) => {
+  const { state } = view;
+  const ranges = state.selection.ranges.map((r) => {
+    const end = r.to > r.from && state.doc.lineAt(r.to).from === r.to ? r.to - 1 : r.to;
+    const span = visualLineSpan(state, r.from, end);
+    const to = Math.min(span.to + 1, state.doc.length);
+    return r.head < r.anchor ? EditorSelection.range(to, span.from) : EditorSelection.range(span.from, to);
+  });
+  view.dispatch({
+    selection: EditorSelection.create(ranges, state.selection.mainIndex),
+    scrollIntoView: true,
+    userEvent: "select",
+  });
+  return true;
+};
+
 /** ⌃⇧G: Unselect Occurrence — drops the most recently added selection; a single one collapses to its caret. */
 export const unselectOccurrence: Command = (view) => {
   const { state } = view;

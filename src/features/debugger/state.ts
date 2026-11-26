@@ -211,7 +211,7 @@ export const useExecutionPoint = create<ExecutionPoint>(() => ({
 /** Console buffer: at most this many physical lines per session. */
 const MAX_CONSOLE_LINES = 50_000;
 /** Longer lines are broken up, as in the Run console, so one blob can't stall rendering. */
-const MAX_LINE_LENGTH = 8_000;
+export const MAX_LINE_LENGTH = 8_000;
 /**
  * Output of one session waiting for the next frame, in characters. A program printing faster
  * than the console parses keeps only the newest output (the rest would be trimmed anyway), so

@@ -1,6 +1,4 @@
 //! macOS project tabs: native window tab groups behind the page's own tab bar.
-use crate::windows::WorkbenchWindows;
-
 use crate::windows::{Launch, WindowsState};
 use ide_core::{IdeError, IdeResult};
 use ide_workspace::window_groups::{TabbingPreference, should_group_new_project};
@@ -33,7 +31,7 @@ fn tabbing_preference(app: &AppHandle) -> IdeResult<TabbingPreference> {
 
 /// Capture before building the new window, which takes focus itself.
 pub fn new_project_tab_target(app: &AppHandle, launch: &Launch) -> IdeResult<Option<WebviewWindow>> {
-    let windows = app.workbench_windows();
+    let windows = app.webview_windows();
     let active = windows
         .values()
         .find(|w| w.is_focused().unwrap_or(false))

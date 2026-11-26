@@ -268,6 +268,11 @@ impl Document {
         out
     }
 
+    /// Whether both documents hold the same (normalized) text.
+    pub fn same_text(&self, other: &Document) -> bool {
+        self.rope == other.rope
+    }
+
     pub fn len_utf16(&self) -> u32 {
         self.rope.len_utf16_cu() as u32
     }

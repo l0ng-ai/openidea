@@ -136,6 +136,11 @@ function inBreakpointArea(e: MouseEvent): boolean {
   return t.classList.contains("cm-gutterElement") && t.childElementCount === 0;
 }
 
+/** Created once: every `EditorView.theme` call mounts new CSS rules into the document. */
+const BREAKPOINT_GUTTER_THEME = EditorView.theme({
+  ".cm-lineNumbers .cm-gutterElement": { cursor: "default" },
+});
+
 export function breakpointGutter(ctx: EditorDocContext): Extension {
   const reason = classFileBreakpointReason(ctx.path);
   if (reason) {
@@ -311,11 +316,5 @@ export function breakpointGutter(ctx: EditorDocContext): Extension {
     },
   );
 
-  return [
-    field,
-    plugin,
-    EditorView.theme({
-      ".cm-lineNumbers .cm-gutterElement": { cursor: "default" },
-    }),
-  ];
+  return [field, plugin, BREAKPOINT_GUTTER_THEME];
 }

@@ -1,7 +1,5 @@
 //! Window groups without native tabs: one member is shown at a time, and the hidden ones are kept
 //! at its frame so that selecting a tab only changes which window is visible.
-use crate::windows::WorkbenchWindows;
-
 use super::Group;
 use crate::windows::WindowsState;
 use ide_core::{IdeError, IdeResult};
@@ -155,12 +153,12 @@ fn sync_member_frames(app: &AppHandle, selected: &str) {
     if group.selected != selected {
         return;
     }
-    let Some(from) = app.workbench_window(selected) else { return };
+    let Some(from) = app.get_webview_window(selected) else { return };
     if from.is_fullscreen().unwrap_or(false) || from.is_minimized().unwrap_or(false) {
         return;
     }
     for member in group.members.iter().filter(|member| member.as_str() != selected) {
-        let Some(to) = app.workbench_window(member) else { continue };
+        let Some(to) = app.get_webview_window(member) else { continue };
         // A visible peer is the one being presented; never move it behind the user's back.
         if to.is_visible().unwrap_or(false) {
             continue;
@@ -196,7 +194,7 @@ pub(super) fn frame_changed(app: &AppHandle, label: &str) {
 pub(super) fn present(app: &AppHandle, previous: &Group, target: &str, to: &WebviewWindow) -> IdeResult<()> {
     let err = |e: tauri::Error| IdeError::internal(e.to_string());
     if previous.selected != target
-        && let Some(from) = app.workbench_window(&previous.selected)
+        && let Some(from) = app.get_webview_window(&previous.selected)
     {
         show_at_frame(&from, to)?;
     } else {
@@ -206,7 +204,7 @@ pub(super) fn present(app: &AppHandle, previous: &Group, target: &str, to: &Webv
     }
     for member in &previous.members {
         if member != target
-            && let Some(window) = app.workbench_window(member)
+            && let Some(window) = app.get_webview_window(member)
         {
             window.hide().map_err(err)?;
         }
@@ -217,7 +215,7 @@ pub(super) fn present(app: &AppHandle, previous: &Group, target: &str, to: &Webv
 /// Shows the previously selected member again after a failed selection.
 pub(super) fn restore_selection(app: &AppHandle, previous: &Group) {
     for member in &previous.members {
-        if let Some(window) = app.workbench_window(member) {
+        if let Some(window) = app.get_webview_window(member) {
             if member == &previous.selected {
                 let _ = window.show();
                 let _ = window.set_focus();

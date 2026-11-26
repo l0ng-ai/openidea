@@ -58,6 +58,16 @@ function markCount(container: HTMLElement) {
 }
 
 describe("Debug console find", () => {
+  it("finds a string across the 8,000-character cut of a long line, highlighted on both rows", () => {
+    const { log } = setup(`${"x".repeat(7_997)}t3boundary${"z".repeat(300)}\n`);
+    openFind(log);
+    type("t3boundary");
+    expect(screen.getByText("1/1")).toBeInTheDocument();
+    const marks = [...log.querySelectorAll("[data-find-current]")];
+    expect(marks.map((m) => m.textContent).join("")).toBe("t3boundary");
+    expect(marks.map((m) => m.closest("[data-index]")?.getAttribute("data-index"))).toEqual(["0", "1"]);
+  });
+
   it("opens on ⌘F, searches as you type and highlights every match", () => {
     const { log, view } = setup();
     expect(openFind(log)).toBeInTheDocument();
