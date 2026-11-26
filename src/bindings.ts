@@ -1593,7 +1593,9 @@ export const commands = {
 	 *  Edits go through the document layer as one patch per file, so open editors
 	 *  update live and undo the whole file's replacements in one step. Unsaved
 	 *  editor buffers are replaced in place and left unsaved; other open documents
-	 *  are saved, and files that were not open are opened transiently, saved and closed.
+	 *  are saved unless the file changed on disk meanwhile (then the replacement stays
+	 *  unsaved, as autosave does), and files that were not open are opened
+	 *  transiently, saved and closed.
 	 * 
 	 *  With `all_in_scope` (Replace All after the search hit its match limit) the
 	 *  scope is searched again without the limit and every match in it is replaced,

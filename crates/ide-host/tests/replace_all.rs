@@ -147,7 +147,7 @@ async fn replace_all_saves_open_buffers_without_unsaved_changes() {
     let base = dunce::canonicalize(temp.path()).unwrap();
     let root = base.join("project");
     std::fs::create_dir_all(&root).unwrap();
-    for name in ["previewed.txt", "edited.txt", "closed.txt"] {
+    for name in ["previewed.txt", "edited.txt", "closed.txt", "stale.txt"] {
         std::fs::write(root.join(name), "TOKEN\n").unwrap();
     }
     let host = Host::new(common::host_config(&base));
@@ -157,6 +157,9 @@ async fn replace_all_saves_open_buffers_without_unsaved_changes() {
     project.documents.open(&root.join("previewed.txt")).unwrap();
     let edited = project.documents.open(&root.join("edited.txt")).unwrap().id;
     project.documents.replace_all(edited, "TOKEN\nmore\n").unwrap();
+    // Open and clean, but changed on disk before the watcher reported it.
+    let stale = project.documents.open(&root.join("stale.txt")).unwrap().id;
+    std::fs::write(root.join("stale.txt"), "TOKEN\nexternal\n").unwrap();
     ops::search::replace_in_files(
         &host,
         "main",
@@ -175,6 +178,8 @@ async fn replace_all_saves_open_buffers_without_unsaved_changes() {
     assert_eq!(disk("closed.txt"), "DONE\n");
     assert_eq!(disk("edited.txt"), "TOKEN\n", "unsaved edits stay unsaved");
     assert_eq!(project.documents.text_snapshot(edited).unwrap().text, "DONE\nmore\n");
+    assert_eq!(disk("stale.txt"), "TOKEN\nexternal\n", "the external change is kept");
+    assert!(project.documents.is_dirty(stale).unwrap(), "the replacement stays unsaved");
     host.close_project("main");
 }
 
