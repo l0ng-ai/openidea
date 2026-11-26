@@ -327,7 +327,33 @@ describe("DuckDB data sources", () => {
     }
   });
 
-  it("requires write access for in-memory databases", async () => {
+  it.each(["jdbc:duckdb::memory:;threads=1", "jdbc:duckdb:memory:default", "jdbc:duckdb::memory:local;threads=1"])(
+    "requires write access for the in-memory URL %s",
+    async (url) => {
+      backend.call.mockImplementation(async ([op]) => (op === "list" ? [duckdb] : "OK"));
+      render(
+        <SourceDialog
+          initial={{
+            driver: "jdbc",
+            vendor: "duckdb",
+            jdbcDriver: duckdb.id,
+            url,
+            urlOnly: true,
+            readOnly: true,
+          }}
+        />,
+      );
+      await screen.findByText("Turn off Read-only in Options to use an in-memory DuckDB database.");
+      expect(screen.getByRole("button", { name: "Test Connection" })).toBeDisabled();
+      fireEvent.click(screen.getByRole("tab", { name: "Options" }));
+      const readOnly = screen.getByRole("checkbox", { name: "Read-only" });
+      fireEvent.click(readOnly);
+      expect(readOnly).toBeDisabled();
+      await waitFor(() => expect(screen.getByRole("button", { name: "Test Connection" })).toBeEnabled());
+    },
+  );
+
+  it("keeps read-only available for a file with a memory-like name", async () => {
     backend.call.mockImplementation(async ([op]) => (op === "list" ? [duckdb] : "OK"));
     render(
       <SourceDialog
@@ -335,19 +361,13 @@ describe("DuckDB data sources", () => {
           driver: "jdbc",
           vendor: "duckdb",
           jdbcDriver: duckdb.id,
-          url: "jdbc:duckdb::memory:;threads=1",
+          url: "jdbc:duckdb:./memory:default",
           urlOnly: true,
-          readOnly: true,
         }}
       />,
     );
-    await screen.findByText("Turn off Read-only in Options to use an in-memory DuckDB database.");
-    expect(screen.getByRole("button", { name: "Test Connection" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("tab", { name: "Options" }));
-    const readOnly = screen.getByRole("checkbox", { name: "Read-only" });
-    fireEvent.click(readOnly);
-    expect(readOnly).toBeDisabled();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Test Connection" })).toBeEnabled());
+    fireEvent.click(await screen.findByRole("tab", { name: "Options" }));
+    expect(screen.getByRole("checkbox", { name: "Read-only" })).toBeEnabled();
   });
 
   it("keeps an existing generic DuckDB JDBC source generic", async () => {

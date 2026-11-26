@@ -673,11 +673,14 @@ export function SourceDialog({
         : fromTemplate
           ? renderedUrl
           : (s.url ?? "");
+  const duckDbTarget = jdbcUrl.split(";", 1)[0]!;
   const duckDbMemory =
     duckdb &&
     (duckDbMode === "memory" ||
       (duckDbMode === "url" &&
-        [DUCKDB_JDBC_PREFIX, `${DUCKDB_JDBC_PREFIX}:memory:`].includes(jdbcUrl.split(";", 1)[0]!)));
+        (duckDbTarget === DUCKDB_JDBC_PREFIX ||
+          duckDbTarget.startsWith(DUCKDB_JDBC_PREFIX + "memory:") ||
+          duckDbTarget.startsWith(DUCKDB_JDBC_PREFIX + ":memory:"))));
   const chooseProfile = (profile?: DbJdbcDriver, type = vendor) => {
     setTest(null);
     setConnectionSecurityConfirmed(false);
