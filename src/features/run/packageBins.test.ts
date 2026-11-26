@@ -98,11 +98,11 @@ describe("package executables", () => {
 
   it("runs through the package manager in the package folder", () => {
     const pkg = { dir: "packages/web", label: "web", bins: [] };
-    expect(execConfig(parseExecLine("pnpm exec")!.runner, "vite", ["--open"], pkg)).toMatchObject({
-      name: "web: pnpm exec vite --open",
+    expect(execConfig(parseExecLine("pnpm exec")!.runner, "vite", ["--host", "a b"], pkg)).toMatchObject({
+      name: "web: pnpm exec vite --host 'a b'",
       kind: "npm",
       command: "pnpm",
-      args: ["exec", "vite", "--open"],
+      args: ["exec", "vite", "--host", "a b"],
       cwd: "packages/web",
     });
     expect(execConfig(parseExecLine("npx")!.runner, "tsc", [], { ...pkg, dir: "" })).toMatchObject({

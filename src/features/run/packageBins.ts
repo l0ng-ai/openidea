@@ -5,7 +5,7 @@
  * manager in the package folder like npm script entries. Reads the disk only.
  */
 import { executeAction } from "@/platform/actions";
-import { parseArgs } from "@/platform/commandLine";
+import { formatArgs, parseArgs } from "@/platform/commandLine";
 import { call, commands, type RunConfig } from "@/platform/ipc";
 import { usePlatform } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
@@ -149,7 +149,7 @@ export async function loadPackages(
 }
 
 export function execConfig(runner: Runner, name: string, args: readonly string[], pkg: PackageBins): RunConfig {
-  const line = [runner.prefix, name, ...args].join(" ");
+  const line = `${runner.prefix} ${formatArgs([name, ...args])}`;
   return {
     id: `runAnything:exec:${pkg.dir}:${line}`,
     name: pkg.dir ? `${pkg.label}: ${line}` : line,
