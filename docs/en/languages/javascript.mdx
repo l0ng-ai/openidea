@@ -103,7 +103,7 @@ Jest, Vitest, Playwright Test, `node --test` and Mocha output is turned into the
 Debugging uses the JavaScript Debugger (vscode-js-debug); if it is missing, the first debug session offers to install it.
 
 - **Debug** works for npm script configurations, Node.js files and `deno run` / `deno test`. Child processes are attached automatically.
-- **Attach to Node.js** is a run configuration type for a process started with `--inspect` on this or another machine (default port 9229), with local and remote root mapping.
+- **Attach to Node.js** is a run configuration type for a process started with `--inspect` on this or another machine (default port 9229), with local and remote root mapping. With **Reconnect automatically** on, the session waits while the process restarts (nodemon, `node --watch`, `tsx watch`) and attaches to it again with the same breakpoints.
 - **Attach to Process…** in the Run menu lists running Node.js processes.
 - **JavaScript Debug** is a run configuration type that opens a URL in Chrome or Edge and debugs the page's JavaScript and TypeScript through source maps. Start the page's server first (for example with the `dev` npm script); **Web root** is the folder the URL serves, the project root by default.
 

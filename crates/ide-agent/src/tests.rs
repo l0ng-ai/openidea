@@ -177,6 +177,9 @@ impl Handler for FakeAgent {
                 })
                 .unwrap_or_default();
             self.mcp_calls.lock().push((method.to_owned(), names));
+            if params.pointer("/_meta/openidea/ephemeral") == Some(&json!(true)) {
+                self.calls.lock().push("ephemeral".into());
+            }
         }
         let session = params.get("sessionId").and_then(Value::as_str).unwrap_or("s1").to_owned();
         match method {
@@ -646,6 +649,32 @@ async fn saved_conversation_reads_do_not_start_or_load_the_agent() {
     restored.task(&task.id).unwrap().state.lock().conversation = Conversation::default();
     assert!(restored.entries(&task.id, None).unwrap().is_empty());
     restored.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ephemeral_task_is_not_saved_and_asks_for_an_unsaved_session() {
+    let tmp = tempfile::tempdir().unwrap();
+    for ephemeral in [true, false] {
+        let agent = Arc::new(FakeAgent::default());
+        let mgr = manager(tmp.path(), agent.clone());
+        let task = mgr
+            .create(NewAgentTask {
+                prompt: text("Write a commit message"),
+                provider: "claude".into(),
+                isolation: Isolation::Local,
+                ephemeral,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+        assert_eq!(agent.calls.lock().iter().any(|c| c == "ephemeral"), ephemeral);
+        mgr.shutdown();
+        // The caller never deleted it (its window closed): only a saved task comes back.
+        let restored = manager(tmp.path(), Arc::new(FakeAgent::default()));
+        assert_eq!(restored.task(&task.id).is_ok(), !ephemeral);
+        restored.shutdown();
+    }
 }
 
 #[cfg(unix)]
@@ -5589,6 +5618,7 @@ async fn per_session_mcp_overrides_filter_session_and_reload_when_idle() {
             mcp_overrides: BTreeMap::from([("slack".into(), false)]),
             idle: false,
             skill_overrides: BTreeMap::new(),
+            ephemeral: false,
         })
         .await
         .unwrap();
@@ -5651,6 +5681,7 @@ async fn per_session_skill_overrides_filter_commands_persist_and_reload_when_idl
                 ("tdd".into(), AgentSkillMode::Auto),
                 ("noisy".into(), AgentSkillMode::Off),
             ]),
+            ephemeral: false,
         })
         .await
         .unwrap();
@@ -5794,6 +5825,7 @@ async fn copilot_falls_back_to_acp_when_headless_probe_session_or_prompt_fails()
             mcp_overrides: BTreeMap::new(),
             idle: false,
             skill_overrides: BTreeMap::new(),
+            ephemeral: false,
         })
         .await
         .unwrap();
@@ -5820,6 +5852,7 @@ async fn copilot_falls_back_to_acp_when_headless_probe_session_or_prompt_fails()
             mcp_overrides: BTreeMap::new(),
             idle: false,
             skill_overrides: BTreeMap::new(),
+            ephemeral: false,
         })
         .await
         .unwrap();

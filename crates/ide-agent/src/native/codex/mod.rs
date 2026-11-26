@@ -492,6 +492,10 @@ impl CodexShim {
         self.prepare_project_trust(params).await;
         let mut request = json!({ "cwd": params.get("cwd") });
         apply_thread_config(params, &mut request);
+        // Not written to `~/.codex/sessions`, so it isn't listed among the past threads.
+        if params.pointer("/_meta/openidea/ephemeral").and_then(Value::as_bool) == Some(true) {
+            request["ephemeral"] = json!(true);
+        }
         let result = self.call("thread/start", request).await?;
         let mut settings = Settings::of(&result, &models);
         settings.fast_override = params.pointer("/_meta/openidea/codexFast").and_then(Value::as_bool);

@@ -10333,6 +10333,11 @@ export type NewAgentTask = {
 	 *  `!` command runs in it first.
 	 */
 	idle?: boolean,
+	/**
+	 *  A throwaway task (Generate Commit Message): it isn't saved, so it doesn't outlive a
+	 *  restart, and the agent keeps no session history of its own for it.
+	 */
+	ephemeral?: boolean,
 };
 
 /**  The approvals new agent tasks start with. */
