@@ -164,7 +164,8 @@ struct ShutdownWork {
     notebooks: Vec<Arc<notebook::NotebookService>>,
     bridges: Vec<Arc<kotlin_bridge::KotlinBridge>>,
     lsp: Option<Arc<ide_lsp::LspManager>>,
-    debug: Option<(Arc<ide_dap::DebugManager>, String, Option<std::path::PathBuf>)>,
+    /// Debug sessions detached when the close began (pending starts were already cancelled).
+    debug: Option<(Arc<ide_dap::DebugManager>, Vec<ide_core::DebugSessionId>)>,
     agents: Vec<Arc<ide_agent::AgentManager>>,
     terminals: Option<ide_terminal::DetachedTerminals>,
     processes: Option<ide_run::DetachedProcessKills>,
@@ -390,6 +391,7 @@ impl Host {
         // After the cancels: a capture or open still running then discards what it registers.
         ops::heap::close_window_snapshots(self, window);
         let project = self.projects.write().remove(window)?;
+        project.closed.cancel();
         if let Some(plugins) = self.plugin_host() {
             if self.windows_for_root(&project.root).is_empty() {
                 plugins.project_closed(&project.root, window);
@@ -436,17 +438,22 @@ impl Host {
         project.devtools.stop();
         project.widget_preview.stop();
         project.notebooks.stop_admission();
-        // Detach runs and terminals synchronously so a new project opened in the same window
-        // never collides with them, then terminate them and shut down agents on the background thread.
+        // Detach runs, terminals and debug sessions synchronously (cancelling any pending debug
+        // starts at once) so a new project opened in the same window never collides with them,
+        // then terminate them and shut down agents on the background thread.
         let processes = self.processes.detach_project_kills(&project.root);
         let terminals = self.terminals.detach_key(self.owner_window(window));
+        // Debug sessions under the root belong to windows: a project served without one starts none,
+        // and another window with the same root open keeps its own sessions.
+        let debug_root =
+            (!background && self.windows_for_root(&project.root).is_empty()).then_some(project.root.as_path());
+        let debug_sessions = self.debugger.detach_for_close(Some(self.owner_window(window)), debug_root);
         let root = (!project.light).then(|| project.root.clone());
         let handle = self.spawn_project_shutdown(ShutdownWork {
             notebooks: vec![project.notebooks.clone()],
             bridges: project.kotlin_bridge.iter().cloned().collect(),
             lsp: Some(project.lsp.clone()),
-            // Debug sessions under the root belong to windows: a project served without one starts none.
-            debug: Some((self.debugger.clone(), window.to_owned(), (!background).then(|| project.root.clone()))),
+            debug: Some((self.debugger.clone(), debug_sessions)),
             agents: vec![project.agents.clone()],
             terminals: Some(terminals),
             processes: Some(processes),
@@ -495,10 +502,11 @@ impl Host {
                 if let Some(lsp) = work.lsp {
                     lsp.shutdown_all().await;
                 }
-                if let Some((debug, key, root)) = work.debug {
-                    debug.stop_key(&key).await;
-                    if let Some(root) = root {
-                        debug.stop_under(&root).await;
+                if let Some((debug, sessions)) = work.debug {
+                    for id in sessions {
+                        if let Err(e) = debug.stop(id).await {
+                            tracing::debug!("debug session {id:?} did not stop: {e}");
+                        }
                     }
                 }
             });
@@ -646,6 +654,7 @@ impl Host {
         self.terminals.kill_all();
         let projects: Vec<_> = self.projects.write().drain().map(|(_, p)| p).collect();
         for project in &projects {
+            project.closed.cancel();
             project.files_events_active.store(false, std::sync::atomic::Ordering::Release);
             project.flutter.kill();
             project.devtools.kill();
@@ -783,5 +792,159 @@ mod tests {
         assert!(project.upgrade().is_none(), "the closed project is dropped");
         host.open_project("main", &root).unwrap();
         host.close_project("main");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn closing_project_during_debug_start_cancels_the_launch_and_keeps_other_windows() {
+        use ide_dap::adapter::{AdapterIo, AdapterLauncher, AdapterSpec, LaunchFuture};
+        use ide_jsonrpc::framing;
+        use serde_json::{Value, json};
+        use tokio::io::{AsyncRead, AsyncWrite, BufReader};
+
+        async fn minimal_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream: S) {
+            let (r, mut w) = tokio::io::split(stream);
+            let mut r = BufReader::new(r);
+            let mut seq = 1000;
+            while let Ok(Some(body)) = framing::read_message(&mut r).await {
+                let msg: Value = serde_json::from_slice(&body).unwrap();
+                if msg["type"] != "request" {
+                    continue;
+                }
+                let cmd = msg["command"].as_str().unwrap_or_default();
+                seq += 1;
+                let resp = json!({
+                    "seq": seq,
+                    "type": "response",
+                    "request_seq": msg["seq"],
+                    "command": cmd,
+                    "success": true,
+                    "body": if cmd == "initialize" {
+                        json!({"supportsConfigurationDoneRequest": true})
+                    } else {
+                        json!({})
+                    }
+                });
+                if framing::write_message(&mut w, &serde_json::to_vec(&resp).unwrap()).await.is_err() {
+                    break;
+                }
+                if cmd == "initialize" {
+                    seq += 1;
+                    let ev = json!({"seq": seq, "type": "event", "event": "initialized"});
+                    if framing::write_message(&mut w, &serde_json::to_vec(&ev).unwrap()).await.is_err() {
+                        break;
+                    }
+                }
+                if cmd == "disconnect" {
+                    break;
+                }
+            }
+        }
+
+        struct BlockingLauncher {
+            blocked_cwd: PathBuf,
+            entered: Arc<tokio::sync::Notify>,
+            release: Arc<tokio::sync::Notify>,
+        }
+
+        impl AdapterLauncher for BlockingLauncher {
+            fn launch(&self, spec: AdapterSpec, _reuse: Option<u16>) -> LaunchFuture {
+                let block = spec.cwd == self.blocked_cwd;
+                let entered = self.entered.clone();
+                let release = self.release.clone();
+                Box::pin(async move {
+                    if block {
+                        entered.notify_one();
+                        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), release.notified()).await;
+                    }
+                    let (client, server) = tokio::io::duplex(1 << 16);
+                    tokio::spawn(minimal_adapter(server));
+                    let (r, w) = tokio::io::split(client);
+                    Ok(AdapterIo {
+                        launch_after_configuration: false,
+                        reader: Box::new(r),
+                        writer: Box::new(w),
+                        child: None,
+                        port: None,
+                        stderr: Arc::default(),
+                        program_output: None,
+                    })
+                })
+            }
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(temp.path()).unwrap();
+        let root_a = base.join("proj-a");
+        let root_b = base.join("proj-b");
+        std::fs::create_dir(&root_a).unwrap();
+        std::fs::create_dir(&root_b).unwrap();
+
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let mut host = Host::new(HostConfig { local_data_dir: base.join("local"), ..HostConfig::for_test(&base) });
+        host.debugger = ide_dap::DebugManager::with_launcher(
+            host.languages.clone(),
+            Arc::new(BlockingLauncher {
+                blocked_cwd: root_a.clone(),
+                entered: entered.clone(),
+                release: release.clone(),
+            }),
+        );
+        let host = Arc::new(host);
+        host.open_project("main", &root_a).unwrap();
+        host.set_project_trust(&root_a, true, false).await.unwrap();
+        host.open_project("other", &root_b).unwrap();
+        host.set_project_trust(&root_b, true, false).await.unwrap();
+
+        let launch_cfg = |cwd: &Path| ide_dap::LaunchConfig {
+            name: "app".into(),
+            adapter: "codelldb".into(),
+            request: "launch".into(),
+            program: Some("/bin/true".into()),
+            args: vec![],
+            cwd: Some(cwd.into()),
+            env: Default::default(),
+            extra_json: None,
+        };
+
+        let other_id = ops::debug::debug_start(&host, "other", launch_cfg(&root_b)).await.unwrap();
+        let start_a = tokio::spawn({
+            let host = host.clone();
+            let cfg = launch_cfg(&root_a);
+            async move { ops::debug::debug_start(&host, "main", cfg).await }
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified()).await.unwrap();
+        host.close_project_detached("main");
+        release.notify_waiters();
+
+        // Opening another project in the same window while the detached close runs must not
+        // cancel or stop the new project's debug session.
+        let root_c = base.join("proj-c");
+        std::fs::create_dir(&root_c).unwrap();
+        host.open_project("main", &root_c).unwrap();
+        host.set_project_trust(&root_c, true, false).await.unwrap();
+        let c_id = ops::debug::debug_start(&host, "main", launch_cfg(&root_c)).await.unwrap();
+        host.wait_detached_closes();
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), start_a).await.unwrap().unwrap();
+        assert_eq!(
+            result.as_ref().map_err(|e| e.kind),
+            Err(ide_core::error::ErrorKind::Cancelled),
+            "debug_start should fail as cancelled when project closes mid-launch, got {result:?}"
+        );
+        assert_eq!(
+            host.debugger.sessions(Some("main")).into_iter().map(|s| s.id).collect::<Vec<_>>(),
+            vec![c_id],
+            "only the newly opened project's session may remain live in main"
+        );
+        assert_eq!(
+            host.debugger.sessions(Some("other")).into_iter().map(|s| s.id).collect::<Vec<_>>(),
+            vec![other_id],
+            "other window's debug session must remain alive"
+        );
+
+        host.close_project("main");
+        host.close_project("other");
     }
 }

@@ -24,6 +24,8 @@ use std::time::{Duration, Instant};
 pub struct Project {
     pub(crate) trusted: Arc<AtomicBool>,
     pub(crate) files_events_active: Arc<AtomicBool>,
+    /// Cancelled synchronously when this project incarnation begins closing.
+    pub(crate) closed: CancellationToken,
     pub root: PathBuf,
     /// Window-scoped event sink, for commands that emit project events.
     pub sink: SharedSink,
@@ -660,6 +662,7 @@ impl Host {
         let project = Arc::new(Project {
             plugin_diagnostics,
             trusted,
+            closed: CancellationToken::new(),
             flutter: ide_flutter::FlutterDaemon::new(
                 root.clone(),
                 sink.clone(),
@@ -925,6 +928,7 @@ impl Host {
         let project = Arc::new(Project {
             plugin_diagnostics,
             trusted: Arc::new(AtomicBool::new(false)),
+            closed: CancellationToken::new(),
             flutter: ide_flutter::FlutterDaemon::new(
                 dir.clone(),
                 sink.clone(),

@@ -337,10 +337,32 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 /// Redefining many classes in a large JVM can take a while.
 const HOT_SWAP_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// An in-flight start not yet registered in [`DebugManager::sessions`] (pre-launch build or
+/// adapter spawn), so closing a project or window cancels it before it can register a session.
+struct PendingStart {
+    owner: String,
+    cwd: PathBuf,
+    parent: Option<DebugSessionId>,
+    cancel: ide_core::CancellationToken,
+}
+
+struct StartingGuard<'a> {
+    manager: &'a DebugManager,
+    id: DebugSessionId,
+}
+
+impl Drop for StartingGuard<'_> {
+    fn drop(&mut self) {
+        self.manager.starting.lock().remove(&self.id);
+    }
+}
+
 pub struct DebugManager {
     languages: Arc<LanguageRegistry>,
     launcher: Arc<dyn AdapterLauncher>,
     me: Weak<DebugManager>,
+    /// Starts still in build or adapter launch. Lock order across the manager: `starting` → `sessions` → `order`.
+    starting: Mutex<HashMap<DebugSessionId, PendingStart>>,
     sessions: Mutex<HashMap<DebugSessionId, Arc<Session>>>,
     /// Session start order, for "the first session" semantics.
     order: Mutex<Vec<DebugSessionId>>,
@@ -819,6 +841,7 @@ impl DebugManager {
             languages,
             launcher,
             me: me.clone(),
+            starting: Mutex::default(),
             sessions: Mutex::default(),
             order: Mutex::default(),
             breakpoints: Mutex::default(),
@@ -900,6 +923,23 @@ impl DebugManager {
         custom_command: impl FnOnce(&str) -> Option<String>,
         exception_classes: Option<Arc<dyn ide_jvm_inspect::ExceptionClassBreakpoints>>,
     ) -> IdeResult<DebugSessionId> {
+        self.start_with_cancel(config, owner, custom_command, exception_classes, ide_core::CancellationToken::new())
+            .await
+    }
+
+    /// [`start_with_exception_classes`](Self::start_with_exception_classes), cancelling a pending
+    /// pre-launch build, adapter launch or configuration when `cancel` is triggered.
+    pub async fn start_with_cancel(
+        &self,
+        config: LaunchConfig,
+        owner: SessionOwner,
+        custom_command: impl FnOnce(&str) -> Option<String>,
+        exception_classes: Option<Arc<dyn ide_jvm_inspect::ExceptionClassBreakpoints>>,
+        cancel: ide_core::CancellationToken,
+    ) -> IdeResult<DebugSessionId> {
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
         let mut arguments = launch_arguments(&config)?;
         // An IDE-side marker (never sent to the adapter): the session is a Flutter
         // one regardless of what the working directory holds.
@@ -964,6 +1004,11 @@ impl DebugManager {
             }
         }
         let id = DebugSessionId::next();
+        self.starting.lock().insert(
+            id,
+            PendingStart { owner: owner.key.clone(), cwd: cwd.clone(), parent: None, cancel: cancel.clone() },
+        );
+        let _starting = StartingGuard { manager: self, id };
         let debug_server = take_debug_server(&mut arguments)?;
         if let Some(server) = &debug_server {
             spec.server_host = server.host.clone();
@@ -988,7 +1033,7 @@ impl DebugManager {
                 .unwrap_or_else(|| vec!["build".into()]);
             let filter = cargo::CargoFilter::from_json(cargo.get("filter"));
             let sink = owner.sink.clone();
-            let program = cargo::build(&cwd, &cargo_args, &filter, move |line| {
+            let program = cargo::build(&cwd, &cargo_args, &filter, &cancel, move |line| {
                 sink.emit(ide_core::IdeEvent::Debug {
                     session: id,
                     event: ide_core::event::DebugEvent::Output { category: "console".into(), output: line },
@@ -1004,7 +1049,11 @@ impl DebugManager {
                 other => other.as_u64().and_then(|p| u32::try_from(p).ok()),
             });
             if let Some(pid) = pid {
-                let port = attach::enable_node_inspector(pid).await?;
+                let port = tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return Err(IdeError::cancelled()),
+                    port = attach::enable_node_inspector(pid) => port?,
+                };
                 if let Some(obj) = arguments.as_object_mut() {
                     obj.remove("processId");
                     obj.insert("port".into(), port.into());
@@ -1052,6 +1101,7 @@ impl DebugManager {
             spec,
             port,
             exception_classes,
+            cancel,
         )
         .await
     }
@@ -1063,6 +1113,9 @@ impl DebugManager {
         request: String,
         configuration: Value,
     ) -> IdeResult<()> {
+        if parent.startup_cancel.is_cancelled() || parent.ended.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
         let name = child_name(&configuration, &parent.name);
         let mut configuration = configuration;
         if let Some(obj) = configuration.as_object_mut() {
@@ -1075,8 +1128,20 @@ impl DebugManager {
                 None => (parent.spec.clone(), None),
             },
         };
+        let id = DebugSessionId::next();
+        let cancel = parent.ended.child_token();
+        self.starting.lock().insert(
+            id,
+            PendingStart {
+                owner: parent.owner.key.clone(),
+                cwd: spec.cwd.clone(),
+                parent: Some(parent.id),
+                cancel: cancel.clone(),
+            },
+        );
+        let _starting = StartingGuard { manager: self, id };
         self.start_session(
-            DebugSessionId::next(),
+            id,
             parent.owner.clone(),
             name,
             parent.adapter.clone(),
@@ -1086,6 +1151,7 @@ impl DebugManager {
             spec,
             port,
             None,
+            cancel,
         )
         .await
         .map(|_| ())
@@ -1104,11 +1170,28 @@ impl DebugManager {
         spec: AdapterSpec,
         reuse_port: Option<u16>,
         exception_classes: Option<Arc<dyn ide_jvm_inspect::ExceptionClassBreakpoints>>,
+        cancel: ide_core::CancellationToken,
     ) -> IdeResult<DebugSessionId> {
         if request != "launch" && request != "attach" {
             return Err(IdeError::invalid(format!("request must be `launch` or `attach`, got `{request}`")));
         }
-        let io = self.launcher.launch(spec.clone(), reuse_port).await?;
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        let io = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(IdeError::cancelled()),
+            io = self.launcher.launch(spec.clone(), reuse_port) => io?,
+        };
+        if cancel.is_cancelled() {
+            if let Some(mut child) = io.child {
+                if let Some(pid) = child.id() {
+                    let _ = tokio::task::spawn_blocking(move || ide_core::process::kill_tree_of(pid)).await;
+                }
+                let _ = child.kill().await;
+            }
+            return Err(IdeError::cancelled());
+        }
         let launch_after_configuration = io.launch_after_configuration && request == "launch";
         let stderr = io.stderr.clone();
         let (conn, incoming) = {
@@ -1129,6 +1212,25 @@ impl DebugManager {
         if let Some(pid) = rdbg_pid {
             session.debuggee_pid.store(i64::from(pid), Ordering::Release);
         }
+        let cancelled = {
+            let mut starting = self.starting.lock();
+            let mut sessions = self.sessions.lock();
+            starting.remove(&id);
+            if cancel.is_cancelled()
+                || parent.is_some_and(|p| !sessions.get(&p).is_some_and(|s| !s.startup_cancel.is_cancelled()))
+            {
+                true
+            } else {
+                sessions.insert(id, session.clone());
+                self.order.lock().push(id);
+                false
+            }
+        };
+        if cancelled {
+            session.conn.close();
+            session.kill_processes();
+            return Err(IdeError::cancelled());
+        }
         if let Some(mut output) = io.program_output {
             session.output_drained.send_replace(false);
             let session = session.clone();
@@ -1139,8 +1241,6 @@ impl DebugManager {
                 session.output_drained.send_replace(true);
             });
         }
-        self.sessions.lock().insert(id, session.clone());
-        self.order.lock().push(id);
         // Announced before the event loop runs, so it precedes every adapter event.
         session.emit(ide_core::event::DebugEvent::Started {
             name: session.name.clone(),
@@ -1149,14 +1249,25 @@ impl DebugManager {
         });
         tokio::spawn(session::event_loop(self.me.clone(), session.clone(), incoming));
 
+        enum ConfigOutcome {
+            Done(IdeResult<()>),
+            Stopped,
+            Cancelled,
+        }
         let configured = tokio::select! {
             biased;
-            _ = session.startup_cancel.cancelled() => return Err(IdeError::cancelled()),
-            result = self.configure(&session, arguments, launch_after_configuration) => result,
+            _ = session.startup_cancel.cancelled() => ConfigOutcome::Stopped,
+            _ = cancel.cancelled() => ConfigOutcome::Cancelled,
+            result = self.configure(&session, arguments, launch_after_configuration) => ConfigOutcome::Done(result),
         };
         match configured {
-            Ok(()) => Ok(id),
-            Err(e) => {
+            ConfigOutcome::Done(Ok(())) => Ok(id),
+            ConfigOutcome::Stopped => Err(IdeError::cancelled()),
+            ConfigOutcome::Cancelled => {
+                let _ = self.stop(id).await;
+                Err(IdeError::cancelled())
+            }
+            ConfigOutcome::Done(Err(e)) => {
                 let e = if session.conn.is_closed() {
                     let mut msg = format!("debug adapter `{}` exited during startup", session.adapter);
                     let tail = stderr.lock().join("\n");
@@ -2292,9 +2403,29 @@ impl DebugManager {
         })
     }
 
-    /// Stops every session `key` started: the window that opened the project is closing.
+    /// Cancels every pending start and returns the live sessions of `key` and (when set) under
+    /// `root`, under one lock so nothing starting can slip into `sessions` unseen.
+    pub fn detach_for_close(&self, key: Option<&str>, root: Option<&Path>) -> Vec<DebugSessionId> {
+        let starting = self.starting.lock();
+        for pending in starting.values() {
+            if key.is_some_and(|k| pending.owner == k) || root.is_some_and(|r| pending.cwd.starts_with(r)) {
+                pending.cancel.cancel();
+            }
+        }
+        let sessions = self.sessions.lock();
+        self.order
+            .lock()
+            .iter()
+            .filter_map(|id| sessions.get(id))
+            .filter(|s| key.is_some_and(|k| s.owner.key == k) || root.is_some_and(|r| s.spec.cwd.starts_with(r)))
+            .map(|s| s.id)
+            .collect()
+    }
+
+    /// Stops every session `key` started (and cancels any still building or launching): the window
+    /// that opened the project is closing or lost trust.
     pub async fn stop_key(&self, key: &str) {
-        let ids: Vec<DebugSessionId> = self.sessions(Some(key)).into_iter().map(|s| s.id).collect();
+        let ids = self.detach_for_close(Some(key), None);
         for id in ids {
             if let Err(e) = self.stop(id).await {
                 tracing::debug!("debug session {id:?} did not stop: {e}");
@@ -2302,12 +2433,11 @@ impl DebugManager {
         }
     }
 
-    /// Stops every debug session started from `root` or below — closing a project stops the
-    /// programs it launched even when the session's owner key does not name the window doing
-    /// the closing (window groups, auxiliary windows).
+    /// Stops every debug session started from `root` or below (and cancels any still building or
+    /// launching) — closing a project stops the programs it launched even when the session's owner
+    /// key does not name the window doing the closing (window groups, auxiliary windows).
     pub async fn stop_under(&self, root: &Path) {
-        let ids: Vec<DebugSessionId> =
-            self.live_sessions().into_iter().filter(|s| s.spec.cwd.starts_with(root)).map(|s| s.id).collect();
+        let ids = self.detach_for_close(None, Some(root));
         tracing::info!(root = %root.display(), sessions = ids.len(), "closing project: stopping debug sessions");
         for id in ids {
             if let Err(e) = self.stop(id).await {
@@ -2335,8 +2465,22 @@ impl DebugManager {
 
     async fn stop_tree(&self, session: Arc<Session>) -> IdeResult<()> {
         session.startup_cancel.cancel();
-        let children: Vec<Arc<Session>> =
-            self.live_sessions().into_iter().filter(|c| c.parent == Some(session.id)).collect();
+        let children: Vec<Arc<Session>> = {
+            let starting = self.starting.lock();
+            for pending in starting.values() {
+                if pending.parent == Some(session.id) {
+                    pending.cancel.cancel();
+                }
+            }
+            let sessions = self.sessions.lock();
+            self.order
+                .lock()
+                .iter()
+                .filter_map(|id| sessions.get(id))
+                .filter(|c| c.parent == Some(session.id))
+                .cloned()
+                .collect()
+        };
         for child in children {
             child.startup_cancel.cancel();
             self.shutdown(&child, true).await;

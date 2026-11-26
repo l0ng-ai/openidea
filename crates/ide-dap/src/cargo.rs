@@ -51,12 +51,17 @@ pub async fn build(
     cwd: &Path,
     args: &[String],
     filter: &CargoFilter,
+    cancel: &ide_core::CancellationToken,
     on_output: impl Fn(String) + Send + Sync + 'static,
 ) -> IdeResult<PathBuf> {
+    if cancel.is_cancelled() {
+        return Err(IdeError::cancelled());
+    }
     let cargo = find_binary("cargo", cwd).ok_or_else(|| IdeError::unavailable("`cargo` not found on PATH"))?;
     let mut cmd = tokio::process::Command::new(cargo);
     cmd.current_dir(cwd);
     ide_core::process::prepare(cmd.as_std_mut());
+    ide_core::process::own_group(cmd.as_std_mut());
     cmd.args(args)
         .arg("--message-format=json-render-diagnostics")
         .stdin(Stdio::null())
@@ -69,7 +74,7 @@ pub async fn build(
     let stdout = child.stdout.take().ok_or_else(|| IdeError::internal("cargo stdout unavailable"))?;
     let on_output = std::sync::Arc::new(on_output);
     let err_out = on_output.clone();
-    let err_task = tokio::spawn(async move {
+    let mut err_task = tokio::spawn(async move {
         let mut lines = BufReader::new(stderr).split(b'\n');
         while let Ok(Some(line)) = lines.next_segment().await {
             let line = ide_core::output_encoding::decode_tool_output(&line);
@@ -77,19 +82,36 @@ pub async fn build(
             err_out(format!("{line}\n"));
         }
     });
-    let mut found = None;
-    let mut lines = BufReader::new(stdout).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
-        if let Some(exe) = artifact_executable(&line, filter) {
-            found = Some(exe);
+    let outcome = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => None,
+        result = async {
+            let mut found = None;
+            let mut lines = BufReader::new(stdout).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if let Some(exe) = artifact_executable(&line, filter) {
+                    found = Some(exe);
+                }
+            }
+            let _ = (&mut err_task).await;
+            let status = child.wait().await?;
+            if !status.success() {
+                return Err(IdeError::invalid(format!("cargo {} failed ({status})", args.first().map_or("", |s| s))));
+            }
+            found.ok_or_else(|| IdeError::invalid("cargo produced no executable to debug"))
+        } => Some(result),
+    };
+    match outcome {
+        Some(result) => result,
+        None => {
+            err_task.abort();
+            if let Some(pid) = child.id() {
+                let _ = tokio::task::spawn_blocking(move || ide_core::process::kill_tree_of(pid)).await;
+            }
+            let _ = child.kill().await;
+            Err(IdeError::cancelled())
         }
     }
-    let _ = err_task.await;
-    let status = child.wait().await?;
-    if !status.success() {
-        return Err(IdeError::invalid(format!("cargo {} failed ({status})", args.first().map_or("", |s| s))));
-    }
-    found.ok_or_else(|| IdeError::invalid("cargo produced no executable to debug"))
 }
 
 #[cfg(test)]
