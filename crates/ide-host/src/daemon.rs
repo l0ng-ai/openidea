@@ -121,11 +121,13 @@ fn ensure_private_dir(dir: &Path) -> io::Result<()> {
 }
 
 /// Connects to the daemon for `project_path` (spawning it if needed) and bridges
-/// `input` / `output` to its Unix socket.
+/// `input` / `output` to its Unix socket. With `replace`, a daemon of another build that
+/// refuses to retire is stopped first.
 pub fn attach(
     base: &Path,
     home: &Path,
     project_path: &str,
+    replace: bool,
     input: impl Read + Send + 'static,
     output: impl Write,
 ) -> Result<(), String> {
@@ -137,11 +139,11 @@ pub fn attach(
         .map_err(|e| format!("cannot identify openidea-server build: {e}"))?;
     let hex = hasher.finalize().to_hex();
     let build = &hex.as_str()[..16];
-    let stream = connect_or_spawn(&exe, &paths, build)?;
+    let stream = connect_or_spawn(&exe, &paths, build, replace)?;
     bridge(stream, input, output).map_err(|e| format!("daemon relay failed: {e}"))
 }
 
-fn connect_or_spawn(exe: &Path, paths: &DaemonPaths, build: &str) -> Result<UnixStream, String> {
+fn connect_or_spawn(exe: &Path, paths: &DaemonPaths, build: &str, replace: bool) -> Result<UnixStream, String> {
     let lock_file = OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -153,8 +155,11 @@ fn connect_or_spawn(exe: &Path, paths: &DaemonPaths, build: &str) -> Result<Unix
     flock(&lock_file, FlockOperation::LockExclusive)
         .map_err(|e| format!("cannot lock {}: {e}", paths.lock.display()))?;
 
-    if let Some(stream) = existing_daemon(paths, build)? {
-        return Ok(stream);
+    match existing_daemon(paths, build) {
+        Ok(Some(stream)) => return Ok(stream),
+        Ok(None) => {}
+        Err(e) if replace && e.contains(rpc::OTHER_BUILD_BUSY) => stop_daemon(&paths.socket)?,
+        Err(e) => return Err(e),
     }
 
     match std::fs::remove_file(&paths.socket) {
@@ -232,10 +237,7 @@ fn existing_daemon(paths: &DaemonPaths, build: &str) -> Result<Option<UnixStream
                     Err(io::Error::other("unexpected response from stopping daemon"))
                 }
             }
-            BUSY => Err(io::Error::other(
-                "Another build of OpenIDEA still has this project open, is running tasks, or has unsaved changes. \
-                 Reconnect with that build, then stop the remote backend before upgrading.",
-            )),
+            BUSY => Err(io::Error::other(rpc::OTHER_BUILD_BUSY)),
             _ => Err(io::Error::other("unrecognized remote backend response")),
         }
     };
@@ -245,6 +247,63 @@ fn existing_daemon(paths: &DaemonPaths, build: &str) -> Result<Option<UnixStream
         Err(e) => return Err(format!("cannot connect to remote backend at {}: {e}", paths.socket.display())),
     };
     exchange(stream).map_err(|e| format!("cannot attach to {}: {e}", paths.socket.display()))
+}
+
+/// Stops the daemon serving `socket` (another build's, which refused to retire): asks it to
+/// shut down like the remote Stop Backend action does, and kills it if it hasn't after a while.
+fn stop_daemon(socket: &Path) -> Result<(), String> {
+    let pids = daemon_pids(socket)?;
+    if pids.is_empty() {
+        return Err(format!("cannot find the backend serving {}", socket.display()));
+    }
+    let signal = |sig| {
+        for pid in &pids {
+            if let Some(pid) = rustix::process::Pid::from_raw(*pid) {
+                let _ = rustix::process::kill_process(pid, sig);
+            }
+        }
+    };
+    let alive = || pids.iter().any(|pid| process_exists(*pid));
+    signal(rustix::process::Signal::TERM);
+    let deadline = Instant::now() + rpc::SHUTDOWN_TIMEOUT;
+    while alive() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if alive() {
+        signal(rustix::process::Signal::KILL);
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    Ok(())
+}
+
+/// Whether `pid` still runs: an exited process its parent hasn't reaped yet (a zombie) doesn't.
+fn process_exists(pid: i32) -> bool {
+    if !rustix::process::Pid::from_raw(pid).is_some_and(|pid| rustix::process::test_kill_process(pid).is_ok()) {
+        return false;
+    }
+    Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .map_or(true, |out| !String::from_utf8_lossy(&out.stdout).trim_start().starts_with('Z'))
+}
+
+/// Processes started as `openidea-server --daemon <socket> <build>`.
+fn daemon_pids(socket: &Path) -> Result<Vec<i32>, String> {
+    let out = Command::new("ps")
+        .args(["-axww", "-o", "pid=", "-o", "args="])
+        .output()
+        .map_err(|e| format!("cannot list processes: {e}"))?;
+    Ok(daemon_pids_in(&String::from_utf8_lossy(&out.stdout), &socket.to_string_lossy()))
+}
+
+fn daemon_pids_in(ps: &str, socket: &str) -> Vec<i32> {
+    ps.lines()
+        .filter_map(|line| {
+            let (pid, args) = line.trim_start().split_once(char::is_whitespace)?;
+            let mut words = args.split_whitespace().skip_while(|w| *w != "--daemon").skip(1);
+            (words.next() == Some(socket)).then(|| pid.parse().ok()).flatten()
+        })
+        .collect()
 }
 
 fn read_log_tail(file: &mut File, offset: u64) -> String {
@@ -479,4 +538,20 @@ fn has_live_work(host: &Host) -> bool {
             .projects()
             .iter()
             .any(|project| project.agents.has_live_work() || project.documents.has_unsaved_changes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::daemon_pids_in;
+
+    #[test]
+    fn finds_the_daemon_of_a_socket_in_the_process_list() {
+        let ps = "    1 /sbin/init\n\
+                  581660 /root/.openidea/server/0.1.51/634a/openidea-server --daemon /root/.openidea/run/s-de2d.sock 634a\n\
+                  141712 /root/.openidea/server/0.1.53/e116/openidea-server --daemon /root/.openidea/run/s-a67f.sock e116\n\
+                  582484 /bin/bash --init-file /tmp/openidea-shell-integration-0.1.51/bash/openidea.bashrc -i\n\
+                  590000 grep --daemon /root/.openidea/run/s-de2d.sock.bak\n";
+        assert_eq!(daemon_pids_in(ps, "/root/.openidea/run/s-de2d.sock"), [581660]);
+        assert!(daemon_pids_in(ps, "/root/.openidea/run/s-none.sock").is_empty());
+    }
 }

@@ -1517,7 +1517,7 @@ export const commands = {
 	 *  dev container, whose project folder is the container's own) in this window (installs /
 	 *  starts the server as needed).
 	 */
-	remoteConnect: (target: RemoteTarget, path: string, onProgress: Channel<RemoteProgress>) => typedError<RemoteProject_Serialize, IdeError>(__TAURI_INVOKE("remote_connect", { target, path, onProgress })),
+	remoteConnect: (target: RemoteTarget, path: string, replace: boolean, onProgress: Channel<RemoteProgress>) => typedError<RemoteProject_Serialize, IdeError>(__TAURI_INVOKE("remote_connect", { target, path, replace, onProgress })),
 	/**  The remote session of this window (a settings window: its parent's), if any. */
 	remoteCurrent: () => __TAURI_INVOKE<{
 	target: RemoteTarget,
@@ -6855,7 +6855,9 @@ report?: PushReport | null } |
  *  jdtls could not set a module up as a Java project: the errors on its build files and
  *  the builds enclosing it (`path: message`, the path relative to the project), nearest first.
  */
-{ type: "javaBuildProblems"; problems: string[] };
+{ type: "javaBuildProblems"; problems: string[] } | 
+/**  A remote backend of another OpenIDEA build still serves the project and refused to retire. */
+{ type: "remoteBackendBusy" };
 
 export type ErrorKind = "notFound" | "alreadyExists" | "permissionDenied" | "invalidInput" | 
 /**  The requested state is stale; the UI must use the current snapshot. */
