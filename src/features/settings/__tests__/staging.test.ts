@@ -10,7 +10,9 @@ import {
   applySettings,
   closeSettings,
   openSettings,
+  selectNextPage,
   selectPage,
+  selectPreviousPage,
   pendingChanges,
   persistChanges,
   resetPage,
@@ -378,6 +380,56 @@ describe("reopening Settings", () => {
   it("falls back to the first page when nothing was recorded", () => {
     openSettings();
     expect(useSettingsDialog.getState().pageId).toBe(DEFAULT_PAGE);
+  });
+
+  it("keeps a page history with back / forward (IDEA ⇧⌘⌥← / →)", () => {
+    openSettings();
+    selectPage("editor.general");
+    selectPage("editor.font");
+    expect(useSettingsDialog.getState().history).toEqual({
+      stack: [DEFAULT_PAGE, "editor.general", "editor.font"],
+      index: 2,
+    });
+
+    expect(selectPreviousPage()).toBe(true);
+    expect(useSettingsDialog.getState().pageId).toBe("editor.general");
+    expect(selectPreviousPage()).toBe(true);
+    expect(useSettingsDialog.getState().pageId).toBe(DEFAULT_PAGE);
+    expect(selectPreviousPage()).toBe(false);
+    expect(useSettingsDialog.getState().pageId).toBe(DEFAULT_PAGE);
+
+    expect(selectNextPage()).toBe(true);
+    expect(useSettingsDialog.getState().pageId).toBe("editor.general");
+    // Visiting a new page truncates the forward entries, like a browser.
+    selectPage("keymap");
+    expect(useSettingsDialog.getState().history).toEqual({
+      stack: [DEFAULT_PAGE, "editor.general", "keymap"],
+      index: 2,
+    });
+    expect(selectNextPage()).toBe(false);
+  });
+
+  it("walks back and forward when selectPage revisits a neighbouring page", () => {
+    openSettings("editor.general");
+    selectPage("editor.font");
+    // Back to the start page: it is the direct neighbour, so this walks instead of pushing.
+    selectPage("editor.general");
+    expect(useSettingsDialog.getState().history).toEqual({
+      stack: ["editor.general", "editor.font"],
+      index: 0,
+    });
+    // Forward again walks, too.
+    selectPage("editor.font");
+    expect(useSettingsDialog.getState().history).toEqual({
+      stack: ["editor.general", "editor.font"],
+      index: 1,
+    });
+    // A visit to a page that is not the neighbour pushes, truncating ahead.
+    selectPage("keymap");
+    expect(useSettingsDialog.getState().history).toEqual({
+      stack: ["editor.general", "editor.font", "keymap"],
+      index: 2,
+    });
   });
 
   it("ignores a recorded value that is not a page id", () => {

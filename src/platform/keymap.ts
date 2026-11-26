@@ -219,6 +219,11 @@ export function suspendKeyboardDispatch(): () => void {
   };
 }
 
+/** Whether dispatch is suspended (e.g. a shortcut recorder holds the keymap). */
+export function keyboardDispatchSuspended(): boolean {
+  return suspended > 0;
+}
+
 /** Linux reserves middle paste by default; explicit overrides bypass this filter. */
 function platformPreset(preset: string): Keymap {
   const own = PRESETS[preset] ?? {};
@@ -720,6 +725,49 @@ export function dispatchForwardedKey(target: EventTarget, init: KeyboardEventIni
 }
 
 /**
+ * Runs the actions bound to a mouse `stroke`: later presets / overrides win,
+ * the first enabled match runs. Shared by the workbench dispatcher and the
+ * standalone Settings-window mouse shortcuts.
+ */
+function runMouseBinding(stroke: string): boolean {
+  const ids = effectiveBindings()
+    .filter(([b]) => b === stroke)
+    .map(([, id]) => id);
+  for (const id of ids.reverse()) if (runIfEnabled(id)) return true;
+  return false;
+}
+
+/**
+ * Mouse side-button shortcuts alone, for windows without the workbench
+ * dispatcher (the native Settings window): a press of buttons 4+ runs its
+ * binding (e.g. the default Button4 = navigate.back), and both press and
+ * release are swallowed so the webview does not navigate its own history.
+ */
+export function installMouseShortcuts(target: Window = window): () => void {
+  const onDown = (e: MouseEvent) => {
+    if (e.button < 3 || suspended > 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const stroke = mouseStrokeOf(e);
+    if (stroke) runMouseBinding(stroke);
+  };
+  /** The release of a side button: swallowed so the webview doesn't navigate its own history. */
+  const onUp = (e: MouseEvent) => {
+    if (e.button < 3) return;
+    e.preventDefault();
+    e.stopPropagation();
+  };
+  target.addEventListener("mousedown", onDown, true);
+  target.addEventListener("mouseup", onUp, true);
+  target.addEventListener("auxclick", onUp, true);
+  return () => {
+    target.removeEventListener("mousedown", onDown, true);
+    target.removeEventListener("mouseup", onUp, true);
+    target.removeEventListener("auxclick", onUp, true);
+  };
+}
+
+/**
  * Installs the global keydown dispatcher (capture phase, so IDE shortcuts win
  * over CodeMirror defaults). Returns an uninstall function. `now` is the clock
  * for the double-modifier gestures.
@@ -876,10 +924,7 @@ export function installKeyboardDispatcher(
     e.preventDefault();
     e.stopPropagation();
     reset();
-    const ids = effectiveBindings()
-      .filter(([b]) => b === stroke)
-      .map(([, id]) => id);
-    for (const id of ids.reverse()) if (runIfEnabled(id)) return;
+    runMouseBinding(stroke);
   };
 
   const onWheel = (e: WheelEvent) => {
