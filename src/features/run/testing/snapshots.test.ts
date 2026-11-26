@@ -80,6 +80,8 @@ describe("snapshot update runs", () => {
     expect(c!.args).toEqual(["run", "test", "--", "src/a.test.ts", "-t", "^(?:cart file snap)$"]);
     const [file] = snapshotTestConfigs(cfg("npx", ["vitest", "run"]), [["src/a.test.ts"]], "a.test.ts");
     expect(file!.args).toEqual(["vitest", "run", "src/a.test.ts"]);
+    const watched: RunConfig & { watch?: boolean } = { ...cfg("npm", ["run", "test"]), watch: true };
+    expect(snapshotTestConfigs(watched, paths, "x")[0]).not.toHaveProperty("watch", true);
   });
 
   it("add -u; Jest also ignores every other test path, keeping other files' obsolete snapshots", () => {

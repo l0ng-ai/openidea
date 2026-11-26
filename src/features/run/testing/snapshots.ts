@@ -48,7 +48,9 @@ export function targetNodes(roots: readonly TestNode[], query: StateQuery): Test
 /** Configurations running only `paths`, launched with {@link snapshotUpdateArgs}; empty when unsupported. */
 export function snapshotTestConfigs(config: RunConfig, paths: string[][], name: string): RunConfig[] {
   if (config.params?.framework === "plugin" || frameworkFor(config) !== "js") return [];
-  const configs = testsConfigs(config, paths, name);
+  // Always a single run: in watch mode (`watch`, #6102) `-u` would rewrite snapshots on every save.
+  const once: RunConfig & { watch?: boolean } = { ...config, watch: undefined };
+  const configs = testsConfigs(once, paths, name);
   return Array.isArray(configs) ? configs : [];
 }
 
