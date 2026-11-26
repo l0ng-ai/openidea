@@ -1086,7 +1086,7 @@ describe("the data view's context menu (DataGrip)", () => {
   });
 
   it("copies the selected whole rows as SQL INSERT / UPDATE / DELETE (#6143)", async () => {
-    const writeText = vi.fn(() => Promise.resolve());
+    const writeText = vi.fn((_text: string) => Promise.resolve());
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
     const keyed = [{ ...columns[0]!, primaryKey: true }, columns[1]!];
     const table = () => ({ columns: keyed, rows: data, table: "cities", driver: "postgres" as const });
