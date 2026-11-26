@@ -4183,5 +4183,8 @@
   "Copy command": "Copy command",
   "Sign In to {name}": "Sign In to {name}",
   "Complete sign-in in your browser or the terminal above…": "Complete sign-in in your browser or the terminal above…",
-  "Sign-in exited with code {exitCode}.": "Sign-in exited with code {exitCode}."
+  "Sign-in exited with code {exitCode}.": "Sign-in exited with code {exitCode}.",
+  "Install GitHub CLI": "Install GitHub CLI",
+  "Download manually…": "Download manually…",
+  "Show Scratches and Consoles": "Show Scratches and Consoles"
 }

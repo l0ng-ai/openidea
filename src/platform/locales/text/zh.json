@@ -1055,6 +1055,10 @@
   "Scroll Down": "向下滚动",
   "Scroll Up and Move if Necessary": "向上滚动并在必要时移动光标",
   "Scroll Down and Move if Necessary": "向下滚动并在必要时移动光标",
+  "Move Up and Scroll": "向上移动并滚动",
+  "Move Down and Scroll": "向下移动并滚动",
+  "Move Up and Scroll with Selection": "向上移动并滚动并选择",
+  "Move Down and Scroll with Selection": "向下移动并滚动并选择",
   "Scroll to Top": "滚动到顶部",
   "Scroll to Bottom": "滚动到底部",
   "Move Caret to Page Top": "将光标移至页面顶部",
@@ -2215,7 +2219,6 @@
   "Install a plugin folder with": "安装插件文件夹：",
   "Install and Debug": "安装并调试",
   "Reinstall and Debug": "重新安装并调试",
-  "Install gh…": "安装 gh…",
   "Installed": "已安装",
   "Installed packages": "已安装的软件包",
   "Installed plugins": "已安装的插件",
@@ -10628,5 +10631,8 @@
   "Copy command": "复制命令",
   "Sign In to {name}": "登录 {name}",
   "Complete sign-in in your browser or the terminal above…": "请在浏览器或上方终端中完成登录…",
-  "Sign-in exited with code {exitCode}.": "登录已退出，代码为 {exitCode}。"
+  "Sign-in exited with code {exitCode}.": "登录已退出，代码为 {exitCode}。",
+  "Install GitHub CLI": "安装 GitHub CLI",
+  "Download manually…": "手动下载…",
+  "Show Scratches and Consoles": "显示临时文件和控制台"
 }

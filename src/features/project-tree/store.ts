@@ -66,6 +66,8 @@ export interface ViewOptions extends TreeOptions {
   showMembers: boolean;
   /** Show the location of each project root beside its name. */
   showRootPaths: boolean;
+  /** List Scratches and Consoles below the project in the Project pane. */
+  showScratches: boolean;
   /** Rows wider than the pane scroll sideways; off clips long names (VS Code's horizontal scrolling). */
   horizontalScroll: boolean;
 }
@@ -78,6 +80,7 @@ export const DEFAULT_VIEW_OPTIONS: ViewOptions = {
   singleClickExpand: false,
   showMembers: false,
   showRootPaths: true,
+  showScratches: true,
   horizontalScroll: true,
 };
 
@@ -313,7 +316,14 @@ export function selectModel(s: ProjectTreeState): TreeModel {
         files,
         s.options.foldersFirst,
       );
-    else model = withExtraRoots(project(), contributed, s.listings, options, placeholder);
+    else
+      model = withExtraRoots(
+        project(),
+        s.options.showScratches ? contributed : contributed.filter((r) => r.scope !== "scratches"),
+        s.listings,
+        options,
+        placeholder,
+      );
     if (s.unity && s.mode === "unity" && model.roots[0])
       model.roots[0].detail = s.unity.editorVersion ? `Unity ${s.unity.editorVersion}` : "Unity";
     if (s.unreal && s.mode === "unreal" && model.roots[0])
@@ -921,23 +931,30 @@ export function extraRootOf(path: string): string | null {
   return null;
 }
 
+const inScratches = (path: string) =>
+  projectViewRoots(useProjectViewRoots.getState().roots).some(
+    (r) => r.scope === "scratches" && r.path !== undefined && isSameOrInside(path, r.path),
+  );
+
+/** A scratch the Project pane leaves out (Show Scratches and Consoles off); ones inside the project stay. */
+const hiddenScratch = (path: string, { options, root }: ProjectTreeState) =>
+  !options.showScratches && inScratches(path) && memberRootOf(path) === null && !isSameOrInside(path, root!);
+
 /** Whether a pane can show `path`. */
 export function modeShows(path: string, mode = get().mode): boolean {
   const state = get();
   if (!state.root) return false;
   switch (mode) {
     case "unity":
-      return !!state.unity && unityPathVisible(path, treeOptions({ ...state, mode }));
+      return !!state.unity && unityPathVisible(path, treeOptions({ ...state, mode })) && !hiddenScratch(path, state);
     case "unreal":
-      return !!state.unreal && unrealPathVisible(path, treeOptions({ ...state, mode }));
+      return !!state.unreal && unrealPathVisible(path, treeOptions({ ...state, mode })) && !hiddenScratch(path, state);
     case "project":
-      return true;
+      return !hiddenScratch(path, state);
     case "projectFiles":
       return memberRootOf(path) !== null || (!state.members && isSameOrInside(path, state.root));
     case "scratches":
-      return projectViewRoots(useProjectViewRoots.getState().roots).some(
-        (r) => r.scope === "scratches" && r.path !== undefined && isSameOrInside(path, r.path),
-      );
+      return inScratches(path);
     default: {
       if (mode === state.mode) return currentModel().keyOfPath.has(path);
       const pane = { ...state, mode };
