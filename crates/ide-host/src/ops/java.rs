@@ -142,7 +142,8 @@ pub(crate) async fn resolve_launch(
         };
         if let Some(outputs) = built {
             progress("Resolving the classpath");
-            let mut info = project.lsp.java_launch(&module, test, false, false, false, cancel).await?;
+            let server = project.lsp.java_launch(&module, test, false, false, false, cancel);
+            let mut info = server_launch_extras(server, SERVER_EXTRAS_WAIT).await?;
             let data_dir = host.local_data_dir.clone();
             let cancel = cancel.clone();
             return tokio::task::spawn_blocking(move || {
@@ -393,6 +394,33 @@ fn is_maven_aggregator(root: &Path, model: &BuildModel, module: &Path) -> bool {
 /// Whether the IDE's Java build builds the module holding `path` (#4078): a Maven module unless
 /// Settings › Maven › Delegate IDE build/run actions to Maven asks for Maven; a Gradle module
 /// when Settings › Gradle › Build and run using asks for the IDE.
+/// How long a launch whose classpath the IDE's Java build resolved waits for what jdtls adds
+/// (the JDK it compiles against, the Java project root). jdtls can be busy for minutes importing
+/// a Maven project (resolving plugin dependencies), and the run doesn't need it:
+/// [`finish_launch`] picks the project's JDK or an installed one.
+const SERVER_EXTRAS_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// jdtls' launch info, or an empty one when it doesn't answer within `wait` or fails.
+async fn server_launch_extras(
+    server: impl std::future::Future<Output = IdeResult<JavaLaunchInfo>>,
+    wait: std::time::Duration,
+) -> IdeResult<JavaLaunchInfo> {
+    let fallback =
+        || JavaLaunchInfo { path_list_separator: if cfg!(windows) { ";" } else { ":" }.into(), ..Default::default() };
+    match tokio::time::timeout(wait, server).await {
+        Ok(Ok(info)) => Ok(info),
+        Ok(Err(e)) if e.kind == ErrorKind::Cancelled => Err(e),
+        Ok(Err(e)) => {
+            tracing::warn!("Java launch without the language server's JDK: {}", e.message);
+            Ok(fallback())
+        }
+        Err(_) => {
+            tracing::info!(wait_ms = wait.as_millis(), "Java language server busy; launching without its JDK");
+            Ok(fallback())
+        }
+    }
+}
+
 pub(crate) fn served_by_service(root: &Path, model: &BuildModel, settings: &Settings, path: &Path) -> bool {
     let maven = model.maven.iter().flat_map(|m| m.projects.iter().map(|p| (root.join(&p.dir), true)));
     let gradle = model.gradle.iter().flat_map(|g| g.projects.iter().map(|p| (root.join(&p.dir), false)));
@@ -1072,6 +1100,22 @@ fn drop_processor_recreate_errors(info: &mut JavaLaunchInfo) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn a_busy_or_failing_language_server_does_not_block_a_resolved_launch() {
+        let wait = std::time::Duration::from_secs(5);
+        // jdtls importing a Maven project: no answer for minutes (#6122).
+        let busy = server_launch_extras(std::future::pending(), wait).await.unwrap();
+        assert!(busy.java_home.is_none() && busy.class_paths.is_empty());
+        assert!(!busy.path_list_separator.is_empty());
+        let failed = server_launch_extras(async { Err(IdeError::unavailable("timed out")) }, wait).await.unwrap();
+        assert!(failed.java_home.is_none());
+        let home = JavaLaunchInfo { java_home: Some(PathBuf::from("/jdk").into()), ..Default::default() };
+        let answered = server_launch_extras(async { Ok(home) }, wait).await.unwrap();
+        assert!(answered.java_home.is_some());
+        let cancelled = server_launch_extras(async { Err(IdeError::cancelled()) }, wait).await;
+        assert_eq!(cancelled.unwrap_err().kind, ErrorKind::Cancelled);
+    }
 
     #[test]
     fn junit_launch_applies_the_surefire_configuration() {
