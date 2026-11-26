@@ -50,7 +50,7 @@ export function workspaceJoinQuery(
     need("#");
     const name = identifier();
     const source = workspaceSourceSide(name, names);
-    if (!source) throw new Error(tx("Use #left or #right to select a workspace source."));
+    if (!source) throw new Error(tx("Choose a source from completion after #, or use #left or #right."));
     need(".");
     const schema = identifier();
     need(".");
