@@ -1517,6 +1517,28 @@ fn failed(e: impl std::fmt::Display) -> HostError {
     HostError::Failed(e.to_string())
 }
 
+/// `cwd` of `open-terminal-session-in`: a directory of the project, relative to `root`
+/// (`""` is the root), that exists and stays inside the project once symlinks are resolved.
+fn project_subdirectory(root: &Path, cwd: &str) -> Result<PathBuf, HostError> {
+    let invalid = |why: &str| HostError::Invalid(format!("terminal directory {cwd:?}: {why}"));
+    if cwd.len() > 4096 || cwd.contains('\0') {
+        return Err(invalid("not a path"));
+    }
+    let relative = Path::new(cwd);
+    if relative.is_absolute() || relative.has_root() {
+        return Err(invalid("must be relative to the project root"));
+    }
+    let base = dunce::canonicalize(root).map_err(|_| invalid("the project root is gone"))?;
+    let dir = dunce::canonicalize(base.join(relative)).map_err(|_| invalid("no such directory"))?;
+    if !dir.starts_with(&base) {
+        return Err(invalid("outside the project"));
+    }
+    if !dir.is_dir() {
+        return Err(invalid("not a directory"));
+    }
+    Ok(dir)
+}
+
 impl HostApi for PluginApi {
     fn database_upsert(&self, root: &Path, source: ide_plugin::PluginDataSource) -> Result<(), HostError> {
         let (host, db) = self.database_host(root)?;
@@ -1667,6 +1689,7 @@ impl HostApi for PluginApi {
         key: String,
         title: String,
         cmd: ProcessCommand,
+        cwd: Option<String>,
         cancel: &CancellationToken,
         timeout: Duration,
     ) -> Result<String, HostError> {
@@ -1677,6 +1700,11 @@ impl HostApi for PluginApi {
         if !self.shared.workspace().is_some_and(|w| w.trusted(&root)) {
             return Err(HostError::Denied("project is not trusted".into()));
         }
+        // Trust and the program pin stay the project's; the directory only moves the shell.
+        let dir = match &cwd {
+            Some(cwd) => project_subdirectory(&root, cwd)?,
+            None => root.clone(),
+        };
         let binary = self.approved_program_in_project(&cmd.program, Some(&root))?;
         let mut command = StdCommand::new(&binary);
         append_process_env(&mut command, &cmd.env)?;
@@ -1708,7 +1736,7 @@ impl HostApi for PluginApi {
             program: binary.into(),
             args: cmd.args,
             env: cmd.env.into_iter().collect(),
-            cwd: root.into(),
+            cwd: dir.into(),
         };
         if let Err(error) = self.window_request(client, request, cancel, timeout) {
             self.shared.operations.lock().remove(&id);
@@ -3924,6 +3952,29 @@ impl PluginWorkspace for HostWorkspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_directories_stay_inside_the_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap().join("project");
+        std::fs::create_dir_all(root.join("sub/deeper")).unwrap();
+        std::fs::write(root.join("file.txt"), "").unwrap();
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        assert_eq!(project_subdirectory(&root, "").unwrap(), root);
+        assert_eq!(project_subdirectory(&root, "sub/deeper").unwrap(), root.join("sub/deeper"));
+        assert_eq!(project_subdirectory(&root, "sub/../sub").unwrap(), root.join("sub"));
+        for bad in ["/tmp", "../outside", "sub/../../outside", "missing", "file.txt", "a\0b"] {
+            assert!(matches!(project_subdirectory(&root, bad), Err(HostError::Invalid(_))), "{bad:?}");
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
+            assert!(project_subdirectory(&root, "escape").is_err(), "a link out of the project");
+            std::os::unix::fs::symlink(root.join("sub"), root.join("inside")).unwrap();
+            assert_eq!(project_subdirectory(&root, "inside").unwrap(), root.join("sub"));
+        }
+    }
 
     fn api(dir: &Path, pins: Arc<RwLock<HashMap<(String, String), ProgramPin>>>) -> PluginApi {
         let manifest = ide_extension::Manifest::parse(

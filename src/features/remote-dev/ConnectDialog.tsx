@@ -107,7 +107,13 @@ function ConnectDialog() {
     }
   };
 
-  const options = configs.map((c) => ({ value: c.id, label: c.name.trim() || sshLabel(c), detail: sshLabel(c) }));
+  const options = configs.map((c) => ({
+    value: c.id,
+    verbatim: true,
+    verbatimDetail: true,
+    label: c.name.trim() || sshLabel(c),
+    detail: sshLabel(c),
+  }));
   const ready = !!name && !busy && !!path.trim();
   const connecting = useRemoteProgress((s) => s.progress !== null);
 
@@ -159,7 +165,7 @@ function ConnectDialog() {
             <label className={styles.label}>{tx("WSL distribution:")}</label>
             <Select
               value={distro || null}
-              options={distros.map((d) => ({ value: d, label: d }))}
+              options={distros.map((d) => ({ value: d, verbatim: true, label: d }))}
               onChange={setDistro}
               aria-label={tx("WSL distribution")}
             />

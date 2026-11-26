@@ -61,6 +61,7 @@ import { layoutActions, layoutWrapper } from "./views/editorLayout";
 import { editorPanelUpdates, projectEditorPanel, type EditorPanelDecl } from "./views/editorPanel";
 import { projectOverlay, type OverlayDecl } from "./views/overlay";
 import { projectDialog, type DialogDecl } from "./views/dialog";
+import { projectRunAnything, type RunAnythingDecl } from "./runAnything";
 import { registerContentActions } from "./views/contentActions";
 import {
   PluginContentEditor,
@@ -522,6 +523,10 @@ export function defineViewUiPoints(): () => void {
     defineUiPoint<DialogDecl>("dialogs", {
       title: "Dialogs",
       project: ({ pluginId, decl }) => projectDialog(pluginId, decl),
+    }),
+    defineUiPoint<RunAnythingDecl>("runAnything", {
+      title: "Run Anything",
+      project: ({ pluginId, decl }) => projectRunAnything(pluginId, decl),
     }),
     defineUiPoint<MarkerIconDecl>("markerIcons", {
       title: "Marker Icons",

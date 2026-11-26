@@ -183,6 +183,8 @@ struct State {
     view_messages: Vec<(String, String)>,
     terminals: Vec<MockTerminal>,
     terminal_sessions: BTreeMap<String, (String, crate::host::Command, String)>,
+    /// Directory a keyed terminal was opened in with `open_terminal_session_in`.
+    terminal_cwds: BTreeMap<String, String>,
     terminal_writes: Vec<(String, String)>,
     content_tabs: BTreeMap<String, crate::ContentTab>,
     content_replies: Vec<(String, crate::ContentTabReply)>,
@@ -614,6 +616,23 @@ impl MockHost {
         self.state.borrow().diagnostics.clone()
     }
 
+    /// Asks a Run Anything provider (API 1.18) for its entries in the mock project.
+    pub fn run_anything_suggest(
+        &self,
+        provider: &mut impl crate::RunAnything,
+        prefix: &str,
+        text: &str,
+    ) -> Vec<crate::RunAnythingItem> {
+        let project = self.invocation().project().expect("mock project").root().expect("mock root");
+        provider.suggest(&project, prefix, text).into_iter().take(100).collect()
+    }
+
+    /// Runs a Run Anything line (API 1.18) in the mock project: whether it was claimed.
+    pub fn run_anything_run(&self, provider: &mut impl crate::RunAnything, prefix: &str, line: &str) -> bool {
+        let project = self.invocation().project().expect("mock project").root().expect("mock root");
+        provider.run(&project, prefix, line)
+    }
+
     /// Calls a target validator with the mock project's root and launch metadata.
     pub fn validate_run_target(
         &self,
@@ -789,6 +808,10 @@ impl MockHost {
             s.run_remote_targets.remove(config);
         }
     }
+    /// The project-relative directory a keyed terminal was opened in (API 1.18), if any.
+    pub fn terminal_cwd(&self, key: &str) -> Option<String> {
+        self.state.borrow().terminal_cwds.get(key).cloned()
+    }
     /// Text written through write_terminal.
     pub fn terminal_writes(&self) -> Vec<(String, String)> {
         self.state.borrow().terminal_writes.clone()
@@ -796,6 +819,7 @@ impl MockHost {
     /// Simulates exit, releasing the key for another operation.
     pub fn finish_terminal(&self, key: &str) -> Option<crate::Event> {
         let (id, _, _) = self.state.borrow_mut().terminal_sessions.remove(key)?;
+        self.state.borrow_mut().terminal_cwds.remove(key);
         Some(crate::Event::Other {
             kind: "terminal-exited".into(),
             data: serde_json::to_string(&crate::TerminalExited { id, key: key.into(), status: Some(0), closed: false })
@@ -2831,6 +2855,22 @@ pub mod current {
             s.terminal_sessions.insert(key.into(), (id.clone(), cmd.clone(), title.into()));
             Ok(id)
         })
+    }
+    pub fn open_terminal_session_in(
+        key: &str,
+        title: &str,
+        cmd: &crate::host::Command,
+        cwd: &str,
+    ) -> Result<String, Error> {
+        let path = std::path::Path::new(cwd);
+        if path.has_root() || path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+            return Err(Error::Invalid(format!("terminal directory {cwd:?}: outside the project")));
+        }
+        let id = open_terminal_session(key, title, cmd)?;
+        with(|s| {
+            s.terminal_cwds.entry(key.into()).or_insert_with(|| cwd.into());
+        });
+        Ok(id)
     }
     pub fn write_terminal(key: &str, text: &str) -> Result<(), Error> {
         with(|s| {

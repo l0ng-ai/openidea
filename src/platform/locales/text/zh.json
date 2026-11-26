@@ -4353,6 +4353,7 @@
   "All Changed Files": "所有已更改的文件",
   "Scratches and Consoles": "临时文件和控制台",
   "Run Anything": "运行任何内容",
+  "{group} could not run {line}": "{group} 无法运行 {line}",
   "Run Anything…": "运行任何内容…",
   "Run a command, configuration or goal": "运行命令、配置或目标",
   "Run Anything entries": "“运行任何内容”条目",

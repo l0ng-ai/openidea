@@ -432,6 +432,7 @@ function sessionItems(sessions: readonly RunSession[], targets: readonly RunTarg
       id: s.id,
       label,
       text: label,
+      verbatim: true,
       icon: sessionIcon(s),
       color: failed(s) ? "var(--danger)" : undefined,
       // An agent's command that ended, however it ended.
