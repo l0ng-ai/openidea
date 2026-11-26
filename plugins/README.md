@@ -351,33 +351,35 @@ installing (or when a new version asks for more). Low-risk capabilities are
 listed; high-risk ones are called out as equivalent to running code on the
 machine. Users can revoke optional capabilities in Settings › Plugins.
 
-| Capability          | Risk   | Unlocks today                                                                                                                                                           |
-| ------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ide.commands`      | high   | Run any IDE action or other plugins' commands as if you chose them, including running programs, committing and pushing. API 1.4; declared own commands are exempt.      |
-| `database.sources`  | medium | API 1.4: manage only the plugin's own project database sources, write their secure credentials and request connection; trusted projects only.                           |
-| `project.read`      | low    | `Project::root`, `read_file`, `read_bytes`, `find_files`, `symbols`, `search_text`, `host::projects`, `publish_diagnostics`, `problems`, editor opening and decorations |
-| `project.write`     | high   | `Project::write_file` — creates and replaces text files inside the open projects, the settings and build scripts a trusted project runs included                        |
-| `fs.read:<path>`    | high   | `host::fs::read_file`, `read_bytes`, `stat`, `read_dir` — files outside the projects, under the grant's directory                                                       |
-| `fs.write:<path>`   | high   | `host::fs::write_file`, `write_bytes` — files under that path; doesn't imply reading                                                                                    |
-| `editor.read`       | low    | `TextEditor::document`, `selections`, `host::open_editors`                                                                                                              |
-| `editor.write`      | medium | `TextEditor::apply_edits`                                                                                                                                               |
-| `vcs.read`          | low    | `Project::vcs_status`, `vcs_remotes`, `vcs_log`, `vcs_blame`, `vcs_diff` (new reads require trust), `host::pending_commit`, before-commit checks                        |
-| `vcs.write`         | medium | `Project::vcs_fetch` (trusted projects only), `host::set_commit_message`                                                                                                |
-| `build.read`        | low    | API 1.10: `Project::build_dependencies`, the Maven / Gradle dependency graph the IDE resolved; trusted projects only                                                    |
-| `storage`           | low    | `host::storage` (64 MiB per plugin, counting UTF-8 bytes of keys and values)                                                                                            |
-| `events`            | low    | file opened/saved, editor focused, repository changed events                                                                                                            |
-| `events.input`      | medium | `action-performed` and `input-mode-changed` events                                                                                                                      |
-| `process:<program>` | high   | `Project::run_process`, language servers, debug adapters, runs                                                                                                          |
-| `lsp:<server>`      | high   | API 1.9: `Project::language_server_request` / `language_server_notify` to that running language server (its name in the language definition); trusted projects only     |
-| `java.agent`        | high   | API 1.10: the `[[contributes.javaAgents]]` jar runs inside the Java applications you start; derived from that declaration, never listed                                 |
-| `net:<host>`        | medium | `host::fetch` over HTTPS (also loopback HTTP); `*.example.com` matches subdomains                                                                                       |
-| `net:ask`           | medium | Ask the user at the first request to an HTTPS (or loopback) host that is not declared; one answer per host, revocable; API 1.5                                          |
-| `net.http:<host>`   | medium | Unencrypted HTTP to that host; API 1.4, same wildcard rules as `net:`                                                                                                   |
-| `ipc:<path>`        | high   | Local Unix sockets or Windows named pipes on the project machine; API 1.4                                                                                               |
-| `secrets`           | medium | `{{secret:<name>}}` in request headers, `host::secret_is_set`, `secret_set`, `secret_delete`                                                                            |
-| `clipboard`         | medium | `host::copy_to_clipboard` and the clipboard API in the plugin's web views                                                                                               |
-| `clipboard.read`    | medium | API 1.11: `host::read_clipboard`, the clipboard's text and image, only in commands and view actions the user ran                                                        |
-| `agents`            | medium | API 1.18: `host::fork_agent_session`, fork a recorded native agent session into a new task in the project; trusted projects only                                        |
+| Capability               | Risk   | Unlocks today                                                                                                                                                           |
+| ------------------------ | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ide.commands`           | high   | Run any IDE action or other plugins' commands as if you chose them, including running programs, committing and pushing. API 1.4; declared own commands are exempt.      |
+| `database.sources`       | medium | API 1.4: manage only the plugin's own project database sources, write their secure credentials and request connection; trusted projects only.                           |
+| `project.read`           | low    | `Project::root`, `read_file`, `read_bytes`, `find_files`, `symbols`, `search_text`, `host::projects`, `publish_diagnostics`, `problems`, editor opening and decorations |
+| `project.write`          | high   | `Project::write_file` — creates and replaces text files inside the open projects, the settings and build scripts a trusted project runs included                        |
+| `fs.read:<path>`         | high   | `host::fs::read_file`, `read_bytes`, `stat`, `read_dir` — files outside the projects, under the grant's directory                                                       |
+| `fs.write:<path>`        | high   | `host::fs::write_file`, `write_bytes` — files under that path; doesn't imply reading                                                                                    |
+| `editor.read`            | low    | `TextEditor::document`, `selections`, `host::open_editors`                                                                                                              |
+| `editor.write`           | medium | `TextEditor::apply_edits`                                                                                                                                               |
+| `vcs.read`               | low    | `Project::vcs_status`, `vcs_remotes`, `vcs_log`, `vcs_blame`, `vcs_diff` (new reads require trust), `host::pending_commit`, before-commit checks                        |
+| `vcs.write`              | medium | `Project::vcs_fetch` (trusted projects only), `host::set_commit_message`                                                                                                |
+| `build.read`             | low    | API 1.10: `Project::build_dependencies`, the Maven / Gradle dependency graph the IDE resolved; trusted projects only                                                    |
+| `storage`                | low    | `host::storage` (64 MiB per plugin, counting UTF-8 bytes of keys and values)                                                                                            |
+| `events`                 | low    | file opened/saved, editor focused, repository changed events                                                                                                            |
+| `events.input`           | medium | `action-performed` and `input-mode-changed` events                                                                                                                      |
+| `process:<program>`      | high   | `Project::run_process`, language servers, debug adapters, runs                                                                                                          |
+| `lsp:<server>`           | high   | API 1.9: `Project::language_server_request` / `language_server_notify` to that running language server (its name in the language definition); trusted projects only     |
+| `java.agent`             | high   | API 1.10: the `[[contributes.javaAgents]]` jar runs inside the Java applications you start; derived from that declaration, never listed                                 |
+| `net:<host>`             | medium | `host::fetch` over HTTPS (also loopback HTTP); `*.example.com` matches subdomains                                                                                       |
+| `net:ask`                | medium | Ask the user at the first request to an HTTPS (or loopback) host that is not declared; one answer per host, revocable; API 1.5                                          |
+| `net.http:<host>`        | medium | Unencrypted HTTP to that host; API 1.4, same wildcard rules as `net:`                                                                                                   |
+| `net:setting:<key>`      | medium | API 1.18: the host of the plugin's `string` setting `<key>` over HTTPS (also loopback HTTP), approved when the user applies the value in Settings; bare host or URL     |
+| `net.http:setting:<key>` | medium | API 1.18: the same setting's host over unencrypted HTTP, approved the same way                                                                                          |
+| `ipc:<path>`             | high   | Local Unix sockets or Windows named pipes on the project machine; API 1.4                                                                                               |
+| `secrets`                | medium | `{{secret:<name>}}` in request headers, `host::secret_is_set`, `secret_set`, `secret_delete`                                                                            |
+| `clipboard`              | medium | `host::copy_to_clipboard` and the clipboard API in the plugin's web views                                                                                               |
+| `clipboard.read`         | medium | API 1.11: `host::read_clipboard`, the clipboard's text and image, only in commands and view actions the user ran                                                        |
+| `agents`                 | medium | API 1.18: `host::fork_agent_session`, fork a recorded native agent session into a new task in the project; trusted projects only                                        |
 
 `process:` capabilities are also derived from what the contributions start: a
 language's `language-servers` and `debugger` commands and a run detector's
@@ -2043,6 +2045,23 @@ Unattended calls to a host that is not yet allowed return `denied` without a dia
 so the plugin should tell the user to run the action once interactively. Plain HTTP
 to other hosts never goes through this flow: declare `net.http:<host>`. A
 manifest using `net:ask` declares `engines.openidea = "^1.5"`.
+
+A setting-derived grant, `net:setting:<key>` (API 1.18), names a `string` setting of
+the plugin's own schema instead of a host; `net.http:setting:<key>` is the same
+over plain HTTP. The key is checked at install like the other manifest checks, and
+the manifest declares `engines.openidea = "^1.18"`. When the user applies the
+setting's value in Settings, a dialog names the plugin, the setting and the host —
+which may be a bare host or a URL — and states plainly that a `net.http:` connection
+is unencrypted. **Deny is the default**: only an explicit approval materializes the
+host, which then behaves exactly like a `net:<host>` (or `net.http:<host>`) grant —
+all ports, no subdomains, `*` refused, redirects unchanged. A value that reaches the
+plugin any other way (a hand-edited settings file, a project settings file, a value
+written by the plugin itself) is not approved: the plugin's permissions show the host
+as pending with an **Approve** action. Changing the setting replaces the approval only
+after the user confirms it; clearing the setting removes it. The approved hosts are
+listed next to the `net:ask` ones and revocable. Unattended calls to a pending or
+revoked host return `denied` without a dialog, like `net:ask`; on remote hosts the
+approval is kept for the session only.
 
 A host answer covers all ports of that host, like `net:<host>`, and never
 covers subdomains or wildcard patterns. IDNs are shown in ASCII (punycode);
