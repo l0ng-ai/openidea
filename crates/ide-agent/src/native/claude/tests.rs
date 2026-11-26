@@ -464,6 +464,7 @@ async fn replay_simple() {
     let args = r.cli.launched.lock()[0].clone();
     assert!(args.windows(2).any(|w| w == ["--session-id", r.session.as_str()]), "{args:?}");
     assert!(args.contains(&"--permission-prompt-tool".to_owned()));
+    assert!(!args.contains(&"--no-session-persistence".to_owned()));
     let user = r.sent(0).into_iter().find(|m| m["type"] == "user").unwrap();
     assert_eq!(user["message"]["content"][0]["text"], "Reply with exactly: hello there");
 }
@@ -1427,4 +1428,17 @@ fn additional_directories_are_read_from_the_session_params() {
     let params = json!({ "cwd": "/w/api", "additionalDirectories": ["/w/web", 3, "/w/docs"] });
     assert_eq!(additional_dirs(&params), ["/w/web", "/w/docs"]);
     assert!(additional_dirs(&json!({ "cwd": "/w/api" })).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ephemeral_session_is_not_saved() {
+    let cli = replay_cli(load_fixture("simple"));
+    let (config, cwd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let cwd_path = std::fs::canonicalize(cwd.path()).unwrap();
+    let h =
+        Harness::connect(cli.clone(), config.path().into(), config.path().join("pending"), cwd_path, Vec::new()).await;
+    let params = json!({ "cwd": h.cwd, "mcpServers": [], "_meta": { "openidea": { "ephemeral": true } } });
+    h.request("session/new", params).await.unwrap();
+    let args = cli.launched.lock()[0].clone();
+    assert!(args.contains(&"--no-session-persistence".to_owned()), "{args:?}");
 }

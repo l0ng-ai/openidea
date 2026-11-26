@@ -59,6 +59,9 @@ const REFACTORING_SERVERS: Readonly<Record<string, { server: string; ids: Readon
   },
 };
 
+/** Languages where tsserver offers "Extract to interface" and "Extract to type alias" (typedef in JavaScript). */
+const TYPE_EXTRACT_LANGUAGES = new Set(["typescript", "typescriptreact", "javascript", "javascriptreact"]);
+
 /** Outcome of the server query: its answer, or why there is none. */
 export type ServerAnswer =
   | { status: "ok"; query: CodeActionQuery }
@@ -192,9 +195,20 @@ export async function runRefactoring(view: EditorView, id: RefactoringId): Promi
     await startChangeSignature(view);
     return;
   }
-  if (id === "extractInterface") {
-    if (EXTRACT_INTERFACE_LANGUAGES.has(ctx.language)) await startExtractInterface(view);
-    else showHint(view, cannotPerform(`Extract Interface is not supported for ${await languageName(ctx.language)}`));
+  if (id === "extractInterface" && EXTRACT_INTERFACE_LANGUAGES.has(ctx.language)) {
+    await startExtractInterface(view);
+    return;
+  }
+  if ((id === "extractInterface" || id === "extractTypeAlias") && !TYPE_EXTRACT_LANGUAGES.has(ctx.language)) {
+    const lang = await languageName(ctx.language);
+    showHint(
+      view,
+      cannotPerform(
+        id === "extractInterface"
+          ? `Extract Interface is not supported for ${lang}`
+          : `Extract Type Alias is not supported for ${lang}`,
+      ),
+    );
     return;
   }
   // IDEA picks the expression first (and the server then extracts exactly that one).

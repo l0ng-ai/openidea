@@ -58,6 +58,7 @@ import { missingAdapter } from "./missingAdapter";
 import { startFailureMessage } from "./startFailure";
 import { evaluateWithImports, forgetImports } from "./classImports";
 import { JAVA_ADAPTER } from "./java";
+import { reconnects } from "./remote";
 import { isTracing, markTraceStop } from "./streams/streamStore";
 
 export type SessionStatus = "starting" | "running" | "paused" | "stopping" | "terminated";
@@ -360,8 +361,20 @@ function ownSession(id: DebugSessionId, event: DebugEvent): DebugSession | null 
   // of a forgotten session, though its id may be one (another backend numbers from 1 again).
   if (owned.has(id) && event.kind !== "started") return null;
   if (event.kind === "started" && event.parent != null) {
-    if (!st.sessions[event.parent]) return null;
-    return adoptSession(id, { name: event.name, adapter: event.adapter, parent: event.parent });
+    const parent = st.sessions[event.parent];
+    if (!parent) return null;
+    const child = adoptSession(id, { name: event.name, adapter: event.adapter, parent: event.parent });
+    // A process attached again after its restart takes the finished one's place (one tab, its output kept).
+    if (reconnects(rootOf(parent).runConfig))
+      for (const s of Object.values(st.sessions)) {
+        if (s.parent !== event.parent || isLive(s)) continue;
+        flushConsoleOutput();
+        useDebug.setState((cur) => ({
+          console: { ...cur.console, [id]: [...(cur.console[s.id] ?? []), ...(cur.console[id] ?? [])] },
+        }));
+        removeSession(s.id);
+      }
+    return child;
   }
   if (pendingStarts === 0) return null;
   provisional.add(id);

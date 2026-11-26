@@ -177,6 +177,16 @@ describe("remote attach requests", () => {
     });
   });
 
+  it("Attach to Node.js reconnects automatically only when the option is on", () => {
+    const attach = (params: Record<string, string> = {}) =>
+      JSON.parse(remoteAttachConfig(configOf(nodeRemoteType, params), "/p")!.extraJson!);
+    expect(attach()).not.toHaveProperty("restart");
+    expect(attach({ restart: "true" })).toMatchObject({ restart: true, port: 9229 });
+    expect(nodeRemoteType.fields.find((f) => f.key === "restart")!.control).toBe("checkbox");
+    const hint = nodeRemoteType.fields.find((f) => f.key === "hint")!;
+    expect(hint.value!({ restart: "true", port: "9230" })).toBe("nodemon --inspect=0.0.0.0:9230 app.js");
+  });
+
   it("PHP Remote Debug defaults to port 9003 and shows the xdebug command line", () => {
     expect(configOf(phpRemoteType).params).toEqual({ port: "9003" });
     const field = phpRemoteType.fields.find((f) => f.key === "hint")!;
@@ -213,6 +223,14 @@ describe("remote attach requests", () => {
   it("PHP Remote Debug says which port it waits on; the attaching types don't", () => {
     expect(remoteWaitingNote(configOf(phpRemoteType, { port: "9010" }))).toBe("Listening for Xdebug on port 9010");
     for (const t of REMOTE_TYPES.filter((x) => x !== phpRemoteType)) expect(remoteWaitingNote(configOf(t))).toBeNull();
+  });
+
+  it("Attach to Node.js with Reconnect automatically says it waits once its process has ended", () => {
+    const rc = configOf(nodeRemoteType, { restart: "true", port: "9230" });
+    expect(remoteWaitingNote(rc, true)).toBe("Waiting to reconnect to Node.js on localhost:9230");
+    // The first attach (or one that never connects) isn't a reconnect.
+    expect(remoteWaitingNote(rc)).toBeNull();
+    expect(remoteWaitingNote(configOf(nodeRemoteType), true)).toBeNull();
   });
 
   it("start-the-remote-side hints follow the port", () => {

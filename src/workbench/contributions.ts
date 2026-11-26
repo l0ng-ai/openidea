@@ -171,6 +171,11 @@ export interface EditorKindContribution {
   /** The input that shows this tab where it is now when Back returns to it, e.g. a diff at its caret. */
   navigationInput?(input: EditorInput): EditorInput;
   /**
+   * Whether Back/Forward can still navigate to this input (`open`: a tab with its key is open).
+   * Defaults to true; return false to skip deleted tasks or closed ephemeral sessions.
+   */
+  canNavigate?(input: EditorInput, open: boolean): boolean;
+  /**
    * "Open in New Window" on its tabs: moves the tab to a lightweight window of this project
    * (`EditorService.openInWindow`) with whatever state it carries. False when it stayed here.
    */
