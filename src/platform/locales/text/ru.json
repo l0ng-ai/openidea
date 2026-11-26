@@ -9792,8 +9792,6 @@
   "Unshelve Silently": "Восстановить без подтверждения",
   "Remove All Watches": "Удалить все контрольные выражения",
   "GitHub account": "Аккаунт GitHub",
-  "Leave empty to use the active GitHub CLI account. OpenIDEA resolves the token at launch and never stores it.": "Оставьте пустым, чтобы использовать активный аккаунт GitHub CLI. OpenIDEA определяет токен при запуске и никогда не сохраняет его.",
-  "github-username": "имя-пользователя-github",
   "Change File Encoding": "Изменить кодировку файла",
   "Convert": "Преобразовать",
   "Use {label} for this file?": "Использовать {label} для этого файла?",

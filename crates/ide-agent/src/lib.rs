@@ -33,7 +33,7 @@ pub use catalogs::AgentCatalogs;
 pub use cli_update::{AgentCliOffer, AgentCliUpdateResult};
 pub use external::ExternalSession;
 pub use model::*;
-pub use provider::LoginLaunch;
+pub use provider::{LoginLaunch, gh_authenticated_accounts, gh_login_launch};
 pub use skill_installer::{
     InstallRemoteSkillRequest, RemoteSkillBrowseResult, RemoteSkillCandidate, RemoteSkillFile, RemoteSkillPreview,
     SkillScanWarning, SkillScanWarningKind,
@@ -67,6 +67,34 @@ pub fn login_launch_without_project(
         .ok_or_else(|| IdeError::not_found(format!("unknown agent '{id}'")))?;
     spec.login_launch(cwd, None)
         .ok_or_else(|| IdeError::unavailable(format!("{} cannot be signed in directly from OpenIDEA", spec.name)))
+}
+
+/// Queries Copilot's default CLI sign-in status alongside authenticated `gh` accounts.
+pub async fn copilot_auth_status_with(
+    custom_agents_dir: Option<&Path>,
+    secrets: Option<&dyn EnvSecrets>,
+    cwd: &Path,
+) -> CopilotAuthStatus {
+    let copilot_spec = provider::load(custom_agents_dir, secrets).into_iter().find(|p| p.id == "copilot");
+    let cwd_buf = cwd.to_path_buf();
+    let cli_fut = async move {
+        let spec = copilot_spec?;
+        native::copilot::probe_auth_status(spec, cwd_buf).await
+    };
+    let gh_fut = tokio::task::spawn_blocking(provider::gh_authenticated_accounts);
+    let (cli, gh) = tokio::join!(cli_fut, gh_fut);
+    let (gh_installed, gh_accounts) = gh.unwrap_or((false, Vec::new()));
+    match cli {
+        Some(cli) => CopilotAuthStatus {
+            authenticated: cli.authenticated,
+            login: cli.login,
+            auth_type: cli.auth_type,
+            status_message: cli.status_message,
+            gh_installed,
+            gh_accounts,
+        },
+        None => CopilotAuthStatus { gh_installed, gh_accounts, ..CopilotAuthStatus::default() },
+    }
 }
 
 /// Receives the events of one project's tasks.
@@ -853,6 +881,20 @@ impl AgentManager {
         Ok(launch)
     }
 
+    /// Queries Copilot's default CLI sign-in status alongside authenticated `gh` accounts.
+    pub async fn copilot_auth_status(&self) -> CopilotAuthStatus {
+        let status = copilot_auth_status_with(
+            self.shared.paths.custom_agents_dir.as_deref(),
+            self.shared.env_secrets(),
+            &self.shared.paths.project_root,
+        )
+        .await;
+        if status.authenticated || !status.gh_accounts.is_empty() {
+            self.shared.paths.catalogs.clear_failed_cooldown(&self.shared, "copilot");
+        }
+        status
+    }
+
     /// Overrides built-in `id`'s command with `command` (the driver and arguments stay
     /// the built-in's) through its agent file, or returns it to auto-detection with `None`.
     pub fn set_builtin_command(&self, id: &str, command: Option<String>) -> IdeResult<()> {
@@ -875,7 +917,9 @@ impl AgentManager {
         let Some(dir) = self.shared.paths.custom_agents_dir.clone() else {
             return Err(IdeError::unavailable("there is no custom agents directory"));
         };
-        provider::set_builtin_env(&dir, self.shared.env_secrets(), id, env)
+        provider::set_builtin_env(&dir, self.shared.env_secrets(), id, env)?;
+        self.shared.paths.catalogs.evict_if_idle(&self.shared, id);
+        Ok(())
     }
 
     /// Saves a new custom ACP agent through its agent file.

@@ -11,6 +11,7 @@ import type {
   AgentModelCatalog,
   AgentProvider,
   AgentRegistry,
+  CopilotAuthStatus,
   CustomAgentInput,
   InstallEvent,
   RegistryAgent,
@@ -34,7 +35,9 @@ export interface CommandsBackend {
   updateCli(id: string, offer: AgentCliOffer, request: RequestId): Promise<AgentCliUpdateResult>;
   cancel(request: RequestId): void;
   providers(): Promise<AgentProvider[]>;
+  copilotAuthStatus?(): Promise<CopilotAuthStatus>;
   loginSpawn?(id: string, cols: number, rows: number, onEvent: (e: AgentLoginEvent) => void): Promise<TerminalId>;
+  ghLoginSpawn?(cols: number, rows: number, onEvent: (e: AgentLoginEvent) => void): Promise<TerminalId>;
   refreshModels?(id: string, model: string | null, force?: boolean): Promise<AgentModelCatalog>;
   set(id: string, command: string | null): Promise<void>;
   setAdditionalArgs(id: string, args: string[]): Promise<void>;
@@ -64,10 +67,17 @@ export const tauriCommands: CommandsBackend = {
   updateCli: (id, offer, request) => call(commands.agentCliUpdate(id, offer, request)),
   cancel: tauriRegistry.cancel,
   providers: () => call(commands.agentProviders()),
+  copilotAuthStatus: () => call(commands.agentCopilotAuthStatus()),
   loginSpawn: async (id, cols, rows, onEvent) => {
     const channel = new Channel<AgentLoginEvent>();
     channel.onmessage = onEvent;
     const info = await call(commands.agentLoginSpawn(id, cols, rows, channel));
+    return info.id;
+  },
+  ghLoginSpawn: async (cols, rows, onEvent) => {
+    const channel = new Channel<AgentLoginEvent>();
+    channel.onmessage = onEvent;
+    const info = await call(commands.agentGhLoginSpawn(cols, rows, channel));
     return info.id;
   },
   refreshModels: (id, model, force = false) => call(commands.agentRefreshModels(id, force, model)),

@@ -9200,8 +9200,6 @@
   "Unshelve Silently": "靜默取消擱置",
   "Remove All Watches": "移除所有監視",
   "GitHub account": "GitHub 帳號",
-  "Leave empty to use the active GitHub CLI account. OpenIDEA resolves the token at launch and never stores it.": "留空則使用 GitHub CLI 目前登入的帳號。OpenIDEA 在啟動時取得令牌，不會儲存它。",
-  "github-username": "GitHub 使用者名稱",
   "Change File Encoding": "更改檔案編碼",
   "Convert": "轉換",
   "Use {label} for this file?": "對此檔案使用 {label} 編碼？",

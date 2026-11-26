@@ -44,6 +44,8 @@ export const commands = {
 	agentCommands: (provider: string, task: string | null) => typedError<AgentCommand[], IdeError>(__TAURI_INVOKE("agent_commands", { provider, task })),
 	/**  Reads the running session's context categories without sending a prompt. */
 	agentContextUsage: (task: string) => typedError<AgentContextUsage, IdeError>(__TAURI_INVOKE("agent_context_usage", { task })),
+	/**  Default Copilot CLI sign-in status alongside authenticated `github.com` accounts in `gh`. */
+	agentCopilotAuthStatus: () => typedError<CopilotAuthStatus, IdeError>(__TAURI_INVOKE("agent_copilot_auth_status")),
 	agentCreate: (request: NewAgentTask) => typedError<AgentTask_Serialize, IdeError>(__TAURI_INVOKE("agent_create", { request })),
 	/**  Imports a JetBrains `acp.json` file's `agent_servers` entries as custom agents. */
 	agentCustomImport: (text: string) => typedError<AcpImportOutcome[], IdeError>(__TAURI_INVOKE("agent_custom_import", { text })),
@@ -69,6 +71,11 @@ export const commands = {
 	 *  as the agent's own fork, under an id the host chooses. `cwd` must be where it was recorded.
 	 */
 	agentForkSession: (provider: string, sessionId: string, cwd: string) => typedError<AgentTask_Serialize, IdeError>(__TAURI_INVOKE("agent_fork_session", { provider, sessionId, cwd })),
+	/**
+	 *  Starts `gh auth login --hostname github.com` in an IDE-managed PTY (with ambient token
+	 *  variables cleared) and streams its output and exit code.
+	 */
+	agentGhLoginSpawn: (cols: number, rows: number, onEvent: Channel<AgentLoginEvent>) => typedError<TerminalInfo, IdeError>(__TAURI_INVOKE("agent_gh_login_spawn", { cols, rows, onEvent })),
 	/**  The task's uncommitted changes and the commits made since it started. */
 	agentGroupedChanges: (task: string) => typedError<AgentChanges, IdeError>(__TAURI_INVOKE("agent_grouped_changes", { task })),
 	/**  Hermes Agent profiles on this machine (`default` first); empty without Hermes. */
@@ -4994,6 +5001,16 @@ export type ContributionInfo = {
 	label: string,
 };
 
+/**  GitHub Copilot's default sign-in status alongside the accounts available through `gh`. */
+export type CopilotAuthStatus = {
+	authenticated: boolean,
+	login: string | null,
+	authType: string | null,
+	statusMessage: string | null,
+	ghInstalled: boolean,
+	ghAccounts: GhAuthAccount[],
+};
+
 export type CoveragePrepared = CoveragePrepared_Serialize | CoveragePrepared_Deserialize;
 
 export type CoveragePrepared_Deserialize = ({ status: "ready"; runner: string; 
@@ -7681,6 +7698,12 @@ export type GhApiRequest = {
 	body: string | null,
 	/**  Follow REST `Link` pages; the result is the array of all pages (`--slurp`). */
 	paginate: boolean,
+};
+
+/**  An authenticated `github.com` account stored in GitHub CLI (`gh`). */
+export type GhAuthAccount = {
+	login: string,
+	active: boolean,
 };
 
 /**  Whether pull requests can be shown for the project, and why not. */
