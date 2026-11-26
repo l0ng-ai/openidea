@@ -227,6 +227,8 @@ export const commands = {
 	 *  can show the UI's language and fall back to English. An install records the
 	 *  notes it saw, so this is only for an update installed outside the app.
 	 *  `Ok(None)` when the manifest covers another version or carries no notes.
+	 *  Reads only the public manifest, like the update check: the page usually opens
+	 *  in a window without a project.
 	 */
 	appReleaseNotes: (version: string, source: UpdateSource) => typedError<{ [key in string]: string } | null, IdeError>(__TAURI_INVOKE("app_release_notes", { version, source })),
 	/**  Quits through every window's unsaved-changes check, then starts again. */

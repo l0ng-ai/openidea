@@ -71,7 +71,7 @@ app_install_update                           always             desktop      bin
 app_log_location                             always             desktop      bindings sync
 app_metrics                                  always             desktop      bindings async
 app_quit                                     always             desktop      bindings sync
-app_release_notes                            trusted            desktop      bindings async
+app_release_notes                            always             desktop      bindings async
 app_restart                                  always             desktop      bindings sync
 app_update_announcement                      always             desktop      bindings sync
 app_update_status                            always             desktop      bindings sync
