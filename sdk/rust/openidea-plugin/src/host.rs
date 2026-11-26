@@ -1009,6 +1009,18 @@ mod imp {
     pub fn start_run(config: &str, args: &[String], debug: bool) -> Result<String, Error> {
         wit::run::start(config, args, debug).map_err(error)
     }
+    pub fn start_run_with_options(
+        config: &str,
+        args: &[String],
+        options: &crate::RunStartOptions,
+    ) -> Result<String, Error> {
+        let mode = options.output_mode.map(|m| match m {
+            crate::OutputMode::Pipes => wit::run::OutputMode::Pipes,
+            crate::OutputMode::Pty => wit::run::OutputMode::Pty,
+        });
+        wit::run::start_with_options(config, args, wit::run::StartOptions { debug: options.debug, output_mode: mode })
+            .map_err(error)
+    }
     pub fn open_terminal_session(key: &str, title: &str, cmd: &super::Command) -> Result<String, Error> {
         wit::views::open_terminal_session(
             key,
@@ -2165,6 +2177,14 @@ pub fn set_file_icons(set: &str, items: &[(String, String)]) -> Result<(), Error
 /// Starts an owned run configuration in the invoking window. Its id receives run-exited.
 pub fn start_run(config: &str, args: &[String], debug: bool) -> Result<String, Error> {
     imp::start_run(config, args, debug)
+}
+/// Starts an owned run configuration with launch options (API 1.18). Its id receives run-exited.
+pub fn start_run_with_options(
+    config: &str,
+    args: &[String],
+    options: &crate::RunStartOptions,
+) -> Result<String, Error> {
+    imp::start_run_with_options(config, args, options)
 }
 /// Opens/reuses a keyed, approved terminal with append-only environment variables.
 pub fn open_terminal_session(key: &str, title: &str, cmd: &Command) -> Result<String, Error> {
