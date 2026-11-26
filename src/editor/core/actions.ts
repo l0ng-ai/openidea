@@ -134,8 +134,10 @@ import { shortcutLabel } from "@/platform/keymap";
 /**
  * Text-editing actions: the editor has focus, or a popup (Find Action) runs them on it. Not a
  * tool window's speed search: it opens a layer too, but the keys belong to its tree (⌘⌫).
+ * `suspendEditorKeys` is set only while dispatching a key that belongs to something else
+ * (a commit message, the Push dialog), so Find Action can still run these actions.
  */
-export const TEXT_WHEN = "editorTextFocus || textEditorActive && popupOpen && !toolWindowFocus";
+export const TEXT_WHEN = "editorTextFocus || textEditorActive && popupOpen && !toolWindowFocus && !suspendEditorKeys";
 const EDITOR_WHEN = "textEditorActive && (editorFocus || !toolWindowFocus)";
 const TABS_WHEN = "editorTabsOpen && !toolWindowFocus";
 

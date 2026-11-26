@@ -2144,8 +2144,14 @@ impl process::HostChild for StoreData {
     }
 }
 
-impl views::Host for StoreData {
-    fn open_terminal_session(&mut self, key: String, title: String, cmd: process::Command) -> Fallible<String> {
+impl StoreData {
+    fn open_keyed_terminal(
+        &mut self,
+        key: String,
+        title: String,
+        cmd: process::Command,
+        cwd: Option<String>,
+    ) -> Fallible<String> {
         if let Err(e) = self.require_window() {
             return Ok(Err(e));
         }
@@ -2160,10 +2166,29 @@ impl views::Host for StoreData {
                 key,
                 title,
                 cmd,
+                cwd,
                 &self.cancel.token(),
                 self.remaining(),
             )
             .map_err(to_wit))
+    }
+}
+
+impl views::Host for StoreData {
+    fn open_terminal_session(&mut self, key: String, title: String, cmd: process::Command) -> Fallible<String> {
+        self.open_keyed_terminal(key, title, cmd, None)
+    }
+    fn open_terminal_session_in(
+        &mut self,
+        key: String,
+        title: String,
+        cmd: process::Command,
+        cwd: String,
+    ) -> Fallible<String> {
+        if let Err(e) = self.host.require_api("views.open-terminal-session-in", 18) {
+            return Ok(Err(to_wit(e)));
+        }
+        self.open_keyed_terminal(key, title, cmd, Some(cwd))
     }
     fn write_terminal(&mut self, key: String, text: String) -> Fallible<()> {
         if let Err(e) = self.require_window() {
@@ -2678,19 +2703,40 @@ impl bindings::openidea::plugin::run_targets::Host for StoreData {
 
 impl bindings::openidea::plugin::run::Host for StoreData {
     fn start(&mut self, config: String, args: Vec<String>, debug: bool) -> Fallible<String> {
+        self.start_with_options(
+            config,
+            args,
+            bindings::openidea::plugin::run::StartOptions { debug, output_mode: None },
+        )
+    }
+
+    fn start_with_options(
+        &mut self,
+        config: String,
+        args: Vec<String>,
+        options: bindings::openidea::plugin::run::StartOptions,
+    ) -> Fallible<String> {
+        use bindings::openidea::plugin::run::OutputMode as WitOutputMode;
         if let Err(e) = self.require_window() {
             return Ok(Err(e));
         }
         if args.len() > MAX_ARGS || args.iter().any(|a| a.len() > MAX_ARG_BYTES || a.contains('\0')) {
             return Ok(Err(wit::Error::Invalid("invalid run arguments".into())));
         }
+        let options = crate::PluginRunStartOptions {
+            debug: options.debug,
+            output_mode: options.output_mode.map(|m| match m {
+                WitOutputMode::Pipes => crate::PluginOutputMode::Pipes,
+                WitOutputMode::Pty => crate::PluginOutputMode::Pty,
+            }),
+        };
         Ok(self
             .host
             .start_run(
                 self.invocation.client.as_deref().unwrap(),
                 &config,
                 args,
-                debug,
+                options,
                 &self.cancel.token(),
                 self.remaining(),
             )
@@ -2703,6 +2749,14 @@ pub(crate) mod run_configurations_bindings {
 pub(crate) mod launch_configurations_bindings {
     wasmtime::component::bindgen!({ world: "launch-configurations-provider", path: "../../wit",
         with: { "openidea:plugin/types": super::bindings::openidea::plugin::types },
+    });
+}
+pub(crate) mod execution_configurations_bindings {
+    wasmtime::component::bindgen!({ world: "execution-configurations-provider", path: "../../wit",
+        with: {
+            "openidea:plugin/types": super::bindings::openidea::plugin::types,
+            "openidea:plugin/run": super::bindings::openidea::plugin::run,
+        },
     });
 }
 pub(crate) mod test_results_bindings {
@@ -3228,6 +3282,11 @@ pub(crate) mod mcp_bindings {
 }
 
 /// Optional API 1.5 run-target launch validation.
+/// The optional `run-anything-provider` export (API 1.18), bound on its own when present.
+pub(crate) mod run_anything_bindings {
+    wasmtime::component::bindgen!({ world: "run-anything-exports", path: "../../wit" });
+}
+
 pub(crate) mod run_target_validation_bindings {
     wasmtime::component::bindgen!({ world: "run-target-validator", path: "../../wit" });
 }

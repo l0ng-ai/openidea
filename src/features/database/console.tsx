@@ -759,10 +759,10 @@ function ConsoleBar({ path, view }: { path: string; view: EditorView }) {
   const schemaOptions = useMemo(() => {
     if (!switchable) return [];
     const names = schemaList?.status === "ok" ? schemaList.value : [];
-    const out = names.map((n) => ({ value: n, label: n, icon: "db-schema" }));
+    const out = names.map((n) => ({ value: n, label: n, verbatim: true, icon: "db-schema" }));
     // The connection's default is offered even before its schema list loads.
     if (defaultSchema && !names.includes(defaultSchema))
-      out.unshift({ value: defaultSchema, label: defaultSchema, icon: "db-schema" });
+      out.unshift({ value: defaultSchema, label: defaultSchema, verbatim: true, icon: "db-schema" });
     return out;
   }, [switchable, schemaList, defaultSchema]);
   // IDEA's order: pick the data source, then a database and a schema in it.
@@ -1026,7 +1026,7 @@ function SnowflakeSession({ target, idle }: { target: string; idle: boolean }) {
       setState((s) => (what === "WAREHOUSE" ? { ...s, warehouse: name } : { ...s, role: name }));
   };
   const options = (names: string[], current: string) =>
-    [...new Set(current ? [current, ...names] : names)].map((n) => ({ value: n, label: n }));
+    [...new Set(current ? [current, ...names] : names)].map((n) => ({ value: n, label: n, verbatim: true }));
   return (
     <>
       <Select

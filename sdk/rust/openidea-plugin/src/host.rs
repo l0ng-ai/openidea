@@ -626,10 +626,7 @@ mod imp {
     }
 
     pub fn subscribe_paths_with_options(kind: &str, options: &crate::SubscriptionOptions) -> Result<(), Error> {
-        let opts = wit::events::SubscriptionOptions {
-            globs: options.globs.clone(),
-            debounce_ms: options.debounce_ms,
-        };
+        let opts = wit::events::SubscriptionOptions { globs: options.globs.clone(), debounce_ms: options.debounce_ms };
         wit::events::subscribe_paths_with_options(kind, &opts).map_err(error)
     }
 
@@ -1021,11 +1018,32 @@ mod imp {
     pub fn start_run(config: &str, args: &[String], debug: bool) -> Result<String, Error> {
         wit::run::start(config, args, debug).map_err(error)
     }
+    pub fn start_run_with_options(
+        config: &str,
+        args: &[String],
+        options: &crate::RunStartOptions,
+    ) -> Result<String, Error> {
+        let mode = options.output_mode.map(|m| match m {
+            crate::OutputMode::Pipes => wit::run::OutputMode::Pipes,
+            crate::OutputMode::Pty => wit::run::OutputMode::Pty,
+        });
+        wit::run::start_with_options(config, args, wit::run::StartOptions { debug: options.debug, output_mode: mode })
+            .map_err(error)
+    }
     pub fn open_terminal_session(key: &str, title: &str, cmd: &super::Command) -> Result<String, Error> {
         wit::views::open_terminal_session(
             key,
             title,
             &wit::process::Command { program: cmd.program.clone(), args: cmd.args.clone(), env: cmd.env.clone() },
+        )
+        .map_err(error)
+    }
+    pub fn open_terminal_session_in(key: &str, title: &str, cmd: &super::Command, cwd: &str) -> Result<String, Error> {
+        wit::views::open_terminal_session_in(
+            key,
+            title,
+            &wit::process::Command { program: cmd.program.clone(), args: cmd.args.clone(), env: cmd.env.clone() },
+            cwd,
         )
         .map_err(error)
     }
@@ -2190,9 +2208,23 @@ pub fn set_file_icons(set: &str, items: &[(String, String)]) -> Result<(), Error
 pub fn start_run(config: &str, args: &[String], debug: bool) -> Result<String, Error> {
     imp::start_run(config, args, debug)
 }
+/// Starts an owned run configuration with launch options (API 1.18). Its id receives run-exited.
+pub fn start_run_with_options(
+    config: &str,
+    args: &[String],
+    options: &crate::RunStartOptions,
+) -> Result<String, Error> {
+    imp::start_run_with_options(config, args, options)
+}
 /// Opens/reuses a keyed, approved terminal with append-only environment variables.
 pub fn open_terminal_session(key: &str, title: &str, cmd: &Command) -> Result<String, Error> {
     imp::open_terminal_session(key, title, cmd)
+}
+/// [`open_terminal_session`] started in `cwd` (API 1.18): a directory of the window's
+/// project relative to its root (`""` is the root), which must exist and stay inside the
+/// project. Trust and the approved program stay the project's.
+pub fn open_terminal_session_in(key: &str, title: &str, cmd: &Command, cwd: &str) -> Result<String, Error> {
+    imp::open_terminal_session_in(key, title, cmd, cwd)
 }
 /// Writes to this plugin's running keyed terminal in the invoking window.
 pub fn write_terminal(key: &str, text: &str) -> Result<(), Error> {

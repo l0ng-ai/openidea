@@ -183,6 +183,8 @@ struct State {
     view_messages: Vec<(String, String)>,
     terminals: Vec<MockTerminal>,
     terminal_sessions: BTreeMap<String, (String, crate::host::Command, String)>,
+    /// Directory a keyed terminal was opened in with `open_terminal_session_in`.
+    terminal_cwds: BTreeMap<String, String>,
     terminal_writes: Vec<(String, String)>,
     content_tabs: BTreeMap<String, crate::ContentTab>,
     content_replies: Vec<(String, crate::ContentTabReply)>,
@@ -197,7 +199,12 @@ struct State {
     extension_points: BTreeMap<String, Vec<crate::Contribution>>,
     run_targets: BTreeMap<(String, String), crate::PluginRunTargetWithOverrides>,
     run_configurations: BTreeMap<String, crate::PluginRunConfiguration>,
+    execution_configurations: BTreeMap<String, crate::PluginExecutionConfiguration>,
+    user_run_output_overrides: BTreeMap<String, crate::OutputMode>,
+    run_stdin_files: BTreeSet<String>,
+    run_remote_targets: BTreeSet<String>,
     configuration_runs: Vec<(String, String, Vec<String>, bool)>,
+    configuration_run_options: Vec<(String, String, Vec<String>, crate::RunStartOptions, crate::OutputMode)>,
     log_tabs: Vec<MockLogTab>,
     locations: Vec<(String, u32, u32)>,
     settings: BTreeMap<String, String>,
@@ -609,6 +616,23 @@ impl MockHost {
         self.state.borrow().diagnostics.clone()
     }
 
+    /// Asks a Run Anything provider (API 1.18) for its entries in the mock project.
+    pub fn run_anything_suggest(
+        &self,
+        provider: &mut impl crate::RunAnything,
+        prefix: &str,
+        text: &str,
+    ) -> Vec<crate::RunAnythingItem> {
+        let project = self.invocation().project().expect("mock project").root().expect("mock root");
+        provider.suggest(&project, prefix, text).into_iter().take(100).collect()
+    }
+
+    /// Runs a Run Anything line (API 1.18) in the mock project: whether it was claimed.
+    pub fn run_anything_run(&self, provider: &mut impl crate::RunAnything, prefix: &str, line: &str) -> bool {
+        let project = self.invocation().project().expect("mock project").root().expect("mock root");
+        provider.run(&project, prefix, line)
+    }
+
     /// Calls a target validator with the mock project's root and launch metadata.
     pub fn validate_run_target(
         &self,
@@ -711,6 +735,12 @@ impl MockHost {
     pub fn configuration_runs(&self) -> Vec<(String, String, Vec<String>, bool)> {
         self.state.borrow().configuration_runs.clone()
     }
+    /// Run launches recorded with start options and resolved effective output mode (API 1.18).
+    pub fn configuration_run_options(
+        &self,
+    ) -> Vec<(String, String, Vec<String>, crate::RunStartOptions, crate::OutputMode)> {
+        self.state.borrow().configuration_run_options.clone()
+    }
     /// Makes the language server `server` run and answer `method` with `result` (JSON).
     /// A server with no answer set is not running: requests to it are not-found.
     pub fn set_language_server_response(&self, server: &str, method: &str, result: &str) {
@@ -738,7 +768,49 @@ impl MockHost {
         self.state.borrow_mut().extension_points.insert(point.into(), list);
     }
     pub fn set_run_configurations(&self, configs: Vec<crate::PluginRunConfiguration>) {
-        self.state.borrow_mut().run_configurations = configs.into_iter().map(|c| (c.id.clone(), c)).collect();
+        let mut s = self.state.borrow_mut();
+        s.run_configurations = configs.into_iter().map(|c| (c.id.clone(), c)).collect();
+        s.execution_configurations.clear();
+    }
+    /// Configurations with environment, debugger, and default output mode (API 1.18).
+    pub fn set_execution_configurations(&self, configs: Vec<crate::PluginExecutionConfiguration>) {
+        let mut s = self.state.borrow_mut();
+        s.run_configurations = configs.iter().map(|c| (c.launch.config.id.clone(), c.launch.config.clone())).collect();
+        s.execution_configurations = configs.into_iter().map(|c| (c.launch.config.id.clone(), c)).collect();
+    }
+    /// Simulates a user-saved output-mode override in `.openidea/run.toml` (API 1.18).
+    pub fn set_user_run_output_override(&self, config: &str, mode: Option<crate::OutputMode>) {
+        let mut s = self.state.borrow_mut();
+        match mode {
+            Some(mode) => {
+                s.user_run_output_overrides.insert(config.into(), mode);
+            }
+            None => {
+                s.user_run_output_overrides.remove(config);
+            }
+        }
+    }
+    /// Marks a configuration as having stdin file redirection in native tests.
+    pub fn set_run_configuration_stdin_file(&self, config: &str, redirected: bool) {
+        let mut s = self.state.borrow_mut();
+        if redirected {
+            s.run_stdin_files.insert(config.into());
+        } else {
+            s.run_stdin_files.remove(config);
+        }
+    }
+    /// Marks a configuration as targeting a remote run target in native tests.
+    pub fn set_run_configuration_remote_target(&self, config: &str, remote: bool) {
+        let mut s = self.state.borrow_mut();
+        if remote {
+            s.run_remote_targets.insert(config.into());
+        } else {
+            s.run_remote_targets.remove(config);
+        }
+    }
+    /// The project-relative directory a keyed terminal was opened in (API 1.18), if any.
+    pub fn terminal_cwd(&self, key: &str) -> Option<String> {
+        self.state.borrow().terminal_cwds.get(key).cloned()
     }
     /// Text written through write_terminal.
     pub fn terminal_writes(&self) -> Vec<(String, String)> {
@@ -747,6 +819,7 @@ impl MockHost {
     /// Simulates exit, releasing the key for another operation.
     pub fn finish_terminal(&self, key: &str) -> Option<crate::Event> {
         let (id, _, _) = self.state.borrow_mut().terminal_sessions.remove(key)?;
+        self.state.borrow_mut().terminal_cwds.remove(key);
         Some(crate::Event::Other {
             kind: "terminal-exited".into(),
             data: serde_json::to_string(&crate::TerminalExited { id, key: key.into(), status: Some(0), closed: false })
@@ -2713,14 +2786,57 @@ pub mod current {
         });
     }
     pub fn start_run(config: &str, args: &[String], debug: bool) -> Result<String, Error> {
+        start_run_with_options(config, args, &crate::RunStartOptions { debug, output_mode: None })
+    }
+    pub fn start_run_with_options(
+        config: &str,
+        args: &[String],
+        options: &crate::RunStartOptions,
+    ) -> Result<String, Error> {
         with(|s| {
-            let c = s.run_configurations.get(config).ok_or_else(|| Error::NotFound(config.into()))?;
+            let c = s.run_configurations.get(config).ok_or_else(|| Error::NotFound(config.into()))?.clone();
             require(s, &format!("process:{}", c.program))?;
-            if debug {
+            let exec = s.execution_configurations.get(config);
+            let debug = options.debug;
+            let has_debugger = exec.is_some_and(|e| e.launch.debugger.is_some());
+            if debug && !has_debugger {
                 return Err(Error::Invalid("this configuration has no debugger".into()));
+            }
+            let has_target = s.run_remote_targets.contains(config);
+            if debug && has_target {
+                return Err(Error::Invalid("debugging this target is not supported".into()));
+            }
+            if debug && options.output_mode == Some(crate::OutputMode::Pty) {
+                return Err(Error::Invalid("terminal emulation cannot be used when debugging".into()));
+            }
+            let plugin_default = exec.map_or(crate::OutputMode::Pipes, |e| e.output_mode);
+            let effective_mode = if debug {
+                crate::OutputMode::Pipes
+            } else if let Some(&user_mode) = s.user_run_output_overrides.get(config) {
+                user_mode
+            } else if let Some(mode) = options.output_mode {
+                mode
+            } else {
+                plugin_default
+            };
+            let requested_pty =
+                effective_mode == crate::OutputMode::Pty || options.output_mode == Some(crate::OutputMode::Pty);
+            if !debug && requested_pty {
+                if c.test {
+                    return Err(Error::Invalid("terminal emulation cannot be used for test configurations".into()));
+                }
+                if s.run_stdin_files.contains(config) {
+                    return Err(Error::Invalid(
+                        "input cannot be redirected from a file when emulating a terminal".into(),
+                    ));
+                }
+                if has_target {
+                    return Err(Error::Invalid("terminal emulation on this target is not supported".into()));
+                }
             }
             let id = format!("mock-run-{}", s.configuration_runs.len());
             s.configuration_runs.push((id.clone(), config.into(), args.to_vec(), debug));
+            s.configuration_run_options.push((id.clone(), config.into(), args.to_vec(), *options, effective_mode));
             Ok(id)
         })
     }
@@ -2739,6 +2855,22 @@ pub mod current {
             s.terminal_sessions.insert(key.into(), (id.clone(), cmd.clone(), title.into()));
             Ok(id)
         })
+    }
+    pub fn open_terminal_session_in(
+        key: &str,
+        title: &str,
+        cmd: &crate::host::Command,
+        cwd: &str,
+    ) -> Result<String, Error> {
+        let path = std::path::Path::new(cwd);
+        if path.has_root() || path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+            return Err(Error::Invalid(format!("terminal directory {cwd:?}: outside the project")));
+        }
+        let id = open_terminal_session(key, title, cmd)?;
+        with(|s| {
+            s.terminal_cwds.entry(key.into()).or_insert_with(|| cwd.into());
+        });
+        Ok(id)
     }
     pub fn write_terminal(key: &str, text: &str) -> Result<(), Error> {
         with(|s| {

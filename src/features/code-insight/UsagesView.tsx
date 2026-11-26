@@ -87,6 +87,7 @@ export function UsagesTabs() {
       items={tabs.map((t) => ({
         id: String(t.id),
         label: label(t),
+        verbatim: true,
         closable: true,
         pinned: t.pinned,
       }))}

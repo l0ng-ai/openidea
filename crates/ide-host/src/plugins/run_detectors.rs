@@ -45,6 +45,9 @@ pub struct Detector {
     /// Optional output parser, including the API 1.4 plugin export.
     #[serde(default)]
     pub framework: Option<String>,
+    /// Output stream transport (API 1.18): `"pipes"` (default) or `"pty"`.
+    #[serde(default, alias = "outputMode")]
+    pub output_mode: Option<ide_plugin::PluginOutputMode>,
 }
 
 /// Detectors of enabled plugins.
@@ -93,6 +96,12 @@ impl ExtensionPoint for RunDetectorsPoint {
         }
         if d.framework.as_ref().is_some_and(|v| v.is_empty() || v.len() > 64) {
             return Err("invalid test framework".into());
+        }
+        if d.output_mode.is_some() {
+            pkg.manifest.needs_api("runDetectors.outputMode", 18)?;
+        }
+        if d.test && d.output_mode == Some(ide_plugin::PluginOutputMode::Pty) {
+            return Err(format!("run detector {:?}: test configurations cannot emulate a terminal", d.id));
         }
         validate_item_id(&d.id, "run detector id")?;
         if d.name.trim().is_empty() || d.name.len() > 128 {
@@ -169,6 +178,7 @@ impl ExternalDetection for PluginRunDetection {
                 allow_parallel: false,
                 extras: ide_run::RunExtras {
                     params: d.framework.clone().map(|f| [("framework".into(), f)].into()).unwrap_or_default(),
+                    emulate_terminal: d.output_mode == Some(ide_plugin::PluginOutputMode::Pty),
                     ..Default::default()
                 },
             })
@@ -193,7 +203,10 @@ impl ExternalDetection for PluginRunDetection {
                     is_test: c.test,
                     debug_adapter: None,
                     allow_parallel: false,
-                    extras: Default::default(),
+                    extras: ide_run::RunExtras {
+                        emulate_terminal: c.output_mode == ide_plugin::PluginOutputMode::Pty,
+                        ..Default::default()
+                    },
                 };
                 config.id = config_id(plugin, &c.id);
                 config.cwd = Some(c.cwd.as_ref().map(|p| root.join(p)).unwrap_or_else(|| root.to_path_buf()).into());
@@ -248,5 +261,36 @@ impl ExternalDetection for PluginRunDetection {
             format!("allow process:{} for plugin {plugin} in Settings › Plugins to run this configuration", d.command)
         })?;
         pin.verify().map(Path::to_path_buf)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ide_extension::ExtensionPoint;
+
+    #[test]
+    fn detector_output_mode_requires_api_18_and_rejects_tests() {
+        let point = RunDetectorsPoint::new(Arc::default());
+        let base_toml = |extra: &str| {
+            let src = format!("id = \"test\"\nname = \"Test\"\nversion = \"1.0.0\"\n{extra}\n");
+            let manifest = ide_extension::Manifest::parse(&src).unwrap();
+            ide_extension::Package::new(manifest, std::env::temp_dir())
+        };
+        let decl = |test: bool, mode: &str| -> toml::Value {
+            toml::from_str(&format!(
+                "id = \"run\"\nname = \"Run\"\nfiles = [\"m\"]\ncommand = \"tool\"\ntest = {test}\noutputMode = \"{mode}\"\n"
+            ))
+            .unwrap()
+        };
+
+        let old = base_toml("engines.openidea = \"^1.17\"");
+        assert!(point.prepare(&old, decl(false, "pty")).unwrap_err().contains("1.18"));
+
+        let current = base_toml("engines.openidea = \"^1.18\"");
+        assert!(point.prepare(&current, decl(false, "pty")).is_ok());
+        assert!(point.prepare(&current, decl(false, "pipes")).is_ok());
+        assert!(point.prepare(&current, decl(true, "pipes")).is_ok());
+        assert!(point.prepare(&current, decl(true, "pty")).unwrap_err().contains("test"));
     }
 }

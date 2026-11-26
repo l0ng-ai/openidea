@@ -158,6 +158,7 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 | `customEditors`     | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`, `frames?`, `binary?` (API 1.16)                                                                                                           | without `web` |
 | `editorPanels`      | `id`, `web`, `width` (pixels, 40–400), `when?`, `frames?` (API 1.16) — needs `editor.read` (API 1.9; _Editor panels_)                                                                                                                  | no            |
 | `overlays`          | `id`, `web`, `width`, `height` (pixels, 40–800), `anchor?`, `when?`, `interactive?` — floats over the workbench, never takes the focus (API 1.18; _Overlays_)                                                                          | no            |
+| `runAnything`       | `prefix`, `title?` — Run Anything lines starting with `prefix`, answered by the `run-anything-provider` export (API 1.18; _Run Anything entries_)                                                                                      | no            |
 | `dialogs`           | `id`, `title`, `web`, `width` (320–1600), `height` (200–1200) — a modal, resizable dialog opened by `views::reveal(id)` (API 1.18; _Dialogs_)                                                                                          | no            |
 | `fileIcons`         | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                                                                                                                               | no            |
 | `fileTemplates`     | `id`, `name`, `extension`, `path`; API 1.3: `fileName`, `variables = [{ name, prompt }]` — New menu                                                                                                                                    | no            |
@@ -455,6 +456,25 @@ matching SDK. Plugins for 1.17 and earlier keep working. New in 1.18:
   configurations from a superseded generation is rejected with `Error::Stale`.
 - `EventKind::ProjectClosed` (`project-closed`) notifies subscribed plugins when a project closes,
   after queued project events are dropped and project run targets and configurations are withdrawn.
+- **Run output transport (`pipes` or `pty`).** Non-test plugin run
+  configurations can request pseudo-terminal emulation (`OutputMode::Pty`,
+  matching **Emulate terminal in output console**) instead of separate stdout
+  and stderr pipes (`OutputMode::Pipes`, the default). Static
+  `[[contributes.runDetectors]]` accept `outputMode = "pty"` (or `"pipes"`),
+  dynamic configurations can export `execution-configurations`
+  (`ExecutionConfigurations`, registration `execution_configurations`), and
+  launches can pass a per-invocation override via
+  `host::start_run_with_options` (`run.start-with-options`). User-saved
+  overrides win over per-invocation overrides, which win over plugin defaults.
+  PTY is rejected for `test` configurations, `debug` launches requesting `Pty`,
+  remote run targets, and redirected `stdin` files. See
+  [Output transport: pipes or PTY](#output-transport-pipes-or-pty-api-118).
+- **Run Anything (`[[contributes.runAnything]]`, `run-anything-provider`).** Lines
+  starting with the plugin's prefix (`task build`) are suggested and run by its
+  code; a claimed line never falls back to the shell. See
+  [Run Anything entries](#run-anything-entries-api-118).
+- **Terminals in a project directory.** `host::open_terminal_session_in` starts a
+  keyed terminal in a directory of the project rather than its root.
 
 ### API 1.17
 
@@ -934,7 +954,9 @@ then run `openidea-plugin check`.
 | `host::register_run_target(project, target)`                                                                   | `run-targets.register`                       | API 1.4: project-scoped, read-only argv wrapper; requires its process grant, executable pin and project trust; remote projects run on the server.                                                                                                                                                                                                         |
 | `host::unregister_run_target(project, id)`                                                                     | `run-targets.unregister`                     | Withdraw this plugin's target; remembered prompt answers remain.                                                                                                                                                                                                                                                                                          |
 | `host::start_run(config, args, debug)`                                                                         | `run.start`                                  | API 1.4: start an owned configuration in this window's Run tool window; returns an id, followed by `run-exited`. Approved `process:` program; commands/events only.                                                                                                                                                                                       |
+| `host::start_run_with_options(config, args, options)`                                                          | `run.start-with-options`                     | API 1.18: start an owned configuration with `RunStartOptions` (`debug` and optional per-launch `output_mode`); user-saved override wins over `options.output_mode`, which wins over plugin default.                                                                                                                                                       |
 | `host::open_terminal_session(key, title, cmd)`                                                                 | `views.open-terminal-session`                | API 1.4: keyed, pinned terminal in this window, append-only env; returns its operation id and later `terminal-exited`.                                                                                                                                                                                                                                    |
+| `host::open_terminal_session_in(key, title, cmd, cwd)`                                                         | `views.open-terminal-session-in`             | API 1.18: the same, started in `cwd`, a directory of the project relative to its root.                                                                                                                                                                                                                                                                    |
 | `host::write_terminal(key, text)`                                                                              | `views.write-terminal`                       | API 1.4: write only to this plugin's still-running terminal in this window; trusted project, commands/events only.                                                                                                                                                                                                                                        |
 | `host::open_content_tab(tab)`                                                                                  | `views.open-content-tab`                     | API 1.4: the shared content editor protocol, without a web view; actions arrive as `content-tab-action`.                                                                                                                                                                                                                                                  |
 | `host::reply_content_tab(request_id, reply)`                                                                   | `views.reply-content-tab`                    | API 1.4: reply to an owned action in the originating window. No capability; commands/events only.                                                                                                                                                                                                                                                         |
@@ -942,6 +964,7 @@ then run `openidea-plugin check`.
 | `host::open_file_diff(diff, file_name)`                                                                        | `views.open-file-diff`                       | API 1.10: `open_diff` where a side may be `None` (the file doesn't exist there: added or deleted); the viewer shows the other side alone. Both `None` fails with `Invalid`.                                                                                                                                                                               |
 | `RunConfigurations::configurations(root)`                                                                      | export `run-configurations.configurations`   | API 1.4: optional `plugin-run-configurations` world; SDK registration `run_configurations`. Full project list, refreshed on configuration listing.                                                                                                                                                                                                        |
 | `LaunchConfigurations::launch_configurations(root)`                                                            | export `launch-configurations`               | API 1.9: optional `plugin-launch-configurations` world; SDK registration `launch_configurations`. The same list with `env` and `debugger`; preferred over `run-configurations`.                                                                                                                                                                           |
+| `ExecutionConfigurations::execution_configurations(root)`                                                      | export `execution-configurations`            | API 1.18: optional `plugin-execution-configurations` world; SDK registration `execution_configurations`. Adds a default `output_mode` (`Pipes` or `Pty`); preferred over `launch-configurations` and `run-configurations`.                                                                                                                                |
 | `TestResults::parse(config, chunk)`                                                                            | export `test-results.parse`                  | API 1.4: optional `plugin-test-results` world; SDK registration `test_results`. Bounded output batches for `framework = "plugin"`; failures use built-in parsers.                                                                                                                                                                                         |
 | `TestResults::select_tests(config, tests)`                                                                     | export `test-results.select-tests`           | API 1.4: full replacement argv for test-tree name paths, or `None` when unsupported (the SDK default). Enables rerunning failed tests and running tree selections.                                                                                                                                                                                        |
 | `host::open_location(path, line, column)`                                                                      | `views.open-location`                        | Opens a file inside the project in an editor of the invoking window, the caret at `line`/`column` (0-based, UTF-16): a view's links to code. Needs `project.read`.                                                                                                                                                                                        |
@@ -2583,6 +2606,27 @@ register_plugin!(Functions, launch_configurations);
 A component exporting both uses `launch-configurations`. Plugins that call
 `run.start(config, args, true)` on such a configuration get the same Debug.
 
+#### Output transport: pipes or PTY (API 1.18)
+
+Plugins targeting API 1.18+ can request either piped console output (`Pipes`, the
+default preserved for all older plugins) or pseudo-terminal emulation (`Pty`,
+equivalent to **Emulate terminal in output console**):
+
+- On static `[[contributes.runDetectors]]`, set `outputMode = "pty"` (or `"pipes"`).
+- From code, export `execution-configurations` (`ExecutionConfigurations`,
+  registered as `execution_configurations`), which sets `output_mode: OutputMode`
+  on each `PluginExecutionConfiguration` and takes precedence over
+  `launch-configurations` and `run-configurations`.
+- Per launch, call `host::start_run_with_options(config, &args, &RunStartOptions { debug, output_mode })`.
+
+Precedence at launch: a user-saved override in **Run | Edit Configurations…**
+wins over the per-invocation `output_mode`, which wins over the plugin's
+configured default. Disallowed combinations (`test` configurations, `debug`
+launches requesting `Pty`, remote run targets, and `stdin` file redirection) are
+rejected with `Invalid`. Ordinary PTYs combine stdout and stderr into a single
+stream and can change buffering, input handling, and terminal behavior (line
+endings, echo, and ANSI control sequences).
+
 For a static detector, `framework = "plugin"` is an API 1.4 manifest field. For
 either kind of configuration, it enables the optional `TestResults` export
 (registration `test_results`). `parse(config, chunk)` receives the short config
@@ -2606,6 +2650,15 @@ have the same append-only validation and collision errors as `run-command`.
 like writing to a process child. Closing the tab stops the operation. Idle wasm
 reclamation retains running sessions; disabling the plugin or revoking its grant
 ends its PTYs. `views.open-terminal` keeps its released behavior.
+
+`host::open_terminal_session_in(key, title, &cmd, "services/api")` (API 1.18,
+`views.open-terminal-session-in`) starts the terminal in a directory of the
+project instead of its root: the path is relative to the root (`""` is the root),
+must name an existing directory and must stay inside the project once symlinks
+are resolved (an absolute path, `..` out of the project or a symlink pointing
+outside is `invalid`). The project, not the directory, decides trust and the
+approved program. Reopening a running key focuses it where it is. This places
+the shell; it does not confine what the program then does.
 
 Completions go only to the owning plugin, in its launching window, even without
 a subscription and even when its wasm instance was reclaimed. A terminal emits
@@ -3554,6 +3607,46 @@ Composer/npm scripts, PHPUnit and Node tests use that choice through the normal
 Run flow. Explicit per-configuration targets take precedence. Choosing Local
 machine explicitly overrides defaults. Language servers, tool discovery/version
 probes and external analysis helpers remain local to the host.
+
+### Run Anything entries (API 1.18)
+
+A task runner's plugin can answer Run Anything (Ctrl Ctrl) lines that start with
+its command word, as the IDE does for `mvn` and `gradle`. Declare the prefix:
+
+```toml
+[[contributes.runAnything]]
+prefix = "task"      # one lowercase word: letters, digits, `.`, `_`, `-` (at most 32)
+title = "Go Task"    # optional: the heading of its entries (default: the plugin's name)
+```
+
+and implement `RunAnything`, registered with `run_anything`:
+
+```rust
+impl RunAnything for MyPlugin {
+    fn suggest(&mut self, project: &str, prefix: &str, text: &str) -> Vec<RunAnythingItem> {
+        // From the tasks the plugin already listed: no process per keystroke.
+        self.tasks(project).iter().filter(|t| format!("{prefix} {t}").starts_with(text))
+            .map(|t| RunAnythingItem { label: format!("{prefix} {t}"), ..Default::default() }).collect()
+    }
+    fn run(&mut self, project: &str, prefix: &str, line: &str) -> bool {
+        let Some(task) = self.task_for(project, line) else { return false };
+        host::start_run(&task.configuration_id, &[], false).is_ok()
+    }
+}
+register_plugin!(MyPlugin, run_anything);
+```
+
+`suggest` is asked while the field's text starts with the prefix (`task b`) or is
+the start of it (`ta`). Entries arrive after the IDE's own: the first 100 are
+kept, an answer that comes after the text changed is dropped, and the call has
+300 ms. `line` (default `label`) is what Tab completes and Enter runs.
+
+`run` gets a line whose first word is the prefix, in a command context of the
+invoking window, so it can use `host::start_run`, terminals and its other granted
+calls, with their usual trust and grant checks. `true` claims the line. `false`
+leaves it to the IDE's other entries and finally the shell. When the call fails
+(trap, timeout, plugin disabled) the line counts as claimed and the error is
+shown: a line meant for the plugin never runs in the shell by accident.
 
 ### Validating run targets (API 1.5)
 
