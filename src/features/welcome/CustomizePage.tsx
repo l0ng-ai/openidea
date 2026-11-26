@@ -100,8 +100,9 @@ export function CustomizePage() {
   const keymaps = useMemo<SelectOption[]>(() => {
     const custom = (settings?.customKeymaps ?? {}) as Record<string, { name?: string }>;
     const list: SelectOption[] = Object.entries(PRESET_TITLES).map(([value, label]) => ({ value, label }));
-    for (const [id, k] of Object.entries(custom)) list.push({ value: id, label: k?.name || id });
-    if (!list.some((o) => o.value === shown.keymap)) list.push({ value: shown.keymap, label: shown.keymap });
+    for (const [id, k] of Object.entries(custom)) list.push({ value: id, verbatim: true, label: k?.name || id });
+    if (!list.some((o) => o.value === shown.keymap))
+      list.push({ value: shown.keymap, verbatim: true, label: shown.keymap });
     return list;
   }, [settings?.customKeymaps, shown.keymap]);
 

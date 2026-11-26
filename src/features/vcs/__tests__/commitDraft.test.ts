@@ -221,6 +221,16 @@ describe("commit message draft (#4423)", () => {
     expect(useCommit.getState()).toMatchObject({ author: "", authorDate: scoped.authorDate, amend: false });
   });
 
+  it("loads no message for Amend with several repositories (#6149)", async () => {
+    useVcs.setState({ root: "/a", roots: ["/a", "/a/b"] });
+    type("my draft");
+    await setAmend(true);
+    expect(vcsLog).not.toHaveBeenCalled();
+    expect(useCommit.getState()).toMatchObject({ amend: true, message: "my draft" });
+    await setAmend(false);
+    expect(useCommit.getState()).toMatchObject({ amend: false, message: "my draft" });
+  });
+
   it("keeps the typed draft, not the amended commit's message, while Amend is on", async () => {
     type("my draft");
     flushDraft();

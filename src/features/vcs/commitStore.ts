@@ -450,6 +450,9 @@ export async function setAmend(on: boolean, target: EarlierAmend | null = null) 
     if (data) scheduleDraft();
     return;
   }
+  // With several repositories the commit to amend is ambiguous: as in IDEA, no message is
+  // loaded, and the one typed amends each repository's HEAD.
+  if (!target && roots.length > 1) return;
   const current = () => request === amendRequest && useCommit.getState().amend && useVcs.getState().root === project;
   let head = target?.commit;
   const source = previewRoot ?? amendedRepository();
