@@ -151,6 +151,11 @@ public class SelfTest {
                 "", "", "false", "file", "unused", "");
             rejectedLake(out, in, "absolute", "openDuckLake", duckdb, memory,
                 "", "", "true", "file", "relative/catalog.ducklake", "");
+            Path temp = Path.of(System.getProperty("java.io.tmpdir")).toAbsolutePath();
+            rejectedLake(out, in, "regular DuckLake catalog file", "openDuckLake", duckdb, memory,
+                "", "", "true", "file", temp.toString(), "");
+            rejectedLake(out, in, "does not exist", "openDuckLake", duckdb, memory,
+                "", "", "true", "file", temp.resolve(UUID.randomUUID() + "-private-token").toString(), "");
             rejectedLake(out, in, "existing DuckLake secret name", "openDuckLake", duckdb, memory,
                 "", "", "true", "secret", "postgresql://user:private-token@localhost/catalog", "");
             rejectedLake(out, in, "absolute", "openDuckLake", duckdb, memory,

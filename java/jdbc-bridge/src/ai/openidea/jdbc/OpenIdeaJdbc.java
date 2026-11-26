@@ -7,7 +7,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.sql.*;
 import java.util.*;
 import java.util.concurrent.*;
@@ -120,6 +122,16 @@ public final class OpenIdeaJdbc {
         throw new DuckLakeUnavailable("DuckLake requires an absolute local path on the database host.");
     }
 
+    private static BasicFileAttributes lakePathAttributes(Path path, String description) throws DuckLakeUnavailable {
+        try {
+            return Files.readAttributes(path, BasicFileAttributes.class);
+        } catch (NoSuchFileException ignored) {
+            throw new DuckLakeUnavailable("The DuckLake " + description + " does not exist on the database host.");
+        } catch (IOException | SecurityException ignored) {
+            throw new DuckLakeUnavailable("The DuckLake " + description + " could not be accessed on the database host. Check permissions.");
+        }
+    }
+
     private static String sqlLiteral(String value) {
         return "'" + value.replace("'", "''") + "'";
     }
@@ -147,16 +159,18 @@ public final class OpenIdeaJdbc {
                 throw new DuckLakeUnavailable("Enter an existing DuckLake secret name using letters, digits or underscores.");
         } else {
             catalog = absoluteLakePath(value);
-            if (!create && !Files.isRegularFile(catalog))
-                throw new DuckLakeUnavailable("The DuckLake catalog file does not exist on the database host.");
+            if (!create && !lakePathAttributes(catalog, "catalog file").isRegularFile())
+                throw new DuckLakeUnavailable("Choose a regular DuckLake catalog file on the database host.");
         }
-        if (!dataPath.isEmpty() && !Files.isDirectory(absoluteLakePath(dataPath)))
-            throw new DuckLakeUnavailable("Choose an existing DuckLake data directory on the database host.");
+        if (!dataPath.isEmpty() && !lakePathAttributes(absoluteLakePath(dataPath), "data directory").isDirectory())
+            throw new DuckLakeUnavailable("Choose a DuckLake data directory on the database host.");
 
         Driver driver = Class.forName(DUCKDB_CLASS).asSubclass(Driver.class).getConstructor().newInstance();
         Connection session = driver.connect(DUCKDB_MEMORY, new Properties());
         if (session == null) throw new UnsupportedUrl();
 
+        boolean directoryCreated = false;
+        String recovery = " If the directory contains catalog.ducklake, try opening it. Otherwise choose a new directory.";
         String failure = "DuckLake could not load the official extension. Check the DuckDB version and extension access.";
         try {
             try (Statement st = session.createStatement()) {
@@ -181,9 +195,11 @@ public final class OpenIdeaJdbc {
                     try {
                         Files.createDirectory(catalog);
                     } catch (FileAlreadyExistsException ignored) {
-                        throw new DuckLakeUnavailable("The DuckLake directory already exists. Choose a new directory.");
+                        throw new DuckLakeUnavailable("The DuckLake directory already exists." + recovery);
                     }
+                    directoryCreated = true;
                     catalog = catalog.resolve("catalog.ducklake");
+                    work.begin(st);
                 }
 
                 failure = create ? "DuckLake could not initialize the new catalog. Check the new directory."
@@ -198,6 +214,7 @@ public final class OpenIdeaJdbc {
                         + DUCKLAKE_CATALOG + "' AND database_name = current_database() AND type = 'ducklake'")) {
                     if (!db.next() || db.getBoolean(1) != readOnly) throw new DuckLakeUnavailable(failure);
                 }
+                work.begin(st);
             }
             openMetadata(session, out);
             // Only a read-only session is published for later requests.
@@ -207,10 +224,11 @@ public final class OpenIdeaJdbc {
             } else {
                 connection = session;
             }
-        } catch (DuckLakeUnavailable e) {
-            throw e;
         } catch (Exception | LinkageError e) {
-            throw new DuckLakeUnavailable(failure);
+            String message = work.isCancelled() ? (create ? "DuckLake creation cancelled." : "DuckLake connection cancelled.")
+                : e instanceof DuckLakeUnavailable ? e.getMessage() : failure;
+            if (directoryCreated) message += " The new directory was kept." + recovery;
+            throw new DuckLakeUnavailable(message);
         } finally {
             if (connection != session) {
                 try { session.close(); } catch (SQLException ignored) {}
@@ -355,6 +373,8 @@ public final class OpenIdeaJdbc {
             if (cancelled) throw new SQLException("Cancelled");
             statement = st;
         }
+
+        synchronized boolean isCancelled() { return cancelled; }
 
         void cancel() {
             Statement st;
