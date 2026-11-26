@@ -1289,6 +1289,8 @@
   "Database": "資料庫",
   "Database actions": "資料庫操作",
   "Database output": "資料庫輸出",
+  "Catalog browsing requires a DuckDB data source": "瀏覽目錄需要 DuckDB 資料來源",
+  "View Data": "檢視資料",
   "Database:": "資料庫：",
   "Date": "日期",
   "Date Formats": "日期格式",
@@ -9362,7 +9364,5 @@
   "Allowed command pattern": "允許的命令模式",
   "Blocked command pattern": "封鎖的命令模式",
   "Mode applies to": "模式作用範圍",
-  "Catalog browsing requires a DuckDB data source": "瀏覽目錄需要 DuckDB 資料來源",
-  "View Data": "檢視資料",
   "Allow all optional permissions": "允許全部可選權限"
 }
