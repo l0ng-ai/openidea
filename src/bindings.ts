@@ -1226,8 +1226,8 @@ export const commands = {
 	 */
 	pluginAnswerPrompt: (promptId: string, answer: string[] | null) => __TAURI_INVOKE<boolean>("plugin_answer_prompt", { promptId, answer }),
 	pluginAnswerRunTarget: (id: string, useTarget: boolean) => typedError<Settings_Serialize, IdeError>(__TAURI_INVOKE("plugin_answer_run_target", { id, useTarget })),
-	/**  Approves the host the plugin's `net:setting:<key>` grant derives from the setting's value right now (applied in Settings, or the pending row). */
-	pluginApproveNetSetting: (id: string, setting: string, http: boolean) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_approve_net_setting", { id, setting, http })),
+	/**  Approves `host` for the plugin's `net:setting:<key>` grant (applied in Settings, or the pending row); refused when the setting no longer holds it. */
+	pluginApproveNetSetting: (id: string, setting: string, http: boolean, host: string) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_approve_net_setting", { id, setting, http, host })),
 	/**  Validated assets of a plugin whose id starts with `prefix` (icon theme mapping and SVGs). */
 	pluginAssets: (pluginId: string, prefix: string) => typedError<([string, string])[], IdeError>(__TAURI_INVOKE("plugin_assets", { pluginId, prefix })),
 	/**  Cancels a plugin task (`taskStarted` with `cancellable`). */

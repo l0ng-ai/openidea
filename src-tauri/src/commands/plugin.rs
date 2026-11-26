@@ -267,8 +267,8 @@ pub async fn plugin_net_setting_host(
     blocking(move || plugins.net_setting_host(&id, &setting, &value)).await
 }
 
-/// Approves the host the plugin's `net:setting:<key>` grant derives from the
-/// setting's value right now (applied in Settings, or the pending row).
+/// Approves `host` for the plugin's `net:setting:<key>` grant (applied in
+/// Settings, or the pending row); refused when the setting no longer holds it.
 #[desktop_command(trust = outside_restricted)]
 #[tauri::command]
 #[specta::specta]
@@ -277,9 +277,10 @@ pub async fn plugin_approve_net_setting(
     id: String,
     setting: String,
     http: bool,
+    host: String,
 ) -> IdeResult<PluginInfo> {
     let plugins = state.plugins.clone();
-    blocking(move || plugins.approve_net_setting(&id, &setting, http)).await
+    blocking(move || plugins.approve_net_setting(&id, &setting, http, &host)).await
 }
 
 /// Drops the approved host of a `net:setting:<key>` grant (revoked, or the

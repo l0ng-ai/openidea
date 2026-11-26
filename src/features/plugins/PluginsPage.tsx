@@ -626,13 +626,14 @@ function NetSettingRow({
   disabled: boolean;
 }) {
   const label = entry.http ? `net.http:setting:${entry.setting}` : `net:setting:${entry.setting}`;
+  const pending = entry.pending;
   return (
     <li className={styles.capabilityItem}>
       <div className={styles.capabilityHeader}>
         <span className={styles.mono}>{label}</span>
         <Badge tone={RISK_LABEL.medium.tone}>{RISK_LABEL.medium.label}</Badge>
       </div>
-      {entry.pending ? (
+      {pending ? (
         <>
           <p className={styles.capabilityDescription}>
             {entry.http
@@ -642,7 +643,7 @@ function NetSettingRow({
           <div className={styles.programPermission}>
             <Button
               disabled={disabled}
-              onClick={() => void approvePluginNetSetting(plugin.id, entry.setting, entry.http)}
+              onClick={() => void approvePluginNetSetting(plugin.id, entry.setting, entry.http, pending)}
             >
               {tx("Approve")}
             </Button>

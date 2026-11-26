@@ -1801,8 +1801,8 @@ describe("marketplace", () => {
         ],
       }),
     ]);
-    const approveNetSetting = vi.fn((id: string, setting: string, http: boolean) =>
-      base.approveNetSetting(id, setting, http),
+    const approveNetSetting = vi.fn((id: string, setting: string, http: boolean, host: string) =>
+      base.approveNetSetting(id, setting, http, host),
     );
     const forgetNetSetting = vi.fn((id: string, setting: string, http: boolean) =>
       base.forgetNetSetting(id, setting, http),
@@ -1815,8 +1815,9 @@ describe("marketplace", () => {
     expect(screen.getByText(/The “server” setting now holds intra\.example\./)).toBeInTheDocument();
     expect(screen.getByText(/Approving connects over unencrypted HTTP\./)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Approve" }));
-    await waitFor(() => expect(approveNetSetting).toHaveBeenCalledWith("p", "server", true));
-    await user.click(screen.getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(approveNetSetting).toHaveBeenCalledWith("p", "server", true, "intra.example"));
+    // Both transports are approved now; the HTTPS row comes first.
+    await user.click((await screen.findAllByRole("button", { name: "Remove" }))[0]!);
     await waitFor(() => expect(forgetNetSetting).toHaveBeenCalledWith("p", "server", false));
   });
 

@@ -6668,7 +6668,12 @@ fn net_setting_grants_approve_replace_and_clear_with_the_setting() {
 
     // Approved when the value is applied in Settings: the host materializes.
     set_setting(&f, "netsetting", &url);
-    f.host.approve_net_setting("netsetting", "server", false).unwrap();
+    // The host the user was shown must still be the setting's value: a value
+    // the plugin wrote after the dialog opened is not approved in its place.
+    let err = f.host.approve_net_setting("netsetting", "server", false, "jira.corp.example").unwrap_err();
+    assert!(err.message.contains("now holds 127.0.0.1"), "{err:?}");
+    assert_eq!(net_setting_of(&f.host.info_of("netsetting").unwrap(), "server").unwrap().host, None);
+    f.host.approve_net_setting("netsetting", "server", false, "127.0.0.1").unwrap();
     let info = f.host.info_of("netsetting").unwrap();
     let entry = net_setting_of(&info, "server").unwrap();
     assert_eq!(entry.host.as_deref(), Some("127.0.0.1"));
@@ -6710,7 +6715,7 @@ fn net_setting_grants_approve_replace_and_clear_with_the_setting() {
     assert_eq!(seen.lock().len(), 2);
 
     // The Approve action replaces the approval only after the user confirms it.
-    f.host.approve_net_setting("netsetting", "server", false).unwrap();
+    f.host.approve_net_setting("netsetting", "server", false, "jira.corp.example").unwrap();
     let info = f.host.info_of("netsetting").unwrap();
     let entry = net_setting_of(&info, "server").unwrap();
     assert_eq!(entry.host.as_deref(), Some("jira.corp.example"));
@@ -6735,7 +6740,7 @@ fn net_setting_grants_approve_replace_and_clear_with_the_setting() {
     assert_eq!(entry.pending.as_deref(), Some("jira.corp.example"));
 
     // Clearing the setting removes the grant.
-    f.host.approve_net_setting("netsetting", "server", false).unwrap();
+    f.host.approve_net_setting("netsetting", "server", false, "jira.corp.example").unwrap();
     set_setting(&f, "netsetting", "");
     f.host.forget_net_setting("netsetting", "server", false).unwrap();
     assert!(Ledger::load(&f.plugins_dir).get(&subject).unwrap().setting_hosts.is_empty());
@@ -6804,7 +6809,7 @@ fn net_http_setting_grants_reach_plain_http_per_transport() {
 
     // Approved for the `net.http:` transport only: the record is its own.
     set_setting(&f, "netsetting", &url);
-    f.host.approve_net_setting("netsetting", "server", true).unwrap();
+    f.host.approve_net_setting("netsetting", "server", true, "127.0.0.2").unwrap();
     let info = f.host.info_of("netsetting").unwrap();
     let entry = http_setting_of(&info, "server").unwrap();
     assert_eq!(entry.host.as_deref(), Some("127.0.0.2"));
@@ -6841,7 +6846,7 @@ fn net_setting_approvals_are_session_only_on_remote_hosts() {
     let url = format!("http://127.0.0.1:{port}/");
 
     set_setting(&f, "netsetting", &url);
-    f.host.approve_net_setting("netsetting", "server", false).unwrap();
+    f.host.approve_net_setting("netsetting", "server", false, "127.0.0.1").unwrap();
     for invocation in [f.inv(), Invocation::default()] {
         let result = f.host.run_command("netsetting", "fetch", Some(&url), invocation).unwrap();
         assert_eq!(result.as_deref(), Some("session ok"));

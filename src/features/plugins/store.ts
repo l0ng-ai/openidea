@@ -211,10 +211,10 @@ export function revokePluginNetHost(id: string, host: string): Promise<boolean> 
   return withBusy(id, tx`Could not revoke ${host} for ${name}`, () => pluginsBackend().revokeNetHost(id, host));
 }
 
-export function approvePluginNetSetting(id: string, setting: string, http: boolean): Promise<boolean> {
+export function approvePluginNetSetting(id: string, setting: string, http: boolean, host: string): Promise<boolean> {
   const name = nameOf(id);
   return withBusy(id, tx`Could not approve the host of the ${setting} setting for ${name}`, () =>
-    pluginsBackend().approveNetSetting(id, setting, http),
+    pluginsBackend().approveNetSetting(id, setting, http, host),
   );
 }
 

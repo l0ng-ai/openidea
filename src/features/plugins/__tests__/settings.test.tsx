@@ -311,7 +311,9 @@ it("records the approval when the applied host is allowed, and forgets it when c
   const applying = applySettings();
   await user.click(await screen.findByRole("button", { name: "Allow" }));
   await act(() => applying);
-  await waitFor(() => expect(approveNetSetting).toHaveBeenCalledWith("example.helper", "server", false));
+  await waitFor(() =>
+    expect(approveNetSetting).toHaveBeenCalledWith("example.helper", "server", false, "jira.corp.example"),
+  );
 
   // Clearing the value forgets the approval without a dialog.
   fireEvent.change(screen.getByRole("textbox", { name: "Server" }), { target: { value: "" } });

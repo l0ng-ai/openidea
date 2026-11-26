@@ -1176,9 +1176,11 @@ impl PluginHost {
 
     /// Approves the host the plugin's `net:setting:<key>` grant derives from
     /// the setting's value right now: the dialog when the user applies the
-    /// value in Settings, or the pending row's Approve action. On a remote
-    /// host the approval is kept for the session only, like `net:ask` (#3809).
-    pub fn approve_net_setting(&self, id: &str, setting: &str, http: bool) -> IdeResult<PluginInfo> {
+    /// value in Settings, or the pending row's Approve action. `expected` is
+    /// the host the user was shown: when the setting changed since (the plugin
+    /// can write its own settings), nothing is approved. On a remote host the
+    /// approval is kept for the session only, like `net:ask` (#3809).
+    pub fn approve_net_setting(&self, id: &str, setting: &str, http: bool, expected: &str) -> IdeResult<PluginInfo> {
         let _guard = self.lifecycle.lock();
         let plugin = self.get(id)?;
         self.check_not_uninstalling(&plugin)?;
@@ -1193,6 +1195,11 @@ impl PluginHost {
         let host = api::setting_host(&value)
             .map_err(IdeError::invalid)?
             .ok_or_else(|| IdeError::invalid(format!("setting {setting:?} holds no host")))?;
+        if host != expected {
+            return Err(IdeError::invalid(format!(
+                "setting {setting:?} now holds {host}, not {expected}: approve the new value instead"
+            )));
+        }
         let session_only = self.shared.net_hosts_session_only.load(std::sync::atomic::Ordering::Relaxed);
         if !session_only {
             let mut ledger = self.ledger.lock();

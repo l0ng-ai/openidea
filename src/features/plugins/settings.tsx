@@ -372,7 +372,7 @@ async function applyNetSettingValue(
       cancel: false,
       icon: "question",
     });
-    if (answer.button === "allow") await backend.approveNetSetting(pluginId, key, http);
+    if (answer.button === "allow") await backend.approveNetSetting(pluginId, key, http, host);
   }
   return value;
 }
