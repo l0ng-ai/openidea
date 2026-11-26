@@ -715,6 +715,7 @@
   "Middle Click": "滑鼠中鍵",
   "On Linux, middle-button rectangular selection conflicts with primary selection paste.": "在 Linux 上，中鍵矩形拖選會與主選取範圍貼上衝突。",
   "Add Carets to Ends of Selected Lines": "在所選行末尾新增游標",
+  "Select Line at Caret": "選取游標所在行",
   "Unselect Occurrence": "取消選擇相符項目",
   "Paste from History…": "從歷史記錄貼上…",
   "Sort Lines": "排序行",

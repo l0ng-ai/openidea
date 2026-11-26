@@ -329,20 +329,8 @@ function useReferenceHover(root: HTMLElement | null) {
   useEffect(() => (root ? referenceHover(root) : undefined), [root, t]);
 }
 
-const KIND_TITLES = {
-  terminal: "Terminal",
-  problems: "Problems",
-  trace: "Stack Trace",
-  element: "Element",
-  text: "Pasted Text",
-} as const;
-const KIND_ICONS = {
-  terminal: "terminal",
-  problems: "problems",
-  trace: "exception",
-  element: "locate",
-  text: "text",
-} as const;
+const KIND_TITLES = { terminal: "Terminal", problems: "Problems", trace: "Stack Trace", text: "Pasted Text" } as const;
+const KIND_ICONS = { terminal: "terminal", problems: "problems", trace: "exception", text: "text" } as const;
 
 /** A ``` block's header: icon and title ("Terminal · zsh", "TypeScript"). */
 function cardTitle(info: string): { icon: string; title: string } {

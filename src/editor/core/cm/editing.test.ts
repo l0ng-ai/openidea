@@ -11,6 +11,7 @@ import {
   deleteLine,
   duplicateEntireLines,
   joinLines,
+  selectLineAtCaret,
   startNewLine,
   startNewLineBefore,
   swapSelectionBoundaries,
@@ -252,6 +253,65 @@ describe("cycle case", () => {
     const v = make("let a = 2|0;");
     expect(cycleCase(v)).toBe(false);
     expect(show(v)).toBe("let a = 2|0;");
+  });
+});
+
+describe("select line at caret", () => {
+  it("selects the caret's line with its line break, the head after it", () => {
+    const v = make("a|b\ncd");
+    expect(selectLineAtCaret(v)).toBe(true);
+    expect(show(v)).toBe("[ab\n]cd");
+    expect(v.state.selection.main).toMatchObject({ anchor: 0, head: 3 });
+    selectLineAtCaret(v);
+    expect(show(v)).toBe("[ab\n]cd");
+  });
+
+  it("selects up to the end of the document on the last line", () => {
+    const v = make("ab\nc|d");
+    selectLineAtCaret(v);
+    expect(show(v)).toBe("ab\n[cd]");
+  });
+
+  it("grows a selection to the whole lines it touches, keeping its direction", () => {
+    const v = make("x\na[b\nc]d\ne");
+    selectLineAtCaret(v);
+    expect(show(v)).toBe("x\n[ab\ncd\n]e");
+    expect(v.state.selection.main).toMatchObject({ anchor: 2, head: 8 });
+
+    const back = make("x\nab\ncd\ne");
+    back.dispatch({ selection: { anchor: 6, head: 3 } });
+    selectLineAtCaret(back);
+    expect(back.state.selection.main).toMatchObject({ anchor: 8, head: 2 });
+  });
+
+  it("leaves out the line where a selection ends at its start", () => {
+    const v = make("[ab\n]cd\nef");
+    selectLineAtCaret(v);
+    expect(show(v)).toBe("[ab\n]cd\nef");
+    const partial = make("a[b\n]cd");
+    selectLineAtCaret(partial);
+    expect(show(partial)).toBe("[ab\n]cd");
+  });
+
+  it("selects each caret's line, once per line", () => {
+    const v = make("a|b\ncd\ne|f");
+    selectLineAtCaret(v);
+    expect(show(v)).toBe("[ab\n]cd\n[ef]");
+    expect(v.state.selection.ranges).toHaveLength(2);
+
+    const one = make("a|b|c\nd");
+    selectLineAtCaret(one);
+    expect(show(one)).toBe("[abc\n]d");
+    expect(one.state.selection.ranges).toHaveLength(1);
+  });
+
+  it("selects in a read-only editor and on an empty line", () => {
+    const v = make("ab\n|\ncd", EditorState.readOnly.of(true));
+    expect(selectLineAtCaret(v)).toBe(true);
+    expect(show(v)).toBe("ab\n[\n]cd");
+    const empty = make("|");
+    expect(selectLineAtCaret(empty)).toBe(true);
+    expect(show(empty)).toBe("|");
   });
 });
 

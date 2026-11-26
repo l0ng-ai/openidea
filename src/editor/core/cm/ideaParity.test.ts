@@ -13,6 +13,7 @@ import {
   nextOccurrence,
   occurrenceSearch,
   selectAllOccurrences,
+  selectLineAtCaret,
   unselectOccurrence,
 } from "./editing";
 import { caretExtension, pasteReindentFilter } from "./prefs";
@@ -201,6 +202,12 @@ describe("folded lines", () => {
     back.dispatch({ selection: { anchor: 4, head: 2 } });
     duplicateEntireLines(back);
     expect(back.state.selection.main).toMatchObject({ anchor: 17, head: 15 });
+  });
+
+  it("Select Line at Caret on a folded region's line selects the whole folded block", () => {
+    const v = folded();
+    selectLineAtCaret(v);
+    expect(v.state.selection.main).toMatchObject({ anchor: 2, head: 15 });
   });
 
   it("⌘⌫ on a folded region's line deletes the whole folded block", () => {

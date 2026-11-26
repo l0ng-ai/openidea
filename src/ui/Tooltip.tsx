@@ -9,7 +9,7 @@
 import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import { createPortal } from "react-dom";
-import { computePosition, flip, offset, shift, type Placement } from "@floating-ui/react-dom";
+import { computePosition, flip, offset, shift } from "@floating-ui/react-dom";
 import styles from "./Tooltip.module.css";
 import { tx } from "@/platform/i18n";
 
@@ -147,52 +147,17 @@ export function TooltipHost() {
     const tip = tipRef.current;
     if (!anchor || !tip) return;
     let cancelled = false;
-    const preferred: Placement = shown.stripe === "right" ? "left" : shown.stripe === "left" ? "right" : "bottom";
-    const surfaces: DOMRect[] = [];
-    for (const el of document.querySelectorAll<HTMLElement>("[data-native-surface]")) {
-      const rect = el.getBoundingClientRect();
-      if (rect.width > 0 && rect.height > 0) surfaces.push(rect);
-    }
-    const overlapsSurface = (x: number, y: number, width: number, height: number) =>
-      surfaces.some((s) => x < s.right && x + width > s.left && y < s.bottom && y + height > s.top);
-    void (async () => {
-      let pos = await computePosition(anchor, tip, {
-        placement: preferred,
-        strategy: "fixed",
-        middleware: [
-          offset(6),
-          flip({ padding: 6, ...(shown.stripe && { fallbackAxisSideDirection: "end" }) }),
-          shift({ padding: 6 }),
-        ],
-      });
-      // Native child webviews paint above HTML; move the tooltip clear of them when possible.
-      if (surfaces.length) {
-        const { width, height } = tip.getBoundingClientRect();
-        if (width > 0 && height > 0 && overlapsSurface(pos.x, pos.y, width, height)) {
-          const candidates: Placement[] = shown.stripe
-            ? ["top-end", "bottom-end", "top-start", "bottom-start", "top", "bottom"]
-            : ["top", "top-end", "top-start", "left", "right"];
-          for (const placement of candidates) {
-            // oxlint-disable-next-line no-await-in-loop -- placements are tried in order; the first clear one wins
-            const next = await computePosition(anchor, tip, {
-              placement,
-              strategy: "fixed",
-              middleware: [offset(6), shift({ padding: 6 })],
-            });
-            const inViewport =
-              next.x >= 0 &&
-              next.y >= 0 &&
-              next.x + width <= window.innerWidth &&
-              next.y + height <= window.innerHeight;
-            if (inViewport && !overlapsSurface(next.x, next.y, width, height)) {
-              pos = next;
-              break;
-            }
-          }
-        }
-      }
-      if (!cancelled) setShown((s) => (s ? { ...s, x: pos.x, y: pos.y, placed: true } : s));
-    })();
+    void computePosition(anchor, tip, {
+      placement: shown.stripe === "right" ? "left" : shown.stripe === "left" ? "right" : "bottom",
+      strategy: "fixed",
+      middleware: [
+        offset(6),
+        flip({ padding: 6, ...(shown.stripe && { fallbackAxisSideDirection: "end" }) }),
+        shift({ padding: 6 }),
+      ],
+    }).then(({ x, y }) => {
+      if (!cancelled) setShown((s) => (s ? { ...s, x, y, placed: true } : s));
+    });
     return () => {
       cancelled = true;
     };

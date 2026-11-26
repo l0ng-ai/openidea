@@ -5,10 +5,8 @@
  * an IDE menu item is clicked; we run `executeAction(action, arg)`. In the
  * other direction we push localised labels (`menu.*` catalog keys) and the
  * native accelerator of every keymap binding, which the macOS menu shows as a key
- * equivalent (see src-tauri/src/menu.rs), and whether the focused editor owns Undo and Redo.
+ * equivalent while the JS keymap stays the only dispatcher (see src-tauri/src/menu.rs).
  */
-import { historyField } from "@codemirror/commands";
-import { EditorView } from "@codemirror/view";
 import { executeActionFrom, getAction, isActionEnabled, useActions } from "@/platform/actions";
 import { getContext, useContextKeys } from "@/platform/context";
 import { keysWithPrefix, t, tx, useI18n } from "@/platform/i18n";
@@ -44,35 +42,12 @@ export function isMenuRoute(v: unknown): v is MenuRoute {
   return typeof v === "object" && v !== null && typeof (v as MenuRoute).action === "string";
 }
 
-function focusedHistoryView(): EditorView | null {
-  if (!document.hasFocus() || getContext().popupOpen) return null;
-  const focused = document.activeElement;
-  if (!(focused instanceof HTMLElement)) return null;
-  const view = EditorView.findFromDOM(focused);
-  return view?.contentDOM === focused &&
-    !view.state.readOnly &&
-    view.state.facet(EditorView.editable) &&
-    view.state.field(historyField, false)
-    ? view
-    : null;
-}
-
 /** Runs the action a menu item stands for. Returns whether it ran. */
 export function routeMenuEvent(
   payload: unknown,
   run = (id: string, arg?: unknown) => executeActionFrom("menu", id, arg),
 ): Promise<boolean> {
   if (!isMenuRoute(payload) || !payload.action) return Promise.resolve(false);
-  if (payload.arg === "editorHistory" && (payload.action === "edit.undo" || payload.action === "edit.redo")) {
-    const view = focusedHistoryView();
-    // Focus may have moved while the event was queued. WebKit's undo stack can target a background editor.
-    if (!view) return Promise.resolve(false);
-    // Use the same history hooks as WebKit, including shared document and workspace history.
-    const inputType = payload.action === "edit.undo" ? "historyUndo" : "historyRedo";
-    return Promise.resolve(
-      !view.contentDOM.dispatchEvent(new InputEvent("beforeinput", { inputType, bubbles: true, cancelable: true })),
-    );
-  }
   return run(payload.action, payload.arg ?? undefined);
 }
 
@@ -149,7 +124,6 @@ export function buildMenuConfig(os: HostOs): MenuConfig {
     accelerators,
     dynamic: dynamicMenuItems(),
     checked: toggledActions(),
-    editorOwnsHistory: os === "macos" && !!focusedHistoryView(),
   };
 }
 
@@ -225,24 +199,13 @@ export function installMenuBridge(): () => void {
   let unlisten: (() => void) | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
-  let editorOwnsHistory: boolean | undefined;
-  const sendConfig = (os: HostOs) => {
-    if (disposed) return;
-    const config = buildMenuConfig(os);
-    editorOwnsHistory = config.editorOwnsHistory;
-    void commands.menuConfigure(config);
-  };
   const push = () => {
     clearTimeout(timer);
-    timer = setTimeout(() => void hostOs().then(sendConfig), 50);
-  };
-  // The next key uses these roles, so focus changes cannot wait for the general menu debounce.
-  const syncHistoryOwner = (force = false) => {
-    void hostOs().then((os) => {
-      if (disposed || os !== "macos" || (!force && editorOwnsHistory === !!focusedHistoryView())) return;
-      clearTimeout(timer);
-      sendConfig(os);
-    });
+    timer = setTimeout(() => {
+      void hostOs().then((os) => {
+        if (!disposed) void commands.menuConfigure(buildMenuConfig(os));
+      });
+    }, 50);
   };
 
   void import("@tauri-apps/api/webviewWindow").then(async ({ getCurrentWebviewWindow }) => {
@@ -297,24 +260,14 @@ export function installMenuBridge(): () => void {
   push();
   const onFocus = () => {
     push();
-    syncHistoryOwner(true);
     pushEnablement(true);
   };
   // The menu bar is shared. A focused window re-pushes labels that can differ per window.
   // The backend edits only submenus whose visible items changed, so switching project
   // tabs does not redraw the macOS menu bar.
   window.addEventListener("focus", onFocus);
-  const onBlur = () => {
-    syncHistoryOwner();
-    pushEnablement(true, true);
-  };
+  const onBlur = () => pushEnablement(true, true);
   window.addEventListener("blur", onBlur);
-  const onFocusIn = () => syncHistoryOwner();
-  const onFocusOut = (event: FocusEvent) => {
-    if (!event.relatedTarget) syncHistoryOwner();
-  };
-  document.addEventListener("focusin", onFocusIn);
-  document.addEventListener("focusout", onFocusOut);
   const unsubs = [
     useI18n.subscribe((s, prev) => {
       if (s.messages !== prev.messages) push();
@@ -334,12 +287,6 @@ export function installMenuBridge(): () => void {
     useMenuSlotItems.subscribe(push),
     useContextKeys.subscribe((s, prev) => {
       pushEnablement();
-      if (
-        s.popupOpen !== prev.popupOpen ||
-        s.editorTextFocus !== prev.editorTextFocus ||
-        s.editorReadOnly !== prev.editorReadOnly
-      )
-        syncHistoryOwner();
       if (javaFileNameOf(s.editorPath) !== javaFileNameOf(prev.editorPath)) push();
     }),
     useActions.subscribe(() => pushEnablement()),
@@ -357,8 +304,6 @@ export function installMenuBridge(): () => void {
     clearTimeout(enableTimer);
     window.removeEventListener("focus", onFocus);
     window.removeEventListener("blur", onBlur);
-    document.removeEventListener("focusin", onFocusIn);
-    document.removeEventListener("focusout", onFocusOut);
     unlisten?.();
     unsubs.forEach((u) => u());
   };

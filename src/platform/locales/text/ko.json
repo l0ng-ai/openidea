@@ -145,6 +145,7 @@
   "Toggle Case": "대/소문자 전환",
   "Cycle Identifier Case": "식별자 대/소문자 순환",
   "Add Carets to Ends of Selected Lines": "선택한 줄 끝에 캐럿 추가",
+  "Select Line at Caret": "캐럿 위치의 줄 선택",
   "Unselect Occurrence": "찾은 항목 선택 해제",
   "Paste from History…": "기록에서 붙여넣기…",
   "Sort Lines": "줄 정렬",

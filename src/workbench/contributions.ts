@@ -1029,22 +1029,6 @@ export const maybeCommitService = (): CommitService | undefined => commitService
  */
 export type AgentContext = { kind: "block"; info: string; text: string } | { kind: "files"; paths: string[] };
 
-type DraftBlock = Extract<AgentContext, { kind: "block" }>;
-let appendDraftBlock: ((block: DraftBlock) => void) | undefined;
-
-/** Shows the current composer after appending context requested in another tool window. */
-export function provideAgentDraftAppender(append: (block: DraftBlock) => void): () => void {
-  appendDraftBlock = append;
-  return () => {
-    if (appendDraftBlock === append) appendDraftBlock = undefined;
-  };
-}
-export function appendAgentDraftBlock(block: DraftBlock): boolean {
-  if (!appendDraftBlock) return false;
-  appendDraftBlock(block);
-  return true;
-}
-
 export interface AgentContextSource {
   /** Typed after `@`. */
   id: string;

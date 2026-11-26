@@ -24,6 +24,7 @@ import {
   moveStatementUp,
   nextOccurrence,
   selectAllOccurrences,
+  selectLineAtCaret,
   startNewLine,
   startNewLineBefore,
   swapSelectionBoundaries,
@@ -1122,6 +1123,7 @@ export function registerEditorActions(): () => void {
       category: "Editor Actions",
       keywords: ["anchor", "exchange point and mark"],
     }),
+    caret("editor.selectLine", "Select Line at Caret", (v) => selectLineAtCaret(v), { category: "Editor Actions" }),
     occurrence("code.unselectOccurrence", "Unselect Occurrence", unselectOccurrence),
     text("code.pasteFromHistory", "Paste from History…", (v) => pasteFromHistory(v), {
       category: "Edit",

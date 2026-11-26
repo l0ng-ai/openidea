@@ -179,6 +179,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "code.selectAllOccurrences": ["Meta+Shift+L"],
   "code.unselectOccurrence": ["Meta+U"],
   "code.addCaretsToLineEnds": ["Alt+Shift+I"],
+  "editor.selectLine": [],
   "code.startNewLine": ["Meta+Enter"],
   "code.startNewLineBefore": ["Meta+Shift+Enter"],
   "code.joinLines": ["Ctrl+J"],
