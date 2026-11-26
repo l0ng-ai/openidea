@@ -816,7 +816,7 @@ async fn typescript_servers_distinguish_global_and_local_function_calls() {
             .await;
             let local = tokens.token_modifiers.iter().position(|m| m == "local").expect(&name);
             for (column, is_local) in [(9, false), (15, true)] {
-                let token = tokens.data.chunks_exact(5).find(|t| t[0] == 3 && t[1] == column).unwrap();
+                let token = tokens.data.as_chunks::<5>().0.iter().find(|t| t[0] == 3 && t[1] == column).unwrap();
                 assert_eq!(tokens.token_types[token[3] as usize], "function", "{name} {language}");
                 assert_eq!(token[4] & (1 << local) != 0, is_local, "{name} {language}:{column}");
             }
