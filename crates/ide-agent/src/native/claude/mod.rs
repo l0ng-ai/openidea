@@ -178,6 +178,8 @@ struct Session {
     additional_dirs: Vec<String>,
     /// The staged skills' `--settings` JSON (`skillOverrides` for the native ones too).
     skills_settings: Option<String>,
+    /// `_meta.openidea.ephemeral`: `--no-session-persistence`, nothing saved under `~/.claude`.
+    ephemeral: bool,
     shim: Weak<Shim>,
     st: Mutex<State>,
     /// Serializes (re)starting the process.
@@ -334,6 +336,12 @@ impl Shim {
         Some(history::transcript(self.config.config_dir.as_deref()?, cwd, id))
     }
 
+    /// Whether session `id` is in the configuration directory, copied there from another one
+    /// if need be (see [`history::adopt`]).
+    fn adopt(&self, cwd: &Path, id: &str) -> bool {
+        self.config.config_dir.as_deref().is_some_and(|dir| history::adopt(dir, cwd, id))
+    }
+
     /// The conversation a session started with `start` begins with.
     fn base_chain(&self, cwd: &Path, start: &Start) -> Result<Vec<Value>, String> {
         let (id, at) = match start {
@@ -370,6 +378,7 @@ impl Shim {
             skills_add_dir: skills.and_then(|s| s.get("claudeAddDir")).and_then(Value::as_str).map(PathBuf::from),
             additional_dirs: additional_dirs(params),
             skills_settings: skills.and_then(|s| s.get("claudeSettings")).and_then(Value::as_str).map(str::to_owned),
+            ephemeral: params.pointer("/_meta/openidea/ephemeral").and_then(Value::as_bool).unwrap_or(false),
             shim: Arc::downgrade(self),
             st: Mutex::new(State {
                 proc: None,
@@ -435,10 +444,13 @@ impl Shim {
                 let id = params.get("sessionId").and_then(Value::as_str).ok_or_else(|| invalid("no sessionId"))?;
                 let cwd = self.cwd_of(&params);
                 let (start, pending) = match self.load_pending(id) {
-                    Some(s) => (s, true),
-                    None if self.transcript(&cwd, id).is_some_and(|p| p.exists()) => {
-                        (Start::Resume { id: id.to_owned(), at: None }, false)
+                    Some(s) => {
+                        if let Start::Resume { id: from, .. } | Start::Fork { from, .. } = &s {
+                            self.adopt(&cwd, from);
+                        }
+                        (s, true)
                     }
+                    None if self.adopt(&cwd, id) => (Start::Resume { id: id.to_owned(), at: None }, false),
                     None => return Err(invalid(format!("no Claude Code session {id} in {}", cwd.display()))),
                 };
                 let chain = self.base_chain(&cwd, &start).map_err(internal)?;
@@ -451,24 +463,43 @@ impl Shim {
                 Ok(json!({ "configOptions": session.st.lock().settings.options() }))
             }
             "session/fork" => {
-                let source = self.session(&params)?;
-                let id = new_uuid(false);
-                let (start, settings) = {
-                    let st = source.st.lock();
-                    let start = match &st.start {
-                        Start::New { .. } if !st.pending && st.titled_or_prompted() => {
-                            Start::Fork { from: source.id.clone(), id: id.clone(), at: None }
-                        }
-                        Start::New { .. } => Start::New { id: id.clone() },
-                        Start::Resume { id: from, at } | Start::Fork { from, at, .. } if st.pending => {
-                            Start::Fork { from: from.clone(), id: id.clone(), at: at.clone() }
-                        }
-                        _ => Start::Fork { from: source.id.clone(), id: id.clone(), at: None },
-                    };
-                    (start, st.settings.clone())
+                let source_id =
+                    params.get("sessionId").and_then(Value::as_str).ok_or_else(|| invalid("no sessionId"))?;
+                let source = self.sessions.lock().get(source_id).cloned();
+                // The host names the fork's session id so the task knows it before the CLI
+                // starts; only a canonical UUID is accepted.
+                let requested = params.pointer("/_meta/openidea/forkSessionId").and_then(Value::as_str);
+                if let Some(target) = requested
+                    && !crate::canonical_uuid(target)
+                {
+                    return Err(invalid("A fork session id must be a canonical UUID"));
+                }
+                let id = requested.map_or_else(|| new_uuid(false), str::to_owned);
+                if self.sessions.lock().contains_key(&id) {
+                    return Err(invalid(format!("session {id} is already open")));
+                }
+                let cwd = source.as_ref().map_or_else(|| self.cwd_of(&params), |session| session.cwd.clone());
+                let (start, settings) = match &source {
+                    Some(source) => {
+                        let st = source.st.lock();
+                        let start = match &st.start {
+                            Start::New { .. } if !st.pending && st.titled_or_prompted() => {
+                                Start::Fork { from: source.id.clone(), id: id.clone(), at: None }
+                            }
+                            Start::New { .. } => Start::New { id: id.clone() },
+                            Start::Resume { id: from, at } | Start::Fork { from, at, .. } if st.pending => {
+                                Start::Fork { from: from.clone(), id: id.clone(), at: at.clone() }
+                            }
+                            _ => Start::Fork { from: source.id.clone(), id: id.clone(), at: None },
+                        };
+                        (start, st.settings.clone())
+                    }
+                    // A recorded session is not open in this connection: the CLI forks it
+                    // from its transcript on disk when the task's first prompt starts it.
+                    None => (Start::Fork { from: source_id.to_owned(), id: id.clone(), at: None }, Settings::default()),
                 };
                 self.save_pending(&id, Some(&start));
-                let session = self.add_session(&id, source.cwd.clone(), start, true, &params);
+                let session = self.add_session(&id, cwd, start, true, &params);
                 session.st.lock().settings = settings;
                 let options = session.st.lock().settings.options();
                 Ok(json!({ "sessionId": id, "configOptions": options }))
@@ -702,6 +733,9 @@ impl Session {
         }
         if let Some(settings) = &self.skills_settings {
             args.extend(["--settings".to_owned(), settings.clone()]);
+        }
+        if self.ephemeral {
+            args.push("--no-session-persistence".to_owned());
         }
         args.extend(start.args());
         let launch =

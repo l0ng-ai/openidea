@@ -29,6 +29,7 @@ import {
   acceptsInput,
   baseConfigOf,
   canRunSelectedTests,
+  canUpdateSnapshots,
   clearConsole,
   closeStdin,
   debugSession,
@@ -37,10 +38,12 @@ import {
   rerunSession,
   resizeTerminal,
   runSelectedTests,
+  toggleRerunAutomatically,
   runtime,
   sendStdin,
   setPendingInput,
   stopSession,
+  updateSnapshots,
   useRun,
   writeTerminal,
   type RunSession,
@@ -48,7 +51,7 @@ import {
   pinSession,
 } from "./store";
 import { rerunFailedConfigs } from "./testing/rerun";
-import { formatDuration, nodeOutput } from "./testing";
+import { formatDuration, frameworkFor, nodeOutput } from "./testing";
 import { TestStatusBar, TestTreeView } from "./TestTreeView";
 import { StackTracePanel, useStackTraces, type StackTraceTab } from "./stackTrace";
 import { ThreadDumpPanel } from "./threadDump/ThreadDumpPanel";
@@ -63,6 +66,7 @@ import { agentName } from "./agentConfig";
 import { archivedAgentSessions, closeAgentArchive } from "./agentRuns";
 import styles from "./Run.module.css";
 import { tx } from "@/platform/i18n";
+import { SERVICES_WINDOW } from "@/workbench/contributions";
 
 const TEST_SPLIT_DEFAULTS = {
   horizontal: { tests: 34, console: 66 },
@@ -117,10 +121,11 @@ export function SessionPanel({
   const hasFlutterActions = supportsHotReload(session.config);
   const reloadable = canHotReload(session, useFlutterRunApps());
   const canDumpThreads = isJvmRun(session.config);
-  // Eight standard buttons with group spacing and insets, then 24 px plus gap per extra button.
+  // Eight standard buttons with group spacing and insets, then 24 px plus gap per extra button
+  // (Rerun Failed Tests in a test run, else Up / Down the Stack Trace, which overflow with the toggles).
   const fullToolbarWidth =
     228 +
-    26 * (Number(hasTests) + Number(canUpdateApplication) + Number(canDumpThreads) + 2 * Number(hasFlutterActions));
+    26 * ((hasTests ? 1 : 2) + Number(canUpdateApplication) + Number(canDumpThreads) + 2 * Number(hasFlutterActions));
   useLayoutEffect(() => {
     const pane = body.current;
     if (!hasRuntime || !pane || (!showLifecycle && !hasTests)) return;
@@ -139,6 +144,7 @@ export function SessionPanel({
     if (hasTests) testSplit.current?.setLayout(testLayouts.current[testOrientation]);
   }, [hasTests, testOrientation]);
   const running = isLive(session);
+  const testsRunning = testsRun(session, rt?.tests) === "running";
   const cwd = runDirectory(session.config.cwd);
   const baseConfig = useRun(() => baseConfigOf(session));
   // Test results mutate in place; their version refreshes the selection.
@@ -182,9 +188,18 @@ export function SessionPanel({
     { label: "Scroll to End", icon: "scroll-to-end", checked: follow, run: () => setFollow((v) => !v) },
     { label: "Soft-Wrap", icon: "soft-wrap", checked: softWrap, run: () => setWrapOverride(!softWrap) },
   ];
+  // IDEA's console toolbar names Previous / Next Occurrence after what they step through here.
+  const stackTraceActions = rt.tests
+    ? []
+    : [
+        { label: "Up the Stack Trace", icon: "arrow-up", action: "navigate.prevOccurrence" },
+        { label: "Down the Stack Trace", icon: "arrow-down", action: "navigate.nextOccurrence" },
+      ];
   const moreItems: MenuItem[] = [{ kind: "action", action: "run.editConfigs", arg: session.config.id }];
   if (overflowConsoleToggles) {
-    moreItems.unshift(...consoleToggles, { kind: "separator" });
+    moreItems.unshift(...stackTraceActions.map((a) => ({ kind: "action" as const, ...a })), ...consoleToggles, {
+      kind: "separator",
+    });
   }
   const stopButton = (
     <IconButton
@@ -198,7 +213,7 @@ export function SessionPanel({
 
   const consoleColumn = (
     <div className={styles.consoleColumn}>
-      {rt.tests && <TestStatusBar results={rt.tests} version={version} running={running} />}
+      {rt.tests && <TestStatusBar results={rt.tests} version={version} running={testsRunning} />}
       {rt.console.dropped > 0 && !testModel && (
         <div className={styles.notice}>{tx`${rt.console.dropped.toLocaleString()} earlier lines were discarded`}</div>
       )}
@@ -207,6 +222,15 @@ export function SessionPanel({
           <button type="button" className={styles.noticeLink} onClick={() => setSelectedTest(null)}>
             <T>Show all output</T>
           </button>
+          {selectedTest && canUpdateSnapshots(session.id, [selectedTest]) && (
+            <button
+              type="button"
+              className={styles.noticeLink}
+              onClick={() => void updateSnapshots(session.id, [selectedTest])}
+            >
+              <T>Update Snapshot</T>
+            </button>
+          )}
         </div>
       )}
       {rt.terminal && !testModel ? (
@@ -228,6 +252,8 @@ export function SessionPanel({
           onFindOpenChange={setFindOpen}
           cwd={cwd}
           onClear={() => clearConsole(session.id)}
+          // A test run's Previous / Next Occurrence go through its failed tests.
+          occurrences={rt.tests ? undefined : showLifecycle ? "run" : SERVICES_WINDOW}
           input={
             !testModel && acceptsInput(session)
               ? {
@@ -327,10 +353,16 @@ export function SessionPanel({
                 pressed={findOpen}
                 onClick={() => setFindOpen((v) => !v)}
               />
-              {!overflowConsoleToggles &&
-                consoleToggles.map(({ label, icon, checked, run }) => (
-                  <IconButton key={label} icon={icon} title={label} pressed={checked} onClick={run} />
-                ))}
+              {!overflowConsoleToggles && (
+                <>
+                  {stackTraceActions.map(({ label, icon, action }) => (
+                    <IconButton key={label} icon={icon} title={label} action={action} />
+                  ))}
+                  {consoleToggles.map(({ label, icon, checked, run }) => (
+                    <IconButton key={label} icon={icon} title={label} pressed={checked} onClick={run} />
+                  ))}
+                </>
+              )}
             </>
           )}
           <IconButton icon="trash" title="Clear All" onClick={() => clearConsole(session.id)} />
@@ -381,12 +413,19 @@ export function SessionPanel({
                 results={rt.tests}
                 version={version}
                 cwd={cwd}
-                running={running}
+                running={testsRunning}
                 name={session.config.name}
                 selected={selectedTest}
                 onSelect={setSelectedTest}
+                canUpdateSnapshots={(ids) => canUpdateSnapshots(session.id, ids)}
+                onUpdateSnapshots={(ids) => void updateSnapshots(session.id, ids)}
                 canRunTests={(ids) => canRunSelectedTests(session.id, ids)}
                 onRunTests={(ids, debug) => void runSelectedTests(session.id, ids, debug)}
+                rerunAutomatically={
+                  frameworkFor(session.config) === "js"
+                    ? { on: !!session.watching && running, toggle: () => toggleRerunAutomatically(session.id) }
+                    : undefined
+                }
               />
             </SplitPanel>
             <SplitHandle />
@@ -402,6 +441,14 @@ export function SessionPanel({
   );
 }
 
+/**
+ * Whether a session's tests still run: a watch run's are done at the end of each cycle, like a
+ * finished run (status, Sort by Duration, Select First Failed).
+ */
+export function testsRun(session: RunSession, tests: { finished: boolean } | null | undefined): "running" | "done" {
+  return isLive(session) && !(session.watching && tests?.finished) ? "running" : "done";
+}
+
 function sessionItems(sessions: readonly RunSession[], targets: readonly RunTargetValid[]): TabItem[] {
   return sessions.map((s) => {
     const label = remoteLabel(s.config, targets);
@@ -413,6 +460,7 @@ function sessionItems(sessions: readonly RunSession[], targets: readonly RunTarg
       id: s.id,
       label,
       text: label,
+      verbatim: true,
       icon: sessionIcon(s),
       color: failed(s) ? "var(--danger)" : undefined,
       // An agent's command that ended, however it ended.

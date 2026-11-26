@@ -11,7 +11,7 @@ import { onWorkflowSettingsChange, workflowSettings } from "@/platform/workflowS
 import { showContextMenu, type MenuItem } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { closeBlamePopup, scheduleCloseBlamePopup, scheduleOpenBlamePopup } from "./BlamePopup";
-import { formatDate } from "./model";
+import { formatPrettyDay } from "@/platform/dateFormat";
 import { saveVcsSetting } from "./settingsUi";
 import { useVcs } from "./store";
 
@@ -318,7 +318,7 @@ function build(lines: BlameLine[], doc: Text): BlameState {
     let label = labels.get(line.commit);
     if (!label && !isUncommitted(line)) {
       label = {
-        date: formatDate(line.timeMs),
+        date: line.timeMs ? formatPrettyDay(line.timeMs) : "",
         author: shortAuthorName(line.author, names),
         revision: line.commit.slice(0, 8),
       };
@@ -559,6 +559,14 @@ function blameExtension(lines: BlameLine[], source: BlameSource): Extension {
                       label: tx("Annotate at Revision…"),
                       icon: "clock",
                       run: () => void import("./FileRevisionChooser").then((m) => m.annotateFileRevision(path)),
+                    },
+                    {
+                      label: tx("Annotate Revision"),
+                      icon: "history",
+                      run: () =>
+                        void import("./annotateRevision").then((m) =>
+                          m.annotateLineRevision(path, l.commit, l.originPath),
+                        ),
                     },
                     {
                       label: tx("Annotate Previous Revision"),

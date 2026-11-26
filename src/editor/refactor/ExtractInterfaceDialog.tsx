@@ -104,7 +104,7 @@ function ExtractInterfaceDialogInner({ request }: { request: InterfaceRequest })
           <Select
             aria-label="Package for new interface"
             value={pkg}
-            options={packages.map((p, i) => ({ value: String(i), label: p.name, icon: "package" }))}
+            options={packages.map((p, i) => ({ value: String(i), verbatim: true, label: p.name, icon: "package" }))}
             onChange={setPkg}
           />
         </label>

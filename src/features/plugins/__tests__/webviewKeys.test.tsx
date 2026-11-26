@@ -3,6 +3,8 @@ import { render, waitFor } from "@testing-library/react";
 import type { PluginInfo } from "@/bindings";
 import { registerAction } from "@/platform/actions";
 import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
+import { installFocusScopeTracking } from "@/ui/focusScope";
+import { installFocusTracking } from "@/workbench/focus";
 import { createMemoryPluginsBackend, setPluginsBackend } from "../backend";
 import { usePlugins } from "../store";
 import { FRAME_TAG } from "../views/frame";
@@ -140,5 +142,56 @@ describe("keys a plugin web view passes on", () => {
     pass(frame, RUN);
     await flush();
     expect(run).not.toHaveBeenCalled();
+  });
+
+  it("reports iframe focus to the host only while the frame actually holds window focus", async () => {
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    setPluginsBackend({ ...createMemoryPluginsBackend([]), webPageUrl: async () => "about:blank" });
+    usePlugins.setState({
+      plugins: [{ id: "k8s.view", hasCode: false, enabled: true, capabilities: [] } as unknown as PluginInfo],
+    });
+    const calls: Array<[string | null, boolean]> = [];
+    const disposeScope = installFocusScopeTracking();
+    const disposeFocus = installFocusTracking((id, editor) => calls.push([id, editor]));
+    try {
+      const view = render(
+        <section data-toolwindow="plugin.k8s.view" data-focus-scope="">
+          <WebView pluginId="k8s.view" view="v" label="Kubernetes" />
+        </section>,
+      );
+      const frame = await waitFor(() => {
+        const found = view.container.querySelector("iframe");
+        expect(found).not.toBeNull();
+        return found!;
+      });
+      const scope = view.container.querySelector('[data-toolwindow="plugin.k8s.view"]')!;
+
+      // Spoofed focus message while another element has focus is ignored.
+      window.dispatchEvent(
+        new MessageEvent("message", { data: { tag: FRAME_TAG, focus: true }, source: frame.contentWindow }),
+      );
+      expect(calls).toEqual([]);
+      expect(scope).not.toHaveAttribute("data-focus-active");
+
+      // Ignored when the window itself does not have focus.
+      frame.focus();
+      calls.length = 0;
+      hasFocus.mockReturnValue(false);
+      window.dispatchEvent(
+        new MessageEvent("message", { data: { tag: FRAME_TAG, focus: true }, source: frame.contentWindow }),
+      );
+      expect(calls).toEqual([]);
+
+      // Accepted once the frame is activeElement and the window has focus.
+      hasFocus.mockReturnValue(true);
+      window.dispatchEvent(
+        new MessageEvent("message", { data: { tag: FRAME_TAG, focus: true }, source: frame.contentWindow }),
+      );
+      expect(calls).toEqual([["plugin.k8s.view", false]]);
+      expect(scope).toHaveAttribute("data-focus-active", "");
+    } finally {
+      disposeFocus();
+      disposeScope();
+    }
   });
 });

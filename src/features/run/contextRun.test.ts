@@ -400,6 +400,38 @@ describe("Debug entry", () => {
   });
 });
 
+describe("Go tests in the project view", () => {
+  const goTest: RunConfig = {
+    ...npmTest,
+    id: "go:test",
+    name: "go test ./...",
+    kind: "go",
+    command: "go",
+    args: ["test", "./..."],
+    debugAdapter: "delve",
+  };
+  const view = (path: string, dir: boolean) =>
+    labels(contextMenuItems("projectView", { paths: [path], dirs: [dir] })).filter((l) => !l.startsWith("run.modify"));
+
+  beforeEach(() => {
+    useProject.setState({ project: { name: "app", root: ROOT, trusted: true, isGit: false, settings: {} } as never });
+    useRun.setState({ configs: [goTest], loaded: true });
+  });
+  afterEach(() => {
+    useProject.setState({ project: null });
+    useRun.setState({ configs: [], loaded: false });
+  });
+
+  it("a package directory and the module root: Run / Debug 'go test <package>/...'", () => {
+    expect(view(`${ROOT}/cart`, true)).toEqual([
+      "run.runContext|Run 'go test cart/...'|run",
+      "run.debugContext|Debug 'go test cart/...'|debug",
+    ]);
+    expect(view(ROOT, true)[0]).toBe("run.runContext|Run 'go test ./...'|run");
+    expect(view(`${ROOT}/cart/testdata`, true)).toEqual([]);
+  });
+});
+
 describe("Run with Fuzzing", () => {
   const goTest: RunConfig = {
     ...npmTest,

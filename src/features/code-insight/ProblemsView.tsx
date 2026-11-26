@@ -5,6 +5,7 @@ import { useCallback, useMemo, useRef, useState, useSyncExternalStore, type Keyb
 import { create } from "zustand";
 import clsx from "clsx";
 import type { Diagnostic, Severity } from "@/bindings";
+import { call, commands } from "@/platform/ipc";
 import { useEditorRegistry } from "@/editor/api";
 import { previewColors } from "@/editor/lineTokens";
 import { executeAction } from "@/platform/actions";
@@ -103,6 +104,8 @@ useProblemsOptions.subscribe((s) => {
 /** The Problems tool window's ⋮ menu entries. */
 export function useProblemsHeaderMenu(): MenuItem[] {
   const o = useProblemsOptions();
+  const tscWatch = useProject((s) => s.settings?.languages?.typescript?.watchProblems ?? false);
+  const hasProject = useProject((s) => s.project !== null);
   const toggle = (key: keyof ProblemsOptions) => () => useProblemsOptions.setState({ [key]: !o[key] });
   return [
     { kind: "header", label: "Sort By" },
@@ -111,7 +114,23 @@ export function useProblemsHeaderMenu(): MenuItem[] {
     { kind: "separator" },
     { id: "preview", label: "Show Preview", checked: o.preview, run: toggle("preview") },
     { id: "autoscroll", label: "Autoscroll to Source", checked: o.autoscroll, run: toggle("autoscroll") },
+    { kind: "separator" },
+    {
+      id: "tscWatch",
+      label: "TypeScript Project Errors (tsc --watch)",
+      checked: tscWatch,
+      disabled: !hasProject,
+      run: () => void setTscWatch(!tscWatch),
+    },
   ];
+}
+
+/** Runs the project's own `tsc --watch` and lists its errors in Problems (project setting). */
+async function setTscWatch(on: boolean) {
+  const settings = await call(
+    commands.settingsSet("project", "languages.typescript.watchProblems", JSON.stringify(on)),
+  );
+  useProject.setState({ settings });
 }
 
 const group = (s: Severity): "error" | "warning" | "info" => (s === "hint" ? "info" : s);

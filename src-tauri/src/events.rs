@@ -1,11 +1,9 @@
-use crate::windows::WorkbenchWindows;
 use ide_core::{EventSink, IdeEvent, SharedSink};
-
 use parking_lot::Mutex;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, UserAttentionType};
+use tauri::{AppHandle, Emitter, Manager, UserAttentionType};
 
 /// Name of the single backend → UI event. Payload: [`IdeEvent`].
 pub const IDE_EVENT: &str = "ide://event";
@@ -151,7 +149,7 @@ fn flash_taskbar_unless_focused(app: &AppHandle) {
         if crate::application_focus::application_active(&handle) {
             return;
         }
-        for window in handle.workbench_windows().values() {
+        for window in handle.webview_windows().values() {
             let _ = window.request_user_attention(Some(UserAttentionType::Informational));
         }
     });
@@ -190,7 +188,7 @@ impl EventSink for TauriSink {
         {
             let app = self.app.clone();
             let _ = self.app.run_on_main_thread(move || {
-                if let Some(window) = app.workbench_window(&label) {
+                if let Some(window) = app.get_webview_window(&label) {
                     let _ = window.unminimize();
                     let _ = window.show();
                     let _ = window.set_focus();

@@ -964,6 +964,21 @@ fn file_at_revisions_and_index() {
 }
 
 #[test]
+fn bounded_revision_bytes_check_the_selected_blob_size() {
+    let fx = Fixture::new();
+    let path = fx.path("image.png");
+    std::fs::write(&path, [0xff, 0x00, 0xfe]).unwrap();
+    fx.commit_all("image");
+    std::fs::write(&path, [0x80]).unwrap();
+    fx.git(&["add", "image.png"]);
+    let repo = fx.repo();
+    assert_eq!(repo.file_bytes_at_bounded(&path, "HEAD", 3).unwrap().unwrap(), [0xff, 0x00, 0xfe]);
+    assert_eq!(repo.file_bytes_at_bounded(&path, ":0", 1).unwrap().unwrap(), [0x80]);
+    assert_eq!(repo.file_bytes_at_bounded(&path, "HEAD", 2).unwrap_err().kind, ErrorKind::InvalidInput);
+    assert_eq!(repo.file_bytes_at_bounded(&fx.path("absent.png"), "HEAD", 0).unwrap(), None);
+}
+
+#[test]
 fn file_at_in_a_blobless_clone() {
     let fx = Fixture::new();
     fx.write("f.txt", "v1\n");

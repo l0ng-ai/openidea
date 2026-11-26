@@ -559,7 +559,8 @@ async fn start_inner(
 
 /// Plugins' Java agents (`[[contributes.javaAgents]]`, granted `java.agent`) for the JVM of an
 /// Application, Spring Boot or JAR Application configuration started on this machine. A JVM on a
-/// run target gets none; the console says so, and why an approved agent was left out.
+/// run target gets none; the console says so, and why an approved agent was left out. A launch
+/// through a plugin executor (`extras.executor`) also gets that plugin's executor-bound agent.
 fn add_java_agents(config: &mut RunConfig, on_output: &Emit<OutputChunk>, run_dir: Option<&Path>) {
     if !ide_run::java_agent::applies(&config.kind) {
         return;
@@ -575,7 +576,7 @@ fn add_java_agents(config: &mut RunConfig, on_output: &Emit<OutputChunk>, run_di
             .or_else(|| std::env::var_os("JAVA_HOME").map(std::path::PathBuf::from));
         ide_run::java_agent::launched_java(&config.command, &search, home.as_deref())
     });
-    let agents = ide_run::java_agent::current_for(java.as_deref());
+    let agents = ide_run::java_agent::current_for_executor(java.as_deref(), config.extras.executor.as_deref());
     let say = |text: &str| on_output(OutputChunk::System { text: format!("{text}\n") });
     if run_dir.is_none() {
         if !agents.options.is_empty() {

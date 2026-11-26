@@ -78,6 +78,17 @@ const jreField: RunConfigTypeField = {
     })),
 };
 
+/**
+ * JetBrains Runtime's `-XX:+AllowEnhancedClassRedefinition` for Debug, so Reload Changed Classes can add or
+ * remove methods and fields. The host adds it only on JetBrains Runtime (other JVMs refuse to start with it).
+ */
+const enhancedRedefinitionField: RunConfigTypeField = {
+  key: "enhancedClassRedefinition",
+  label: "Enhanced class redefinition",
+  control: "checkbox",
+  hint: "When debugging on JetBrains Runtime, Reload Changed Classes can also add or remove methods and fields",
+};
+
 /** IDEA's "Use classpath of module": the module whose classpath and build the run uses. */
 const moduleField: RunConfigTypeField = {
   key: "module",
@@ -119,6 +130,7 @@ function jvmApplicationType(spring: boolean): RunConfigTypeContribution {
       ...(spring ? [profilesField("Comma separated; passed as --spring.profiles.active")] : []),
       ...(spring ? updatePolicyFields(false) : []),
       jreField,
+      enhancedRedefinitionField,
       moduleField,
       {
         key: "classpath",

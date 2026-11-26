@@ -1,9 +1,10 @@
 /** Menus of the Database tool window, laid out like IDEA's (New ▸, Copy/Paste ▸, SQL Scripts ▸ …). */
 import { choosePath } from "@/platform/choosePath";
+import { tx } from "@/platform/i18n";
 import type { MenuItem } from "@/ui";
 import { notifications } from "@/workbench/contributions";
 import { fileSourceName, parseSourceUrl } from "./model";
-import { VENDORS, vendorPreset } from "./vendors";
+import { VENDORS, vendorById, vendorPreset } from "./vendors";
 import { nodeTarget, objectOf, tableOf, type DbNode } from "./nodes";
 import { SCRIPT_LABELS, canDrop, canModifyTable, canRename, type ScriptKind } from "./objects";
 import {
@@ -32,12 +33,14 @@ const act = (
 
 const sep: MenuItem = { kind: "separator" };
 
-async function sqliteFromFile() {
-  const file = await choosePath({ directory: false, title: "SQLite Database File" });
-  if (typeof file === "string") openSourceDialog(null, { driver: "sqlite", file, name: fileSourceName(file) });
+async function sourceFromFile() {
+  const file = await choosePath({ directory: false, title: tx("Database File") });
+  if (file === null) return;
+  const preset = /\.duckdb$/i.test(file) ? vendorPreset(vendorById("duckdb")!) : { driver: "sqlite" as const };
+  openSourceDialog(null, { ...preset, file, name: fileSourceName(file) });
 }
 
-/** New ▸ Data Source ▸ — the drivers the backend speaks and wire-compatible products, A–Z like IDEA's. */
+/** New ▸ Data Source ▸ — built-in and JDBC presets, A–Z. */
 function dataSourceItems(): MenuItem[] {
   return [
     {
@@ -49,7 +52,7 @@ function dataSourceItems(): MenuItem[] {
         run: () => openSourceDialog(null, vendorPreset(v)),
       })),
     },
-    { label: "Data Source from File…", icon: "folder", run: () => void sqliteFromFile() },
+    { label: "Data Source from File…", icon: "folder", run: () => void sourceFromFile() },
     { label: "Data Source from URL…", icon: "external-link", run: () => openDialog({ kind: "sourceUrl" }) },
     { label: "Import from Clipboard", icon: "paste", run: () => void sourceFromClipboard() },
   ];

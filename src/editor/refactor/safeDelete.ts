@@ -20,6 +20,8 @@ import { basename } from "@/platform/project";
 import { whenSynced, type EditorDocContext } from "@/editor/api";
 import { structure } from "@/editor/structure";
 import { docOf, isUnavailable, lspRequest } from "@/editor/lsp/lsp";
+import { dedupeLocations } from "@/editor/lsp/navigation";
+import { overriddenMethods, overriddenReferences } from "@/editor/lsp/overriddenReferences";
 import { comparePos, offsetToPos, rangeContains, rangeToOffsets } from "@/editor/lsp/positions";
 import { showHint } from "@/editor/lsp/hint";
 import { confirmChecked } from "@/workbench/messages";
@@ -249,7 +251,10 @@ async function resolveTarget(view: EditorView, ctx: EditorDocContext): Promise<R
   };
 }
 
-/** LSP references to the target, its own declaration excluded. */
+/**
+ * LSP references to the target, its own declaration excluded. A Python method's usages include the
+ * calls through the bases it overrides: deleting it sends them to the base's method, which may be abstract.
+ */
 async function findUsages(ctx: EditorDocContext, target: SafeDeleteTarget): Promise<Location[]> {
   const outside = (path: string, range: Range) =>
     path !== ctx.path ||
@@ -257,9 +262,16 @@ async function findUsages(ctx: EditorDocContext, target: SafeDeleteTarget): Prom
     comparePos(range.start, target.range.end) > 0;
   if (target.local)
     return target.local.references.filter((r) => outside(ctx.path, r)).map((range) => ({ path: ctx.path, range }));
-  const { locations: refs } = await lspRequest(() =>
-    commands.lspReferences(nextRequestId(), ctx.doc, target.at, false, true, false, new Channel()),
-  );
+  const request = nextRequestId();
+  const references = (doc: number, at: Pos) =>
+    lspRequest(() => commands.lspReferences(request, doc, at, false, true, false, new Channel()));
+  const overridden = overriddenMethods(ctx.path, ctx.doc, target.at);
+  const own = await references(ctx.doc, target.at);
+  const inherited = await overriddenReferences(await overridden, references);
+  // Unsearched calls would let the deletion through unasked, as a failed search of its own would.
+  if (inherited.some((r) => r.incomplete === "serverFailed"))
+    throw new Error("The language server could not search the calls through the base method");
+  const refs = inherited.length ? dedupeLocations([own, ...inherited].flatMap((r) => r.locations)) : own.locations;
   return refs.filter((l) => outside(l.path, l.range));
 }
 

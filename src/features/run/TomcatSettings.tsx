@@ -375,6 +375,7 @@ export function TomcatSettings({ config, onChange }: { config: RunConfig; onChan
                   placeholder="Choose a detected Tomcat installation"
                   options={allServers.map((s) => ({
                     value: s.home,
+                    verbatim: true,
                     label: s.name || s.home,
                   }))}
                   onChange={(selectedHome) => {

@@ -63,6 +63,8 @@ struct FakeAgent {
     session_steering: bool,
     /// Records the `mcpServers` array passed to `session/new`, `session/load`, and `session/fork`.
     mcp_calls: Mutex<Vec<(String, Vec<String>)>>,
+    /// The params of every `session/fork`, in order.
+    forks: Mutex<Vec<Value>>,
     /// The content blocks of each `session/prompt`.
     prompts: Mutex<Vec<Value>>,
 }
@@ -175,6 +177,9 @@ impl Handler for FakeAgent {
                 })
                 .unwrap_or_default();
             self.mcp_calls.lock().push((method.to_owned(), names));
+            if params.pointer("/_meta/openidea/ephemeral") == Some(&json!(true)) {
+                self.calls.lock().push("ephemeral".into());
+            }
         }
         let session = params.get("sessionId").and_then(Value::as_str).unwrap_or("s1").to_owned();
         match method {
@@ -203,7 +208,11 @@ impl Handler for FakeAgent {
                 "modes": {"currentModeId": "ask", "availableModes": [{"id": "ask", "name": "Ask"}, {"id": "code", "name": "Code"}]},
                 "configOptions": options}))
             }
-            "session/fork" => Ok(json!({"sessionId": "s2"})),
+            "session/fork" => {
+                self.forks.lock().push(params.clone());
+                let requested = params.pointer("/_meta/openidea/forkSessionId").and_then(Value::as_str);
+                Ok(json!({ "sessionId": requested.unwrap_or("s2") }))
+            }
             "_openidea/stop_task" => {
                 self.calls.lock().push(format!("{method} {}", params["taskId"]));
                 Ok(json!({}))
@@ -640,6 +649,32 @@ async fn saved_conversation_reads_do_not_start_or_load_the_agent() {
     restored.task(&task.id).unwrap().state.lock().conversation = Conversation::default();
     assert!(restored.entries(&task.id, None).unwrap().is_empty());
     restored.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ephemeral_task_is_not_saved_and_asks_for_an_unsaved_session() {
+    let tmp = tempfile::tempdir().unwrap();
+    for ephemeral in [true, false] {
+        let agent = Arc::new(FakeAgent::default());
+        let mgr = manager(tmp.path(), agent.clone());
+        let task = mgr
+            .create(NewAgentTask {
+                prompt: text("Write a commit message"),
+                provider: "claude".into(),
+                isolation: Isolation::Local,
+                ephemeral,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        wait_for(&mgr, &task.id, AgentStatus::NeedsInput).await;
+        assert_eq!(agent.calls.lock().iter().any(|c| c == "ephemeral"), ephemeral);
+        mgr.shutdown();
+        // The caller never deleted it (its window closed): only a saved task comes back.
+        let restored = manager(tmp.path(), Arc::new(FakeAgent::default()));
+        assert_eq!(restored.task(&task.id).is_ok(), !ephemeral);
+        restored.shutdown();
+    }
 }
 
 #[cfg(unix)]
@@ -2773,6 +2808,128 @@ async fn forks_rollbacks_and_steering() {
     restored.shutdown();
 }
 
+const NATIVE_SOURCE: &str = "11111111-1111-4111-8111-111111111111";
+const NATIVE_TARGET: &str = "22222222-2222-4222-8222-222222222222";
+
+/// Plants a recorded claude transcript for `session_id` under the project's escaped folder.
+fn plant_claude_session(mgr: &AgentManager, root: &Path, session_id: &str) {
+    let config = root.join("claude-config");
+    mgr.set_builtin_env(
+        "claude",
+        [("CLAUDE_CONFIG_DIR".to_string(), config.to_string_lossy().into_owned())].into_iter().collect(),
+    )
+    .unwrap();
+    mgr.reload_providers();
+    let escaped: String =
+        root.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    let transcript = config.join("projects").join(escaped).join(format!("{session_id}.jsonl"));
+    std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+    std::fs::write(
+        &transcript,
+        format!(
+            "{}\n",
+            json!({
+                "type": "user",
+                "uuid": "u1",
+                "parentUuid": null,
+                "message": {"role": "user", "content": "fix the login bug"},
+                "cwd": root.to_string_lossy(),
+            })
+        ),
+    )
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fork_session_starts_a_ready_task_as_the_recorded_session_s_fork() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    plant_claude_session(&mgr, tmp.path(), NATIVE_SOURCE);
+
+    let task = mgr.fork_session("claude", NATIVE_SOURCE, tmp.path()).unwrap();
+    assert_eq!(task.provider, "claude");
+    assert_eq!(task.status, AgentStatus::Ready);
+    assert_eq!(task.isolation, Isolation::Local);
+
+    mgr.prompt(&task.id, text("again"), true).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+
+    let forks = agent.forks.lock().clone();
+    assert_eq!(forks.len(), 1, "one fork start");
+    assert_eq!(forks[0]["sessionId"], NATIVE_SOURCE);
+    let target = forks[0]["_meta"]["openidea"]["forkSessionId"].as_str().unwrap();
+    assert!(canonical_uuid(target), "the host chooses a canonical fork id: {target}");
+    assert_ne!(target, NATIVE_SOURCE);
+    assert!(
+        !agent.calls.lock().iter().any(|call| call == "session/new" || call == "session/load"),
+        "the task forks the recorded session instead of starting or loading another"
+    );
+    assert_eq!(mgr.task(&task.id).unwrap().state.lock().session_id.as_deref(), Some(target));
+    mgr.shutdown();
+}
+
+/// Plants a recorded codex rollout for `session_id` under the home `.codex/sessions` tree.
+fn plant_codex_session(root: &Path, session_id: &str) {
+    let dir = root.join(".codex").join("sessions").join("2026").join("11").join("23");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join(format!("rollout-{session_id}.jsonl")),
+        format!(
+            "{}\n{}\n",
+            json!({"type": "session_meta", "payload": {"id": session_id, "cwd": root.to_string_lossy()}}),
+            json!({"type": "event_msg", "payload": {"type": "user_message", "message": "fix the login bug"}})
+        ),
+    )
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fork_session_uses_the_id_codex_assigns() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    plant_codex_session(tmp.path(), NATIVE_SOURCE);
+
+    let task = mgr.fork_session("codex", NATIVE_SOURCE, tmp.path()).unwrap();
+    assert_eq!(task.status, AgentStatus::Ready);
+    mgr.prompt(&task.id, text("again"), true).await.unwrap();
+    wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+
+    let forks = agent.forks.lock().clone();
+    assert_eq!(forks.len(), 1);
+    assert_eq!(forks[0]["sessionId"], NATIVE_SOURCE);
+    assert!(forks[0].pointer("/_meta/openidea/forkSessionId").is_none(), "codex names its own fork");
+    assert_eq!(mgr.task(&task.id).unwrap().state.lock().session_id.as_deref(), Some("s2"));
+    mgr.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fork_session_rejects_invalid_input_before_starting() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent = Arc::new(FakeAgent::default());
+    let mgr = manager(tmp.path(), agent.clone());
+    plant_claude_session(&mgr, tmp.path(), NATIVE_SOURCE);
+
+    // Non-native provider, malformed id, unknown session, wrong directory.
+    let cases: [(&str, &str, &Path, ide_core::error::ErrorKind); 4] = [
+        ("gemini", NATIVE_SOURCE, tmp.path(), ide_core::error::ErrorKind::InvalidInput),
+        ("claude", "not-a-uuid", tmp.path(), ide_core::error::ErrorKind::InvalidInput),
+        ("claude", NATIVE_TARGET, tmp.path(), ide_core::error::ErrorKind::NotFound),
+        ("claude", NATIVE_SOURCE, Path::new("/elsewhere"), ide_core::error::ErrorKind::InvalidInput),
+    ];
+    for (index, (provider, id, cwd, kind)) in cases.into_iter().enumerate() {
+        let error = mgr.fork_session(provider, id, cwd).unwrap_err();
+        assert_eq!(error.kind, kind, "case {index}: {error}");
+    }
+    // A session already held by a task cannot be forked again.
+    mgr.import_session("claude", NATIVE_SOURCE).unwrap();
+    let error = mgr.fork_session("claude", NATIVE_SOURCE, tmp.path()).unwrap_err();
+    assert_eq!(error.kind, ide_core::error::ErrorKind::InvalidInput, "{error}");
+    assert!(agent.calls.lock().is_empty(), "no process may start");
+    mgr.shutdown();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn usage_limits_and_late_settings() {
     let tmp = tempfile::tempdir().unwrap();
@@ -3043,6 +3200,46 @@ async fn rapid_idle_model_switches_share_discovery_and_never_apply_a_stale_compl
     assert_eq!(agent.calls.lock().iter().filter(|call| *call == "session/new").count(), 2);
     assert!(!agent.calls.lock().iter().any(|call| call == "session/prompt"));
     restored.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn explicit_service_tier_reaches_the_session_even_when_it_matches_the_reported_default() {
+    for value in [None, Some("false"), Some("true")] {
+        let tmp = tempfile::tempdir().unwrap();
+        let agent = Arc::new(FakeAgent::default());
+        *agent.extra_options.lock() = vec![json!({
+            "id": "service_tier", "name": "Fast", "category": "model_config", "type": "select",
+            "currentValue": value.unwrap_or("true"),
+            "options": [{"value": "false"}, {"value": "true"}]
+        })];
+        let mgr = manager(tmp.path(), agent.clone());
+        let task = mgr
+            .create(NewAgentTask {
+                prompt: text("again"),
+                provider: "codex".into(),
+                config: value
+                    .map(|value| vec![AgentConfigChoice { id: "service_tier".into(), value: value.into() }])
+                    .unwrap_or_default(),
+                isolation: Isolation::Local,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        wait_for(&mgr, &task.id, AgentStatus::Ready).await;
+        let calls = agent.calls.lock();
+        let prompt = calls.iter().position(|call| call == "session/prompt").unwrap();
+        if let Some(value) = value {
+            let setting = calls
+                .iter()
+                .position(|call| call == &format!("session/set_config_option \"{value}\""))
+                .expect("an explicit tier must not be mistaken for an inherited default");
+            assert!(setting < prompt);
+        } else {
+            assert!(!calls.iter().any(|call| call == "session/set_config_option"));
+        }
+        drop(calls);
+        mgr.shutdown();
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -5421,6 +5618,7 @@ async fn per_session_mcp_overrides_filter_session_and_reload_when_idle() {
             mcp_overrides: BTreeMap::from([("slack".into(), false)]),
             idle: false,
             skill_overrides: BTreeMap::new(),
+            ephemeral: false,
         })
         .await
         .unwrap();
@@ -5483,6 +5681,7 @@ async fn per_session_skill_overrides_filter_commands_persist_and_reload_when_idl
                 ("tdd".into(), AgentSkillMode::Auto),
                 ("noisy".into(), AgentSkillMode::Off),
             ]),
+            ephemeral: false,
         })
         .await
         .unwrap();
@@ -5626,6 +5825,7 @@ async fn copilot_falls_back_to_acp_when_headless_probe_session_or_prompt_fails()
             mcp_overrides: BTreeMap::new(),
             idle: false,
             skill_overrides: BTreeMap::new(),
+            ephemeral: false,
         })
         .await
         .unwrap();
@@ -5652,6 +5852,7 @@ async fn copilot_falls_back_to_acp_when_headless_probe_session_or_prompt_fails()
             mcp_overrides: BTreeMap::new(),
             idle: false,
             skill_overrides: BTreeMap::new(),
+            ephemeral: false,
         })
         .await
         .unwrap();

@@ -29,9 +29,16 @@ export interface LogDateFilter {
 /** User filter entry standing for the current Git user (`user.name` / `user.email`). */
 export const ME = "me";
 
+interface LogBranchTarget {
+  ref: string;
+  repo?: string;
+}
+
 export interface LogFilters {
   /** Branches / revisions to show; empty = all. */
   branches: string[];
+  /** Refs activated in the Branches pane; a missing repo targets all repositories. */
+  branchTargets?: LogBranchTarget[];
   repositories?: string[];
   /** Author names or emails (any matches); `ME` = the current user. */
   authors: string[];
@@ -269,7 +276,7 @@ export function initLogBranchFilter(): boolean {
     .branches.filter((b) => !b.name.endsWith("/HEAD"))
     .map((b) => b.name);
   const next = resolveLogBranches(rememberedLogBranches(repo), names);
-  useGitLog.setState({ filters: { ...s.filters, branches: next }, branchScope: repo });
+  useGitLog.setState({ filters: { ...s.filters, branches: next, branchTargets: undefined }, branchScope: repo });
   return true;
 }
 
@@ -286,6 +293,7 @@ export function setLogBranches(branches: readonly string[]) {
     filters: {
       ...s.filters,
       branches: branches.filter((b) => !b.includes("..")),
+      branchTargets: undefined,
       range: ranges.length ? ranges.join("\n") : null,
     },
     ...(repo ? { branchScope: repo } : {}),
@@ -430,7 +438,9 @@ export function ensureEditorLog(id: string, label: string, config?: Pick<LogTab,
 
 function comparisonFilters(filters: LogFilters, tab: LogTab | undefined): LogFilters {
   const range = tab?.comparison;
-  return range ? { ...filters, branches: [], range: `${range.from}..${range.to}`, repoRanges: undefined } : filters;
+  return range
+    ? { ...filters, branches: [], branchTargets: undefined, range: `${range.from}..${range.to}`, repoRanges: undefined }
+    : filters;
 }
 
 /** Selects a content tab of the Git tool window; a log tab brings its own filters and commits. */
@@ -619,9 +629,22 @@ function parseFilters(value: unknown): LogFilters {
   const raw = value as Record<string, unknown>;
   const strings = (v: unknown): string[] =>
     Array.isArray(v) ? v.filter((s): s is string => typeof s === "string") : [];
+  const branches = strings(raw.branches);
+  const branchTargets = Array.isArray(raw.branchTargets)
+    ? raw.branchTargets.filter(
+        (target: unknown): target is LogBranchTarget =>
+          !!target &&
+          typeof target === "object" &&
+          "ref" in target &&
+          typeof target.ref === "string" &&
+          branches.includes(target.ref) &&
+          (!("repo" in target) || typeof target.repo === "string"),
+      )
+    : [];
   const filters = {
     ...emptyFilters(),
-    branches: strings(raw.branches),
+    branches,
+    ...(branchTargets.length ? { branchTargets } : {}),
     authors: strings(raw.authors),
     repositories: strings(raw.repositories),
     paths: strings(raw.paths),
@@ -808,6 +831,7 @@ export function recentLogFilters(): LogFilters[] {
 
 function rememberRecentFilters(before: LogFilters) {
   for (const name of Object.keys(before) as Array<keyof LogFilters>) {
+    if (name === "branchTargets") continue;
     const value = before[name];
     if (value == null || value === "" || (Array.isArray(value) && !value.length)) continue;
     try {
@@ -842,7 +866,7 @@ export function setLogFilters(patch: Partial<LogFilters>) {
   rememberRecentFilters(useGitLog.getState().filters);
   useGitLog.setState((s) => ({
     filters: comparisonFilters(
-      { ...s.filters, ...("branches" in patch ? { range: null } : {}), ...patch },
+      { ...s.filters, ...("branches" in patch ? { range: null, branchTargets: undefined } : {}), ...patch },
       s.logTabs.find((tab) => tab.id === s.shownLog),
     ),
   }));
@@ -865,7 +889,14 @@ function logRepositoryScope(state: LogState) {
       : registeredRoots.length
         ? registeredRoots
         : [f.path || f.paths?.length ? projectRepo : currentRepo()];
-  return { repositories: scopedLogRepositories(candidates, f, ownerRoots), ownerRoots };
+  const repositories = scopedLogRepositories(candidates, f, ownerRoots);
+  const { branchTargets } = f;
+  return {
+    repositories: branchTargets?.length
+      ? repositories.filter((repo) => branchTargets.some((target) => !target.repo || target.repo === repo))
+      : repositories,
+    ownerRoots,
+  };
 }
 
 /** The source can already be specified by one branch or a single revision range. */
@@ -1021,9 +1052,13 @@ function loadPage(replace: boolean, id: string, before = false): Promise<void> {
       let joined = false;
       const results = await Promise.allSettled(
         roots.map(async (repo) => {
-          const branches = f.branches.filter(
-            (ref) => !knownRefs.has(ref) || (repo && refs[repo]?.some((b) => b.name === ref)),
-          );
+          const branches = f.branchTargets?.length
+            ? [
+                ...new Set(
+                  f.branchTargets.filter((target) => !target.repo || target.repo === repo).map((target) => target.ref),
+                ),
+              ]
+            : f.branches.filter((ref) => !knownRefs.has(ref) || (repo && refs[repo]?.some((b) => b.name === ref)));
           if (f.branches.length && !branches.length) return [];
           const config = (key: string) => call(commands.vcsConfigGet(repo, key)).catch(() => null);
           const [userEmail, userName] = await Promise.all([config("user.email"), config("user.name")]);

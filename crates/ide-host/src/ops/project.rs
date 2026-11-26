@@ -22,6 +22,8 @@ pub struct ProjectInfo {
     pub workspace: Option<ide_workspace::workspace::Workspace>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unity: Option<ide_workspace::unity::UnityProjectInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unreal: Option<ide_workspace::unreal::UnrealProjectInfo>,
 }
 
 pub fn info(project: &Project) -> ProjectInfo {
@@ -45,6 +47,7 @@ pub fn info(project: &Project) -> ProjectInfo {
         root: project.root.clone().into(),
         workspace,
         unity: ide_workspace::unity::detect(&project.root),
+        unreal: ide_workspace::unreal::detect(&project.root),
     }
 }
 
@@ -124,6 +127,11 @@ pub fn settings_set(
     }
     if key == "terminal" || key.starts_with("terminal.") {
         super::term::apply_output_rate(host, window);
+    }
+    if "languages.typescript.watchProblems".starts_with(&key)
+        && let Some(watch) = host.project(window).ok().and_then(|p| p.tsc_watch.clone())
+    {
+        watch.apply(&host.runtime);
     }
     let sink = host.window_sink(window);
     sink.emit(IdeEvent::SettingsChanged { key });
@@ -280,6 +288,36 @@ fn refresh_workspace(project: &Project) {
     project.refresh_index_scope();
     project.refresh_repositories();
     project.sink.emit(ide_core::IdeEvent::ProjectRootsChanged { root: project.root.clone().into() });
+}
+
+/// Records `project` in `recent` (its branch, unless attached to a workspace, and display name).
+pub fn record_recent(recent: &ide_workspace::RecentProjects, project: &Project) -> IdeResult<()> {
+    let info = info(project);
+    let attached = info.workspace.as_ref().is_some_and(|w| !w.is_container(&project.root));
+    let branch = if attached {
+        None
+    } else {
+        project.repos.read().primary().and_then(|r| r.branch_info().ok()).and_then(|b| b.head)
+    };
+    recent.touch(&project.root, branch)?;
+    recent.rename(&project.root, Some(&info.display_name))?;
+    Ok(())
+}
+
+/// File › Rename Project…: the display name of `window`'s project; an empty `name` restores the
+/// folder name. A workspace container renames the workspace, else it is stored in project settings.
+pub fn rename(host: &Host, window: &str, name: &str) -> IdeResult<Arc<Project>> {
+    let project = host.project(window)?;
+    let name = name.trim();
+    if let Some(workspace) = ide_workspace::workspace::Workspace::load(&project.root)?
+        && workspace.is_container(&project.root)
+    {
+        save_workspace(host, window, name, workspace.projects)?;
+    } else {
+        let value = if name.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(name.to_owned()) };
+        project.settings.set(SettingsScope::Project, "general.projectName", value)?;
+    }
+    Ok(project)
 }
 
 /// Attaches a trusted folder without replacing the current project.

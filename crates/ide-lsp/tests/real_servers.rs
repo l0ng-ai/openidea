@@ -780,6 +780,51 @@ fn npm_server(tools: &Path, name: &str, bin: &str, init: Option<serde_json::Valu
     }
 }
 
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires OPENIDEA_TEST_NPM_TOOLS (vtsls and typescript-language-server) and OPENIDEA_TEST_TS7 (native tsc)"]
+async fn typescript_servers_distinguish_global_and_local_function_calls() {
+    let tools = std::env::var_os("OPENIDEA_TEST_NPM_TOOLS").expect("set OPENIDEA_TEST_NPM_TOOLS");
+    let tools = Path::new(&tools);
+    let mut native = npm_server(tools, "typescript-7", "tsc", None);
+    native.command = std::env::var("OPENIDEA_TEST_TS7").expect("set OPENIDEA_TEST_TS7");
+    native.args.insert(0, "--lsp".into());
+
+    let text = "function outer(x) { return x; }\nexport function run() {\n  function local() { return 1; }\n  return outer(local());\n}\n";
+    for server in [
+        native,
+        npm_server(tools, "vtsls", "vtsls", None),
+        npm_server(tools, "typescript-language-server", "typescript-language-server", None),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::write(root.join("package.json"), r#"{"type":"module"}"#).unwrap();
+        std::fs::write(root.join("tsconfig.json"), r#"{"compilerOptions":{"allowJs":true}}"#).unwrap();
+        let name = server.name.clone();
+        let registry = LanguageRegistry::from_configs(vec![
+            lang("typescript", "ts", server.clone()),
+            lang("javascript", "js", server),
+        ]);
+        let (mgr, _) = manager(&root, registry);
+        for (language, ext) in [("typescript", "ts"), ("javascript", "js")] {
+            let file = root.join(format!("sample.{ext}"));
+            std::fs::write(&file, text).unwrap();
+            let doc = DocId::next();
+            mgr.did_open(doc, &file, &LanguageId::new(language), 1, text);
+            let tokens = retry(&format!("{name} {language} tokens"), Duration::from_secs(8), || async {
+                mgr.semantic_tokens(doc).await.ok().flatten().filter(|t| !t.data.is_empty())
+            })
+            .await;
+            let local = tokens.token_modifiers.iter().position(|m| m == "local").expect(&name);
+            for (column, is_local) in [(9, false), (15, true)] {
+                let token = tokens.data.as_chunks::<5>().0.iter().find(|t| t[0] == 3 && t[1] == column).unwrap();
+                assert_eq!(tokens.token_types[token[3] as usize], "function", "{name} {language}");
+                assert_eq!(token[4] & (1 << local) != 0, is_local, "{name} {language}:{column}");
+            }
+        }
+        mgr.shutdown_all().await;
+    }
+}
+
 /// Vue Language Server 3 in hybrid mode: its `tsserver/request`s go through the
 /// client to vtsls with `@vue/typescript-plugin` (issue #25). Set
 /// `OPENIDEA_TEST_NPM_TOOLS` to a dir with `npm i @vue/language-server typescript@6 @vtsls/language-server`.
@@ -834,6 +879,94 @@ async fn vue_hybrid_mode_end_to_end() {
         assert!(!crashed, "{:?}", last_status(&events, "vue-language-server"));
         tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
     }
+}
+
+/// The path-alias tsserver plugin (`ide-sdk/src/path-aliases.js`) on vtsls: a Vite alias the
+/// tsconfig doesn't define resolves, completes and isn't reported; one it defines keeps the
+/// tsconfig's target. Set `OPENIDEA_TEST_NPM_TOOLS` to a dir with `npm i @vtsls/language-server typescript@6`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires @vtsls/language-server (OPENIDEA_TEST_NPM_TOOLS)"]
+async fn bundler_path_aliases_resolve_below_tsconfig_paths() {
+    let tools = std::path::PathBuf::from(std::env::var("OPENIDEA_TEST_NPM_TOOLS").expect("OPENIDEA_TEST_NPM_TOOLS"));
+    let dir = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(dir.path()).unwrap();
+    let slash = |p: &Path| p.to_string_lossy().replace('\\', "/");
+    for dir in ["src", "own", "plugin/node_modules/openidea-path-aliases"] {
+        std::fs::create_dir_all(root.join(dir)).unwrap();
+    }
+    // What the settings hook writes for `alias: { '@': path.resolve(__dirname, 'src') }`.
+    let plugin = root.join("plugin/node_modules/openidea-path-aliases");
+    std::fs::write(plugin.join("index.js"), include_str!("../../ide-sdk/src/path-aliases.js")).unwrap();
+    let src = slash(&root.join("src"));
+    let paths = serde_json::json!({ slash(&root): { "@": [src], "@/*": [format!("{src}/*")] } });
+    std::fs::write(plugin.join("paths.json"), paths.to_string()).unwrap();
+    std::fs::write(root.join("package.json"), "{\"name\":\"app\",\"private\":true}").unwrap();
+    let tsconfig = |paths: &str| {
+        format!(
+            "{{\"compilerOptions\":{{\"strict\":true,\"module\":\"ESNext\",\"moduleResolution\":\"Bundler\"{paths}}},\"include\":[\"src\"]}}"
+        )
+    };
+    std::fs::write(root.join("tsconfig.json"), tsconfig("")).unwrap();
+    std::fs::write(root.join("src/a.ts"), "export const answer = 42;\n").unwrap();
+    std::fs::write(root.join("own/a.ts"), "export const answer = 1;\n").unwrap();
+    let main = root.join("src/main.ts");
+    let text = "import { answer } from '@/a';\nimport '@/';\nconst n: number = answer + '';\n";
+    std::fs::write(&main, text).unwrap();
+    let init = serde_json::json!({ "vtsls": { "tsserver": { "globalPlugins": [{
+        "name": "openidea-path-aliases",
+        "location": root.join("plugin").to_string_lossy(),
+        "enableForWorkspaceTypeScriptVersions": true,
+    }] } } });
+    let ts = || lang("typescript", "ts", npm_server(&tools, "vtsls", "vtsls", Some(init.clone())));
+
+    let (mgr, events) = manager(&root, LanguageRegistry::from_configs(vec![ts()]));
+    let doc = DocId::next();
+    mgr.did_open(doc, &main, &LanguageId::new("typescript"), 1, text);
+    let defs = retry("definition through the alias", Duration::from_secs(90), || {
+        let mgr = mgr.clone();
+        let a = root.join("src/a.ts");
+        // The syntax server answers with the import itself until the project is loaded.
+        async move {
+            mgr.goto(doc, Pos::new(0, 10), GotoKind::Definition).await.ok().filter(|d| d.iter().any(|d| d.path == a))
+        }
+    })
+    .await;
+    assert_eq!(defs.len(), 1);
+    retry("path completion after @/", Duration::from_secs(30), || {
+        let mgr = mgr.clone();
+        async move {
+            let list = mgr.completion(doc, Pos::new(1, 10), Some("/".into()), Default::default()).await.ok()?;
+            list.items.iter().any(|i| i.label == "a" || i.label == "a.ts").then_some(())
+        }
+    })
+    .await;
+    // The deliberate type error is reported; the aliased import is not.
+    let diagnostics = retry("diagnostics", Duration::from_secs(30), || {
+        let found = events.lock().iter().rev().find_map(|e| match e {
+            IdeEvent::Diagnostics { path, items, .. } if path == &main && !items.is_empty() => Some(items.clone()),
+            _ => None,
+        });
+        async move { found }
+    })
+    .await;
+    assert!(diagnostics.iter().all(|d| !d.message.contains("Cannot find module")), "{diagnostics:?}");
+    tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
+
+    // The tsconfig's own `@/*` wins.
+    std::fs::write(root.join("tsconfig.json"), tsconfig(",\"paths\":{\"@/*\":[\"./own/*\"]}")).unwrap();
+    let (mgr, _events) = manager(&root, LanguageRegistry::from_configs(vec![ts()]));
+    let doc = DocId::next();
+    mgr.did_open(doc, &main, &LanguageId::new("typescript"), 1, text);
+    let defs = retry("definition through the tsconfig paths", Duration::from_secs(90), || {
+        let mgr = mgr.clone();
+        let own = root.join("own/a.ts");
+        async move {
+            mgr.goto(doc, Pos::new(0, 10), GotoKind::Definition).await.ok().filter(|d| d.iter().any(|d| d.path == own))
+        }
+    })
+    .await;
+    assert_eq!(defs.len(), 1);
+    tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
 }
 
 const NG_APP_TS: &str = "import { Component } from '@angular/core';\n\n@Component({\n  selector: 'app-root',\n  templateUrl: './app.html',\n})\nexport class App {\n  title = 'demo';\n}\n";

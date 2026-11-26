@@ -105,7 +105,13 @@ export function ScopeFields({
                   <Select<string>
                     className={styles.grow}
                     value={(selected ? value.custom : custom) ?? null}
-                    options={scopes.map((s) => ({ value: s.name, label: s.name, detail: s.pattern }))}
+                    options={scopes.map((s) => ({
+                      value: s.name,
+                      label: s.name,
+                      verbatim: true,
+                      detail: s.pattern,
+                      verbatimDetail: true,
+                    }))}
                     placeholder={scopes.length ? "Choose a scope" : "No custom scopes"}
                     disabled={!selected}
                     onChange={(custom) => onChange({ ...value, custom })}

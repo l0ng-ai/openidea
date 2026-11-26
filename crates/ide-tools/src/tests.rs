@@ -603,6 +603,34 @@ esac"#,
     assert!(!err.message.contains("ECONNRESET"), "{}", err.message);
 }
 
+/// Settings › Tools › Download Mirrors › Use only the configured package registries: a registry
+/// that refuses a package (a firewall's 403) is the answer.
+#[cfg(unix)]
+#[test]
+fn configured_registries_only_never_reach_public_registries() {
+    let env = Env::new();
+    let log = env.root.parent().unwrap().join("npm-only.txt");
+    env.script(&env.sys, "node", "exit 0");
+    env.script(
+        &env.sys,
+        "npm",
+        &format!(
+            r#"echo "$@" >> '{log}'
+echo "npm error code E403" >&2
+echo "npm error 403 Forbidden - GET https://nexus.example/yaml-language-server - quarantined" >&2
+exit 1"#,
+            log = log.display()
+        ),
+    );
+    let only = ToolDownloadSettings { configured_registries_only: true, ..Default::default() };
+    let tools = env.tools().with_downloads(only);
+    let err = tools.install("yaml-language-server", &langs(), &CancellationToken::new(), &|_| {}).unwrap_err();
+    assert!(err.message.contains("quarantined"), "{}", err.message);
+    let calls = fs::read_to_string(&log).unwrap();
+    assert_eq!(calls.lines().count(), 1, "{calls}");
+    assert!(!calls.contains("registry.npmjs.org"), "{calls}");
+}
+
 /// Servers that load TypeScript as a library get one with its JS API: `@latest`
 /// is TypeScript 7 (native, no `ts.server`), which crashed vue-language-server (#25).
 /// Uninstalling one keeps the TypeScript another installed server still uses.
@@ -1344,7 +1372,10 @@ esac"#,
         ),
     );
     // The first mirror is down: the next one is tried before the official host.
-    let downloads = ToolDownloadSettings { github_mirror: "https://down.mirror.test/, https://mirror.test/".into() };
+    let downloads = ToolDownloadSettings {
+        github_mirror: "https://down.mirror.test/, https://mirror.test/".into(),
+        ..Default::default()
+    };
     let emit = |_: InstallEvent| {};
     env.tools()
         .with_downloads(downloads)

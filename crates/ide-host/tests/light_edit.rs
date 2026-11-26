@@ -2,7 +2,7 @@
 
 mod common;
 
-use ide_core::{ChangeSet, TextChange};
+use ide_core::{ChangeSet, Pos, Range, SymbolKind, TextChange};
 use ide_host::{Host, catalogue::TrustClass, ops};
 use std::sync::Arc;
 use std::time::Duration;
@@ -49,6 +49,33 @@ async fn edits_loose_files_without_project_services() {
     let project = host.open_project("main", &a_dir).unwrap();
     assert!(!project.light);
     assert!(!Arc::ptr_eq(&project, &light));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn large_markdown_has_structure_after_embedded_images() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("paper.md");
+    let image = format!("![Figure](data:image/png;base64,{})\n\n", "A".repeat(64 * 1024));
+    let text = format!("# Paper\n\n{}```text\n## Inside code\n```\n\n## Results\n", image.repeat(84));
+    std::fs::write(&path, text).unwrap();
+    let host = host(&tmp.path().join("app"));
+    host.open_light("main", &path).unwrap();
+
+    let doc = ops::doc::doc_open(&host, "main", path).await.unwrap();
+    assert!(doc.large);
+    let outline = ops::doc::doc_outline(&host, "main", doc.id).await.unwrap();
+
+    assert_eq!(outline.len(), 1);
+    let paper = &outline[0];
+    assert_eq!(paper.kind, SymbolKind::Key);
+    assert_eq!(paper.name, "Paper");
+    assert_eq!(paper.selection_range, Range::new(Pos::new(0, 2), Pos::new(0, 7)));
+    assert_eq!(paper.children.len(), 1);
+    let results = &paper.children[0];
+    assert_eq!(results.kind, SymbolKind::Key);
+    assert_eq!(results.name, "Results");
+    assert_eq!(results.selection_range, Range::new(Pos::new(174, 3), Pos::new(174, 10)));
+    assert!(results.children.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

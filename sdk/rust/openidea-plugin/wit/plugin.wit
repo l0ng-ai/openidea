@@ -8,7 +8,7 @@
 /// `fs` and `workspace`, and everything else goes through the imports below,
 /// gated by the capabilities granted in `plugin.toml` (a missing one returns
 /// `error::denied`).
-package openidea:plugin@1.17.0;
+package openidea:plugin@1.18.0;
 
 world plugin {
     import log;
@@ -40,6 +40,7 @@ world plugin {
     import mcp;
     import settings;
     import extensions;
+    import agents;
 
     export lifecycle;
     export commands;
@@ -189,6 +190,10 @@ world configurations-provider { export run-configurations; }
 world plugin-launch-configurations { include plugin; export launch-configurations; }
 /// Export-only launch configurations world, composed with plugin by SDK macros.
 world launch-configurations-provider { export launch-configurations; }
+/// A plugin that exports configurations with environment, debugger, and output mode (API 1.18).
+world plugin-execution-configurations { include plugin; export execution-configurations; }
+/// Export-only execution configurations world, composed with plugin by SDK macros.
+world execution-configurations-provider { export execution-configurations; }
 /// A plugin that parses its test output.
 world plugin-test-results { include plugin; export test-results; }
 /// Export-only test parser world, composed with plugin by SDK macros.
@@ -212,6 +217,16 @@ world mcp-tools { export mcp-provider; }
 world plugin-run-target-validation { include plugin; export run-target-validation; }
 /// Export-only validation, composed with the base plugin world.
 world run-target-validator { export run-target-validation; }
+
+/// A plugin with Run Anything entries for its prefixes (API 1.18).
+world plugin-run-anything { include plugin; export run-anything-provider; }
+/// Export-only Run Anything provider, composed with the base plugin world.
+world run-anything-exports { export run-anything-provider; }
+
+/// A plugin completing fields of its own run configurations (API 1.18).
+world plugin-run-configuration-completion { include plugin; export run-configuration-completion; }
+/// Export-only run configuration completion, composed with the base plugin world.
+world run-configuration-completion-exports { export run-configuration-completion; }
 
 /// A plugin with custom Search Everywhere categories.
 world plugin-search { include plugin; export search-provider; }

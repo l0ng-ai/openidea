@@ -193,7 +193,7 @@ class CheckboxMarker extends GutterMarker {
 
 const theme = EditorView.baseTheme({
   ".cm-include-gutter .cm-gutterElement": { display: "flex", alignItems: "center", padding: "0 2px" },
-  ".cm-include-hunk": { margin: 0, width: "12px", height: "12px", accentColor: "var(--accent)", cursor: "pointer" },
+  ".cm-include-hunk": { margin: 0, width: "12px", height: "12px", accentColor: "var(--accent)", cursor: "default" },
 });
 
 /**

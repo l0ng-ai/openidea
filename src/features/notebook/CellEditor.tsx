@@ -12,14 +12,23 @@ import {
 import { defaultKeymap, indentWithTab } from "@codemirror/commands";
 import { bracketMatching, indentOnInput, syntaxHighlighting } from "@codemirror/language";
 import type { NotebookCellDoc } from "@/bindings";
-import { adjacentEditor, cellEditorExtensions, embeddedEditorExtensions, externalHistory } from "@/editor/api";
+import {
+  _setFocusedCellEditor,
+  adjacentEditor,
+  cellEditorExtensions,
+  embeddedEditorExtensions,
+  externalHistory,
+  focusedCellEditor,
+} from "@/editor/api";
 import { openideaTheme } from "@/editor/core/cm/theme";
 import { openideaHighlightStyle } from "@/editor/core/cm/highlight";
 import { selectionMarks } from "@/editor/core/cm/selectionMarks";
 import { seamlessSelection } from "@/editor/core/cm/selectionLayer";
+import { multiCaretMouse } from "@/editor/core/cm/multiCaret";
 import { findLanguageDescription, loadSupport } from "@/editor/core/cm/languages";
 import { tooltipBounds } from "@/editor/core/cm/setup";
 import { tx } from "@/platform/i18n";
+import { setContext } from "@/platform/context";
 import type { CellReveal, NotebookSession } from "./session";
 import styles from "./Notebook.module.css";
 
@@ -30,6 +39,13 @@ function languageServices(type: string, doc: NotebookCellDoc | undefined) {
   if (type !== "code" || !doc) return [];
   return cellEditorExtensions({ doc: doc.doc, path: doc.uri, language: "python", uiMode: "Python", readOnly: false });
 }
+
+/** Created once: every `EditorView.theme` call mounts new CSS rules into the document. */
+const CELL_EDITOR_THEME = EditorView.theme({
+  "&.cm-editor": { height: "auto" },
+  // `auto`: past either end of a long cell the wheel scrolls the notebook.
+  "&.cm-editor .cm-scroller": { maxHeight: "640px", overflow: "auto", overscrollBehavior: "auto" },
+});
 
 export function CellEditor({
   session,
@@ -67,6 +83,7 @@ export function CellEditor({
       drawSelection(),
       selectionMarks,
       seamlessSelection(),
+      multiCaretMouse,
       highlightActiveLine(),
       highlightSpecialChars(),
       bracketMatching(),
@@ -106,11 +123,7 @@ export function CellEditor({
       services.current.of(languageServices(type, initialDoc.current)),
       readonly.current.of(EditorState.readOnly.of(session.getState().frozen)),
       EditorView.lineWrapping,
-      EditorView.theme({
-        "&.cm-editor": { height: "auto" },
-        // `auto`: past either end of a long cell the wheel scrolls the notebook.
-        "&.cm-editor .cm-scroller": { maxHeight: "640px", overflow: "auto", overscrollBehavior: "auto" },
-      }),
+      CELL_EDITOR_THEME,
       adjacentEditor.of((direction, col) => session.revealAdjacent(id, direction, col)),
       EditorView.contentAttributes.of({
         "aria-label": tx(type === "code" ? "Python cell source" : "Markdown cell source"),
@@ -120,8 +133,16 @@ export function CellEditor({
       ),
       EditorView.updateListener.of((update) => {
         session.editors.set(id, update.state);
-        // The session puts the caret back here after a backend undo/redo (session.ts history).
-        if (update.focusChanged) session.focusedCell = update.view.hasFocus ? id : null;
+        if (update.focusChanged) {
+          // The session puts the caret back here after a backend undo/redo (session.ts history).
+          session.focusedCell = update.view.hasFocus ? id : null;
+          // While the cell editor has focus the notebook publishes the editor context keys a
+          // text tab does, and the cell's view is what editor actions resolve (@/editor/api,
+          // re-read by editor/core's publishContext and the action resolvers).
+          _setFocusedCellEditor(update.view.hasFocus ? update.view : null);
+          setContext("textEditorActive", update.view.hasFocus);
+          setContext("editorTextFocus", update.view.hasFocus);
+        }
         if (update.docChanged && update.transactions.some((tr) => !tr.annotation(external))) {
           session.edit({ type: "setSource", cell: id, source: update.state.doc.toString() });
         }
@@ -147,6 +168,7 @@ export function CellEditor({
       alive = false;
       session.editors.set(id, editor.state);
       if (session.focusedCell === id) session.focusedCell = null;
+      if (focusedCellEditor() === editor) _setFocusedCellEditor(null);
       view.current = null;
       editor.destroy();
     };

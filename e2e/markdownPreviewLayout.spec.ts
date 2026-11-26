@@ -20,6 +20,70 @@ async function ratio(editor: Locator, preview: Locator, axis: "height" | "width"
   return source![axis] / (source![axis] + rendered![axis]);
 }
 
+test("copies fenced Markdown code with hover or keyboard in both preview layouts", async ({
+  workbench: page,
+  context,
+}) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  const bash = "  printf '%s\\n' '<&>'\n\n  echo done";
+  const python = "if True:\n    print('hello')";
+  const plain = "first\n\n  second";
+  const mermaid = "flowchart TD\n    A --> B";
+  const source = [
+    "# Examples",
+    "```bash\n\n" + bash + "\n\n```",
+    "- Python\n\n  ~~~python\n  " + python.replace("\n", "\n  ") + "\n  ~~~",
+    "```\n" + plain + "  \n```",
+    "    indented code",
+    '<pre data-markdown-fence><code class="language-bash">raw HTML</code></pre>',
+    "```mermaid\n" + mermaid + "\n```",
+  ].join("\n\n");
+  await page.evaluate(async (source) => {
+    const backendPath = "/src/editor/core/backend.ts";
+    const servicePath = "/src/workbench/contributions.ts";
+    const { docBackend } = await import(backendPath);
+    const { editorService } = await import(servicePath);
+    const path = "/dev/acme-api/code-examples.md";
+    docBackend().files.set(path, source);
+    await editorService().openFile(path);
+  }, source);
+
+  const preview = page.getByRole("document", { name: "Markdown preview" });
+  const copies = preview.getByRole("button", { name: /^(Copy Code|Copied!)$/ });
+  const readClipboard = () => page.evaluate(() => navigator.clipboard.readText());
+  await expect(copies).toHaveCount(4);
+  await expect(preview.locator("pre")).toHaveCount(6);
+  await page.mouse.move(0, 0);
+  await expect(copies.first()).toHaveCSS("opacity", "0");
+  await preview.locator("pre").first().hover();
+  await expect(copies.first()).toHaveCSS("opacity", "1");
+  await copies.first().click();
+  await expect(copies.first()).toHaveAccessibleName("Copied!");
+  await expect.poll(readClipboard).toBe(bash);
+  await expect(copies.first()).toHaveAccessibleName("Copy Code");
+
+  await page.mouse.move(0, 0);
+  await copies.first().focus();
+  await page.keyboard.press("Tab");
+  await expect(copies.nth(1)).toBeFocused();
+  await expect(copies.nth(1)).toHaveCSS("opacity", "1");
+  await page.keyboard.press("Enter");
+  await expect.poll(readClipboard).toBe(python);
+
+  await page.getByRole("button", { name: "Preview Only", exact: true }).click();
+  await expect(copies).toHaveCount(4);
+  await preview.locator("pre").nth(2).hover();
+  await copies.nth(2).click();
+  await expect.poll(readClipboard).toBe(plain);
+  const diagram = preview.locator('[data-mermaid-state="ok"]');
+  await expect(diagram.getByRole("button", { name: "Full screen", exact: true })).toBeVisible();
+  await diagram.hover();
+  await diagram.getByRole("button", { name: "Copy Code", exact: true }).click();
+  await expect.poll(readClipboard).toBe(mermaid);
+  await page.getByRole("button", { name: "Editor and Preview", exact: true }).click();
+  await expect(copies).toHaveCount(4);
+});
+
 test("Markdown settings can stack the preview and remember each direction's split", async ({ workbench: page }) => {
   await page.setViewportSize({ width: 980, height: 760 });
   await page.evaluate(() =>

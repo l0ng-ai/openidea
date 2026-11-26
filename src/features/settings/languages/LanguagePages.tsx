@@ -118,6 +118,7 @@ export function NodePage() {
         const found = list.find((s) => s.name === name);
         return {
           value: name,
+          verbatim: true,
           label: name,
           detail: found ? `${found.version ?? ""} ${tildify(found.path)}`.trim() : "not found",
         };

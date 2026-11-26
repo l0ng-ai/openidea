@@ -6,7 +6,7 @@
 import { type ComponentType, useEffect, useState } from "react";
 import clsx from "clsx";
 import { t } from "@/platform/i18n";
-import type { WindowButton } from "@/platform/ipc";
+import { call, commands, type WindowButton } from "@/platform/ipc";
 import { usePlatform } from "@/platform/platformInfo";
 import { Icon } from "@/ui";
 import styles from "./TitleBar.module.css";
@@ -47,13 +47,17 @@ function MinimizeButton() {
 }
 
 function MaximizeButton() {
-  const [maximized, setMaximized] = useState(false);
+  const [state, setState] = useState<"normal" | "maximized" | "fullscreen">("normal");
 
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
     withWindow(async (w) => {
-      const sync = () => void w.isMaximized().then((m) => !disposed && setMaximized(m));
+      const sync = () =>
+        void Promise.all([w.isMaximized(), w.isFullscreen()]).then(
+          ([maximized, fullscreen]) =>
+            !disposed && setState(fullscreen ? "fullscreen" : maximized ? "maximized" : "normal"),
+        );
       sync();
       const off = await w.onResized(sync);
       if (disposed) off();
@@ -65,16 +69,23 @@ function MaximizeButton() {
     };
   }, []);
 
-  const label = maximized ? t("window.caption.restore") : t("window.caption.maximize");
+  // In full screen the button restores the window: maximizing under the full-screen frame did
+  // nothing visible and left the window broken once it was dragged (#6029).
+  const restore = state !== "normal";
+  const label = restore ? t("window.caption.restore") : t("window.caption.maximize");
   return (
     <button
       type="button"
       className={styles.caption}
       aria-label={label}
       title={label}
-      onClick={() => withWindow((w) => w.toggleMaximize())}
+      onClick={() =>
+        state === "fullscreen"
+          ? void call(commands.windowToggleFullscreen()).catch((e) => console.warn("cannot leave full screen", e))
+          : withWindow((w) => w.toggleMaximize())
+      }
     >
-      <Icon name={maximized ? "window-restore" : "window-maximize"} size={16} />
+      <Icon name={restore ? "window-restore" : "window-maximize"} size={16} />
     </button>
   );
 }

@@ -69,16 +69,15 @@ pub(crate) async fn resolve_launch(
     progress("Resolving the module");
     let project = host.project(window)?;
     let module = ide_core::project_roots::resolve(&project.root, &module);
-    let scope = {
+    let scope = std::sync::Arc::new({
         let (project, module) = (project.clone(), module.clone());
         tokio::task::spawn_blocking(move || workspace::scope_for(&project, &module))
             .await
             .map_err(|e| IdeError::internal(e.to_string()))??
-    };
+    });
     if !project.lsp.java_served_by_jdtls(&module) {
         return resolve_launch_without_jdtls(host, &project, module, scope, test, policy, cancel, events).await;
     }
-    let scope = std::sync::Arc::new(scope);
     let launches = project.java_launches.for_cache(&scope.cache);
     let prefer_maven = scope.settings.languages.java.maven.delegate_build;
     // A launch builds incrementally unless the configuration asks for Rebuild or NoBuild.
@@ -110,6 +109,10 @@ pub(crate) async fn resolve_launch(
         .await
         .map_err(|e| IdeError::internal(e.to_string()))?
     };
+    // A dependency-only POM has no Java project in jdtls, but is a valid launch classpath.
+    if is_maven_aggregator(&scope.root, &model, &module) {
+        return resolve_launch_without_jdtls(host, &project, module, scope, test, policy, cancel, events).await;
+    }
     // A Maven or Gradle module is built by the IDE's Java build ([`served_by_service`]), unless
     // the launch debugs with java-debug, whose HotSwap reloads what jdtls compiles (ecj's
     // classes differ from javac's: lambda names). jdtls keeps building for its diagnostics
@@ -139,7 +142,8 @@ pub(crate) async fn resolve_launch(
         };
         if let Some(outputs) = built {
             progress("Resolving the classpath");
-            let mut info = project.lsp.java_launch(&module, test, false, false, false, cancel).await?;
+            let server = project.lsp.java_launch(&module, test, false, false, false, cancel);
+            let mut info = server_launch_extras(server, SERVER_EXTRAS_WAIT).await?;
             let data_dir = host.local_data_dir.clone();
             let cancel = cancel.clone();
             return tokio::task::spawn_blocking(move || {
@@ -383,9 +387,40 @@ fn is_maven_module(root: &Path, model: &BuildModel, module: &Path) -> bool {
     model.maven.as_ref().is_some_and(|m| m.projects.iter().any(|p| root.join(&p.dir) == module))
 }
 
+fn is_maven_aggregator(root: &Path, model: &BuildModel, module: &Path) -> bool {
+    model.maven.as_ref().is_some_and(|m| m.projects.iter().any(|p| root.join(&p.dir) == module && p.packaging == "pom"))
+}
+
 /// Whether the IDE's Java build builds the module holding `path` (#4078): a Maven module unless
 /// Settings › Maven › Delegate IDE build/run actions to Maven asks for Maven; a Gradle module
 /// when Settings › Gradle › Build and run using asks for the IDE.
+/// How long a launch whose classpath the IDE's Java build resolved waits for what jdtls adds
+/// (the JDK it compiles against, the Java project root). jdtls can be busy for minutes importing
+/// a Maven project (resolving plugin dependencies), and the run doesn't need it:
+/// [`finish_launch`] picks the project's JDK or an installed one.
+const SERVER_EXTRAS_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// jdtls' launch info, or an empty one when it doesn't answer within `wait` or fails.
+async fn server_launch_extras(
+    server: impl std::future::Future<Output = IdeResult<JavaLaunchInfo>>,
+    wait: std::time::Duration,
+) -> IdeResult<JavaLaunchInfo> {
+    let fallback =
+        || JavaLaunchInfo { path_list_separator: if cfg!(windows) { ";" } else { ":" }.into(), ..Default::default() };
+    match tokio::time::timeout(wait, server).await {
+        Ok(Ok(info)) => Ok(info),
+        Ok(Err(e)) if e.kind == ErrorKind::Cancelled => Err(e),
+        Ok(Err(e)) => {
+            tracing::warn!("Java launch without the language server's JDK: {}", e.message);
+            Ok(fallback())
+        }
+        Err(_) => {
+            tracing::info!(wait_ms = wait.as_millis(), "Java language server busy; launching without its JDK");
+            Ok(fallback())
+        }
+    }
+}
+
 pub(crate) fn served_by_service(root: &Path, model: &BuildModel, settings: &Settings, path: &Path) -> bool {
     let maven = model.maven.iter().flat_map(|m| m.projects.iter().map(|p| (root.join(&p.dir), true)));
     let gradle = model.gradle.iter().flat_map(|g| g.projects.iter().map(|p| (root.join(&p.dir), false)));
@@ -418,31 +453,32 @@ fn gradle_served(settings: &Settings) -> bool {
 
 /// A launch of a module jdtls doesn't serve (another Java language server, or none): the
 /// build tool compiles it, and the classpath comes from that server, else from Maven.
+/// Dependency-only Maven POMs also use this path, without querying a Java language server.
 #[allow(clippy::too_many_arguments)]
 async fn resolve_launch_without_jdtls(
     host: &Host,
     project: &std::sync::Arc<crate::Project>,
     module: PathBuf,
-    scope: workspace::Scope,
+    scope: std::sync::Arc<workspace::Scope>,
     test: bool,
     policy: BuildPolicy,
     cancel: &CancellationToken,
     events: Option<LaunchEvents>,
 ) -> IdeResult<JavaLaunchInfo> {
     let started = std::time::Instant::now();
-    let scope = std::sync::Arc::new(scope);
     let kind = if policy == BuildPolicy::Rebuild { compile::BuildKind::Rebuild } else { compile::BuildKind::Build };
     let (model, built, by_service) = {
         let (scope, module, cancel, events) = (scope.clone(), module.clone(), cancel.clone(), events.clone());
         let (service, data_dir) = (host.java_build.clone(), host.local_data_dir.clone());
         tokio::task::spawn_blocking(move || {
             let model = load_launch_model(&scope);
+            let aggregator = is_maven_aggregator(&scope.root, &model, &module);
             let on_event = |event: BuildEvent| {
                 if let Some(events) = &events {
                     events(event);
                 }
             };
-            if policy == BuildPolicy::NoBuild {
+            if policy == BuildPolicy::NoBuild && !aggregator {
                 return (model, None, false);
             }
             if served_by_service(&scope.root, &model, &scope.settings, &module)
@@ -455,7 +491,7 @@ async fn resolve_launch_without_jdtls(
                     &model,
                     &module,
                     test,
-                    Some(kind),
+                    (policy != BuildPolicy::NoBuild).then_some(kind),
                     &cancel,
                     &on_event,
                 ) {
@@ -466,6 +502,9 @@ async fn resolve_launch_without_jdtls(
                     Ok(None) => {}
                     Err(e) => return (model, Some(Err(e)), false),
                 }
+            }
+            if policy == BuildPolicy::NoBuild {
+                return (model, None, false);
             }
             let built = compile::build_for_launch(&scope.root, &model, &module, test, kind, &cancel, &on_event);
             (model, Some(built), false)
@@ -486,14 +525,17 @@ async fn resolve_launch_without_jdtls(
             )));
         }
         Some(Ok(built)) => {
-            info.build = Some(match built.failure {
+            let status = match built.failure {
                 None => JavaBuildStatus::Succeeded,
                 Some(failure) if policy == BuildPolicy::MakeAndContinueOnErrors => {
                     info.hints.push(failure);
                     JavaBuildStatus::Failed
                 }
                 Some(failure) => return Err(IdeError::internal(failure)),
-            });
+            };
+            if policy != BuildPolicy::NoBuild {
+                info.build = Some(status);
+            }
             class_paths.extend(built.class_dirs.iter().map(|p| p.to_string_lossy().into_owned()));
         }
     }
@@ -501,7 +543,8 @@ async fn resolve_launch_without_jdtls(
     if let Some(events) = &events {
         events(BuildEvent::Progress { message: "Resolving the classpath".into(), fraction: None });
     }
-    let from_server = project.lsp.java_server_classpath(&module, test, cancel).await?;
+    let aggregator = is_maven_aggregator(&scope.root, &model, &module);
+    let from_server = if aggregator { None } else { project.lsp.java_server_classpath(&module, test, cancel).await? };
     let data_dir = host.local_data_dir.clone();
     let cancel = cancel.clone();
     tokio::task::spawn_blocking(move || {
@@ -527,7 +570,11 @@ async fn resolve_launch_without_jdtls(
                     ));
                 }
                 let local_repo = ide_sdk::apply::maven_local_repository(root, settings);
-                let classpath = compile::module_classpath(root, &model, &module, test, local_repo, cache, &cancel)?;
+                let classpath = if aggregator && policy == BuildPolicy::NoBuild {
+                    compile::module_classpath_without_build(root, &model, &module, test, cache, &cancel)?
+                } else {
+                    compile::module_classpath(root, &model, &module, test, local_repo, cache, &cancel)?
+                };
                 append_unique_class_paths(
                     &mut class_paths,
                     std::env::split_paths(&classpath).map(|p| p.to_string_lossy().into_owned()),
@@ -903,7 +950,7 @@ pub async fn java_build_workspace(
 /// The JVM of OpenIDEA's JUnit runner for the module at `module`, given its resolved test classpath:
 /// the classpath with the runner and `junit-platform-launcher` of the engine's version (unless the
 /// classpath has one, or has JUnit 4 alone; from the engine's repository, else downloaded once from
-/// Maven Central), and,
+/// Maven Central unless only the configured package registries are allowed), and,
 /// for a Maven module, what its Surefire configuration gives the forked test JVM.
 #[command(trust = trusted)]
 pub async fn java_junit_runner(
@@ -916,6 +963,7 @@ pub async fn java_junit_runner(
     let project = host.project(window)?;
     let module = ide_core::project_roots::resolve(&project.root, &module);
     let data_dir = host.local_data_dir.clone();
+    let registries_only = host.configured_registries_only();
     tokio::task::spawn_blocking(move || {
         let scope = workspace::scope_for(&project, &module)?;
         let model = load_launch_model(&scope);
@@ -929,7 +977,9 @@ pub async fn java_junit_runner(
         let launcher = match ide_sdk::java::junit_launcher(&class_paths) {
             ide_sdk::java::JunitLauncher::OnClasspath | ide_sdk::java::JunitLauncher::Junit4 => None,
             ide_sdk::java::JunitLauncher::Found(path) => Some(path),
-            ide_sdk::java::JunitLauncher::Missing(version) => Some(download_junit_launcher(&data_dir, &version)?),
+            ide_sdk::java::JunitLauncher::Missing(version) => {
+                Some(download_junit_launcher(&data_dir, &version, registries_only)?)
+            }
             ide_sdk::java::JunitLauncher::NoPlatform => {
                 return Err(IdeError::unavailable(
                     "Neither JUnit 5 (junit-platform-engine) nor JUnit 4 is on the test classpath. To run these tests \
@@ -998,7 +1048,9 @@ fn junit_launch(
     }
 }
 
-fn download_junit_launcher(data_dir: &Path, version: &str) -> IdeResult<PathBuf> {
+/// The launcher jar downloaded once from Maven Central; with only the configured package
+/// registries allowed (Settings › Tools › Download Mirrors), only one downloaded before.
+fn download_junit_launcher(data_dir: &Path, version: &str, registries_only: bool) -> IdeResult<PathBuf> {
     if version.is_empty() || !version.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) {
         return Err(IdeError::invalid(format!("Unexpected JUnit Platform version '{version}'")));
     }
@@ -1006,6 +1058,14 @@ fn download_junit_launcher(data_dir: &Path, version: &str) -> IdeResult<PathBuf>
     let dest = data_dir.join("junit").join(&name);
     if dest.is_file() {
         return Ok(dest);
+    }
+    if registries_only {
+        return Err(IdeError::unavailable(format!(
+            "{name} is not on the test classpath, and Settings › Tools › Download Mirrors allows only the \
+             configured package registries, so it is not downloaded from Maven Central. Add \
+             org.junit.platform:junit-platform-launcher to the test dependencies, or set Settings › Build Tools › \
+             Maven › Run tests using to Maven."
+        )));
     }
     std::fs::create_dir_all(dest.parent().expect("has a parent"))?;
     let url = format!("https://repo1.maven.org/maven2/org/junit/platform/junit-platform-launcher/{version}/{name}");
@@ -1040,6 +1100,22 @@ fn drop_processor_recreate_errors(info: &mut JavaLaunchInfo) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn a_busy_or_failing_language_server_does_not_block_a_resolved_launch() {
+        let wait = std::time::Duration::from_secs(5);
+        // jdtls importing a Maven project: no answer for minutes (#6122).
+        let busy = server_launch_extras(std::future::pending(), wait).await.unwrap();
+        assert!(busy.java_home.is_none() && busy.class_paths.is_empty());
+        assert!(!busy.path_list_separator.is_empty());
+        let failed = server_launch_extras(async { Err(IdeError::unavailable("timed out")) }, wait).await.unwrap();
+        assert!(failed.java_home.is_none());
+        let home = JavaLaunchInfo { java_home: Some(PathBuf::from("/jdk").into()), ..Default::default() };
+        let answered = server_launch_extras(async { Ok(home) }, wait).await.unwrap();
+        assert!(answered.java_home.is_some());
+        let cancelled = server_launch_extras(async { Err(IdeError::cancelled()) }, wait).await;
+        assert_eq!(cancelled.unwrap_err().kind, ErrorKind::Cancelled);
+    }
 
     #[test]
     fn junit_launch_applies_the_surefire_configuration() {

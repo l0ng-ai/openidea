@@ -9,6 +9,7 @@ mod modules;
 mod parse;
 mod single;
 mod structure;
+mod tsc_watch;
 mod up_to_date;
 
 pub use fingerprint::{LaunchFingerprint, launch_fingerprint, menu_fingerprint};
@@ -16,12 +17,14 @@ pub use launch_resources::process_launch_resources;
 pub use modules::record_module_build;
 pub use single::{
     SingleFileTarget, compile_file_plan, compile_file_plan_cancellable, find_javac, gradle_compile_file_plan,
-    has_gradle_file_target, javac_step, module_classpath, module_classpaths, single_file_classpath, single_file_target,
+    has_gradle_file_target, javac_step, module_classpath, module_classpath_without_build, module_classpaths,
+    single_file_classpath, single_file_target,
 };
 pub use structure::{
     StructureJdk, StructureRoots, artifact_file, artifact_output, language_release, structure_compile_file_plan,
     structure_outputs, structure_plan, structure_war_plan, structure_web_artifacts,
 };
+pub use tsc_watch::{tsc_watch, tsc_watch_roots};
 pub use up_to_date::{menu_up_to_date, record_menu_build};
 
 use crate::process::{self, Stream};
@@ -811,6 +814,11 @@ pub fn run(
 
 /// Per-file editor / Problems diagnostics of the messages that have a position.
 pub fn diagnostics(messages: &[BuildMessage]) -> BTreeMap<PathBuf, Vec<Diagnostic>> {
+    diagnostics_from(messages, DIAGNOSTICS_SOURCE)
+}
+
+/// [`diagnostics`] reported by `source`.
+pub fn diagnostics_from(messages: &[BuildMessage], source: &str) -> BTreeMap<PathBuf, Vec<Diagnostic>> {
     let mut out: BTreeMap<PathBuf, Vec<Diagnostic>> = BTreeMap::new();
     for m in messages {
         let (Some(path), Some(range)) = (&m.path, m.range) else { continue };
@@ -818,11 +826,11 @@ pub fn diagnostics(messages: &[BuildMessage]) -> BTreeMap<PathBuf, Vec<Diagnosti
             range,
             severity: m.severity,
             message: m.text.clone(),
-            source: Some(DIAGNOSTICS_SOURCE.to_owned()),
+            source: Some(source.to_owned()),
             code: m.code.clone(),
             unnecessary: false,
             deprecated: false,
-            server: Some(DIAGNOSTICS_SOURCE.to_owned()),
+            server: Some(source.to_owned()),
         });
     }
     out

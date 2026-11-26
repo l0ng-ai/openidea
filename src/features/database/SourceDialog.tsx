@@ -25,7 +25,7 @@ import {
   type RequestId,
 } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
-import { choosePath } from "@/platform/choosePath";
+import { choosePath, chooseSavePath } from "@/platform/choosePath";
 import { tx, txPart, useTx, useTxTemplate } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import { useRemote } from "@/platform/remote";
@@ -44,13 +44,20 @@ import {
   sshTunnelReady,
 } from "./model";
 import { closeDialog, loadDatabases, loadSchemas, saveSource, useDatabase } from "./store";
-import { VENDORS, blankSnowflake, sourceUrl, vendorById, vendorOf } from "./vendors";
-import { JdbcDriverProfiles, useJdbcDrivers } from "./JdbcDriverProfiles";
+import { DUCKDB_JDBC_PREFIX, VENDORS, blankSnowflake, sourceUrl, vendorById, vendorOf } from "./vendors";
+import { JdbcDriverProfiles, jdbcProfileOption, useJdbcDrivers } from "./JdbcDriverProfiles";
 import styles from "./Database.module.css";
 import { isImeKey } from "@/platform/ime";
 
 type Tab = "general" | "options" | "ssh" | "schemas" | "advanced";
 type ConnectionMethod = "direct" | "ssh" | "external";
+type DuckDbMode = "file" | "memory" | "url";
+
+const DUCKDB_MODES: Array<{ id: DuckDbMode; label: string }> = [
+  { id: "file", label: "File" },
+  { id: "memory", label: "In memory" },
+  { id: "url", label: "JDBC URL" },
+];
 
 const TYPES: SelectOption[] = VENDORS.map((v) => ({ value: v.id, label: v.label, icon: v.icon }));
 
@@ -204,7 +211,7 @@ function absoluteDatabaseFile(path: string, root: string | undefined): boolean {
     : path.startsWith("/") || (!root && windowsAbsolutePath.test(path));
 }
 
-function sqliteJdbcFile(file: string | null | undefined, root: string | undefined): string | null {
+function jdbcDatabaseFile(file: string | null | undefined, root: string | undefined): string | null {
   if (!file) return null;
   const windows = !!root && windowsAbsolutePath.test(root);
   const path = windows ? file.replace(/\\/g, "/") : file;
@@ -507,8 +514,8 @@ export function SourceDialog({
   }, []);
   useEffect(() => cancelExternalTest, [cancelExternalTest]);
   const [showComment, setShowComment] = useState(!!s.comment);
-  // The URL being typed in default mode (null: show the fields' URL).
-  const [urlDraft, setUrlDraft] = useState<string | null>(null);
+  // URL text being edited in native default mode or DuckDB's explicit URL mode.
+  const [urlDraft, setUrlDraft] = useState<string | null>(s.vendor === "duckdb" && s.urlOnly ? (s.url ?? "") : null);
   const [showJdbcProfiles, setShowJdbcProfiles] = useState(false);
   const [nativeDraft, setNativeDraft] = useState<{
     source: DataSource;
@@ -521,10 +528,17 @@ export function SourceDialog({
   const jdbc = s.driver === "jdbc";
   const vendor = vendorOf(s);
   const genericJdbc = vendor.id === "jdbc";
+  const duckdb = vendor.id === "duckdb";
+  const jdbcOnly = vendor.driver === "jdbc";
+  const [duckDbMode, setDuckDbMode] = useState<DuckDbMode>(() => {
+    if (s.urlOnly) return "url";
+    return !s.file && s.url === DUCKDB_JDBC_PREFIX ? "memory" : "file";
+  });
   const savedJdbcWithPreset = initial?.driver === "jdbc" && (!genericJdbc || vendorOf(initial).driver !== "jdbc");
   const jdbcProfiles = useJdbcDrivers();
   const availableProfiles = jdbcProfiles.drivers?.filter((d) => genericJdbc || d.vendor === vendor.id);
-  const jdbcProfile = availableProfiles?.find((d) => d.id === s.jdbcDriver);
+  const selectedProfileId = s.jdbcDriver || (duckdb && availableProfiles?.length === 1 ? availableProfiles[0]!.id : "");
+  const jdbcProfile = availableProfiles?.find((d) => d.id === selectedProfileId);
   const installedJdbcProfile = jdbcProfiles.drivers?.find((d) => d.id === s.jdbcDriver);
   const projectRoot = useProject((st) => st.project?.root);
   const remote = useRemote((st) => st.session !== null);
@@ -541,7 +555,7 @@ export function SourceDialog({
     ((savedJdbcWithPreset &&
       (initial.jdbcDriver !== s.jdbcDriver ||
         nativeSource ||
-        (s.url && s.url === jdbcProfile?.urlTemplate && s.url !== initial.url))) ||
+        (!duckdb && s.url && s.url === jdbcProfile?.urlTemplate && s.url !== initial.url))) ||
       (nativeSource &&
         (!!initial ||
           nativeSource.driver === "clickhouse" ||
@@ -609,9 +623,11 @@ export function SourceDialog({
     s.name?.trim() ||
     (genericJdbc
       ? (jdbcProfile?.name ?? tx("Custom JDBC"))
-      : vendor.driver === "sqlite"
-        ? fileSourceName(s.file ?? "")
-        : `${database || s.user || "db"}@${host || "localhost"}`);
+      : duckdb
+        ? (duckDbMode === "file" && fileSourceName(s.file ?? "")) || vendor.label
+        : vendor.driver === "sqlite"
+          ? fileSourceName(s.file ?? "")
+          : `${database || s.user || "db"}@${host || "localhost"}`);
   // Snowflake is reached over HTTPS, where a tunnel to another host name cannot pass certificate checks.
   const sshOn = !sqlite && !snowflake && !jdbc && !externalTunnel && !!ssh.enabled;
   const connectionMethod = externalTunnel ? "external" : sshOn ? "ssh" : "direct";
@@ -637,11 +653,38 @@ export function SourceDialog({
     /\{(host|port|database|file)\}/g,
     (token, key: "host" | "port" | "database" | "file") => String(s[key] || token),
   );
-  const fromTemplate = !!templateFields.length && (s.url === template || s.url === renderedUrl);
-  const jdbcUrl = fromTemplate ? renderedUrl : (s.url ?? "");
+  const fromTemplate = !duckdb && !!templateFields.length && (s.url === template || s.url === renderedUrl);
+  const duckDbFile = duckdb && duckDbMode === "file" ? jdbcDatabaseFile(s.file, projectRoot) : null;
+  const duckDbFileError =
+    !duckDbFile || !s.file?.trim() || /[\r\n]/.test(duckDbFile)
+      ? tx("Enter an absolute database path or a path relative to the open project.")
+      : duckDbFile.includes(";")
+        ? tx("DuckDB database paths cannot contain semicolons.")
+        : null;
+  const jdbcUrl =
+    duckdb && duckDbMode === "file"
+      ? duckDbFileError
+        ? ""
+        : DUCKDB_JDBC_PREFIX + duckDbFile
+      : duckdb
+        ? duckDbMode === "memory"
+          ? DUCKDB_JDBC_PREFIX
+          : (urlDraft ?? s.url ?? "")
+        : fromTemplate
+          ? renderedUrl
+          : (s.url ?? "");
+  const duckDbMemory =
+    duckdb &&
+    (duckDbMode === "memory" ||
+      (duckDbMode === "url" &&
+        [DUCKDB_JDBC_PREFIX, `${DUCKDB_JDBC_PREFIX}:memory:`].includes(jdbcUrl.split(";", 1)[0]!)));
   const chooseProfile = (profile?: DbJdbcDriver, type = vendor) => {
     setTest(null);
     setConnectionSecurityConfirmed(false);
+    if (duckdb) {
+      set({ jdbcDriver: profile?.id ?? "" });
+      return;
+    }
     if (jdbc) {
       const wasDefault = !s.url || (!savedJdbcWithPreset && (fromTemplate || s.url === jdbcProfile?.urlTemplate));
       set({ jdbcDriver: profile?.id ?? "", url: wasDefault ? (profile?.urlTemplate ?? "") : s.url });
@@ -655,7 +698,7 @@ export function SourceDialog({
       port: (parsed ? parsed.port : s.port) ?? (clickhouse && secure ? 8443 : vendor.port),
       database: parsed?.database ?? s.database,
       user: parsed?.user || s.user,
-      file: sqlite ? sqliteJdbcFile(file, projectRoot) : file,
+      file: sqlite ? jdbcDatabaseFile(file, projectRoot) : file,
     };
     setNativeDraft({ source: s, password, endpoint });
     const snowflakeOptions = { ...sf, ...parsed?.snowflake };
@@ -664,7 +707,7 @@ export function SourceDialog({
     set({
       ...endpoint,
       driver: "jdbc",
-      vendor: type.driver === "jdbc" ? "" : type.id,
+      vendor: type.id === "jdbc" ? "" : type.id,
       ...(snowflake ? { snowflake: snowflakeOptions } : {}),
       ...(needsJdbcPassword ? { savePassword: false } : {}),
       urlOnly: true,
@@ -680,14 +723,22 @@ export function SourceDialog({
       sslKeyFile: "",
     });
   };
-  const jdbcUrlValid = /^jdbc:[^\s:]+:[^\r\n]*$/.test(jdbcUrl) && !jdbcUrlPlaceholder.test(jdbcUrl);
+  const jdbcUrlValid =
+    duckdb && duckDbMode === "file"
+      ? duckDbFileError === null
+      : /^jdbc:[^\s:]+:[^\r\n]*$/.test(jdbcUrl) &&
+        !jdbcUrlPlaceholder.test(jdbcUrl) &&
+        (!duckdb || jdbcUrl.startsWith(DUCKDB_JDBC_PREFIX));
   const valid =
     (!externalTunnel ||
       (!externalError &&
         !!externalTunnel.executable.trim() &&
         externalTunnel.arguments.some((argument) => argument.includes("{localPort}")))) &&
     (jdbc
-      ? !!jdbcProfile && jdbcUrlValid && (!reviewJdbcSecurity || connectionSecurityConfirmed)
+      ? !!jdbcProfile &&
+        jdbcUrlValid &&
+        !(duckDbMemory && s.readOnly) &&
+        (!reviewJdbcSecurity || connectionSecurityConfirmed)
       : (!reviewBuiltinSecurity || connectionSecurityConfirmed) &&
         (sqlite
           ? !!s.file?.trim()
@@ -704,9 +755,10 @@ export function SourceDialog({
     ...(externalTunnel ? { ssh: null } : {}),
     ...(jdbc
       ? {
-          jdbcDriver: s.jdbcDriver ?? "",
+          jdbcDriver: jdbcProfile?.id ?? "",
           url: jdbcUrl,
-          urlOnly: true,
+          urlOnly: !duckdb || duckDbMode === "url",
+          ...(duckdb && { file: duckDbFile }),
           ssh: null,
           options: { ...options, transaction: "auto" as const },
         }
@@ -719,8 +771,18 @@ export function SourceDialog({
     setTest(null);
     setUrlDraft(null);
     setConnectionSecurityConfirmed(false);
-    if (v.driver === "jdbc") {
-      if (jdbc) set({ vendor: "" });
+    if (v.id === "duckdb") {
+      const sameDriver = installedJdbcProfile?.vendor === v.id;
+      const existingDuckUrl = jdbc && jdbcUrl.startsWith(DUCKDB_JDBC_PREFIX);
+      if (!jdbc) chooseProfile(undefined, v);
+      setDuckDbMode(existingDuckUrl ? "url" : "file");
+      setUrlDraft(existingDuckUrl ? jdbcUrl : null);
+      set({ vendor: v.id, file: null, url: "", jdbcDriver: sameDriver ? s.jdbcDriver : "" });
+      return;
+    }
+    if (v.id === "jdbc") {
+      if (duckdb) set({ vendor: "", jdbcDriver: selectedProfileId, file: duckDbFile, url: jdbcUrl });
+      else if (jdbc) set({ vendor: "" });
       else chooseProfile(undefined, v);
       return;
     }
@@ -913,7 +975,25 @@ export function SourceDialog({
     { id: "advanced", label: "Advanced" },
   ];
   const current = tabs.some((t) => t.id === tab) ? tab : "general";
-  const props = PROPERTIES[s.driver ?? "sqlite"]!;
+  const props = duckdb
+    ? { names: [], hint: "Passed to the DuckDB JDBC driver as connection properties." }
+    : PROPERTIES[s.driver ?? "sqlite"]!;
+
+  const pickDuckDbFile = async (create: boolean) => {
+    const filters = [{ name: "DuckDB", extensions: ["duckdb", "db"] }];
+    const defaultPath = duckDbFile ?? projectRoot;
+    const file = create
+      ? await chooseSavePath({
+          title: tx("New DuckDB Database"),
+          filters,
+          defaultPath: jdbcDatabaseFile("database.duckdb", projectRoot) ?? "database.duckdb",
+        })
+      : await choosePath({ directory: false, title: tx("Open DuckDB Database"), filters, defaultPath });
+    if (file) {
+      set({ file });
+      setTest(null);
+    }
+  };
 
   const general = (
     <>
@@ -926,15 +1006,19 @@ export function SourceDialog({
         <Select
           className={styles.fill}
           aria-label={genericJdbc ? "JDBC driver profile" : "Connection driver"}
-          value={jdbc ? (s.jdbcDriver ?? "") : ""}
-          disabled={genericJdbc && !jdbcProfiles.drivers}
+          value={jdbc ? selectedProfileId : ""}
+          disabled={jdbcOnly && !jdbcProfiles.drivers}
           onChange={(id) => {
-            if (!id && !genericJdbc) setType(vendor.id, true);
+            if (!id && !jdbcOnly) setType(vendor.id, true);
             else chooseProfile(availableProfiles?.find((d) => d.id === id));
           }}
           options={[
-            { value: "", label: genericJdbc ? "Choose a JDBC driver profile" : "Built-in" },
-            ...(availableProfiles ?? []).map((d) => ({ value: d.id, label: d.name, verbatim: true })),
+            {
+              value: "",
+              label: jdbcOnly ? "Choose a JDBC driver profile" : "Built-in",
+              disabled: duckdb,
+            },
+            ...(availableProfiles ?? []).map(jdbcProfileOption),
             ...(jdbc && s.jdbcDriver && !jdbcProfile
               ? [
                   {
@@ -962,16 +1046,111 @@ export function SourceDialog({
         <span className={styles.formFull} role="status">
           <T>Loading JDBC driver profiles…</T>
         </span>
+      ) : duckdb && !jdbcProfile && !availableProfiles?.length ? (
+        <span className={styles.formFull} role="status">
+          <T>Add the official DuckDB JDBC JAR in Manage Drivers… to connect.</T>
+        </span>
       ) : jdbc && s.jdbcDriver && !jdbcProfile && jdbcProfiles.drivers ? (
         <span className={`${styles.formFull} ${styles.bad}`} role="alert">
           {tx(
-            installedJdbcProfile
-              ? "The JDBC driver profile is assigned to a different data source type. Select a matching profile or update its type in Custom JDBC."
-              : "The JDBC driver profile is missing. Select or add a profile before connecting.",
+            duckdb
+              ? "Select a DuckDB driver profile or add the official DuckDB JDBC JAR in Manage Drivers…"
+              : installedJdbcProfile
+                ? "The JDBC driver profile is assigned to a different data source type. Select a matching profile or update its type in Custom JDBC."
+                : "The JDBC driver profile is missing. Select or add a profile before connecting.",
           )}
         </span>
       ) : null}
-      {sqlite ? (
+      {duckdb ? (
+        <>
+          <span className={styles.formLabel}>
+            <T>Connection type:</T>
+          </span>
+          <div className={styles.segmented} role="group" aria-label={tx("Connection type")}>
+            {DUCKDB_MODES.map(({ id, label }) => (
+              <button
+                type="button"
+                key={id}
+                aria-pressed={id === duckDbMode}
+                onClick={() => {
+                  setDuckDbMode(id);
+                  if (id === "url" && duckDbMode !== "url" && urlDraft === null) set({ url: jdbcUrl });
+                  setTest(null);
+                }}
+              >
+                <T>{label}</T>
+              </button>
+            ))}
+          </div>
+          {duckDbMode === "file" && (
+            <>
+              <label className={styles.formLabel} htmlFor="db-duckdb-file">
+                <T>File:</T>
+              </label>
+              <div className={styles.formRow}>
+                <Input
+                  id="db-duckdb-file"
+                  className={styles.fill}
+                  value={s.file ?? ""}
+                  invalid={!!s.file && !!duckDbFileError}
+                  placeholder="path/to/database.duckdb"
+                  onChange={(e) => {
+                    set({ file: e.target.value });
+                    setTest(null);
+                  }}
+                />
+                <Button onClick={() => void pickDuckDbFile(false)}>
+                  <T>Browse…</T>
+                </Button>
+                <Button disabled={!!s.readOnly} onClick={() => void pickDuckDbFile(true)}>
+                  <T>New File…</T>
+                </Button>
+              </div>
+              <span />
+              {s.file && duckDbFileError ? (
+                <span className={styles.bad} role="alert">
+                  {duckDbFileError}
+                </span>
+              ) : (
+                <span className={styles.formHint}>
+                  {s.readOnly ? (
+                    <T>Read-only requires an existing database file.</T>
+                  ) : (
+                    <T>Creates the database on first connection if the file does not exist.</T>
+                  )}
+                </span>
+              )}
+            </>
+          )}
+          <label className={styles.formLabel} htmlFor="db-url">
+            <T>URL:</T>
+          </label>
+          <Input
+            id="db-url"
+            mono
+            value={jdbcUrl}
+            readOnly={duckDbMode !== "url"}
+            invalid={duckDbMode === "url" && !!jdbcUrl && !jdbcUrlValid}
+            placeholder={DUCKDB_JDBC_PREFIX}
+            onChange={(e) => {
+              setUrlDraft(e.target.value);
+              setTest(null);
+            }}
+          />
+          {duckDbMemory && (
+            <>
+              <span />
+              <span className={styles.formHint}>
+                {s.readOnly ? (
+                  <T>Turn off Read-only in Options to use an in-memory DuckDB database.</T>
+                ) : (
+                  <T>Data is discarded when the connection closes.</T>
+                )}
+              </span>
+            </>
+          )}
+        </>
+      ) : sqlite ? (
         <FileField
           id="db-file"
           label="File:"
@@ -1278,12 +1457,21 @@ export function SourceDialog({
     <>
       <Section title="Connection" />
       <span />
-      <Checkbox checked={!!s.readOnly} onChange={(readOnly) => set({ readOnly })} label="Read-only" />
-      {jdbc && (
+      <Checkbox
+        checked={!!s.readOnly}
+        disabled={duckDbMemory && !s.readOnly}
+        onChange={(readOnly) => set({ readOnly })}
+        label="Read-only"
+      />
+      {duckDbMemory ? (
+        <span className={styles.formWide}>
+          <T>In-memory DuckDB databases require write access.</T>
+        </span>
+      ) : jdbc && !duckdb ? (
         <span className={styles.formWide}>
           <T>For read-only access, use a database account with read-only privileges.</T>
         </span>
-      )}
+      ) : null}
       {!jdbc && (
         <>
           <span className={styles.formLabel}>
@@ -1402,8 +1590,14 @@ export function SourceDialog({
 
   const sshConfigOptions: SelectOption[] = [
     { value: "", label: "Custom (fields below)" },
-    ...sshConfigs.map((c) => ({ value: c.id, label: c.name.trim() || configLabel(c) || c.id, detail: configLabel(c) })),
-    ...(sshConfigId && !sshConfig ? [{ value: sshConfigId, label: tx`${sshConfigId} (missing)` }] : []),
+    ...sshConfigs.map((c) => ({
+      value: c.id,
+      verbatim: true,
+      verbatimDetail: true,
+      label: c.name.trim() || configLabel(c) || c.id,
+      detail: configLabel(c),
+    })),
+    ...(sshConfigId && !sshConfig ? [{ value: sshConfigId, verbatim: true, label: tx`${sshConfigId} (missing)` }] : []),
   ];
   const targetHost = s.host?.trim() ?? "";
   const targetPort = s.port ?? vendor.port ?? 5432;

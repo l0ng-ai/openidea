@@ -4,7 +4,8 @@
 //!
 //! Definitions (`.card`, `#main`, `--accent`) come from stylesheets and the
 //! `<style>` elements of HTML documents and feed the symbol index (see
-//! [`super::Syntax::tags`]), so a lookup is an exact index query.
+//! [`super::Syntax::tags`]), so a lookup is an exact index query. A `--name` symbol carries
+//! its declared value as its container.
 
 use super::lines::{LineIndex, byte_at};
 use super::{Grammar, parse};
@@ -119,23 +120,35 @@ pub(crate) fn definitions(g: &Grammar, css: Option<&Grammar>, tree: &Tree, text:
         walk(css_tree.root_node(), &mut |n| {
             let def = match n.kind() {
                 "class_name" if n.parent().is_some_and(|p| p.kind() == "class_selector") => {
-                    Some((format!(".{}", text_of(n, css_text)), CSS_CLASS))
+                    Some((format!(".{}", text_of(n, css_text)), CSS_CLASS, None))
                 }
-                "id_name" => Some((format!("#{}", text_of(n, css_text)), CSS_ID)),
+                "id_name" => Some((format!("#{}", text_of(n, css_text)), CSS_ID, None)),
                 "property_name" if text_of(n, css_text).starts_with("--") => {
-                    Some((text_of(n, css_text).to_owned(), CSS_VARIABLE))
+                    Some((text_of(n, css_text).to_owned(), CSS_VARIABLE, declared_value(n, css_text)))
                 }
                 _ => None,
             };
-            if let Some((name, kind)) = def {
+            if let Some((name, kind, container)) = def {
                 let range = idx.range(base + n.start_byte(), base + n.end_byte());
-                out.push(SymbolTag { name, kind, container: None, range, bases: Vec::new() });
+                out.push(SymbolTag { name, kind, container, range, bases: Vec::new() });
             }
             true
         });
     }
     out
 }
+
+/// The value a custom property declares (`n` is its `property_name`), whitespace collapsed and
+/// cut at [`MAX_VALUE_CHARS`]: the container of its `--name` symbol, so completion and hover
+/// show it without reading the file.
+fn declared_value(n: Node, text: &str) -> Option<String> {
+    let decl = n.parent().filter(|p| p.kind() == "declaration")?;
+    let rest = text.get(n.end_byte()..decl.end_byte())?.trim_start().strip_prefix(':')?;
+    let value = rest.trim().trim_end_matches(';').split_whitespace().collect::<Vec<_>>().join(" ");
+    (!value.is_empty()).then(|| value.chars().take(MAX_VALUE_CHARS).collect())
+}
+
+const MAX_VALUE_CHARS: usize = 120;
 
 /// The whitespace-separated token of `value` (starting at byte `base`) around byte `at`.
 fn token_at(value: &str, base: usize, at: usize) -> Option<(usize, &str)> {

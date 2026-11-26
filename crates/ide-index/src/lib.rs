@@ -391,6 +391,11 @@ impl ProjectIndex {
         matching::symbols_named_within(&self.shared.data.read(), name, kind, roots, limit)
     }
 
+    /// Symbols of `kind` whose name starts with `prefix`, by path then position.
+    pub fn symbols_prefixed(&self, prefix: &str, kind: SymbolKind, limit: usize) -> Vec<SymbolMatch> {
+        matching::symbols_prefixed(&self.shared.data.read(), prefix, kind, limit)
+    }
+
     /// Symbols named exactly one of `names` whose file is inside `root`, at most `limit` per name.
     pub fn symbols_named_any(&self, names: &[String], root: &Path, limit: usize) -> Vec<SymbolMatch> {
         matching::symbols_named_any(&self.shared.data.read(), names, root, limit)

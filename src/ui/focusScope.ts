@@ -10,6 +10,13 @@
 const FOCUS_SCOPE_ATTR = "data-focus-scope";
 export const FOCUS_ACTIVE_ATTR = "data-focus-active";
 
+let markCurrent: ((target: Element | null) => void) | null = null;
+
+/** Updates the active focus scope marks for `target` (e.g. a focused plugin iframe). */
+export function syncFocusScope(target: Element | null) {
+  markCurrent?.(target);
+}
+
 /** Marks the scopes holding focus. Returns an uninstaller that clears the marks. */
 export function installFocusScopeTracking(): () => void {
   let active: Element[] = [];
@@ -22,11 +29,23 @@ export function installFocusScopeTracking(): () => void {
     for (const el of chain) el.setAttribute(FOCUS_ACTIVE_ATTR, "");
     active = chain;
   };
+  markCurrent = mark;
   const onFocusIn = (e: FocusEvent) => mark(e.target instanceof Element ? e.target : null);
+  const checkIframe = () => {
+    const el = document.activeElement;
+    if (el instanceof HTMLIFrameElement && document.hasFocus()) mark(el);
+  };
+  const onWindowBlur = () => {
+    checkIframe();
+    queueMicrotask(checkIframe);
+  };
   document.addEventListener("focusin", onFocusIn);
+  window.addEventListener("blur", onWindowBlur);
   mark(document.activeElement);
   return () => {
+    if (markCurrent === mark) markCurrent = null;
     document.removeEventListener("focusin", onFocusIn);
+    window.removeEventListener("blur", onWindowBlur);
     for (const el of active) el.removeAttribute(FOCUS_ACTIVE_ATTR);
     active = [];
   };

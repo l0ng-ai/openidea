@@ -212,6 +212,8 @@ pub async fn dependency_versions(
     let project = host.project(window)?;
     let cache = host.dependency_versions.clone();
     let config_dir = host.config_dir.clone();
+    // npm and crates.io are asked directly; `go` goes through the configured GOPROXY.
+    let public_registries = !host.configured_registries_only();
     let cancel = host.begin_project_read_request(window, request);
     let result = host
         .blocking(move || {
@@ -227,6 +229,9 @@ pub async fn dependency_versions(
                 let source = go_source(&project, &config_dir, snap.path.as_ref())?;
                 let versions = cache.versions(&source, &dependency.package, &cancel)?;
                 return Ok(vec![DependencyVersions { dependency, versions, update: None }]);
+            }
+            if !public_registries {
+                return Ok(Vec::new());
             }
             if snap.path.file_name().is_some_and(|name| name == "package.json") {
                 let Some(dependency) = offset.and_then(|offset| npm::dependency_at(&snap.text, offset)) else {
@@ -310,6 +315,9 @@ pub async fn pypi_package(
     request: RequestId,
 ) -> IdeResult<Option<pypi::PypiPackage>> {
     let url = pypi::project_url(name.trim()).ok_or_else(|| IdeError::invalid("not a package name"))?;
+    if host.configured_registries_only() {
+        return Ok(None);
+    }
     let cancel = host.begin_project_read_request(window, request);
     let result = host
         .blocking(move || {
@@ -334,6 +342,9 @@ pub async fn pypi_package(
 /// PyPI's name list, which the first search downloads and a search a day later refreshes.
 #[command(trust = outside_restricted)]
 pub async fn pypi_search(host: &Host, window: &str, query: String, request: RequestId) -> IdeResult<Vec<String>> {
+    if host.configured_registries_only() {
+        return Ok(Vec::new());
+    }
     let names = host.pypi_names.clone();
     let cancel = host.begin_project_read_request(window, request);
     let result = host

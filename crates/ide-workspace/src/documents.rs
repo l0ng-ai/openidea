@@ -29,8 +29,8 @@ pub struct DocumentInfo {
     /// (archive entries, JDT sources with an editable attachment encoding,
     /// Git revisions); false for server-generated content (decompiled code).
     pub can_reload_encoding: bool,
-    /// Larger than `ide_vfs::LARGE_FILE_THRESHOLD`: language servers, syntax
-    /// structure and folding are disabled; the editor should drop heavy features.
+    /// Marks files above `ide_vfs::LARGE_FILE_THRESHOLD` for reduced editor
+    /// features such as disabling language servers and folding.
     #[specta(optional)]
     pub large: bool,
     /// Effective `.editorconfig` properties, when any section applies.
@@ -190,6 +190,35 @@ impl DocState {
         self.disk_len = disk_len(&self.path);
         self.disk_conflict = false;
         self.clean_text = (!self.large).then(|| self.doc.clone());
+    }
+
+    /// The bytes saving `doc` with this document's encoding, BOM and conversion would write.
+    fn bytes_for_save(&self, doc: &Document) -> IdeResult<Vec<u8>> {
+        let text = doc.text_for_save();
+        Ok(if self.native_to_ascii {
+            ide_vfs::encode_properties_ascii(&text).into_bytes()
+        } else {
+            ide_vfs::encode(&text, &self.encoding, self.has_bom)?
+        })
+    }
+
+    /// Whether the file changed on disk since the buffer last matched it. A moved stamp with the
+    /// same bytes (touch, a tool rewriting the file unchanged) is no change and its stamp is adopted. Reads the file
+    /// only when the mtime moved but the length did not; without a clean text to compare (large
+    /// files, a pending encoding, line-ending or BOM change, a reported conflict) a moved stamp counts.
+    fn changed_on_disk(&mut self, meta: &std::fs::Metadata) -> bool {
+        let mtime = ide_vfs::mtime_ms(meta);
+        if mtime == self.disk_mtime && meta.len() == self.disk_len {
+            return false;
+        }
+        let same_bytes = meta.len() == self.disk_len
+            && self.clean_text.as_ref().is_some_and(|clean| {
+                self.bytes_for_save(clean).is_ok_and(|bytes| std::fs::read(&self.path).is_ok_and(|disk| disk == bytes))
+            });
+        if same_bytes {
+            self.disk_mtime = mtime;
+        }
+        !same_bytes
     }
 }
 
@@ -919,6 +948,20 @@ impl Documents {
     /// on disk after this buffer was edited, which only an explicit save may overwrite.
     pub fn autosave(&self, doc: DocId) -> IdeResult<bool> {
         self.with_doc(doc, |st| {
+            // The watcher event for an external write may not have arrived yet: check the stamp now.
+            if st.dirty
+                && !st.disk_conflict
+                && st.uri.is_none()
+                && let Ok(meta) = std::fs::metadata(&st.path)
+                && st.changed_on_disk(&meta)
+            {
+                st.disk_mtime = ide_vfs::mtime_ms(&meta);
+                st.disk_len = meta.len();
+                st.disk_conflict = true;
+                // The text read before no longer matches the file: undoing back to it is not clean.
+                st.clean_text = None;
+                self.sink.emit(IdeEvent::DocDiskConflict { doc, path: st.path.to_string_lossy().into_owned() });
+            }
             if st.dirty && st.disk_conflict {
                 return Ok(false);
             }
@@ -1397,6 +1440,9 @@ impl Documents {
                     return Ok(());
                 }
                 if st.dirty {
+                    if !st.changed_on_disk(&meta) {
+                        return Ok(());
+                    }
                     st.disk_mtime = mtime;
                     st.disk_len = meta.len();
                     st.disk_conflict = true;
