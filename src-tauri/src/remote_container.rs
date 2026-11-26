@@ -164,7 +164,7 @@ async fn install(
 
 /// The arguments of `docker` that start the server in the container: in the project folder, told
 /// that the folder is trusted and that the CLI already ran the lifecycle commands.
-fn server_args(up: &Up, bin: &str) -> Vec<String> {
+fn server_args(up: &Up, bin: &str, replace: bool) -> Vec<String> {
     let mut args: Vec<String> = ["exec", "-i", "-u", &up.user, "-w", &up.folder].map(str::to_owned).into();
     for var in [
         format!("{}={}", ide_host::trust::TRUSTED_ROOT_ENV, up.folder),
@@ -173,6 +173,9 @@ fn server_args(up: &Up, bin: &str) -> Vec<String> {
         args.extend(["-e".to_owned(), var]);
     }
     args.extend([up.container.clone(), bin.to_owned(), "--attach".to_owned(), up.folder.clone()]);
+    if replace {
+        args.push("--replace".to_owned());
+    }
     args
 }
 
@@ -183,6 +186,7 @@ pub(crate) async fn connect(
     state: &crate::state::AppState,
     folder: &str,
     config: &str,
+    replace: bool,
     handler: Arc<dyn Handler>,
     tail: &Tail,
     progress: &Arc<Progress>,
@@ -215,16 +219,23 @@ pub(crate) async fn connect(
     let up = up(&cli, &docker, &local, config, tail).await?;
     let bin = ensure_server(state, &docker, &up, progress).await?;
     progress(RemoteStage::Starting, None);
-    let peer = spawn(&docker, &up, &bin, handler, tail)?;
+    let peer = spawn(&docker, &up, &bin, replace, handler, tail)?;
     let folder = up.folder.clone();
     Ok((peer, folder, Exec::new(docker, up, bin)))
 }
 
-fn spawn(docker: &Path, up: &Up, bin: &str, handler: Arc<dyn Handler>, tail: &Tail) -> IdeResult<Peer> {
+fn spawn(docker: &Path, up: &Up, bin: &str, replace: bool, handler: Arc<dyn Handler>, tail: &Tail) -> IdeResult<Peer> {
     let tail = tail.clone();
     let program = docker.to_string_lossy();
-    Peer::spawn(&program, &server_args(up, bin), &std::env::temp_dir(), &[], handler, Box::new(move |l| tail.push(l)))
-        .map_err(|e| IdeError::unavailable(format!("cannot start docker: {e}")))
+    Peer::spawn(
+        &program,
+        &server_args(up, bin, replace),
+        &std::env::temp_dir(),
+        &[],
+        handler,
+        Box::new(move |l| tail.push(l)),
+    )
+    .map_err(|e| IdeError::unavailable(format!("cannot start docker: {e}")))
 }
 
 #[cfg(test)]
@@ -237,7 +248,7 @@ mod tests {
     #[test]
     fn the_server_starts_in_the_folder_trusted_and_without_the_lifecycle() {
         let up = Up { container: ID.into(), user: "vscode".into(), folder: "/workspaces/my app".into() };
-        let args = server_args(&up, "/home/vscode/.openidea/server/1/ab/openidea-server");
+        let args = server_args(&up, "/home/vscode/.openidea/server/1/ab/openidea-server", false);
         assert_eq!(
             args,
             [
@@ -374,7 +385,7 @@ echo '{{"outcome":"success","containerId":"{ID}","remoteUser":"vscode","remoteWo
         let dir = version_dir(&found.home, "0.0.0-test");
         let bin = install(&docker, &up, &dir, "b1", &server, &progress).await.unwrap();
         assert_eq!(probe(&docker, &up, "0.0.0-test").await.unwrap().installed, std::slice::from_ref(&bin));
-        let peer = spawn(&docker, &up, &bin, Arc::new(Silent), &tail).unwrap();
+        let peer = spawn(&docker, &up, &bin, false, Arc::new(Silent), &tail).unwrap();
         let info: ide_host::rpc::ServerInfo = peer
             .request("initialize", serde_json::json!({ "version": ide_host::rpc::PROTOCOL_VERSION }), None)
             .await
@@ -446,7 +457,7 @@ echo '{{"outcome":"success","containerId":"{ID}","remoteUser":"vscode","remoteWo
         let live = || docker_sh(&docker, &up.container, &format!("kill -0 {pid} 2>/dev/null && printf live"));
         assert_eq!(live(), "live", "the terminal must outlive the window in a dev container");
 
-        let peer = spawn(&docker, &up, &bin, Arc::new(Silent), &Tail::default()).unwrap();
+        let peer = spawn(&docker, &up, &bin, false, Arc::new(Silent), &Tail::default()).unwrap();
         tokio::time::timeout(Duration::from_secs(30), async {
             let project: Value = peer.request("invoke", invoke("project_current", json!({})), None).await.unwrap();
             assert_eq!(project["root"], up.folder);
