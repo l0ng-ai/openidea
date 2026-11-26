@@ -853,7 +853,7 @@ async fn bundler_path_aliases_resolve_below_tsconfig_paths() {
     let plugin = root.join("plugin/node_modules/openidea-path-aliases");
     std::fs::write(plugin.join("index.js"), include_str!("../../ide-sdk/src/path-aliases.js")).unwrap();
     let src = slash(&root.join("src"));
-    let paths = serde_json::json!({ "@": [src], "@/*": [format!("{src}/*")] });
+    let paths = serde_json::json!({ slash(&root): { "@": [src], "@/*": [format!("{src}/*")] } });
     std::fs::write(plugin.join("paths.json"), paths.to_string()).unwrap();
     std::fs::write(root.join("package.json"), "{\"name\":\"app\",\"private\":true}").unwrap();
     let tsconfig = |paths: &str| {

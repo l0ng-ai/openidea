@@ -201,8 +201,9 @@ fn normalize(path: &Path) -> String {
 mod tests {
     use super::*;
 
+    /// With `/` separators, so that the expectations hold on Windows too.
     fn aliases(text: &str) -> Vec<(String, String)> {
-        bundler_aliases(text, Path::new("/p"))
+        bundler_aliases(text, Path::new("/p")).into_iter().map(|(a, t)| (a, t.replace('\\', "/"))).collect()
     }
 
     fn pairs(list: &[(&str, &str)]) -> Vec<(String, String)> {

@@ -1599,19 +1599,19 @@ pub fn configure_vue_module_resolution(cfg: &mut LanguageServerConfig, data_dir:
     true
 }
 
-/// Registers the tsserver plugin that adds the Vite / Rollup / esbuild path aliases of the
-/// project at `server_root` to every tsserver project's `paths`, below tsconfig.json /
-/// jsconfig.json's own (#6020). Only vtsls hosts tsserver plugins (not TypeScript 7's
-/// native server). No-op without aliases.
+/// Registers the tsserver plugin that adds the Vite / Rollup / esbuild path aliases of each
+/// package under `server_root` to that package's tsserver projects' `paths`, below
+/// tsconfig.json / jsconfig.json's own (#6020). Only vtsls hosts tsserver plugins (not
+/// TypeScript 7's native server). No-op without aliases.
 pub fn configure_path_aliases(cfg: &mut LanguageServerConfig, server_root: &Path, data_dir: &Path) -> bool {
     if cfg.name != "vtsls" || !cfg.tsserver_project {
         return false;
     }
-    let paths = crate::path_aliases::paths(server_root);
-    if paths.is_empty() {
+    let packages = crate::path_aliases::packages(server_root);
+    if packages.is_empty() {
         return false;
     }
-    let Some(plugin) = crate::path_aliases::tsserver_plugin(data_dir, server_root, &paths) else {
+    let Some(plugin) = crate::path_aliases::tsserver_plugin(data_dir, server_root, &packages) else {
         return false;
     };
     let mut current =
