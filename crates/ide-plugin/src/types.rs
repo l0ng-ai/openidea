@@ -1121,3 +1121,16 @@ pub struct PluginDataSource {
     pub url: Option<String>,
     pub options: Vec<(String, String)>,
 }
+
+/// Most Run Anything entries kept from one `run-anything-provider.suggest` answer.
+pub const MAX_RUN_ANYTHING_ITEMS: usize = 100;
+
+/// A Run Anything entry from a plugin's `run-anything-provider` export (API 1.18).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RunAnythingItem {
+    pub label: String,
+    pub detail: Option<String>,
+    /// The line Tab completes and Enter runs; `label` when absent.
+    pub line: Option<String>,
+}

@@ -211,12 +211,14 @@ export function FilterBar({ fileHistory = false }: { fileHistory?: boolean }) {
     );
     menuBelow(anchor, [
       ...recentFilterValues("authors").map((authors) => ({
+        verbatim: true,
         label: authors.join(", "),
         run: () => setLogFilters({ authors }),
       })),
       { label: ME, checked: filters.authors.includes(ME), run: () => setLogFilters({ authors: [ME] }) },
       ...(authors.length ? [{ kind: "separator" as const }] : []),
       ...authors.slice(0, 30).map((a) => ({
+        verbatim: true,
         label: a,
         checked: filters.authors.includes(a),
         run: () => setLogFilters({ authors: [a] }),

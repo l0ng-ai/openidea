@@ -20,6 +20,7 @@ use crate::wit_host::completion_list_bindings::exports::openidea::plugin::comple
 use crate::wit_host::hover_actions_bindings::exports::openidea::plugin::hover_actions as wit_hia;
 use crate::wit_host::injections_bindings::exports::openidea::plugin::injections as wit_inj;
 use crate::wit_host::language_features_bindings::exports::openidea::plugin::language_features as wit_lf;
+use crate::wit_host::run_anything_bindings::exports::openidea::plugin::run_anything_provider as wit_ra;
 use crate::wit_host::run_target_validation_bindings::exports::openidea::plugin::run_target_validation as wit_rtv;
 use crate::wit_host::search_bindings::exports::openidea::plugin::search_provider as wit_search;
 use crate::wit_host::{
@@ -137,13 +138,16 @@ pub trait HostApi: Send + Sync {
         cancel: &CancellationToken,
         timeout: Duration,
     ) -> Result<String, HostError>;
-    /// Opens/reuses a keyed terminal, retained across idle instance reclamation.
+    /// Opens/reuses a keyed terminal, retained across idle instance reclamation; `cwd`
+    /// (API 1.18) is a directory relative to the window's project root.
+    #[allow(clippy::too_many_arguments)]
     fn open_terminal_session(
         &self,
         client: &str,
         key: String,
         title: String,
         cmd: ProcessCommand,
+        cwd: Option<String>,
         cancel: &CancellationToken,
         timeout: Duration,
     ) -> Result<String, HostError>;
@@ -897,6 +901,7 @@ pub struct Runtime {
 /// What the component exports: the `plugin` world, plus optional interfaces.
 struct Exports {
     run_target_validation: Option<wit_rtv::Guest>,
+    run_anything: Option<wit_ra::Guest>,
     language_features: Option<wit_lf::Guest>,
     injections: Option<wit_inj::Guest>,
     plugin: bindings::Plugin,
@@ -1078,6 +1083,7 @@ impl Runtime {
         let exec_indices = wit_exec::GuestIndices::new(&pre).ok();
         let tests_indices = wit_tests::GuestIndices::new(&pre).ok();
         let validation_indices = wit_rtv::GuestIndices::new(&pre).ok();
+        let run_anything_indices = wit_ra::GuestIndices::new(&pre).ok();
         let lf_indices = wit_lf::GuestIndices::new(&pre).ok();
         let inj_indices = wit_inj::GuestIndices::new(&pre).ok();
         let mcp_indices =
@@ -1095,6 +1101,7 @@ impl Runtime {
         let injections = inj_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let run_target_validation =
             validation_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
+        let run_anything = run_anything_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let plugin = plugin_indices.load(&mut store, &instance).map_err(api_hint)?;
         let syntax = match syntax_indices {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
@@ -1153,6 +1160,7 @@ impl Runtime {
             store,
             exports: Exports {
                 run_target_validation,
+                run_anything,
                 language_features,
                 injections,
                 plugin,
@@ -1180,6 +1188,51 @@ impl Runtime {
             limits: setup.limits,
             version: setup.version,
         })
+    }
+
+    pub fn has_run_anything(&self) -> bool {
+        self.exports.run_anything.is_some()
+    }
+
+    /// Run Anything entries for `text` (API 1.18); none without the export.
+    pub fn run_anything_suggest(
+        &mut self,
+        prefix: &str,
+        text: &str,
+        invocation: Invocation,
+        timeout: Duration,
+    ) -> Result<Vec<crate::RunAnythingItem>, CallError> {
+        if self.exports.run_anything.is_none() {
+            return Ok(Vec::new());
+        }
+        let root = invocation.workspace_root.as_deref().map(to_ipc).unwrap_or_default();
+        let items = self.call(invocation, timeout, |e, store| {
+            e.run_anything.as_ref().unwrap().call_suggest(store, &root, prefix, text)
+        })?;
+        Ok(items
+            .into_iter()
+            .take(crate::MAX_RUN_ANYTHING_ITEMS)
+            .map(|i| crate::RunAnythingItem {
+                label: clip(i.label, MAX_TITLE),
+                detail: i.detail.map(|d| clip(d, MAX_TITLE)),
+                line: i.line.map(|l| clip(l, 4096)),
+            })
+            .collect())
+    }
+
+    /// Runs a Run Anything line (API 1.18): whether the plugin claimed it.
+    pub fn run_anything_run(
+        &mut self,
+        prefix: &str,
+        line: &str,
+        invocation: Invocation,
+        timeout: Duration,
+    ) -> Result<bool, CallError> {
+        if self.exports.run_anything.is_none() {
+            return Ok(false);
+        }
+        let root = invocation.workspace_root.as_deref().map(to_ipc).unwrap_or_default();
+        self.call(invocation, timeout, |e, store| e.run_anything.as_ref().unwrap().call_run(store, &root, prefix, line))
     }
 
     pub fn has_run_target_validation(&self) -> bool {
@@ -2589,10 +2642,21 @@ impl Runtime {
         timeout: Duration,
         f: impl FnOnce(&wit_lf::Guest, &mut Store<StoreData>) -> wasmtime::Result<R>,
     ) -> Result<R, CallError> {
+        self.language_feature_call_in(None, timeout, f)
+    }
+    /// [`Self::language_feature_call`] for an editor of the project at `project`, which the
+    /// call has as its invocation's project (`workspace.project-of` prefers it).
+    fn language_feature_call_in<R>(
+        &mut self,
+        project: Option<&Path>,
+        timeout: Duration,
+        f: impl FnOnce(&wit_lf::Guest, &mut Store<StoreData>) -> wasmtime::Result<R>,
+    ) -> Result<R, CallError> {
         if self.exports.language_features.is_none() {
             return Err(CallError::missing_export("language-features"));
         }
-        self.call(Invocation::default(), timeout, |e, s| f(e.language_features.as_ref().expect("checked"), s))
+        let invocation = Invocation { workspace_root: project.map(Path::to_path_buf), ..Default::default() };
+        self.call(invocation, timeout, |e, s| f(e.language_features.as_ref().expect("checked"), s))
     }
     pub fn language_format(
         &mut self,
@@ -2790,9 +2854,11 @@ impl Runtime {
         let result = self.language_feature_call(timeout, |p, s| p.call_type_definition(s, &d, pos_to_wit(at)))?;
         Ok(result.into_iter().take(10000).map(location_from_wit).collect())
     }
+    /// Gutter actions of `doc`, open in an editor of the project at `project`.
     pub fn language_gutter_actions(
         &mut self,
         doc: &ProviderDocument,
+        project: Option<&Path>,
         timeout: Duration,
     ) -> Result<Vec<crate::language_features::GutterAction>, CallError> {
         let d = wit_lf::Document {
@@ -2801,13 +2867,15 @@ impl Runtime {
             version: doc.version,
             text: doc.text.clone(),
         };
-        let result = self.language_feature_call(timeout, |p, s| p.call_gutter_actions(s, &d))?;
+        let result = self.language_feature_call_in(project, timeout, |p, s| p.call_gutter_actions(s, &d))?;
         Ok(result.into_iter().take(10000).map(gutter_action_from).collect())
     }
 
+    /// Hover actions of `doc`, open in an editor of the project at `project`.
     pub fn language_hover_actions(
         &mut self,
         doc: &ProviderDocument,
+        project: Option<&Path>,
         timeout: Duration,
     ) -> Result<Vec<crate::language_features::HoverAction>, CallError> {
         if self.exports.hover_actions.is_none() {
@@ -2819,7 +2887,8 @@ impl Runtime {
             version: doc.version,
             text: doc.text.clone(),
         };
-        let result = self.call(Invocation::default(), timeout, |exports, store| {
+        let invocation = Invocation { workspace_root: project.map(Path::to_path_buf), ..Default::default() };
+        let result = self.call(invocation, timeout, |exports, store| {
             exports.hover_actions.as_ref().expect("checked").call_hover_actions(store, &d)
         })?;
         Ok(result.into_iter().take(10_000).map(hover_action_from).collect())

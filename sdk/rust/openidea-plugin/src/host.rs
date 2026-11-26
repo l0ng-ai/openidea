@@ -297,6 +297,10 @@ mod imp {
         wit::workspace::project_of(path)
     }
 
+    pub fn invoking_project() -> Option<ProjectRes> {
+        wit::workspace::invoking_project()
+    }
+
     pub fn project_root(p: &ProjectRes) -> Result<String, Error> {
         p.root().map_err(error)
     }
@@ -1038,6 +1042,15 @@ mod imp {
         )
         .map_err(error)
     }
+    pub fn open_terminal_session_in(key: &str, title: &str, cmd: &super::Command, cwd: &str) -> Result<String, Error> {
+        wit::views::open_terminal_session_in(
+            key,
+            title,
+            &wit::process::Command { program: cmd.program.clone(), args: cmd.args.clone(), env: cmd.env.clone() },
+            cwd,
+        )
+        .map_err(error)
+    }
     pub fn write_terminal(key: &str, text: &str) -> Result<(), Error> {
         wit::views::write_terminal(key, text).map_err(error)
     }
@@ -1689,6 +1702,14 @@ pub fn project_of(path: &str) -> Option<Project> {
     imp::project_of(path).map(|inner| Project { inner })
 }
 
+/// The project of the window this call serves (API 1.18): the invoking window's in commands
+/// and events, the editor's window's in `gutter_actions` and `hover_actions`; `None` when the
+/// call serves no window. Unlike [`project_of`], it tells overlapping projects apart.
+/// Obtaining the handle needs no capability; reading it still needs `project.read`.
+pub fn invoking_project() -> Option<Project> {
+    imp::invoking_project().map(|inner| Project { inner })
+}
+
 /// A file open in an editor.
 pub struct TextEditor {
     inner: imp::EditorRes,
@@ -2210,6 +2231,12 @@ pub fn start_run_with_options(
 /// Opens/reuses a keyed, approved terminal with append-only environment variables.
 pub fn open_terminal_session(key: &str, title: &str, cmd: &Command) -> Result<String, Error> {
     imp::open_terminal_session(key, title, cmd)
+}
+/// [`open_terminal_session`] started in `cwd` (API 1.18): a directory of the window's
+/// project relative to its root (`""` is the root), which must exist and stay inside the
+/// project. Trust and the approved program stay the project's.
+pub fn open_terminal_session_in(key: &str, title: &str, cmd: &Command, cwd: &str) -> Result<String, Error> {
+    imp::open_terminal_session_in(key, title, cmd, cwd)
 }
 /// Writes to this plugin's running keyed terminal in the invoking window.
 pub fn write_terminal(key: &str, text: &str) -> Result<(), Error> {

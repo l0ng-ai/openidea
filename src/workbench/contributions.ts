@@ -2040,6 +2040,11 @@ export interface RunAnythingProvider {
    * synchronous): Markdown offers run icons for such lines in code blocks.
    */
   accepts?(line: string): boolean;
+  /**
+   * For providers whose entries arrive later (a plugin's answer): `listener` is called when
+   * `items` would return something new, so the open popup asks again. Returns the unsubscribe.
+   */
+  subscribe?(listener: () => void): () => void;
 }
 
 const runAnythingProviders = new Map<string, RunAnythingProvider>();

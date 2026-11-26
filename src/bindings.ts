@@ -1312,6 +1312,13 @@ export const commands = {
 	pluginRevokeNetHost: (id: string, host: string) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_revoke_net_host", { id, host })),
 	/**  Goes back to the version the last update of `id` replaced. */
 	pluginRollBack: (id: string) => typedError<PluginInfo, IdeError>(__TAURI_INVOKE("plugin_roll_back", { id })),
+	/**
+	 *  Runs a Run Anything line starting with the plugin's `prefix` (API 1.18): whether
+	 *  the plugin claimed it.
+	 */
+	pluginRunAnythingRun: (pluginId: string, prefix: string, line: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("plugin_run_anything_run", { pluginId, prefix, line })),
+	/**  Run Anything entries of the plugin declaring `prefix` for the field's `text` (API 1.18). */
+	pluginRunAnythingSuggest: (pluginId: string, prefix: string, text: string) => typedError<RunAnythingItem[], IdeError>(__TAURI_INVOKE("plugin_run_anything_suggest", { pluginId, prefix, text })),
 	/**  Runs a plugin command in the context of this window's project and focused editor. */
 	pluginRunCommand: (pluginId: string, commandId: string, arg: string | null, editor: {
 	path: string,
@@ -1586,7 +1593,9 @@ export const commands = {
 	 *  Edits go through the document layer as one patch per file, so open editors
 	 *  update live and undo the whole file's replacements in one step. Unsaved
 	 *  editor buffers are replaced in place and left unsaved; other open documents
-	 *  are saved, and files that were not open are opened transiently, saved and closed.
+	 *  are saved unless the file changed on disk meanwhile (then the replacement stays
+	 *  unsaved, as autosave does), and files that were not open are opened
+	 *  transiently, saved and closed.
 	 * 
 	 *  With `all_in_scope` (Replace All after the search hit its match limit) the
 	 *  scope is searched again without the limit and every match in it is replaced,
@@ -12385,6 +12394,14 @@ export type RouteSource = {
 export type RubySettings = {
 	/**  Project interpreter executable; empty = auto-detect (`.ruby-version`, mise / asdf, else `ruby` on PATH). */
 	interpreter?: string,
+};
+
+/**  A Run Anything entry from a plugin's `run-anything-provider` export (API 1.18). */
+export type RunAnythingItem = {
+	label: string,
+	detail: string | null,
+	/**  The line Tab completes and Enter runs; `label` when absent. */
+	line: string | null,
 };
 
 /**  Snapshot and live output binding returned when reattaching to a running process. */

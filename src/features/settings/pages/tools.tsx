@@ -181,7 +181,13 @@ function ShellPathRow() {
         anchor={menuRef}
         placement="bottom-end"
         aria-label="Installed shells"
-        items={shells.map((p) => ({ id: p, label: p, checked: quotePath(p) === value, run: () => set(quotePath(p)) }))}
+        items={shells.map((p) => ({
+          id: p,
+          verbatim: true,
+          label: p,
+          checked: quotePath(p) === value,
+          run: () => set(quotePath(p)),
+        }))}
       />
     </Row>
   );
@@ -442,6 +448,7 @@ function MacroButton({ onInsert }: { onInsert: (macro: string) => void }) {
         aria-label="Macros"
         items={EXTERNAL_TOOL_MACROS.map((m) => ({
           id: m.name,
+          verbatim: true,
           label: m.name,
           shortcut: m.description,
           run: () => onInsert(m.name),
