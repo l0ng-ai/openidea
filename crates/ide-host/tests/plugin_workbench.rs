@@ -555,6 +555,7 @@ async fn plugin_run_output_mode_executes_pty_and_pipes_with_input_exit_and_stop(
     let package = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../ide-plugin/tests/fixtures/execution-output");
     plugins.install_from_dir(&package, &Consent::all()).unwrap();
     plugins.choose_program("test.execution-output", "process:execution-tool", Some(&f.root), Some(&tool)).unwrap();
+    plugins.refresh_run_configurations(&f.root);
 
     let launch_and_collect = |arg: &str, stdin: Option<&str>, stop_after_ready: bool| {
         let host = f.host.clone();
