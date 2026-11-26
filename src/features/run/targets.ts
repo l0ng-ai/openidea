@@ -134,9 +134,12 @@ function rustTargets(lines: string[], relPath: string): RunTarget[] {
   );
 }
 
-/** Jest / Vitest `describe` / `test` / `it` (Mocha's `specify` too), and Playwright's `test.describe` and modifiers. */
+/**
+ * Jest / Vitest `describe` / `test` / `it` (Mocha's `specify` and Jasmine's `fdescribe` / `fit` /
+ * `xdescribe` / `xit` too), and Playwright's `test.describe` and modifiers.
+ */
 const JS_RE =
-  /^(\s*)(test\.describe|describe|suite|context|test|it|specify)\b(?:\.(?:only|skip|todo|concurrent|failing|sequential|fixme|fail|serial|parallel))*(\.each\s*(?:\(.*?\)|`[^`]*`))?\s*\(\s*(['"`])((?:\\.|(?!\4).)*)\4/;
+  /^(\s*)(test\.describe|[fx]?describe|suite|context|test|[fx]?it|specify)\b(?:\.(?:only|skip|todo|concurrent|failing|sequential|fixme|fail|serial|parallel))*(\.each\s*(?:\(.*?\)|`[^`]*`))?\s*\(\s*(['"`])((?:\\.|(?!\4).)*)\4/;
 
 function jsTargets(lines: string[]): RunTarget[] {
   const out: RunTarget[] = [];
@@ -149,7 +152,7 @@ function jsTargets(lines: string[]): RunTarget[] {
     const name = m[5]!.replace(/\\(.)/g, "$1");
     const parameterized = !!m[3] || (m[4] === "`" && name.includes("${")) || /%[sdifjo#%p]|\$\w+/.test(name);
     const path = [...stack.map((s) => s.name), name];
-    const isSuite = m[2] === "test.describe" || m[2] === "describe" || m[2] === "suite" || m[2] === "context";
+    const isSuite = m[2]!.endsWith("describe") || m[2] === "suite" || m[2] === "context";
     out.push({ line: i, kind: isSuite ? "suite" : "test", name: path.join(" > "), path, parameterized });
     if (isSuite) stack.push({ indent, name });
   }
@@ -373,12 +376,24 @@ export function testsInTestDirectory(configs: readonly RunConfig[]): boolean {
   return configs.some((c) => c.isTest && ["mocha", "node-test"].includes(frameworkFor(c)));
 }
 
+/** Whether the project tests with Jasmine, which looks in `spec/` by default (`fooSpec.js` and the like). */
+export function specsInSpecDirectory(configs: readonly RunConfig[]): boolean {
+  return configs.some((c) => c.isTest && frameworkFor(c) === "jasmine");
+}
+
 /**
  * Run targets of a file (relative path picks the language). `django`: a Django project, where
  * `tests.py` (Django's default test module) holds tests too. `testDirectory`: JS files in `test/`
- * hold tests whatever their name (`testsInTestDirectory`).
+ * hold tests whatever their name (`testsInTestDirectory`); `specDirectory`: the same for `spec/`
+ * (`specsInSpecDirectory`).
  */
-export function detectRunTargets(text: string, relPath: string, django = false, testDirectory = false): RunTarget[] {
+export function detectRunTargets(
+  text: string,
+  relPath: string,
+  django = false,
+  testDirectory = false,
+  specDirectory = false,
+): RunTarget[] {
   if (text.length > MAX_SCAN) return [];
   const lines = text.split("\n");
   switch (targetLanguage(relPath)) {
@@ -388,7 +403,8 @@ export function detectRunTargets(text: string, relPath: string, django = false, 
       return rustTargets(lines, relPath);
     case "js":
       return /\.(test|spec)\.[cm]?[jt]sx?$|(^|\/)__tests__\//.test(relPath) ||
-        (testDirectory && /(^|\/)test\//.test(relPath))
+        (testDirectory && /(^|\/)test\//.test(relPath)) ||
+        (specDirectory && /(^|\/)spec\//.test(relPath))
         ? jsTargets(lines)
         : [];
     case "python":
@@ -487,6 +503,7 @@ export function targetConfig(
   if (frameworkFor(file) === "node-test")
     return { ...named(file.args), env: withNodeTestNamePattern(file.env, jsNamePattern(target)) };
   if (frameworkFor(file) === "mocha") return named([...file.args, "--grep", jsNamePattern(target)]);
+  if (frameworkFor(file) === "jasmine") return named([...file.args, `--filter=${jsNamePattern(target)}`]);
   switch (file.kind) {
     case "dotnet-test": {
       const methods =

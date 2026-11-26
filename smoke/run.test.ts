@@ -100,6 +100,17 @@ const CASES: Record<string, Case | Case[]> = {
         file: "test/pricing.spec.js",
       },
     },
+    {
+      fixture: "jasmine-app",
+      setup: npmInstall,
+      tests: {
+        config: "npm:test",
+        failing: (c) => env(c, { OPENIDEA_FAIL: "1" }),
+        passed: 4,
+        failed: "intentionally fails (set OPENIDEA_FAIL=1)",
+        file: "spec/cartSpec.js",
+      },
+    },
   ],
   python: {
     fixture: "python-app",

@@ -291,6 +291,15 @@ function builtinTestsConfig(config: RunConfig, paths: string[][], name: string):
       args = appendScriptArgs(config.command, base, [...files, ...grep]);
       break;
     }
+    case "jasmine": {
+      // Jasmine's `--filter=` matches a spec's full name: its describe chain and name, space separated.
+      const files = unique(paths.map((p) => p[0]!).filter(Boolean));
+      const names = unique(paths.filter((p) => p.length > 1).map((p) => p.slice(1).join(" ")));
+      if (!files.length) return null;
+      const filter = names.length ? [`--filter=^(?:${names.map(escapeRegExp).join("|")})$`] : [];
+      args = appendScriptArgs(config.command, dropFlag(config.args, ["--filter"]), [...files, ...filter]);
+      break;
+    }
     case "pytest":
       args = pytestArgs(config.args, paths);
       break;
