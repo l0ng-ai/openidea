@@ -104,7 +104,7 @@ Jest、Vitest、Playwright Test、`node --test` 和 Mocha 的输出会解析成�
 调试使用 JavaScript 调试器（vscode-js-debug）；未安装时，第一次调试会提示安装。
 
 - **调试** 适用于 npm 脚本配置、Node.js 文件以及 `deno run` / `deno test`，子进程会自动附加。
-- **附加到 Node.js** 是一种运行配置类型，用于附加到本机或其他机器上以 `--inspect` 启动的进程（默认端口 9229），可设置本地与远程根目录映射。
+- **附加到 Node.js** 是一种运行配置类型，用于附加到本机或其他机器上以 `--inspect` 启动的进程（默认端口 9229），可设置本地与远程根目录映射。勾选 **自动重新连接** 后，进程重启时（nodemon、`node --watch`、`tsx watch`）会话会等待，并以相同的断点重新附加。
 - 运行菜单中的 **附加到进程…** 会列出正在运行的 Node.js 进程。
 - **JavaScript 调试** 是一种运行配置类型：在 Chrome 或 Edge 中打开一个 URL，通过 source map 调试页面中的 JavaScript 和 TypeScript。先启动页面的服务（例如 `dev` npm 脚本）；**Web 根目录** 是该 URL 对应的文件夹，默认为项目根目录。
 

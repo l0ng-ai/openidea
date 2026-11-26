@@ -145,11 +145,15 @@ describe("catalog", () => {
     expect(c("Change signature", "refactor.changeSignature")).toBe("changeSignature");
     expect(c("Convert parameters to destructured object", "refactor.rewrite.parameters.toDestructured")).toBeNull();
     expect(c("Extract type alias", "refactor.extract.type")).toBeNull();
+    expect(c("Extract to type alias", "refactor.extract.type")).toBe("extractTypeAlias");
+    expect(c("Extract to typedef", "refactor.extract.typedef")).toBe("extractTypeAlias");
+    expect(c("Extract to interface", "refactor.extract.interface")).toBe("extractInterface");
+    expect(c("Extract to interface", "refactor")).toBe("extractInterface");
     expect(c("Remove unused", "quickfix")).toBeNull();
     // typescript-language-server reports plain `refactor` for everything.
     expect(c("Extract to inner function in function 'formatMoney'", "refactor")).toBe("extractMethod");
     expect(c("Extract to constant in enclosing scope", "refactor")).toBe("extractVariable");
-    expect(c("Extract to type alias", "refactor")).toBeNull();
+    expect(c("Extract to type alias", "refactor")).toBe("extractTypeAlias");
     expect(c("Extract type as type alias", "refactor.extract")).toBeNull();
     expect(c("Extract struct from enum variant", "refactor.extract")).toBeNull();
     expect(c("Move to a new file", "refactor")).toBe("move");
@@ -416,6 +420,67 @@ describe("Refactor menu actions", () => {
     if (popup?.kind !== "list") return;
     popup.items[1]!.onActive!();
     expect(temporaryHighlights(v)).toHaveLength(2);
+  });
+
+  it("run tsserver's Extract to type alias / interface in TypeScript and rename the new type", async () => {
+    const text = "function f(p: { a: string }) {}";
+    const literal = "{ a: string }";
+    const v = editor(text, "typescript");
+    v.dispatch({ selection: { anchor: text.indexOf(literal), head: text.indexOf(literal) + literal.length } });
+    query = answer([
+      action("Extract to interface", "refactor.extract.interface"),
+      action("Extract to type alias", "refactor.extract.type"),
+    ]);
+    onApply = () =>
+      v.dispatch({
+        changes: [
+          { from: 0, insert: "type NewType = { a: string };\n\n" },
+          { from: text.indexOf(literal), to: text.indexOf(literal) + literal.length, insert: "NewType" },
+        ],
+      });
+    await runRefactoring(v, "extractTypeAlias");
+    expect(lspCodeActionQuery.mock.calls[0]![3]).toEqual(["refactor"]);
+    expect(lspResolveCodeAction.mock.calls[0]![1].title).toBe("Extract to type alias");
+    await vi.waitFor(() => expect(inplaceSession(v.state)).not.toBeNull());
+    expect(inplaceSession(v.state)!.oldName).toBe("NewType");
+
+    lspResolveCodeAction.mockClear();
+    onApply = null;
+    const w = editor(text, "typescriptreact");
+    w.dispatch({ selection: { anchor: text.indexOf(literal), head: text.indexOf(literal) + literal.length } });
+    await runRefactoring(w, "extractInterface");
+    expect(lspResolveCodeAction.mock.calls[0]![1].title).toBe("Extract to interface");
+    expect(startExtractInterface).not.toHaveBeenCalled();
+  });
+
+  it("say why when tsserver offers no type extraction, and keep Extract Interface on Java's dialog", async () => {
+    query = answer([action("Extract to constant in enclosing scope", "refactor.extract.constant")]);
+    const ts = editor("const x = 1;", "typescript");
+    await runRefactoring(ts, "extractTypeAlias");
+    expect(showHint).toHaveBeenLastCalledWith(ts, "Cannot perform refactoring. Selected block should represent a type");
+    await runRefactoring(ts, "extractInterface");
+    expect(showHint).toHaveBeenLastCalledWith(
+      ts,
+      "Cannot perform refactoring. Selected block should represent an object type",
+    );
+    expect(lspExecuteCodeAction).not.toHaveBeenCalled();
+
+    const rs = editor();
+    await runRefactoring(rs, "extractTypeAlias");
+    expect(showHint).toHaveBeenLastCalledWith(
+      rs,
+      "Cannot perform refactoring. Extract Type Alias is not supported for Rust",
+    );
+    await runRefactoring(rs, "extractInterface");
+    expect(showHint).toHaveBeenLastCalledWith(
+      rs,
+      "Cannot perform refactoring. Extract Interface is not supported for Rust",
+    );
+
+    lspCodeActionQuery.mockClear();
+    await runRefactoring(editor("class A {}", "java"), "extractInterface");
+    expect(startExtractInterface).toHaveBeenCalledOnce();
+    expect(lspCodeActionQuery).not.toHaveBeenCalled();
   });
 
   it("rename the introduced name in place after the server's edit", async () => {

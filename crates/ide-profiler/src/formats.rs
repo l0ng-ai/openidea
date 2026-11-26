@@ -123,7 +123,7 @@ fn source_location(entry: &Value) -> Option<(PathBuf, u32)> {
 /// Adds a V8 CPU profile (`node --cpu-prof`), weighted by sampled time in milliseconds.
 pub(crate) fn add_cpuprofile(b: &mut TreeBuilder, json: &str) -> Result<(), String> {
     let v: Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
-    let nodes = v.get("nodes").and_then(Value::as_array).ok_or("not a CPU profile: no nodes")?;
+    let nodes = v.get("nodes").and_then(Value::as_array).ok_or("no nodes")?;
     let mut by_id: HashMap<i64, &Value> = HashMap::new();
     let mut parent: HashMap<i64, i64> = HashMap::new();
     for n in nodes {
