@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { workspaceJoinQuery } from "./workspaceQuery";
+import { workspaceJoinQuery, workspaceSourceNames } from "./workspaceQuery";
 
 describe("workspace table references", () => {
   it("keeps quoted dots, embedded quotes and reversed join keys", () => {
@@ -17,6 +17,25 @@ describe("workspace table references", () => {
         (x) => x.key,
       ),
     ).toEqual(["id", "id"]);
+  });
+  it("joins explicitly selected sources by their quoted display names", () => {
+    const names = workspaceSourceNames('Sales "EU"', "events");
+    const refs = workspaceJoinQuery(
+      'SELECT * FROM #events.logs.orders e JOIN #"Sales ""EU""".public.users u ON u.id=e.id',
+      names,
+    );
+    expect(refs.map((ref) => ref.source)).toEqual(["right", "left"]);
+    expect(() =>
+      workspaceJoinQuery("SELECT * FROM #other.logs.orders e JOIN #left.public.users u ON u.id=e.id", names),
+    ).toThrow();
+    expect(() =>
+      workspaceJoinQuery("SELECT * FROM #events.logs.t a JOIN #right.logs.t b ON a.id=b.id", names),
+    ).toThrow();
+  });
+  it("keeps stable references for blank, conflicting, or reserved display names", () => {
+    expect(workspaceSourceNames("Sales", "sales")).toEqual({ left: "left", right: "right" });
+    expect(workspaceSourceNames("right", "warehouse")).toEqual({ left: "left", right: "warehouse" });
+    expect(workspaceSourceNames("  ", "LEFT")).toEqual({ left: "left", right: "right" });
   });
   it.each([
     "left.id = left.id",

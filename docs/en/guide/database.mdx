@@ -180,7 +180,7 @@ Console results are editable the same way when the query is a plain select from 
 
 ## Join tables from two data sources
 
-In a trusted project, open **Database › + › Query Workspace**. Select two saved native PostgreSQL or ClickHouse sources for `#left` and `#right`. Choose an [installed DuckDB JDBC driver](#duckdb) on the project host. Type `#left.` or `#right.` in the editor to complete a table name.
+In a trusted project, open **Query Workspace** in the Database tree and choose two saved native PostgreSQL or ClickHouse sources. The workspace uses an [installed DuckDB JDBC driver](#duckdb) on the project host. Type `#` to complete a selected source by name, then `.` to complete a qualified table. The example below uses the stable aliases `#left` and `#right`, which also work when both sources have the same display name.
 
 ```sql
 SELECT *

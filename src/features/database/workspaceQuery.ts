@@ -9,8 +9,26 @@ export interface WorkspaceRelation {
   key: string;
 }
 
+const sides = ["left", "right"] as const;
+type Side = (typeof sides)[number];
+type SourceNames = Record<Side, string>;
+
+export function workspaceSourceNames(left: string, right: string): SourceNames {
+  const unique = left.toLowerCase() !== right.toLowerCase();
+  const preferred = (name: string, side: Side) =>
+    unique && name.trim() && !/^(left|right)$/i.test(name) ? name : side;
+  return { left: preferred(left, "left"), right: preferred(right, "right") };
+}
+
+export function workspaceSourceSide(name: string, names: SourceNames): Side | undefined {
+  return sides.find((side) => name === side || name === names[side]);
+}
+
 /** Compile the workspace's direct table JOIN to structured host arguments. */
-export function workspaceJoinQuery(sql: string): [WorkspaceRelation, WorkspaceRelation] {
+export function workspaceJoinQuery(
+  sql: string,
+  names: SourceNames = { left: "left", right: "right" },
+): [WorkspaceRelation, WorkspaceRelation] {
   if (sql.length > 65_536) throw new Error(tx("Workspace SQL exceeds 65,536 characters."));
   const { tokens } = lex(sql, "postgres");
   let i = 0;
@@ -30,14 +48,14 @@ export function workspaceJoinQuery(sql: string): [WorkspaceRelation, WorkspaceRe
   };
   const relation = (): WorkspaceRelation => {
     need("#");
-    const source = identifier();
-    if (source !== "left" && source !== "right")
-      throw new Error(tx("Use #left or #right to select a workspace source."));
+    const name = identifier();
+    const source = workspaceSourceSide(name, names);
+    if (!source) throw new Error(tx("Use #left or #right to select a workspace source."));
     need(".");
     const schema = identifier();
     need(".");
     const table = identifier();
-    const alias = take("AS") || !["INNER", "JOIN", "ON"].includes(tokens[i]?.upper ?? "") ? identifier() : source;
+    const alias = take("AS") || !["INNER", "JOIN", "ON"].includes(tokens[i]?.upper ?? "") ? identifier() : name;
     return { source, schema, table, alias, key: "" };
   };
   const column = (relations: WorkspaceRelation[]) => {
