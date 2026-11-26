@@ -777,7 +777,7 @@ export function registerVcsActions(): () => void {
         }
         const line =
           arg && typeof arg === "object" && "line" in arg ? Number((arg as { line: unknown }).line) : undefined;
-        const paths = selectedPaths(arg);
+        const paths = focusedPaths(arg, ctx);
         if (!paths.length) {
           notifications().notify({ group: "vcs", level: "info", title: "Select a changed file to show its diff" });
           return;
@@ -816,9 +816,9 @@ export function registerVcsActions(): () => void {
       icon: "diff",
       when: VCS,
       keyWhen: "!editorTextFocus",
-      run: ({ arg }) => {
+      run: ({ arg, ctx }) => {
         const requested = arg && typeof arg === "object" && "left" in arg && "right" in arg ? (arg as DiffData) : null;
-        const path = selectedPaths(arg)[0];
+        const path = focusedPaths(arg, ctx)[0];
         const data = requested ?? focusedDiffNavigator()?.viewer?.()?.data ?? (path ? workingDiffData(path) : null);
         if (!data) {
           notifications().notify({ group: "vcs", level: "info", title: "Select a changed file to show its diff" });
