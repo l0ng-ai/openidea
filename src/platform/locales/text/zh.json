@@ -10399,5 +10399,6 @@
   "Granted with grant option": "已授予（可转授）",
   "No privileges are granted on this table.": "此表未授予任何权限。",
   "* With grant option: the grantee may grant the privilege to others.": "* WITH GRANT OPTION：被授权者可以将该权限再授予他人。",
-  "Separate several prefixes with commas: they are tried in order, then the official source.": "多个前缀用逗号分隔：按顺序尝试，最后回退到官方源。"
+  "Separate several prefixes with commas: they are tried in order, then the official source.": "多个前缀用逗号分隔：按顺序尝试，最后回退到官方源。",
+  "Recent Find Usages": "最近的查找用法"
 }

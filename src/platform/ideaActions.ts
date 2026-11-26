@@ -37,6 +37,7 @@ export const IDEA_ACTIONS: Readonly<Record<string, string>> = {
   FindPrevWordAtCaret: "find.previousWordAtCaret",
   FindUsages: "find.usages",
   ShowUsages: "find.showUsages",
+  ShowRecentFindUsagesGroup: "find.recentUsages",
   HighlightUsagesInFile: "find.highlightUsages",
   ReformatCode: "code.reformat",
   OptimizeImports: "code.optimizeImports",

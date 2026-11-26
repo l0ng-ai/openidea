@@ -84,6 +84,8 @@ describe("IDEA keymap parity", () => {
     // Rerun in the Find / Find Usages tool windows uses the Rerun shortcut.
     ["find.rerun", ["Meta+R"], ["Ctrl+F5"]],
     ["usages.rerun", ["Meta+R"], ["Ctrl+F5"]],
+    // ShowRecentFindUsagesGroup has no shortcut.
+    ["find.recentUsages", [], []],
     // Vcs.Log.GoToRef: Find in the Git Log table.
     ["vcs.log.goToRef", ["Meta+F"], ["Ctrl+F"]],
     // Back / Forward also carry the mouse side buttons (`<mouse-shortcut keystroke="button4"/>`).
