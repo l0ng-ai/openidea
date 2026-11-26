@@ -10597,5 +10597,9 @@
   "Open in Value Editor": "在值编辑器中打开",
   "Show Aggregate View": "显示聚合视图",
   "Data Extractor": "数据提取器",
-  "Export Table to Clipboard": "将表导出到剪贴板"
+  "Export Table to Clipboard": "将表导出到剪贴板",
+  "Keys": "键",
+  "Triggers": "触发器",
+  "Filter by name or type": "按名称或类型过滤",
+  "Filter columns": "过滤列"
 }

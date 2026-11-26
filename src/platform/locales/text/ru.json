@@ -10168,5 +10168,9 @@
   "Open in Value Editor": "Открыть в редакторе значений",
   "Show Aggregate View": "Показать агрегаты",
   "Data Extractor": "Экстрактор данных",
-  "Export Table to Clipboard": "Экспортировать таблицу в буфер обмена"
+  "Export Table to Clipboard": "Экспортировать таблицу в буфер обмена",
+  "Keys": "Ключи",
+  "Triggers": "Триггеры",
+  "Filter by name or type": "Фильтр по имени или типу",
+  "Filter columns": "Фильтр столбцов"
 }
