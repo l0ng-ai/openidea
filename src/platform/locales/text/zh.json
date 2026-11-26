@@ -5237,7 +5237,7 @@
   "'{name}' needs an open file": "'{name}' 需要一个已打开的文件",
   "Run a configuration (hold Shift to debug); the title bar widget passes \"select\" to only select one": "运行配置（按住 Shift 进行调试）；标题栏小部件传入 \"select\" 时仅选择配置",
   "Runs with a contributed executor (`{ executor, config? }` or `{ executor, context }`): the given or selected configuration, or the context.": "使用贡献的执行器运行（`{ executor, config? }` 或 `{ executor, context }`）：给定或所选的配置，或者上下文。",
-  "Saves the given `RunConfig` as a user configuration and opens it in Edit Configurations.": "将给定的 `RunConfig` 保存为用户配置，并在“编辑配置”中打开。",
+  "Saves the given `RunConfig` as a user configuration and opens it in Edit Configurations; a saved one with its id opens unchanged.": "将给定的 `RunConfig` 保存为用户配置，并在“编辑配置”中打开；已保存的同 id 配置直接打开，不作改动。",
   "No sources for this class": "此类没有源代码",
   "Error running '{name}'": "运行 '{name}' 时出错",
   "No JDK can run '{name}'": "没有可以运行 '{name}' 的 JDK",
