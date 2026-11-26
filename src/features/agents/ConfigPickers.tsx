@@ -19,7 +19,7 @@ export function configPickerOptions(
   descriptions = true,
 ): SelectOption[] {
   if (option.category !== "model") {
-    return option.values.map((v) => ({ value: v.value, label: v.name, detail: v.description ?? undefined }));
+    return option.values.map((v) => agentValueOption(v));
   }
   const pinnedSet = new Set(pinned);
   const buildItem = (v: AgentConfigOption["values"][number]): { provider: string; opt: SelectOption } => {
@@ -40,7 +40,10 @@ export function configPickerOptions(
       (p): p is string => !!p,
     );
     const detail = parts.length > 0 ? parts.join(" · ") : undefined;
-    return { provider, opt: { value: v.value, label, detail, keywords: provider } };
+    return {
+      provider,
+      opt: { value: v.value, label, verbatim: true, detail, verbatimDetail: true, keywords: provider },
+    };
   };
 
   const pinnedItems: SelectOption[] = [];
@@ -61,8 +64,16 @@ export function configPickerOptions(
     ...(pinnedItems.length > 0 ? [{ value: "__pinned__", label: "Pinned", section: true }, ...pinnedItems] : []),
     ...(pinnedItems.length > 0 && plain.length > 0 ? [{ value: "__models__", label: "Models", section: true }] : []),
     ...plain,
-    ...[...groups].flatMap(([provider, items]) => [{ value: provider, label: provider, section: true }, ...items]),
+    ...[...groups].flatMap(([provider, items]) => [
+      { value: provider, label: provider, verbatim: true, section: true },
+      ...items,
+    ]),
   ];
+}
+
+/** An agent-reported value: its name and description show as the agent wrote them in every UI language. */
+function agentValueOption(v: AgentConfigOption["values"][number]): SelectOption {
+  return { value: v.value, label: v.name, verbatim: true, detail: v.description ?? undefined, verbatimDetail: true };
 }
 
 /** The on and off values of a two-state permissions or fast option, or null when it has other values. */
@@ -79,6 +90,8 @@ interface ModeApprovalSwitch {
   off: string;
   /** Switch label inside the Mode popup footer (e.g. "Allow All", "Bypass approvals"). */
   label: string;
+  /** The label is the agent's name for the "on" value, shown as written. */
+  verbatimLabel?: boolean;
   /** Concise detail shown on the Mode chip when enabled (e.g. "Allow All", "Bypass"). */
   chipLabel: string;
 }
@@ -93,7 +106,13 @@ function modeApprovalSwitch(option: AgentConfigOption): ModeApprovalSwitch | nul
     const on = option.values.find((v) => v.value.toLowerCase() === "bypass");
     const off = option.values.find((v) => v !== on);
     if (on && off) {
-      return { on: on.value, off: off.value, label: on.name || option.name, chipLabel: "Bypass" };
+      return {
+        on: on.value,
+        off: off.value,
+        label: on.name || option.name,
+        verbatimLabel: !!on.name,
+        chipLabel: "Bypass",
+      };
     }
   }
   return null;
@@ -643,7 +662,7 @@ function ModelSettings({
             <SelectListbox
               aria-label={label}
               value={currentValue}
-              options={o.values.map((v) => ({ value: v.value, label: v.name, detail: v.description ?? undefined }))}
+              options={o.values.map((v) => agentValueOption(v))}
               onChoose={(v) => {
                 if (v !== currentValue) onChange(o.id, v);
                 if (only) onDone();
@@ -732,6 +751,7 @@ function ModePicker({
   const [open, setOpen] = useState(false);
   const anchor = useRef<HTMLButtonElement>(null);
   const toggle = modeApprovalSwitch(allowAll)!;
+  const switchLabel = toggle.verbatimLabel ? toggle.label : tx(toggle.label);
   const current = selected(mode, modeValue);
   const on = allowAllValue === toggle.on;
   const approvalText =
@@ -790,10 +810,10 @@ function ModePicker({
           ))}
         </div>
         <div className={styles.modeFooter}>
-          <span title={allowAll.description ?? undefined}>{tx(toggle.label)}</span>
+          <span title={allowAll.description ?? undefined}>{switchLabel}</span>
           <Toggle
             checked={on}
-            aria-label={tx(toggle.label)}
+            aria-label={switchLabel}
             onChange={(checked) => onChange(allowAll.id, checked ? toggle.on : toggle.off)}
           />
         </div>

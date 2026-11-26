@@ -13,8 +13,8 @@
  * or the wheel direction (`WheelUp`, `WheelDown`), optionally with modifiers.
  */
 import { create } from "zustand";
-import { executeAction, executeActionFrom, getAction, isActionKeyEnabled } from "./actions";
-import { evaluateWhen, getContext } from "./context";
+import { executeAction, executeActionFrom, getAction, isActionEnabled, isActionKeyEnabled } from "./actions";
+import { evaluateWhen, getContext, type ContextKeys } from "./context";
 import { intellijMacos } from "./keymaps/intellij-macos";
 import { intellijWindows } from "./keymaps/intellij-windows";
 import { eclipseMacos } from "./keymaps/eclipse-macos";
@@ -567,6 +567,24 @@ function isPlainTextField(target: EventTarget | null): boolean {
   return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable;
 }
 
+/**
+ * A popup keeps text actions enabled so Find Action can run them. A key pressed outside the
+ * editor belongs to the control that has focus: Ctrl/Cmd+Enter commits or pushes instead of
+ * splitting a line in the editor behind the dialog. `keyWhen` still sees the real context.
+ */
+function whenContextForKey(e: KeyboardEvent, ctx: ContextKeys): ContextKeys {
+  const node = e.composedPath()[0] ?? e.target;
+  const el = node instanceof Element ? node : null;
+  if (el?.closest(".cm-editor")) return ctx;
+  if (!isPlainTextField(node) && !ctx.popupOpen) return ctx;
+  return { ...ctx, editorTextFocus: false, diffEditorFocus: false, suspendEditorKeys: true };
+}
+
+function actionEnabledForKey(action: NonNullable<ReturnType<typeof getAction>>, e: KeyboardEvent): boolean {
+  const ctx = getContext();
+  return isActionEnabled(action, whenContextForKey(e, ctx)) && evaluateWhen(action.keyWhen, ctx);
+}
+
 function isTextTarget(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null;
   if (!el || !el.tagName) return false;
@@ -745,7 +763,7 @@ export function installKeyboardDispatcher(
       .map(([, id]) => id);
     for (const id of ids.reverse()) {
       const action = getAction(id);
-      if (!action || !isActionKeyEnabled(action)) continue;
+      if (!action || !actionEnabledForKey(action, e)) continue;
       return () => {
         e.preventDefault();
         e.stopPropagation();
@@ -818,7 +836,7 @@ export function installKeyboardDispatcher(
     }
     for (const id of [...preferred, ...fallback]) {
       const action = getAction(id);
-      if (action && isActionKeyEnabled(action, ctx) && (!restricted || isForwardableAction(id, e.target))) {
+      if (action && actionEnabledForKey(action, e) && (!restricted || isForwardableAction(id, e.target))) {
         e.preventDefault();
         e.stopPropagation();
         reset();

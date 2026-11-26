@@ -98,7 +98,7 @@ test("Run Anything shows entries a provider reads in the background without anot
       group: "Package Executables",
       items: (line: string) =>
         loaded && line.startsWith("npx") ? [{ key: "vite", label: "npx vite", completion: "npx vite ", run() {} }] : [],
-      watch(onChange: () => void) {
+      subscribe(onChange: () => void) {
         const timer = setTimeout(() => {
           loaded = true;
           onChange();

@@ -2041,10 +2041,10 @@ export interface RunAnythingProvider {
    */
   accepts?(line: string): boolean;
   /**
-   * Called when the popup opens, with a callback for `items` changing while it
-   * is open (entries read from disk in the background); returns the unsubscriber.
+   * For providers whose entries arrive later (a plugin's answer): `listener` is called when
+   * `items` would return something new, so the open popup asks again. Returns the unsubscribe.
    */
-  watch?(onChange: () => void): () => void;
+  subscribe?(listener: () => void): () => void;
 }
 
 const runAnythingProviders = new Map<string, RunAnythingProvider>();

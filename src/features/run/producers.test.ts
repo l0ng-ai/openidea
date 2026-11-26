@@ -18,6 +18,7 @@ import {
   type ToolEnv,
 } from "./producers";
 import { clearInheritedMain, resolveCandidates, unresolvedCandidates } from "./inheritedMain";
+import { BUILTIN_TYPES, formParams, withParams } from "./types";
 
 afterEach(() => clearInheritedMain());
 
@@ -118,6 +119,38 @@ describe("single-file producers (scratches)", () => {
     expect(missing.config).toBeUndefined();
     expect(missing.missing!.body).toMatch(/22\.6\+.*Found Node\.js 20\.11\.0.*npm install -D tsx/);
     expect(produceContext(scratch("hi.js"), env({}))!.missing!.body).toMatch(/Node\.js was not found.*nodejs\.org/);
+  });
+
+  it("JavaScript and TypeScript file runs open in the Node.js form and stay editable (#6085)", () => {
+    const node = BUILTIN_TYPES.find((t) => t.id === "node")!;
+    const file = (name: string, e: ToolEnv = ALL) => produceContext(scratch(name), e)!.config!;
+    for (const name of ["hi.js", "hi.mjs", "hi.cjs"]) {
+      const c = file(name);
+      expect(c.kind).toBe("node");
+      expect(formParams(c, node)).toEqual({ interpreter: "/bin/node", nodeOptions: "", file: name, arguments: "" });
+    }
+    const edited = withParams(
+      file("hi.js"),
+      { ...formParams(file("hi.js"), node)!, nodeOptions: "--env-file=.env", arguments: "a 'b c'" },
+      node,
+    );
+    expect(edited).toMatchObject({
+      command: "/bin/node",
+      args: ["--env-file=.env", "hi.js", "a", "b c"],
+      cwd: SCRATCH,
+    });
+    expect(edited.id).toBe(`context:file:${SCRATCH}/hi.js`);
+    // TypeScript through type stripping or tsx keeps its command line in the form.
+    expect(formParams(file("hi.ts", env({ node: "22.6.0" })), node)).toMatchObject({
+      nodeOptions: "--experimental-strip-types",
+      file: "hi.ts",
+    });
+    expect(formParams(file("hi.ts", env({ node: "20.11.0", tsx: null })), node)).toMatchObject({
+      interpreter: "/bin/tsx",
+      file: "hi.ts",
+    });
+    // `npx tsx` (no tool lookup) is edited as a plain command and runs as before.
+    expect(formParams(file("hi.ts", OPTIMISTIC), node)).toBeNull();
   });
 
   it("type stripping versions", () => {

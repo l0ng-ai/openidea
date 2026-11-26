@@ -30,6 +30,67 @@ pub(super) fn transcript(config_dir: &Path, cwd: &Path, id: &str) -> PathBuf {
         .unwrap_or(direct)
 }
 
+/// Brings session `id` into `config_dir` when it is missing there but another Claude Code
+/// configuration directory beside it (`~/.claude`, `~/.claude-work`...) has it: switching
+/// `CLAUDE_CONFIG_DIR` (another account) would otherwise lose every earlier conversation.
+/// Copies the transcript and its folder (subagents, tool results) under the same project
+/// directory name. Returns whether the session is in `config_dir` now.
+pub(super) fn adopt(config_dir: &Path, cwd: &Path, id: &str) -> bool {
+    if transcript(config_dir, cwd, id).exists() {
+        return true;
+    }
+    let file = format!("{id}.jsonl");
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from);
+    let mut homes: Vec<PathBuf> = config_dir
+        .parent()
+        .into_iter()
+        .chain(home.as_deref())
+        .flat_map(|dir| std::fs::read_dir(dir).into_iter().flatten().flatten())
+        .filter(|d| d.file_name().to_string_lossy().starts_with(".claude"))
+        .map(|d| d.path())
+        .filter(|p| p != config_dir && p.join("projects").is_dir())
+        .collect();
+    homes.sort();
+    homes.dedup();
+    let found = homes.iter().find_map(|other| {
+        let projects = other.join("projects");
+        let direct = projects.join(escape(cwd));
+        std::iter::once(direct.clone())
+            .chain(std::fs::read_dir(&projects).into_iter().flatten().flatten().map(|d| d.path()))
+            .find(|dir| dir.join(&file).is_file())
+    });
+    let Some(source) = found else { return false };
+    let Some(name) = source.file_name() else { return false };
+    let target = config_dir.join("projects").join(name);
+    let copied = std::fs::create_dir_all(&target)
+        .and_then(|()| copy_tree(&source.join(id), &target.join(id)))
+        .and_then(|()| std::fs::copy(source.join(&file), target.join(&file)).map(drop));
+    match copied {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!("claude session {id}: copying it from {}: {e}", source.display());
+            false
+        }
+    }
+}
+
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    if !from.is_dir() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let dest = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_tree(&entry.path(), &dest)?;
+        } else if !dest.exists() {
+            std::fs::copy(entry.path(), dest)?;
+        }
+    }
+    Ok(())
+}
+
 /// The project directory name Claude Code uses for `cwd`.
 pub(crate) fn escape(cwd: &Path) -> String {
     cwd.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
@@ -205,6 +266,26 @@ mod tests {
 
     fn assistant(id: &str, parent: &str, content: Value) -> Value {
         json!({"type": "assistant", "uuid": id, "parentUuid": parent, "message": {"role": "assistant", "content": content}})
+    }
+
+    #[test]
+    fn a_session_from_another_config_dir_is_copied_in() {
+        let root = tempfile::tempdir().unwrap();
+        let (old, new) = (root.path().join(".claude-2"), root.path().join(".claude-3"));
+        let cwd = Path::new("/work/app");
+        let project = old.join("projects").join(escape(cwd));
+        std::fs::create_dir_all(project.join("s1/subagents")).unwrap();
+        std::fs::write(project.join("s1.jsonl"), "{}\n").unwrap();
+        std::fs::write(project.join("s1/subagents/a.jsonl"), "{}\n").unwrap();
+        std::fs::create_dir_all(new.join("projects")).unwrap();
+
+        assert!(!adopt(&new, cwd, "missing"));
+        assert!(adopt(&new, cwd, "s1"));
+        let copied = new.join("projects").join(escape(cwd));
+        assert_eq!(transcript(&new, cwd, "s1"), copied.join("s1.jsonl"));
+        assert!(copied.join("s1/subagents/a.jsonl").is_file());
+        assert!(project.join("s1.jsonl").is_file(), "the original stays");
+        assert!(adopt(&new, cwd, "s1"));
     }
 
     #[test]

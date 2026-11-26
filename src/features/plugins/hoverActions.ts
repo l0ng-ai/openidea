@@ -9,6 +9,7 @@
  * - the action is anchored to the action's `line`, not the hovered
  *   line, so hovering a method body shows the button at its declaration.
  */
+import type { Text } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 
 import { call, commands, type HoverAction } from "@/platform/ipc";
@@ -44,6 +45,8 @@ export function matchingActions(actions: readonly PlacedHoverAction[], line: num
 class HoverActionLayer {
   private readonly root: HTMLDivElement;
   private placed: PlacedHoverAction[] = [];
+  /** The text the actions were placed for. */
+  private text: Text | null = null;
   private shown: PlacedHoverAction[] = [];
   private visible = false;
   private readonly onMove = (event: MouseEvent) => this.handleMove(event);
@@ -82,6 +85,7 @@ class HoverActionLayer {
   }
 
   set(actions: readonly PlacedHoverAction[]) {
+    this.text = this.view.state.doc;
     const next = [...actions];
     const signature = next
       .map(({ plugin, action }) => `${plugin}:${action.command}:${action.line}:${action.label}`)
@@ -202,6 +206,8 @@ class HoverActionLayer {
   }
 
   private runAction(plugin: string, action: HoverAction) {
+    // Edited since the plugin placed it: its line may now mean something else.
+    if (this.view.state.doc !== this.text) return;
     void call(
       commands.lspExecuteCommand(this.ctx.doc, {
         title: action.tooltip ?? action.label,

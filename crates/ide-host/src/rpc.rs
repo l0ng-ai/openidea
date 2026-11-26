@@ -32,6 +32,10 @@ use std::sync::{Arc, OnceLock};
 /// doesn't know the event would show stale output.
 pub const PROTOCOL_VERSION: u32 = 4;
 pub const SESSION_REPLACED: &str = "session_replaced";
+/// What `openidea-server --attach` reports when another build's backend keeps the project
+/// (clients match it to offer stopping that backend).
+pub const OTHER_BUILD_BUSY: &str = "Another build of OpenIDEA still has this project open, is running tasks, or has \
+     unsaved changes. Reconnect with that build, or stop its backend and open the project again.";
 pub const SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
 
 /// Advertised only by a persistent backend with an editable idle timeout.

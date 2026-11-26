@@ -177,7 +177,7 @@ describe("package executables", () => {
     provideEditorService({ activePath: () => "/p/packages/web/src/main.ts" } as unknown as EditorService);
     const run = vi.spyOn(actions, "executeAction").mockResolvedValue(true);
     const changed = vi.fn();
-    const unwatch = packageBinsRunAnything.watch!(changed);
+    const unwatch = packageBinsRunAnything.subscribe!(changed);
     expect(packageBinsRunAnything.items("npx")).toEqual([]);
     await vi.waitFor(() => expect(changed).toHaveBeenCalled());
     expect(packageBinsRunAnything.items("npx v").map((i) => i.label)).toEqual(["npx vite"]);

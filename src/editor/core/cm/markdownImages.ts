@@ -9,7 +9,7 @@ import { notifications } from "@/workbench/contributions";
 import { registerFileDropHandler } from "@/workbench/fileDrop";
 
 const IMAGE_FILE = /\.(png|jpe?g|gif|webp|avif|bmp|svg|ico|tiff?)$/i;
-const MAX_IMAGE_BYTES = 16 * 1024 * 1024;
+export const MAX_IMAGE_BYTES = 16 * 1024 * 1024;
 
 export function isMarkdown(path: string): boolean {
   return /\.(md|markdown|mdown|mkd|mkdn|mdwn|mdx|ronn|workbook)$/i.test(path);
@@ -49,16 +49,17 @@ export function imageName(source: string, mime: string, pattern: string, now = n
   if (source) return source.replace(/^.*[\\/]/, "");
   const pad = (n: number) => String(n).padStart(2, "0");
   const timestamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-  const stem = (pattern.trim() || "image-{timestamp}")
-    .replaceAll("{timestamp}", timestamp)
-    // Filenames cannot contain control characters.
-    // eslint-disable-next-line no-control-regex
-    .replace(/[<>:"/\\|?*\x00-\x1f]/g, "-");
+  const stem = imageStem((pattern.trim() || "image-{timestamp}").replaceAll("{timestamp}", timestamp));
   const ext =
     ({ "image/jpeg": "jpg", "image/svg+xml": "svg", "image/x-icon": "ico" } as Record<string, string>)[mime] ||
     mime.split("/")[1]?.replace(/[^a-z0-9]/gi, "") ||
     "png";
   return `${stem}.${ext}`;
+}
+
+export function imageStem(stem: string): string {
+  // eslint-disable-next-line no-control-regex
+  return stem.replace(/[<>:"/\\|?*\x00-\x1f]/g, "-");
 }
 
 export async function saveImage(

@@ -232,7 +232,7 @@
 }
 .host :global(.cm-merge-revert button:hover) {
   color: var(--fg-strong);
-  background: transparent;
+  background: var(--bg-toolbar-hover);
 }
 .hunkGutter {
   min-width: var(--h-row);
@@ -256,7 +256,6 @@
   padding: 0;
   background: transparent;
   color: var(--fg-secondary);
-  cursor: pointer;
 }
 .hunkButtons > button:hover,
 .hunkButtons > button:focus-visible {
@@ -280,7 +279,7 @@
   padding: 0;
   border: 0;
   background: none;
-  cursor: pointer;
+  cursor: default;
 }
 .host :global(.cm-diffHoverLine) {
   position: relative;
@@ -301,7 +300,6 @@
   color: var(--fg-secondary);
   font-family: var(--font-ui);
   font-size: var(--fs-tiny);
-  cursor: pointer;
 }
 .host :global(.cm-diffHoverRevert:hover) {
   color: var(--fg-strong);
@@ -412,7 +410,7 @@
   border-radius: var(--radius-small);
   background: none;
   color: var(--fg-subtle);
-  cursor: pointer;
+  cursor: default;
 }
 .host :global(.cm-diffDivider button.cm-diffArrow-a-to-b) {
   left: 0;
@@ -428,7 +426,7 @@
 }
 .host :global(.cm-diffDivider button.cm-diffArrow:hover) {
   color: var(--fg-strong);
-  background: transparent;
+  background: var(--bg-toolbar-hover);
 }
 /* Where the other pane has lines this one lacks. */
 .host :global(.cm-diffGap-inserted) {

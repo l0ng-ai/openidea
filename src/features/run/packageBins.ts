@@ -273,7 +273,7 @@ export const packageBinsRunAnything: RunAnythingProvider = {
     await executeAction("run.runConfig", execConfig(parsed.runner, parsed.name, args, pkg));
     return true;
   },
-  watch(onChange) {
+  subscribe(onChange) {
     listeners.add(onChange);
     return () => listeners.delete(onChange);
   },

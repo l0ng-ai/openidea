@@ -56,10 +56,12 @@ function RunAnythingPopup({ root }: { root: string }) {
   const [line, setLine] = useState("");
   const [active, setActive] = useState(-1);
   const [history, setHistory] = useState(() => readHistory(root));
-  const [revision, setRevision] = useState(0);
+  // Providers answering later (plugins) ask for the rows to be built again.
+  const [arrived, setArrived] = useState(0);
   useEffect(() => {
-    const unwatch = runAnythingProviderList().map((p) => p.watch?.(() => setRevision((r) => r + 1)));
-    return () => unwatch.forEach((u) => u?.());
+    const bump = () => setArrived((n) => n + 1);
+    const offs = runAnythingProviderList().map((p) => p.subscribe?.(bump));
+    return () => offs.forEach((off) => off?.());
   }, []);
   const rows = useMemo(
     () =>
@@ -67,8 +69,8 @@ function RunAnythingPopup({ root }: { root: string }) {
         close();
         void runCommandLine(h);
       }),
-    // oxlint-disable-next-line react-hooks/exhaustive-deps -- `revision` re-reads providers whose entries changed.
-    [line, history, revision],
+    // `arrived`: a provider's late answer for the current line.
+    [line, history, arrived],
   );
   const selected = rows[active];
   const first = firstSelectable(rows, isSection);

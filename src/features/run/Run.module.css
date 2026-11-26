@@ -26,7 +26,6 @@
   background: none;
   color: var(--fg-muted);
   font: inherit;
-  cursor: pointer;
 }
 .agentArchive:hover {
   background: var(--bg-hover);
@@ -139,6 +138,9 @@
 .noticeLink:hover {
   color: var(--link-hover);
   text-decoration: underline;
+}
+.noticeLink + .noticeLink {
+  margin-left: var(--space-3);
 }
 
 /* Console */
@@ -1239,7 +1241,6 @@
   border-radius: 3px;
   padding: 0 6px;
   font: inherit;
-  cursor: pointer;
 }
 .fold:hover {
   color: var(--fg);
@@ -1258,7 +1259,6 @@
   background: var(--bg-app);
   color: var(--fg-faint);
   vertical-align: top;
-  cursor: pointer;
 }
 .foldToggle:hover {
   color: var(--fg);
@@ -1392,7 +1392,6 @@
   box-shadow: inset 0 0 0 1px var(--border-button);
   color: var(--fg);
   font-size: var(--fs-ui);
-  cursor: pointer;
   flex: none;
 }
 .tomcatDotsBtn:hover {
@@ -1647,9 +1646,6 @@
   font-size: var(--fs-small);
   border-bottom: 1px solid var(--border-popup);
 }
-.tomcatLogRow {
-  cursor: pointer;
-}
 .tomcatLogRow:hover {
   background: var(--bg-hover);
 }
@@ -1748,7 +1744,6 @@
   color: var(--fg-secondary);
   font-size: var(--fs-ui);
   font-weight: 500;
-  cursor: pointer;
 }
 .addServerDialogBody {
   display: flex;
