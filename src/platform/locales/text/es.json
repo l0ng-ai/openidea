@@ -3754,7 +3754,7 @@
   "'{name}' needs an open file": "'{name}' necesita un archivo abierto",
   "Run a configuration (hold Shift to debug); the title bar widget passes \"select\" to only select one": "Ejecutar una configuración (mantenga presionado Shift para depurar); el widget de la barra de título pasa \"select\" solo para seleccionar una",
   "Runs with a contributed executor (`{ executor, config? }` or `{ executor, context }`): the given or selected configuration, or the context.": "Se ejecuta con un ejecutor contribuido (`{ executor, config? }` o `{ executor, context }`): la configuración indicada o seleccionada, o el contexto.",
-  "Saves the given `RunConfig` as a user configuration and opens it in Edit Configurations.": "Guarda la `RunConfig` indicada como una configuración de usuario y la abre en Editar configuraciones.",
+  "Saves the given `RunConfig` as a user configuration and opens it in Edit Configurations; a saved one with its id opens unchanged.": "Guarda la `RunConfig` indicada como una configuración de usuario y la abre en Editar configuraciones; una ya guardada con ese id se abre sin cambios.",
   "No sources for this class": "No hay código fuente para esta clase",
   "Error running '{name}'": "Error al ejecutar '{name}'",
   "No JDK can run '{name}'": "Ningún JDK puede ejecutar '{name}'",

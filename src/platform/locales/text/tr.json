@@ -6451,7 +6451,7 @@
   "'{name}' needs an open file": "'{name}' için açık bir dosya gerekiyor",
   "Run a configuration (hold Shift to debug); the title bar widget passes \"select\" to only select one": "Bir yapılandırmayı çalıştırır (hata ayıklamak için Shift tuşunu basılı tutun); başlık çubuğu bileşeni yalnızca seçim yapmak için “select” iletir",
   "Runs with a contributed executor (`{ executor, config? }` or `{ executor, context }`): the given or selected configuration, or the context.": "Katkı sağlayan yürütücüyle (`{ executor, config? }` veya `{ executor, context }`) çalıştırır: verilen veya seçilen yapılandırmayı ya da bağlamı kullanır.",
-  "Saves the given `RunConfig` as a user configuration and opens it in Edit Configurations.": "Verilen `RunConfig` değerini kullanıcı yapılandırması olarak kaydeder ve Yapılandırmaları Düzenle bölümünde açar.",
+  "Saves the given `RunConfig` as a user configuration and opens it in Edit Configurations; a saved one with its id opens unchanged.": "Verilen `RunConfig` değerini kullanıcı yapılandırması olarak kaydeder ve Yapılandırmaları Düzenle bölümünde açar; bu id ile zaten kaydedilmiş olan değiştirilmeden açılır.",
   "No sources for this class": "Bu sınıfın kaynak kodu yok",
   "Error running '{name}'": "'{name}' çalıştırılırken hata",
   "No JDK can run '{name}'": "'{name}' çalıştırabilecek bir JDK yok",

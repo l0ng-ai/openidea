@@ -4708,7 +4708,7 @@
   "'{name}' needs an open file": "'{name}' 需要一個已開啟的檔案",
   "Run a configuration (hold Shift to debug); the title bar widget passes \"select\" to only select one": "執行組態（按住 Shift 進行偵錯）；標題欄小部件傳入 \"select\" 時僅選擇組態",
   "Runs with a contributed executor (`{ executor, config? }` or `{ executor, context }`): the given or selected configuration, or the context.": "使用貢獻的執行器執行（`{ executor, config? }` 或 `{ executor, context }`）：給定或所選的組態，或者上下文。",
-  "Saves the given `RunConfig` as a user configuration and opens it in Edit Configurations.": "將給定的 `RunConfig` 儲存為使用者組態，並在「編輯組態」中開啟。",
+  "Saves the given `RunConfig` as a user configuration and opens it in Edit Configurations; a saved one with its id opens unchanged.": "將給定的 `RunConfig` 儲存為使用者組態，並在「編輯組態」中開啟；已儲存的同 id 組態直接開啟，不作變更。",
   "No sources for this class": "此類別沒有原始碼",
   "Error running '{name}'": "執行 '{name}' 時出錯",
   "No JDK can run '{name}'": "沒有可以執行 '{name}' 的 JDK",
