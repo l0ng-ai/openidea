@@ -693,6 +693,8 @@
   "Scroll to Center": "捲動到中央",
   "Scroll Up": "向上捲動",
   "Scroll Down": "向下捲動",
+  "Scroll Up and Move if Necessary": "向上捲動並在必要時移動游標",
+  "Scroll Down and Move if Necessary": "向下捲動並在必要時移動游標",
   "Scroll to Top": "捲動到頂部",
   "Scroll to Bottom": "捲動到底部",
   "Move Caret to Page Top": "將游標移至頁面頂部",
