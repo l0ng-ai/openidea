@@ -119,6 +119,14 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(k.unknownActions).toEqual([]);
   });
 
+  it("maps Swap Selection Boundaries", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="S" parent="$default"><action id="EditorSwapSelectionBoundaries"><keyboard-shortcut first-keystroke="control X" second-keystroke="control X"/></action></keymap>`,
+    );
+    expect(k.overrides["editor.swapSelectionBoundaries"]).toEqual([normalizeBinding("Ctrl+X Ctrl+X")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
   it("maps Select Line at Caret", () => {
     const k = parseIdeaKeymap(
       `<keymap name="S" parent="$default"><action id="EditorSelectLine"><keyboard-shortcut first-keystroke="control alt L"/></action></keymap>`,

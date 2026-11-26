@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { EditorSelection, EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { history, insertNewlineAndIndent, redo, undo } from "@codemirror/commands";
+import { history, insertNewlineAndIndent, redo, selectCharLeft, undo } from "@codemirror/commands";
 import { indentOnInput, indentService, indentUnit, ensureSyntaxTree } from "@codemirror/language";
 import {
   addCaretsToLineEnds,
@@ -14,6 +14,7 @@ import {
   selectLineAtCaret,
   startNewLine,
   startNewLineBefore,
+  swapSelectionBoundaries,
   toggleCase,
   unselectOccurrence,
 } from "./editing";
@@ -339,6 +340,48 @@ describe("multiple carets", () => {
     expect(unselectOccurrence(v)).toBe(true);
     expect(show(v)).toBe("a| a a");
     expect(unselectOccurrence(v)).toBe(false);
+  });
+
+  it("swaps the caret to the other end of each selection", () => {
+    const v = make("[ab] c|d [ef]");
+    const before = v.state.selection;
+    expect(swapSelectionBoundaries(v)).toBe(true);
+    const after = v.state.selection;
+    expect(after.ranges.map((r) => [r.anchor, r.head])).toEqual([
+      [2, 0],
+      [4, 4],
+      [8, 6],
+    ]);
+    expect(after.mainIndex).toBe(before.mainIndex);
+    expect(show(v)).toBe("[ab] c|d [ef]");
+    swapSelectionBoundaries(v);
+    expect(v.state.selection.eq(before)).toBe(true);
+  });
+
+  it("lets the selection grow from its start after the swap", () => {
+    const v = make("a [bc]d");
+    swapSelectionBoundaries(v);
+    selectCharLeft(v);
+    expect(show(v)).toBe("a[ bc]d");
+  });
+
+  it("swaps a selection that spans lines", () => {
+    const v = make("a[b\nc]d");
+    swapSelectionBoundaries(v);
+    expect(v.state.selection.main.head).toBe(1);
+    expect(v.state.selection.main.anchor).toBe(4);
+  });
+
+  it("does nothing without a selection", () => {
+    const v = make("a|b c|d");
+    expect(swapSelectionBoundaries(v)).toBe(false);
+    expect(show(v)).toBe("a|b c|d");
+  });
+
+  it("swaps in a read-only editor", () => {
+    const v = make("[ab]c", EditorState.readOnly.of(true));
+    expect(swapSelectionBoundaries(v)).toBe(true);
+    expect(v.state.selection.main.head).toBe(0);
   });
 
   it("⌥⇧click toggles a caret", () => {
