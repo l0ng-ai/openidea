@@ -411,7 +411,7 @@ impl ide_host::plugins::PluginWorkspace for Nested {
 }
 
 #[test]
-fn gutter_actions_are_asked_for_the_editors_project() {
+fn gutter_actions_see_the_editors_window_project() {
     let tmp = tempfile::tempdir().unwrap();
     let outer = dunce::canonicalize(tmp.path()).unwrap().join("outer");
     let inner = outer.join("inner");
@@ -432,7 +432,7 @@ fn gutter_actions_are_asked_for_the_editors_project() {
     // The outer project's window: the file is its, though the inner project holds it too.
     assert_eq!(argument(Some(&outer)), outer.to_string_lossy());
     assert_eq!(argument(Some(&inner)), inner.to_string_lossy());
-    // No window, or one whose project doesn't hold the file: the innermost project.
-    assert_eq!(argument(None), inner.to_string_lossy());
-    assert_eq!(argument(Some(&tmp.path().join("elsewhere"))), inner.to_string_lossy());
+    // No window, or a root that is no open project: no invoking project.
+    assert_eq!(argument(None), "gutter");
+    assert_eq!(argument(Some(&tmp.path().join("elsewhere"))), "gutter");
 }

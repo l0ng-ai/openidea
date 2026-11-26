@@ -1430,6 +1430,11 @@ pub mod current {
         })
     }
 
+    /// The mock's project: every mocked call serves its window.
+    pub fn invoking_project() -> Option<ProjectRes> {
+        with(|s| s.root.clone().map(|root| make_mock_project(s, root)))
+    }
+
     pub fn project_root(p: &ProjectRes) -> Result<String, Error> {
         with(|s| {
             require(s, "project.read")?;

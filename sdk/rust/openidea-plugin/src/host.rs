@@ -297,6 +297,10 @@ mod imp {
         wit::workspace::project_of(path)
     }
 
+    pub fn invoking_project() -> Option<ProjectRes> {
+        wit::workspace::invoking_project()
+    }
+
     pub fn project_root(p: &ProjectRes) -> Result<String, Error> {
         p.root().map_err(error)
     }
@@ -1696,6 +1700,14 @@ pub fn projects() -> Result<Vec<Project>, Error> {
 /// Obtaining the handle needs no capability; reading it still needs `project.read`.
 pub fn project_of(path: &str) -> Option<Project> {
     imp::project_of(path).map(|inner| Project { inner })
+}
+
+/// The project of the window this call serves (API 1.18): the invoking window's in commands
+/// and events, the editor's window's in `gutter_actions` and `hover_actions`; `None` when the
+/// call serves no window. Unlike [`project_of`], it tells overlapping projects apart.
+/// Obtaining the handle needs no capability; reading it still needs `project.read`.
+pub fn invoking_project() -> Option<Project> {
+    imp::invoking_project().map(|inner| Project { inner })
 }
 
 /// A file open in an editor.

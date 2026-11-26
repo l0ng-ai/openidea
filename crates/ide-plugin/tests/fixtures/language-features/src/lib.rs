@@ -93,9 +93,10 @@ impl LanguageFeatures for Fixture {
     fn type_definition(&mut self, d: &Document, _: Position) -> Vec<Location> {
         vec![Location { path: d.path.clone(), range: range(2, 3) }]
     }
-    fn gutter_actions(&mut self, d: &Document) -> Vec<GutterAction> {
-        // The project the action is for: the editor's, also when another project holds it.
-        let project = openidea_plugin::host::project_of(&d.path).and_then(|p| p.root().ok());
+    fn gutter_actions(&mut self, _: &Document) -> Vec<GutterAction> {
+        // The project the action is for: the editor's window's, also when a project opened
+        // inside it holds the file too.
+        let project = openidea_plugin::host::invoking_project().and_then(|p| p.root().ok());
         vec![GutterAction {
             line: 0,
             icon: Some("run".into()),

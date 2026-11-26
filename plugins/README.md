@@ -475,6 +475,10 @@ matching SDK. Plugins for 1.17 and earlier keep working. New in 1.18:
   [Run Anything entries](#run-anything-entries-api-118).
 - **Terminals in a project directory.** `host::open_terminal_session_in` starts a
   keyed terminal in a directory of the project rather than its root.
+- **The window's project.** `host::invoking_project()` (`workspace.invoking-project`)
+  is the project of the window a call serves, also in `gutter-actions` and
+  `hover-actions` calls, which tells overlapping projects apart. Gutter and hover
+  action buttons go inert after an edit until the provider answers for the new text.
 
 ### API 1.17
 
@@ -1517,9 +1521,10 @@ the final close only after queued frames have drained.
 Provider calls can use `host::project_of(&doc.path)` (`workspace.project-of`)
 without an invocation project or enumerating every open project. It returns the
 deepest open project containing the absolute path, or `None` outside open roots.
-In a call for a window (a command, an event, or `gutter-actions` / `hover-actions`
-asked for that window's editor), the window's project wins when it holds the path,
-even if a project opened inside it holds it too.
+`host::invoking_project()` (`workspace.invoking-project`, API 1.18) is the project
+of the window the call serves instead: the invoking window's in commands and events,
+the editor's window's in `gutter-actions` and `hover-actions`. Use it when projects
+overlap (one opened inside another), where `project_of` always answers the inner one.
 Symlinks and missing file tails are resolved before checking containment.
 Obtaining a handle grants no read access: `Project::root` and file operations
 still require `project.read`.
