@@ -15,6 +15,8 @@ import {
 
 const ipc = vi.hoisted(() => ({
   docOutline: vi.fn(),
+  docOpen: vi.fn(),
+  docClose: vi.fn(async () => ({ status: "ok" as const, data: null })),
   lspReferences: vi.fn(),
   cancelRequest: vi.fn<(id: number) => Promise<void>>(async () => {}),
   vcsBlame: vi.fn(),
@@ -23,6 +25,11 @@ vi.mock("@/platform/ipc", async (orig) => {
   const real = await orig<typeof import("@/platform/ipc")>();
   return { ...real, isTauri: () => true, commands: { ...real.commands, ...ipc } };
 });
+const python = vi.hoisted(() => ({ hierarchy: null as unknown }));
+vi.mock("@/editor/navigation/pythonHierarchy", async (orig) => ({
+  ...(await orig<object>()),
+  projectPythonHierarchy: async () => python.hierarchy ?? Promise.reject(new Error("no graph")),
+}));
 const executeAction = vi.hoisted(() => vi.fn(async () => true));
 vi.mock("@/platform/actions", () => ({ executeAction }));
 vi.mock("@tauri-apps/api/core", async (orig) => ({
@@ -129,6 +136,57 @@ describe("author hint", () => {
     author.run!(view, new MouseEvent("click"));
     author.run!(view, new MouseEvent("click"));
     expect(executeAction.mock.calls).toEqual([["vcs.annotate"], ["vcs.annotate"]]);
+  });
+});
+
+describe("Python usages through a base", () => {
+  const impl = { doc: 9, path: "/p/impl.py", language: "python", uiMode: "Python", readOnly: false };
+  const BASE_DOC = 10;
+  const span = (line: number, col: number, len: number) => ({
+    start: { line, col },
+    end: { line, col: col + len },
+  });
+  const py = (name: string, kind: OutlineItem["kind"], line: number, end: number, children: OutlineItem[] = []) => ({
+    name,
+    kind,
+    detail: null,
+    range: { start: { line, col: 0 }, end: { line: end, col: 1 } },
+    selection_range: span(line, kind === "class" ? 6 : 8, name.length),
+    children,
+  });
+
+  afterEach(() => {
+    python.hierarchy = null;
+  });
+
+  it("counts the calls bound to the method it overrides", async () => {
+    const { pythonHierarchy } = await import("@/editor/navigation/pythonHierarchy");
+    python.hierarchy = pythonHierarchy(
+      [
+        { path: "/p/base.py", line: 0, col: 6, name: "Repository", bases: [] },
+        { path: "/p/impl.py", line: 0, col: 6, name: "MysqlRepository", bases: ["Repository"] },
+      ],
+      { readFiles: async (paths) => new Map(paths.map((p) => [p, null])) },
+    );
+    const outlines: Record<number, OutlineItem[]> = {
+      [impl.doc]: [py("MysqlRepository", "class", 0, 2, [py("save", "method", 1, 2)])],
+      [BASE_DOC]: [py("Repository", "class", 0, 2, [py("save", "method", 1, 2)])],
+    };
+    ipc.docOutline.mockImplementation(async (doc: number) => ok(outlines[doc] ?? []));
+    ipc.docOpen.mockImplementation(async (path: string) => ok({ id: path === "/p/base.py" ? BASE_DOC : 0 }));
+    // `repo.save()` with `repo: Repository` binds to the base's declaration only.
+    const call = { path: "/p/service.py", range: span(4, 13, 4) };
+    ipc.lspReferences.mockImplementation(async (_request: number, doc: number) =>
+      ok({ locations: doc === BASE_DOC ? [call] : [], incomplete: null }),
+    );
+    const view = editor(3, undefined, impl);
+    await settle();
+    expect(titles(view)).toEqual(["no usages", "1 usage"]);
+    expect(ipc.lspReferences.mock.calls.map((c) => [c[1], c[2]])).toEqual([
+      [impl.doc, { line: 0, col: 6 }],
+      [impl.doc, { line: 1, col: 8 }],
+      [BASE_DOC, { line: 1, col: 8 }],
+    ]);
   });
 });
 

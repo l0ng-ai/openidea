@@ -3,6 +3,7 @@ import {
   executeAction,
   executeActionOrThrow,
   getAction,
+  overrideActions,
   registerAction,
   registerActions,
   useActions,
@@ -124,4 +125,18 @@ it("registers and disposes a batch with one store update each while keeping late
     disposeOverride();
     off();
   }
+});
+
+it("puts the overridden registration back, and its owner's disposer still removes it", () => {
+  const editorBack = vi.fn();
+  const settingsBack = vi.fn();
+  const disposeEditor = registerActions([{ id: "test.back", title: "Back", run: editorBack }]);
+  const disposeOverride = overrideActions([{ id: "test.back", title: "Back", run: settingsBack }]);
+  void executeAction("test.back");
+  expect(settingsBack).toHaveBeenCalledOnce();
+  disposeOverride();
+  void executeAction("test.back");
+  expect(editorBack).toHaveBeenCalledOnce();
+  disposeEditor();
+  expect(getAction("test.back")).toBeUndefined();
 });

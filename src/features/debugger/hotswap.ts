@@ -59,15 +59,40 @@ const classesText = (n: number) => (n === 1 ? tx`${n} class` : tx`${n} classes`)
 
 // java-debug reports this after redefineClasses succeeds, with no changedClasses count.
 const obsoleteMethods = (message: string) => message.trim() === "JVM contains obsolete methods";
+// JDI's refusals of a structural change: "add method not implemented", "schema change not implemented", …
+const structuralChange = (message: string) => /\bnot implemented\b/i.test(message);
+
+/** Application and Spring Boot configurations offer Enhanced class redefinition (JetBrains Runtime's DCEVM). */
+const ENHANCEABLE_KINDS = new Set(["application", "spring-boot"]);
+
+/** Whether the session's configuration could turn on Enhanced class redefinition but has not. */
+export function canEnhanceRedefinition(s: DebugSession): boolean {
+  const rc = s.runConfig;
+  return !!rc && ENHANCEABLE_KINDS.has(rc.kind) && rc.params?.enhancedClassRedefinition !== "true";
+}
+
+/** The failure text, plus how to allow structural changes when JDI refused one and the configuration can. */
+function failureBody(errors: string[], enhanceable: boolean): string {
+  const body = errors.join("\n");
+  if (!enhanceable || !errors.some(structuralChange)) return body;
+  return (
+    body +
+    "\n\n" +
+    tx(
+      "To add or remove methods and fields, turn on Enhanced class redefinition in the run configuration and debug on JetBrains Runtime.",
+    )
+  );
+}
 
 /** Message for the reload result (IDEA wording). */
 export function hotSwapMessage(
   changed: number,
   errors: string[],
   bottomFrame = false,
+  enhanceable = false,
 ): { level: "info" | "warning" | "error"; title: string; body?: string } {
   if (errors.some((e) => !obsoleteMethods(e)))
-    return { level: "error", title: "Hot Swap failed", body: errors.join("\n") };
+    return { level: "error", title: "Hot Swap failed", body: failureBody(errors, enhanceable) };
   if (errors.length)
     return {
       level: "warning",
@@ -226,6 +251,7 @@ export async function reloadChangedClasses(build = true, configId?: string, allo
       changed.size,
       errors,
       affected.some((s) => s.status === "paused" && s.frames.length === 1),
+      sessions.some(canEnhanceRedefinition),
     );
     notifications().notify({
       group: "run",
@@ -308,7 +334,7 @@ export function onHotCodeReplace(session: DebugSessionId, event: Extract<DebugEv
         level: event.changeType === "ERROR" ? "error" : "warning",
         key: KEY,
         title: "Hot Swap",
-        body: event.message,
+        body: failureBody([event.message], canEnhanceRedefinition(useDebug.getState().sessions[session]!)),
       });
       break;
   }

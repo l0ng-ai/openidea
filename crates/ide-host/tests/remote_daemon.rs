@@ -782,7 +782,7 @@ async fn upgraded_build_refuses_live_work_and_then_replaces_idle_backend() {
     .unwrap()
     .unwrap();
     assert!(!rejected.status.success());
-    assert!(String::from_utf8_lossy(&rejected.stderr).contains("Another build of OpenIDEA"), "{rejected:?}");
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains(ide_host::rpc::OTHER_BUILD_BUSY), "{rejected:?}");
     assert!(previous_build.try_wait().unwrap().is_none(), "the live backend was replaced");
     let resumed = old_open().await;
     assert_eq!(invoke(&resumed, "term_list", json!({})).await.unwrap()[0]["id"], term["id"]);
@@ -795,6 +795,60 @@ async fn upgraded_build_refuses_live_work_and_then_replaces_idle_backend() {
     let old_exit = tokio::time::timeout(Duration::from_secs(5), previous_build.wait()).await.unwrap().unwrap();
     assert!(old_exit.success(), "handoff did not shut down the old daemon cleanly");
     assert!(invoke(&new, "project_current", json!({})).await.unwrap().is_null());
+    shutdown(&new).await;
+}
+
+/// `--attach --replace` stops another build's backend that refuses to retire (#6119).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn replace_stops_another_builds_busy_backend() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::UnixStream;
+
+    const OLD_BUILD: &str = "fedcba9876543210";
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("h");
+    let base = tmp.path().join("s");
+    let project = home.join("demo");
+    std::fs::create_dir_all(&project).unwrap();
+    let guard = DaemonGuard(ide_host::daemon::paths_for(&base, &home, "~/demo").unwrap().socket);
+    let mut previous_build = tokio::process::Command::new(SERVER)
+        .arg("--daemon")
+        .arg(&guard.0)
+        .arg(OLD_BUILD)
+        .envs(server_env(&home, &base, 10_800))
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    until("old backend socket", || guard.0.exists()).await;
+    let mut stream = 'connect: {
+        for _ in 0..600 {
+            match UnixStream::connect(&guard.0).await {
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+                    tokio::time::sleep(Duration::from_millis(15)).await;
+                }
+                other => break 'connect other.unwrap(),
+            }
+        }
+        panic!("the old backend never accepted a connection");
+    };
+    stream.write_all(OLD_BUILD.as_bytes()).await.unwrap();
+    assert_eq!(stream.read_u8().await.unwrap(), b'A');
+    let (reader, writer) = stream.into_split();
+    let old = Peer::connect(reader, writer, Arc::new(Client::default()));
+    initialize(&old).await;
+    let term = looping_terminal(&old, &project).await;
+    old.kill();
+    old.closed().await;
+
+    let client = Arc::new(Client::default());
+    let args = ["--attach", "~/demo", "--replace"].map(str::to_owned).to_vec();
+    let env = server_env(&home, &base, 10_800);
+    let new = Peer::spawn(SERVER, &args, &home, &env, client, Box::new(|line| eprintln!("{line}"))).unwrap();
+    initialize(&new).await;
+    let old_exit = tokio::time::timeout(Duration::from_secs(15), previous_build.wait()).await.unwrap().unwrap();
+    assert!(old_exit.success(), "the old backend did not shut down cleanly: {old_exit:?}");
+    until("its terminal stopped", || !pid_alive(term["pid"].as_u64().unwrap() as u32)).await;
+    assert!(invoke(&new, "term_list", json!({})).await.unwrap().as_array().unwrap().is_empty());
     shutdown(&new).await;
 }
 

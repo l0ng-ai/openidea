@@ -26,7 +26,6 @@
   background: none;
   color: var(--fg-muted);
   font: inherit;
-  cursor: pointer;
 }
 .agentArchive:hover {
   background: var(--bg-hover);
@@ -140,6 +139,9 @@
   color: var(--link-hover);
   text-decoration: underline;
 }
+.noticeLink + .noticeLink {
+  margin-left: var(--space-3);
+}
 
 /* Console */
 
@@ -244,6 +246,10 @@
 .link:hover {
   color: var(--link-hover);
   text-decoration-color: currentColor;
+}
+/* The link Up / Down the Stack Trace stepped to (IDEA selects it). */
+.currentLink {
+  background: var(--bg-editor-selection);
 }
 
 /* Test runner */
@@ -1235,7 +1241,6 @@
   border-radius: 3px;
   padding: 0 6px;
   font: inherit;
-  cursor: pointer;
 }
 .fold:hover {
   color: var(--fg);
@@ -1254,7 +1259,6 @@
   background: var(--bg-app);
   color: var(--fg-faint);
   vertical-align: top;
-  cursor: pointer;
 }
 .foldToggle:hover {
   color: var(--fg);
@@ -1388,7 +1392,6 @@
   box-shadow: inset 0 0 0 1px var(--border-button);
   color: var(--fg);
   font-size: var(--fs-ui);
-  cursor: pointer;
   flex: none;
 }
 .tomcatDotsBtn:hover {
@@ -1643,9 +1646,6 @@
   font-size: var(--fs-small);
   border-bottom: 1px solid var(--border-popup);
 }
-.tomcatLogRow {
-  cursor: pointer;
-}
 .tomcatLogRow:hover {
   background: var(--bg-hover);
 }
@@ -1744,7 +1744,6 @@
   color: var(--fg-secondary);
   font-size: var(--fs-ui);
   font-weight: 500;
-  cursor: pointer;
 }
 .addServerDialogBody {
   display: flex;
@@ -1768,4 +1767,44 @@
 .addServerErrorIcon {
   color: var(--danger);
   flex: none;
+}
+
+/* Completion popup of a plugin run configuration's Arguments field. */
+.argsPopup {
+  min-width: 260px;
+  max-width: min(640px, 70vw);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.argsListWrap {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 4px 0;
+  box-sizing: content-box;
+}
+.argsList {
+  flex: 1;
+}
+.argsRow {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.argsLabel {
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.argsDetail {
+  margin-left: auto;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }

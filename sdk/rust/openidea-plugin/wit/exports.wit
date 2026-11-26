@@ -1,4 +1,4 @@
-package openidea:plugin@1.17.0;
+package openidea:plugin@1.18.0;
 
 interface lifecycle {
     use types.{context, error};
@@ -72,6 +72,57 @@ interface syntax-provider {
     highlights: func(language: string, text: string) -> list<token>;
     outline: func(language: string, text: string) -> list<symbol>;
     folding: func(language: string, text: string) -> list<fold>;
+}
+
+/// Optional Run Anything (Ctrl Ctrl) entries and command lines for the prefixes
+/// the plugin declares under `[[contributes.runAnything]]` (API 1.18).
+interface run-anything-provider {
+    record run-anything-item {
+        /// What the list shows, such as `task build`.
+        label: string,
+        /// Grey text after the label.
+        detail: option<string>,
+        /// The line Tab completes in the field and Enter runs (default: `label`).
+        line: option<string>,
+    }
+    /// Entries for `text`, the field's text, which starts with the declared `prefix`
+    /// (or is the start of it). Answer from what the plugin already knows: the IDE
+    /// asks while the user types, keeps the first 100 entries, and drops an answer
+    /// that comes after the text changed or takes longer than 300 ms.
+    suggest: func(project: string, prefix: string, text: string) -> list<run-anything-item>;
+    /// Runs `line`, whose first word is `prefix`, from the invoking window: the
+    /// plugin starts it through its own host calls (`run.start`, terminals), with
+    /// their trust and grant checks. True claims the line; false leaves it to the
+    /// IDE's other entries and finally the shell. A failed call claims the line
+    /// too, so it never runs in the shell instead.
+    run: func(project: string, prefix: string, line: string) -> bool;
+}
+
+/// Optional completion in the fields of this plugin's own run configurations, in
+/// the Run/Debug Configurations dialog (API 1.18).
+interface run-configuration-completion {
+    record completion-item {
+        /// What the list shows, such as `build`.
+        label: string,
+        /// Grey text after the label, such as the file the entry comes from.
+        detail: option<string>,
+        /// The text that replaces `[replace-start, replace-end)` (default: `label`).
+        insert: option<string>,
+        /// UTF-16 offsets into `text`; the caret ends after the inserted text.
+        replace-start: u32,
+        replace-end: u32,
+    }
+    /// Completions for `field` of the configuration `config` (its id as this plugin
+    /// reported it) in `project`. `field` is `arguments` today: the field splits like a
+    /// shell command line (whitespace separates arguments, `'` and `"` quote). Later
+    /// IDEs may ask for other fields, so answer none for a field you don't know.
+    /// `text` is the field as typed and `caret` a UTF-16 offset into it. Replace only
+    /// the token being completed, so the other options, quoted values and arguments
+    /// after `--` stay as they are. Answer from what the plugin already knows (no
+    /// process per keystroke): the IDE asks while the user types, keeps the first 200
+    /// items, drops an item whose range is outside `text`, and drops an answer that
+    /// comes after the text changed or takes longer than 300 ms.
+    complete: func(project: string, config: string, field: string, text: string, caret: u32) -> list<completion-item>;
 }
 
 /// Optional pre-launch gate for targets owned by this plugin (API 1.5).

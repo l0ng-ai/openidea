@@ -42,7 +42,6 @@ import {
   cursorModelDefaults,
   emptyDraft,
   hasMention,
-  fenced,
   isMentioned,
   isPerModelOption,
   mentionOf,
@@ -56,8 +55,14 @@ import {
 import { withQuote } from "./conversation";
 import {
   EMPTY_ORGANIZE,
+  PINNED_SECTION,
+  compactOrder,
+  customSection,
   loadOrganize,
   pruneOrganize,
+  removeFromOrder,
+  reorderGroupsInOrganize,
+  reorderTaskInOrganize,
   saveOrganize,
   type OrganizeGroup,
   type TaskOrganize,
@@ -1697,19 +1702,6 @@ export async function setTaskSkillOverrides(task: string, overrides: Record<stri
   }));
 }
 
-/** Attach a reviewed block without submitting, changing providers, or replacing draft attachments. */
-export function appendContextBlock({ text, info }: { text: string; info: string }) {
-  const selected = activeComposerKey();
-  const task = useAgents.getState().tasks.get(selected);
-  const key = task && task.status !== "archived" ? task.id : HOME;
-  const existing = composerDraft(key).text.trimEnd();
-  // End with a trailing newline so the composer caret lands after the fence and folds it into a card.
-  const block = `${fenced(text, info)}\n`;
-  updateComposer(key, { text: existing ? `${existing}\n\n${block}` : block });
-  if (key === HOME) openHome();
-  else openTask(key);
-}
-
 /** The composer the user is looking at: the Agents surface on show, else the one typed in last. */
 function activeComposerKey(): string {
   const s = useAgents.getState();
@@ -1838,10 +1830,15 @@ export const renameTask = (task: string, title: string) => call(commands.agentRe
 export const archiveTask = (task: string) => call(commands.agentArchive(task));
 export const deleteTask = (task: string, removeWorktree: boolean) => call(commands.agentDelete(task, removeWorktree));
 
+function withOrder(base: Omit<TaskOrganize, "order">, order: Record<string, string[]> | undefined): TaskOrganize {
+  return order ? { ...base, order } : base;
+}
+
 /** Applies `change` to the saved arrange state of the project the tasks belong to. */
 function changeOrganize(change: (organize: TaskOrganize) => TaskOrganize) {
   const s = useAgents.getState();
   const organize = change(s.organize);
+  if (organize === s.organize) return;
   useAgents.setState({ organize });
   saveOrganize(s.organizeRoot, organize);
 }
@@ -1854,7 +1851,8 @@ export function pinTasks(tasks: readonly string[], pinned: boolean) {
       if (pinned) next.add(task);
       else next.delete(task);
     }
-    return { ...organize, pinned: [...next] };
+    const order = pinned ? organize.order : removeFromOrder(organize.order, [PINNED_SECTION], new Set(tasks));
+    return withOrder({ groups: organize.groups, groupOf: organize.groupOf, pinned: [...next] }, order);
   });
 }
 
@@ -1886,22 +1884,80 @@ export function renameTaskGroup(group: string, name: string) {
 
 /** Removes a group; its tasks go back to the status groups. */
 export function deleteTaskGroup(group: string) {
-  changeOrganize((organize) => ({
-    ...organize,
-    groups: organize.groups.filter((g) => g.id !== group),
-    groupOf: Object.fromEntries(Object.entries(organize.groupOf).filter(([, g]) => g !== group)),
-  }));
+  changeOrganize((organize) => {
+    const section = customSection(group);
+    let order = organize.order;
+    if (order && section in order) {
+      const rest = { ...order };
+      delete rest[section];
+      order = compactOrder(rest);
+    }
+    return withOrder(
+      {
+        groups: organize.groups.filter((g) => g.id !== group),
+        groupOf: Object.fromEntries(Object.entries(organize.groupOf).filter(([, g]) => g !== group)),
+        pinned: organize.pinned,
+      },
+      order,
+    );
+  });
 }
 
 /** Moves the tasks into `group`, out of the pinned section; `null` puts them back among the status groups. */
 export function moveTasksToGroup(tasks: readonly string[], group: string | null) {
   changeOrganize((organize) => {
     const groupOf = { ...organize.groupOf };
+    const leftSections = new Set<string>();
     for (const task of tasks) {
+      const prev = organize.groupOf[task];
+      if (prev && prev !== group) leftSections.add(customSection(prev));
       if (group) groupOf[task] = group;
       else delete groupOf[task];
     }
+    if (group) leftSections.add(PINNED_SECTION);
     const moved = new Set(tasks);
-    return { ...organize, groupOf, pinned: group ? organize.pinned.filter((id) => !moved.has(id)) : organize.pinned };
+    const order = removeFromOrder(organize.order, leftSections, moved);
+    return withOrder(
+      {
+        groups: organize.groups,
+        groupOf,
+        pinned: group ? organize.pinned.filter((id) => !moved.has(id)) : organize.pinned,
+      },
+      order,
+    );
   });
+}
+
+/** Returns tasks to their status group (unpinned and out of any custom group). */
+export function moveTasksToStatusGroup(tasks: readonly string[]) {
+  changeOrganize((organize) => {
+    const moved = new Set(tasks);
+    const groupOf = { ...organize.groupOf };
+    const leftSections = new Set<string>([PINNED_SECTION]);
+    for (const task of tasks) {
+      const prev = organize.groupOf[task];
+      if (prev) leftSections.add(customSection(prev));
+      delete groupOf[task];
+    }
+    const order = removeFromOrder(organize.order, leftSections, moved);
+    return withOrder(
+      {
+        groups: organize.groups,
+        groupOf,
+        pinned: organize.pinned.filter((id) => !moved.has(id)),
+      },
+      order,
+    );
+  });
+}
+
+/** Places `sourceId` before or after `targetId` (moving it into the target's section when needed). */
+export function reorderTask(sourceId: string, targetId: string, position: "before" | "after") {
+  const tasks = useAgents.getState().tasks.values();
+  changeOrganize((organize) => reorderTaskInOrganize(organize, tasks, sourceId, targetId, position));
+}
+
+/** Reorders a custom group before or after another custom group. */
+export function reorderTaskGroup(sourceId: string, targetId: string, position: "before" | "after") {
+  changeOrganize((organize) => reorderGroupsInOrganize(organize, sourceId, targetId, position));
 }

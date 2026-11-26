@@ -18,6 +18,7 @@ import { SecretsDetails, type SecretDecl } from "./secrets";
 import { pluginSettingsPageId } from "./settings";
 import { pluginsBackend } from "./backend";
 import { isLive, runPluginCommand, usePlugins } from "./store";
+import { focusedViewItem } from "./views/PluginView";
 import styles from "./PluginsPage.module.css";
 
 /** Unpacks an action argument: a bare path, or a menu's `{ path, paths }`. */
@@ -244,7 +245,8 @@ export function defineCoreUiPoints(): () => void {
           keywords: ["plugin", plugin.name, pluginId],
           description: tx`From plugin ${plugin.name}`,
           run: async ({ arg }: { arg?: unknown }) => {
-            const [path, paths] = commandArgs(arg);
+            // A shortcut passes nothing: the plugin's focused view supplies its selected item.
+            const [path, paths] = commandArgs(arg ?? focusedViewItem(pluginId, action.id));
             await runPluginCommand(pluginId, decl.id, path, paths);
           },
         };

@@ -139,6 +139,9 @@ pub struct BlameLine {
 pub struct BlockHistory {
     /// The selected lines in HEAD (0-based, inclusive); None when none of them is committed.
     pub head_lines: Option<(u32, u32)>,
+    /// Those lines as HEAD has them, each ending with `\n`; None from servers that predate it.
+    #[serde(default)]
+    pub head: Option<String>,
     pub revisions: Vec<BlockRevision>,
 }
 

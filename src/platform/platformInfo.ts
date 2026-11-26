@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { commands, isTauri, type WindowButtonLayout } from "@/platform/ipc";
+import { isWebMode } from "@/platform/webBridge";
 
 interface PlatformInfo {
   /** `macos` | `windows` | `linux` | `web`. */
@@ -30,14 +31,15 @@ export function guessOs(): "macos" | "windows" | "linux" | "web" {
 
 export const usePlatform = create<PlatformInfo>(() => {
   const os = guessOs();
+  const desktop = isTauri() && !isWebMode();
   return {
     os,
     version: null,
     windowsBuildNumber: null,
-    overlayTitleBar: isTauri() && os === "macos",
-    framelessTitleBar: isTauri() && (os === "windows" || os === "linux"),
+    overlayTitleBar: desktop && os === "macos",
+    framelessTitleBar: desktop && (os === "windows" || os === "linux"),
     wayland: false,
-    windowButtons: DEFAULT_WINDOW_BUTTONS,
+    windowButtons: isWebMode() ? { left: [], right: [] } : DEFAULT_WINDOW_BUTTONS,
   };
 });
 
@@ -45,14 +47,15 @@ export async function loadPlatformInfo() {
   if (!isTauri()) return;
   try {
     const info = await commands.appInfo();
+    const web = isWebMode();
     usePlatform.setState({
       os: info.platform,
       version: info.version,
       windowsBuildNumber: info.windowsBuildNumber,
-      overlayTitleBar: info.platform === "macos",
-      framelessTitleBar: info.platform === "windows" || info.platform === "linux",
-      wayland: info.wayland,
-      windowButtons: info.windowButtons ?? DEFAULT_WINDOW_BUTTONS,
+      overlayTitleBar: !web && info.platform === "macos",
+      framelessTitleBar: !web && (info.platform === "windows" || info.platform === "linux"),
+      wayland: !web && info.wayland,
+      windowButtons: web ? { left: [], right: [] } : (info.windowButtons ?? DEFAULT_WINDOW_BUTTONS),
     });
   } catch {
     /* keep the user-agent guess */

@@ -324,6 +324,28 @@ it("attaches a module directory without a build file outside the project, after 
   expect(mocks.link).not.toHaveBeenCalled();
 });
 
+it("doesn't offer to attach a folder where another root can't be attached (a remote window)", async () => {
+  const attached = vi.fn();
+  const off = registerAction({
+    id: "project.attachFolder",
+    title: "Attach",
+    when: "projectLocal",
+    run: ({ arg }) => attached(arg),
+  });
+  setContext("projectLocal", false);
+  mocks.open.mockResolvedValue("/code/B");
+  mocks.readDir.mockResolvedValue([fileEntry("/code/B", "Main.java")]);
+  await act(async () => {
+    await executeAction("maven.importExternal");
+  });
+  off();
+  expect(mocks.confirm).not.toHaveBeenCalled();
+  expect(attached).not.toHaveBeenCalled();
+  expect(mocks.notify).toHaveBeenCalledWith(
+    expect.objectContaining({ level: "warning", title: "Module was not imported", key: "module-import-no-attach" }),
+  );
+});
+
 it("says a module directory without a build file inside the project is already part of it", async () => {
   mocks.open.mockResolvedValue("/p/lib");
   mocks.readDir.mockResolvedValue([]);
