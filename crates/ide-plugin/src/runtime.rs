@@ -2642,10 +2642,21 @@ impl Runtime {
         timeout: Duration,
         f: impl FnOnce(&wit_lf::Guest, &mut Store<StoreData>) -> wasmtime::Result<R>,
     ) -> Result<R, CallError> {
+        self.language_feature_call_in(None, timeout, f)
+    }
+    /// [`Self::language_feature_call`] for an editor of the project at `project`, which the
+    /// call has as its invocation's project (`workspace.project-of` prefers it).
+    fn language_feature_call_in<R>(
+        &mut self,
+        project: Option<&Path>,
+        timeout: Duration,
+        f: impl FnOnce(&wit_lf::Guest, &mut Store<StoreData>) -> wasmtime::Result<R>,
+    ) -> Result<R, CallError> {
         if self.exports.language_features.is_none() {
             return Err(CallError::missing_export("language-features"));
         }
-        self.call(Invocation::default(), timeout, |e, s| f(e.language_features.as_ref().expect("checked"), s))
+        let invocation = Invocation { workspace_root: project.map(Path::to_path_buf), ..Default::default() };
+        self.call(invocation, timeout, |e, s| f(e.language_features.as_ref().expect("checked"), s))
     }
     pub fn language_format(
         &mut self,
@@ -2843,9 +2854,11 @@ impl Runtime {
         let result = self.language_feature_call(timeout, |p, s| p.call_type_definition(s, &d, pos_to_wit(at)))?;
         Ok(result.into_iter().take(10000).map(location_from_wit).collect())
     }
+    /// Gutter actions of `doc`, open in an editor of the project at `project`.
     pub fn language_gutter_actions(
         &mut self,
         doc: &ProviderDocument,
+        project: Option<&Path>,
         timeout: Duration,
     ) -> Result<Vec<crate::language_features::GutterAction>, CallError> {
         let d = wit_lf::Document {
@@ -2854,13 +2867,15 @@ impl Runtime {
             version: doc.version,
             text: doc.text.clone(),
         };
-        let result = self.language_feature_call(timeout, |p, s| p.call_gutter_actions(s, &d))?;
+        let result = self.language_feature_call_in(project, timeout, |p, s| p.call_gutter_actions(s, &d))?;
         Ok(result.into_iter().take(10000).map(gutter_action_from).collect())
     }
 
+    /// Hover actions of `doc`, open in an editor of the project at `project`.
     pub fn language_hover_actions(
         &mut self,
         doc: &ProviderDocument,
+        project: Option<&Path>,
         timeout: Duration,
     ) -> Result<Vec<crate::language_features::HoverAction>, CallError> {
         if self.exports.hover_actions.is_none() {
@@ -2872,7 +2887,8 @@ impl Runtime {
             version: doc.version,
             text: doc.text.clone(),
         };
-        let result = self.call(Invocation::default(), timeout, |exports, store| {
+        let invocation = Invocation { workspace_root: project.map(Path::to_path_buf), ..Default::default() };
+        let result = self.call(invocation, timeout, |exports, store| {
             exports.hover_actions.as_ref().expect("checked").call_hover_actions(store, &d)
         })?;
         Ok(result.into_iter().take(10_000).map(hover_action_from).collect())

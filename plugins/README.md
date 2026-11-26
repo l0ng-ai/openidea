@@ -475,6 +475,10 @@ matching SDK. Plugins for 1.17 and earlier keep working. New in 1.18:
   [Run Anything entries](#run-anything-entries-api-118).
 - **Terminals in a project directory.** `host::open_terminal_session_in` starts a
   keyed terminal in a directory of the project rather than its root.
+- **The window's project.** `host::invoking_project()` (`workspace.invoking-project`)
+  is the project of the window a call serves, also in `gutter-actions` and
+  `hover-actions` calls, which tells overlapping projects apart. Gutter and hover
+  action buttons go inert after an edit until the provider answers for the new text.
 
 ### API 1.17
 
@@ -1517,6 +1521,10 @@ the final close only after queued frames have drained.
 Provider calls can use `host::project_of(&doc.path)` (`workspace.project-of`)
 without an invocation project or enumerating every open project. It returns the
 deepest open project containing the absolute path, or `None` outside open roots.
+`host::invoking_project()` (`workspace.invoking-project`, API 1.18) is the project
+of the window the call serves instead: the invoking window's in commands and events,
+the editor's window's in `gutter-actions` and `hover-actions`. Use it when projects
+overlap (one opened inside another), where `project_of` always answers the inner one.
 Symlinks and missing file tails are resolved before checking containment.
 Obtaining a handle grants no read access: `Project::root` and file operations
 still require `project.read`.
@@ -1798,7 +1806,7 @@ and register `register_plugin!(MyPlugin, language_features)`:
 | `document-symbols`    | `document_symbols(doc)`                          | Structure and breadcrumbs use these only when LSP returns no document symbols (including an empty list); otherwise LSP symbols win. Tree-sitter is the final fallback.                                                                                                                                                                                          |
 | `implementation`      | `implementation(doc, at)`                        | Merged with LSP Go to Implementation, deduplicated by location.                                                                                                                                                                                                                                                                                                 |
 | `type-definition`     | `type_definition(doc, at)`                       | Merged with LSP Go to Type Declaration, deduplicated by location.                                                                                                                                                                                                                                                                                               |
-| `gutter-actions`      | `gutter_actions(doc)`                            | Buttons beside line markers. Clicks invoke only the returning plugin's declared command, with its optional string argument and the editor window/project context. Icons accept the same names, aliases and declared marker SVG paths as line markers.                                                                                                           |
+| `gutter-actions`      | `gutter_actions(doc)`                            | Buttons beside line markers. Clicks invoke only the returning plugin's declared command, with its optional string argument and the editor window/project context. After an edit the buttons are inert until the provider answers for the new text. Icons accept the same names, aliases and declared marker SVG paths as line markers.                          |
 | `hover-actions`       | `hover_actions(doc)`                             | Left-edge actions revealed by line-edge hover, with an anchor line and an inclusive trigger line range (API 1.14).                                                                                                                                                                                                                                              |
 
 The optional WIT interface is `language-features`, in worlds

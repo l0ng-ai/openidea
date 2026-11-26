@@ -2292,6 +2292,7 @@ pub async fn plugin_language_visuals(host: &Host, window: &str, doc: DocId) -> I
     let project = host.project(window)?;
     let snap = project.documents.snapshot(doc)?;
     let generation = project.lsp.injection_generation();
+    let root = project.root.clone();
     blocking(move || {
         let d = ProviderDocument {
             path: snap.path.0,
@@ -2311,8 +2312,8 @@ pub async fn plugin_language_visuals(host: &Host, window: &str, doc: DocId) -> I
         {
             out.injections = plugins.provide_injections(&d);
             out.colors = plugins.language_colors(&d);
-            out.gutter_actions = plugins.language_gutter_actions(&d);
-            out.hover_actions = plugins.language_hover_actions(&d);
+            out.gutter_actions = plugins.language_gutter_actions(&d, Some(&root));
+            out.hover_actions = plugins.language_hover_actions(&d, Some(&root));
         }
         project.lsp.set_injections_at(
             doc,
