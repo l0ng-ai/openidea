@@ -107,6 +107,20 @@ fn mocha_scripts() {
 }
 
 #[test]
+fn jasmine_scripts() {
+    let dir = project(&[(
+        "package.json",
+        r#"{"scripts":{"spec":"jasmine --config=spec/support/jasmine.json","test":"tsc && node node_modules/jasmine/bin/jasmine.js","browser":"jasmine-browser-runner runSpecs"}}"#,
+    )]);
+    let c = detect(dir.path());
+    let spec = find(&c, "npm:spec");
+    assert!(spec.is_test);
+    assert_eq!(spec.extras.test_runner.as_deref(), Some("jasmine"));
+    assert_eq!(find(&c, "npm:test").extras.test_runner.as_deref(), Some("jasmine"));
+    assert!(!find(&c, "npm:browser").is_test);
+}
+
+#[test]
 fn package_manager_selection() {
     for (lock, pm) in [("yarn.lock", "yarn"), ("bun.lockb", "bun"), ("bun.lock", "bun"), ("package-lock.json", "npm")] {
         let dir = project(&[("package.json", r#"{"scripts":{"start":"node ."}}"#), (lock, "")]);

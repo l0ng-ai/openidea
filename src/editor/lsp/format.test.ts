@@ -185,6 +185,8 @@ describe("format on save provider isolation", () => {
     expect(formatsOnSave(settings({ ruff: { runOnSave: true } }), "python")).toBe(true);
     expect(formatsOnSave(settings({ ruff: { runOnSave: true } }), "typescript")).toBe(false);
     expect(formatsOnSave(settings({}), "typescript")).toBe(false);
+    // dprint's configuration decides which files it formats.
+    expect(formatsOnSave(settings({ dprint: { runOnSave: true } }), "toml")).toBe(true);
     expect(formatsOnSave(settings({}, true), "rust")).toBe(true);
     expect(formatsOnSave(null, "typescript")).toBe(false);
   });

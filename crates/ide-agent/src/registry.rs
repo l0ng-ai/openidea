@@ -550,6 +550,7 @@ fn install_entry_with(
         driver: Driver::Acp,
         command: exe.to_string_lossy().into_owned(),
         args,
+        additional_args: Vec::new(),
         env,
         registry: Some(RegistryRef { id: entry.id.clone(), version: entry.version.clone() }),
     };
@@ -941,6 +942,7 @@ mod tests {
             driver: Driver::Acp,
             command: "/x".into(),
             args: vec![],
+            additional_args: Vec::new(),
             env: BTreeMap::new(),
             registry: Some(RegistryRef { id: id.into(), version: version.into() }),
         };
@@ -1168,6 +1170,7 @@ esac
             driver: Driver::Acp,
             command: "/data/tools/copilot/1.0.104/node_modules/.bin/copilot".into(),
             args: vec!["--acp".into()],
+            additional_args: Vec::new(),
             env: BTreeMap::new(),
             registry: Some(RegistryRef { id: "copilot".into(), version: "1.0.104".into() }),
         }

@@ -462,7 +462,8 @@ export const isPerModelOption = (o: AgentConfigOption) =>
   o.category === "context_tier" ||
   o.category === "model_config" ||
   isFastOption(o.id) ||
-  isContextOption(o.id);
+  isContextOption(o.id) ||
+  o.id === "service_tier";
 
 const matchesCategory = (o: AgentConfigOption, category: string) =>
   o.category === category ||

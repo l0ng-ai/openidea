@@ -612,6 +612,9 @@ pub struct AgentProvider {
     /// Executable and arguments actually launched, without flattening paths containing spaces.
     pub program: String,
     pub args: Vec<String>,
+    /// Settings-managed suffix of `args`; absent for launches that cannot be edited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub additional_args: Option<Vec<String>>,
     pub default_program: Option<String>,
     pub default_args: Vec<String>,
     pub login_hint: Option<String>,
@@ -700,6 +703,10 @@ pub struct NewAgentTask {
     /// `!` command runs in it first.
     #[serde(default)]
     pub idle: bool,
+    /// A throwaway task (Generate Commit Message): it isn't saved, so it doesn't outlive a
+    /// restart, and the agent keeps no session history of its own for it.
+    #[serde(default)]
+    pub ephemeral: bool,
 }
 
 /// A file the task changed: against [`AgentTask::base_commit`], or against `HEAD` in the
