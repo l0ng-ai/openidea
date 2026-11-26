@@ -6241,5 +6241,6 @@
   "Search NuGet packages": "NuGet 패키지 검색",
   "Install / Update": "설치 / 업데이트",
   "Versions": "버전",
-  "Transitive": "전이"
+  "Transitive": "전이",
+  "Allow all optional permissions": "모든 선택 권한 허용"
 }
