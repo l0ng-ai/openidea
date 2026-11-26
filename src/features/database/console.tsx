@@ -92,6 +92,7 @@ import {
   runSql,
   listsDatabases,
   loadDatabases,
+  loadDuckdbCatalog,
   loadSchemas,
   loadSources,
   loadTables,
@@ -1232,18 +1233,26 @@ export function completionSource(path: string, sql: SqlText = WHOLE_FILE): Compl
       ? analyze(doc.slice(0, sel.from) + doc.slice(sel.to), sel.from, driver)
       : analyze(doc, ctx.pos, driver);
     if (!ctx.explicit && !shouldAutoCompleteSql(analysis)) return null;
-    const cataloged = driver === "snowflake" && !!id;
-    if (cataloged && analysis.qualifier?.length) {
-      await loadQualified(id, analysis.qualifier).catch(() => {});
-      if (ctx.aborted || !current()) return null;
+    let catalog: SqlCatalog | undefined;
+    if (id && driver === "snowflake") {
+      if (analysis.qualifier?.length) await loadQualified(id, analysis.qualifier).catch(() => {});
+      catalog = catalogOf(id);
+    } else if (
+      id &&
+      driver === "duckdb" &&
+      analysis.context.kind === "table" &&
+      (analysis.qualifier?.length ?? 0) < 3
+    ) {
+      catalog = await loadDuckdbCatalog(id, analysis.qualifier?.[0]).catch(() => undefined);
     }
+    if (ctx.aborted || !current() || consoleSource(path) !== id) return null;
     const candidates = sqlCandidates({
       model: scoped,
       analysis,
       driver,
       dialect,
       sourceName: source?.name ?? undefined,
-      catalog: cataloged ? catalogOf(id) : undefined,
+      catalog,
     });
     if (!candidates.length) return null;
     return {

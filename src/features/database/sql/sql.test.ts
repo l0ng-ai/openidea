@@ -155,6 +155,48 @@ describe("DuckDB SQL", () => {
     expect(labels(complete(sql.replace("ÄörDER", "ÄÖrDER"), "duckdb"), "column")).toContain("total");
   });
 
+  it("inserts three-part DuckDB paths and keeps columns from same-named local tables out of them", () => {
+    const database = "Archive.db:1";
+    const schema = "Mixed.Schema";
+    const catalog = {
+      databases: [database, "memory"],
+      schemas: (name: string) => (name === database ? [schema, "main"] : null),
+      tables: (name: string, namespace: string) =>
+        name === database && namespace.toLowerCase() === schema.toLowerCase()
+          ? [{ name: 'Remote "view"', view: true }]
+          : null,
+    };
+    const local = {
+      ...model,
+      tables: [...model.tables, { ...model.tables[0]!, schema: database, name: "local_table" }],
+    };
+    const run = (sql: string) =>
+      sqlCandidates({ model: local, analysis: at(sql, "duckdb"), driver: "duckdb", catalog });
+    expect(run("from Arch|")).toContainEqual(
+      expect.objectContaining({ label: database, insert: '"Archive.db:1".', retrigger: true }),
+    );
+    expect(run('from "ARCHIVE.db:1".|')).toEqual([
+      expect.objectContaining({ label: schema, insert: '"Mixed.Schema".', retrigger: true }),
+      expect.objectContaining({ label: "main", insert: "main." }),
+    ]);
+    expect(run('from "archive.db:1"."mixed.schema".|')).toEqual([
+      expect.objectContaining({ kind: "view", insert: '"Remote ""view"""' }),
+    ]);
+    expect(run('from "archive.db:1".missing.|')).toEqual([]);
+    expect(run("from main.|").map((c) => c.label)).toContain("orders");
+
+    const remote = '"Archive.db:1".main.orders';
+    for (const select of ["select |", "select o.|", "select main.orders.|", 'select "Archive.db:1".main.orders.|']) {
+      expect(labels(run(select + " from " + remote + " o"), "column")).toEqual([]);
+    }
+    expect(labels(run("select o.| from main.orders o"), "column")).toContain("total");
+    const sql = "select o.total from " + remote + " o";
+    const resolver = new SqlResolver(sql, "duckdb", model);
+    expect(resolver.problems()).toEqual([]);
+    expect(resolver.resolveAt(sql.indexOf("total"))?.symbol).toBeNull();
+    expect(resolver.resolveAt(sql.indexOf("orders"))?.symbol).toBeNull();
+  });
+
   it("keeps nested comments and dollar-quoted SQL out of caret analysis", () => {
     expect(at("select /* outer /* nested */ here| */ 1", "duckdb").context.kind).toBe("none");
     expect(at("select $body$ from not_a_table; here| $body$", "duckdb").context.kind).toBe("none");

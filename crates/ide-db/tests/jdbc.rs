@@ -154,6 +154,35 @@ async fn duckdb_custom_driver_through_database_manager() -> IdeResult<()> {
     assert!(!last.has_more);
     let past = db.table_page("test", "main", "items", None, &sort, 2, 1, &c).await?.result;
     assert!(past.rows.is_empty() && !past.has_more);
+    let path = tmp.path().join("attachment.duckdb");
+    let path = ide_db::sql::quote_literal(DbDriver::Jdbc, &path.to_string_lossy());
+    let catalog = "archive.db:'1";
+    let quoted = ide_db::sql::quote_ident(DbDriver::Jdbc, catalog);
+    for statement in [
+        format!("ATTACH {path} AS {quoted}"),
+        format!("CREATE SCHEMA {quoted}.empty"),
+        format!("CREATE TABLE {quoted}.main.items(remote_only INTEGER)"),
+        format!("CREATE VIEW {quoted}.main.remote_view AS SELECT * FROM {quoted}.main.items"),
+    ] {
+        db.execute("test", &statement, 1, &c).await?;
+    }
+    let databases = db.databases("test").await?;
+    assert_eq!(databases.current, "local");
+    assert!(databases.names.iter().any(|name| name == catalog));
+    let schemas = db.database_catalog("test", catalog).await?;
+    assert!(schemas.iter().any(|schema| schema.name == "empty" && schema.tables.is_empty()));
+    let main = schemas.iter().find(|schema| schema.name == "main").expect("main");
+    assert_eq!(
+        main.tables.iter().map(|table| (table.name.as_str(), table.kind)).collect::<Vec<_>>(),
+        [("items", ide_db::DbTableKind::Table), ("remote_view", ide_db::DbTableKind::View)]
+    );
+    assert!(db.saved_catalog("test").await?.is_none());
+    db.execute("test", &format!("USE {quoted}"), 1, &c).await?;
+    assert_eq!(db.databases("test").await?.current, catalog);
+    db.execute("test", "USE local", 1, &c).await?;
+    db.execute("test", &format!("DETACH {quoted}"), 1, &c).await?;
+    assert!(!db.databases("test").await?.names.iter().any(|name| name == catalog));
+    assert!(db.database_catalog("test", catalog).await?.is_empty());
     db.disconnect("test").await;
     let reopened = manager(tmp.path());
     assert_eq!(reopened.execute("test", "select count(*) from items", 1, &c).await?.rows, [vec![Some("2".into())]]);

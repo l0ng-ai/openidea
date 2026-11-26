@@ -42,7 +42,7 @@ use parking_lot::Mutex;
 use secrets::SecretStore;
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -366,6 +366,38 @@ fn tunneled(driver: DbDriver) -> bool {
 fn tunnel_target(source: &DataSource) -> (&str, u16) {
     let port = source.port.or(source.driver.default_port()).unwrap_or_default();
     (if source.host.trim().is_empty() { "localhost" } else { source.host.trim() }, port)
+}
+
+fn is_duckdb(source: &DataSource) -> bool {
+    const PREFIX: &str = "jdbc:duckdb:";
+    source.driver == DbDriver::Jdbc
+        && (source.vendor == "duckdb"
+            || source.url.trim().get(..PREFIX.len()).is_some_and(|url| url.eq_ignore_ascii_case(PREFIX)))
+}
+
+async fn duckdb_catalog(pool: &Pool, database: &str) -> IdeResult<Vec<CatalogSchema>> {
+    // List empty schemas too and put all schema names before the bounded table rows.
+    const MAX_CATALOG_ROWS: usize = 20_000;
+    let name = sql::quote_literal(DbDriver::Jdbc, database);
+    let query = format!(
+        "SELECT schema_name AS schema, NULL::VARCHAR AS name, NULL::VARCHAR AS kind \
+         FROM system.main.duckdb_schemas() WHERE database_name = {name} \
+         UNION ALL \
+         SELECT table_schema, table_name, lower(table_type) \
+         FROM system.information_schema.tables WHERE table_catalog = {name} \
+         ORDER BY name NULLS FIRST, schema LIMIT {MAX_CATALOG_ROWS}"
+    );
+    let mut schemas = BTreeMap::<String, Vec<TableInfo>>::new();
+    for row in pool.rows(&query, MAX_CATALOG_ROWS).await? {
+        let mut values = row.into_iter();
+        let Some(Some(schema)) = values.next() else { continue };
+        let tables = schemas.entry(schema).or_default();
+        if let Some(Some(name)) = values.next() {
+            let kind = values.next().flatten();
+            tables.push(TableInfo { name, kind: DbTableKind::from_catalog(kind.as_deref()) });
+        }
+    }
+    Ok(schemas.into_iter().map(|(name, tables)| CatalogSchema { name, tables }).collect())
 }
 
 pub fn split_target(target: &str) -> (&str, Option<&str>) {
@@ -950,12 +982,30 @@ impl DbManager {
         Ok(())
     }
 
-    /// The databases of the server of data source `id` (PostgreSQL), the connected one first.
+    /// What databases this data source can see, including DuckDB's live attachments.
     pub async fn databases(&self, id: &str) -> IdeResult<Databases> {
         let id = split_target(id).0;
-        let introspection = self.source(id)?.introspection;
+        let source = self.source(id)?;
+        let introspection = &source.introspection;
         let system = introspection.show_system;
         let pool = self.pool(id).await?;
+        if let Pool::Jdbc(p) = &*pool
+            && is_duckdb(&source)
+        {
+            let mut current = String::new();
+            let mut names = Vec::new();
+            for mut row in p.metadata(&["catalogs"]).await? {
+                if let [Some(name), active] = row.as_mut_slice() {
+                    if active.as_deref() == Some("1") {
+                        current = name.clone();
+                        names.insert(0, std::mem::take(name));
+                    } else if system || name != "system" {
+                        names.push(std::mem::take(name));
+                    }
+                }
+            }
+            return Ok(Databases { current, names });
+        }
         if pool.driver() == DbDriver::SqlServer {
             let first =
                 |rows: Vec<Vec<Option<String>>>| rows.into_iter().filter_map(|r| r.into_iter().next().flatten());
@@ -994,12 +1044,13 @@ impl DbManager {
         Ok(Databases { current, names })
     }
 
-    /// The schemas of `database` of data source `id` with their tables and views (Snowflake):
-    /// what completion needs to follow `database.schema.table` without the tree being opened.
-    /// The result is also saved ([`DbManager::saved_catalog`]) for the next run.
+    /// The schemas of `database` with their tables and views for qualified SQL completion.
+    /// Snowflake's result is also saved ([`DbManager::saved_catalog`]) for the next run.
     pub async fn database_catalog(&self, id: &str, database: &str) -> IdeResult<Vec<CatalogSchema>> {
         let id = split_target(id).0;
-        let schemas = match &*self.pool(id).await? {
+        let pool = self.pool(id).await?;
+        let schemas = match &*pool {
+            Pool::Jdbc(_) if is_duckdb(&self.source(id)?) => return duckdb_catalog(&pool, database).await,
             Pool::Snowflake(p) => snowflake::meta::catalog(p, database).await?,
             _ => return Err(IdeError::invalid("this data source does not list other databases")),
         };

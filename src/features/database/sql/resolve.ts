@@ -157,8 +157,13 @@ export class SqlResolver {
       if (cte) return { ...span, symbol: { kind: "cte", name: cte.name, def: { from: cte.from, to: cte.to } } };
       if (this.model?.tables.some((x) => eq(x.schema, name))) return this.schema(name, span);
       if (!checked || PSEUDO_TABLES.has(name.toUpperCase()) || ctx.kind === "none") return { ...span, symbol: null };
-      // Snowflake `database.schema.table.column`: other databases are not in the model.
-      if (this.driver === "snowflake" && isP(toks[i + 3], ".") && isP(toks[i + 5], ".") && isName(toks[i + 6]))
+      // A fully qualified column may live in a catalog the model does not hold.
+      if (
+        (this.driver === "snowflake" || this.driver === "duckdb") &&
+        isP(toks[i + 3], ".") &&
+        isP(toks[i + 5], ".") &&
+        isName(toks[i + 6])
+      )
         return { ...span, symbol: null };
       return { ...span, symbol: null, problem: `Unable to resolve symbol '${name}'` };
     }
@@ -175,6 +180,7 @@ export class SqlResolver {
         // Table functions (`generate_series(1, 3)`), `DROP TABLE IF EXISTS`.
         if (isP(next, "(") && !isIntoTarget(toks, i)) return null;
         if (t.kind === "word" && (t.upper === "IF" || t.upper === "ONLY" || t.upper === "LATERAL")) return null;
+        if (this.driver === "duckdb" && qualifier && qualifier.length > 1) return { ...span, symbol: null };
         const schema = qualifier?.at(-1) ?? null;
         const cte = schema ? undefined : a.ctes.find((c) => eq(c.name, name));
         if (cte) return { ...span, symbol: { kind: "cte", name: cte.name, def: { from: cte.from, to: cte.to } } };
@@ -204,6 +210,7 @@ export class SqlResolver {
     }
 
     if (qualifier) {
+      if (this.driver === "duckdb" && qualifier.length > 2) return { ...span, symbol: null };
       const ref =
         qualifier.length === 1
           ? this.findRef(a.refs, null, qualifier[0]!)
@@ -283,8 +290,13 @@ export class SqlResolver {
     return refs.find((r) => (r.alias ? eq(r.alias, name) : eq(r.name, name) && (!schema || eq(r.schema, schema))));
   }
 
+  private refTable(ref: TableRef): DbCompletionTable | undefined {
+    if (ref.kind !== "table" || (this.driver === "duckdb" && ref.database !== undefined)) return undefined;
+    return findTable(this.model, ref.schema, ref.name, this.driver);
+  }
+
   private refSymbol(ref: TableRef): SqlSymbol {
-    const table = ref.kind === "table" ? findTable(this.model, ref.schema, ref.name, this.driver) : undefined;
+    const table = this.refTable(ref);
     if (ref.alias && ref.aliasAt) return { kind: "alias", name: ref.alias, def: ref.aliasAt, table };
     if (table) return { kind: "table", table };
     return { kind: "cte", name: ref.name, def: { from: ref.from, to: ref.to } };
@@ -293,13 +305,13 @@ export class SqlResolver {
   /** Columns of a FROM item; `null` when unknown (not in the model, `select *` subqueries). */
   private columnsOf(ref: TableRef): Array<{ name: string; column?: DbCompletionColumn }> | null {
     if (ref.columns) return ref.columns.length ? ref.columns.map((name) => ({ name })) : null;
-    const table = findTable(this.model, ref.schema, ref.name, this.driver);
+    const table = this.refTable(ref);
     // A table listed without columns is one whose columns were not read (a large Snowflake database).
     return table?.columns.length ? table.columns.map((c) => ({ name: c.name, column: c })) : null;
   }
 
   private columnSymbol(ref: TableRef, col: { name: string; column?: DbCompletionColumn }): SqlSymbol {
-    const table = ref.kind === "table" ? findTable(this.model, ref.schema, ref.name, this.driver) : undefined;
+    const table = this.refTable(ref);
     return { kind: "column", name: col.name, column: col.column, table, owner: ref.alias ?? ref.name };
   }
 

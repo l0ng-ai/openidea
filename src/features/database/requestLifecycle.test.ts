@@ -1,9 +1,12 @@
+import { CompletionContext } from "@codemirror/autocomplete";
+import { EditorState } from "@codemirror/state";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DataSource, ProjectInfo } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 
 const backend = vi.hoisted(() => ({
   databases: vi.fn(),
+  catalog: vi.fn(),
   schemas: vi.fn(),
   tables: vi.fn(),
   objects: vi.fn(),
@@ -31,6 +34,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     commands: {
       ...actual.commands,
       dbDatabases: backend.databases,
+      dbDatabaseCatalog: backend.catalog,
       dbSchemas: backend.schemas,
       dbTables: backend.tables,
       dbSchemaObjects: backend.objects,
@@ -67,6 +71,7 @@ import {
   useDatabase,
   withConnection,
 } from "./store";
+import { completionSource } from "./console";
 import { provideToolWindowService } from "@/workbench/contributions";
 
 const initial = useDatabase.getState();
@@ -154,6 +159,51 @@ beforeEach(() => {
 afterEach(() => {
   useProject.setState(initialProject, true);
   useDatabase.setState(initial, true);
+});
+
+it("completes live DuckDB attachments through the source and refreshes after session commands", async () => {
+  const id = "duck";
+  const path = "console.sql";
+  const name = "archive.db:1";
+  const duck: DataSource = { id, name: "DuckDB", driver: "jdbc", url: "jdbc:duckdb:" };
+  useDatabase.setState({ sources: [duck], consoles: { [path]: id }, completion: { [id]: completion } });
+  backend.databases.mockResolvedValue(ok({ current: "memory", names: ["memory", name] }));
+  backend.catalog.mockResolvedValue(ok([{ name: "Main", tables: [{ name: "archive_only", kind: "table" }] }]));
+  const complete = async (doc: string) =>
+    (await completionSource(path)(new CompletionContext(EditorState.create({ doc }), doc.length, true)))?.options.map(
+      (option) => option.label,
+    ) ?? [];
+
+  expect(await complete("select * from ")).toContain(name);
+  expect(backend.catalog).not.toHaveBeenCalled();
+  expect(await complete('select * from "ARCHIVE.db:1".')).toEqual(["Main"]);
+  expect(await complete('select * from "archive.db:1".main.')).toEqual(["archive_only"]);
+  expect(backend.databases.mock.calls).toEqual([[id]]);
+  expect(backend.catalog.mock.calls).toEqual([[id, name]]);
+  expect(useDatabase.getState().databases[id]).toBeUndefined();
+  expect(useDatabase.getState().catalogs[id]).toBeUndefined();
+
+  const success = (text: string) => ok([{ statement: { text, from: 0, to: text.length }, result: null, error: null }]);
+  const detach = '/* comment */ DETACH "archive.db:1"';
+  backend.execute.mockResolvedValueOnce(success(detach));
+  backend.databases.mockResolvedValueOnce(ok({ current: "memory", names: ["memory"] }));
+  expect(await runSql(id, [detach])).toBe(true);
+  expect(await complete('select * from "archive.db:1".main.')).toEqual([]);
+  expect(backend.catalog).toHaveBeenCalledOnce();
+
+  const next = deferred();
+  backend.databases.mockResolvedValue(ok({ current: "memory", names: ["memory", name] }));
+  const attach = "ATTACH " + "':memory:'" + ' AS "archive.db:1"';
+  backend.execute.mockResolvedValueOnce(success(attach));
+  expect(await runSql(id, [attach])).toBe(true);
+  backend.catalog.mockReturnValueOnce(next.promise);
+  const pending = complete('select * from "archive.db:1".main.');
+  await vi.waitFor(() => expect(backend.catalog).toHaveBeenCalledTimes(2));
+  const use = 'USE "archive.db:1"';
+  backend.execute.mockResolvedValueOnce(success(use));
+  expect(await runSql(id, [use])).toBe(true);
+  next.resolve(ok([{ name: "Main", tables: [{ name: "stale", kind: "table" }] }]));
+  expect(await pending).toEqual([]);
 });
 
 describe("database metadata request lifetimes", () => {

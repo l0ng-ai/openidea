@@ -62,7 +62,10 @@ import { TABLE_KIND, type TableRef } from "./tableInput";
 import type { DiagramData } from "./erDiagram";
 import type { ExportData, ExportFormat } from "./export";
 import type { DbObjectRef } from "./objects";
+import type { SqlCatalog } from "./sql/complete";
+import { nameMatcher, sqlDriverOf } from "./sql/dialect";
 import { formatted } from "./sql/format";
+import { lex } from "./sql/lexer";
 import { bindParams, findParams } from "./sql/params";
 import { isReadOnlyQuery } from "./sql/readOnly";
 import { pageFetch } from "./resultView";
@@ -476,6 +479,7 @@ export async function loadSources(): Promise<void> {
 /** Drops cached metadata of target `id` (refresh, disconnect); a data source id drops all its databases. */
 function forget(id: string) {
   invalidateDatabaseRequests(id);
+  duckdbCatalogLoads.delete(id);
   const whole = !splitTarget(id).database;
   const ofTarget = (t: string) => t === id || (whole && splitTarget(t).id === id);
   const dropKeys = <T>(m: Record<string, T>) =>
@@ -1035,6 +1039,10 @@ export async function revealOpened(): Promise<void> {
 }
 
 const completionLoads = new Map<string, { current: () => boolean; promise: Promise<DbCompletion | null> }>();
+const duckdbCatalogLoads = new Map<
+  string,
+  { names: Promise<DbDatabases>; catalog?: { name: string; schemas: Promise<DbCatalogSchema[]> } }
+>();
 const preparingConsoles = new Map<string, RequestId>();
 const stopResultDelivery = new Map<RequestId, () => void>();
 const incompleteResultDelivery = Symbol("incomplete SQL result delivery");
@@ -1063,6 +1071,51 @@ export function loadCompletion(id: string): Promise<DbCompletion | null> {
   return pending.promise;
 }
 
+/** DuckDB attachments belong to this JDBC session. The catalog name is never a connection target. */
+export async function loadDuckdbCatalog(id: string, wanted?: string): Promise<SqlCatalog | undefined> {
+  const sourceId = splitTarget(id).id;
+  if (!allowsPassiveConsoleMetadata(sourceId)) return undefined;
+  let live = duckdbCatalogLoads.get(sourceId);
+  if (!live) {
+    const names = call(commands.dbDatabases(sourceId)).catch((error) => {
+      if (duckdbCatalogLoads.get(sourceId)?.names === names) duckdbCatalogLoads.delete(sourceId);
+      throw error;
+    });
+    live = { names };
+    duckdbCatalogLoads.set(sourceId, live);
+  }
+  const { names } = await live.names;
+  if (duckdbCatalogLoads.get(sourceId) !== live) return undefined;
+  const eq = nameMatcher("duckdb");
+  const database = wanted === undefined ? undefined : names.find((name) => eq(name, wanted));
+  let schemas: DbCatalogSchema[] = [];
+  if (database !== undefined) {
+    if (live.catalog?.name !== database) {
+      const entry = live;
+      const schemas = call(commands.dbDatabaseCatalog(sourceId, database)).catch((error) => {
+        if (entry.catalog?.schemas === schemas) delete entry.catalog;
+        throw error;
+      });
+      live.catalog = { name: database, schemas };
+    }
+    schemas = await live.catalog.schemas;
+  }
+  if (duckdbCatalogLoads.get(sourceId) !== live) return undefined;
+  return {
+    databases: names,
+    schemas: (name) => (name === database ? schemas.map((schema) => schema.name) : null),
+    tables: (name, schema) =>
+      name === database
+        ? (schemas
+            .find((s) => eq(s.name, schema))
+            ?.tables.map((table) => ({
+              name: table.name,
+              view: table.kind !== "table",
+            })) ?? null)
+        : null,
+  };
+}
+
 useProject.subscribe((state, previous) => {
   if (state.project?.root === previous.project?.root) return;
   sourcesRequest++;
@@ -1070,6 +1123,7 @@ useProject.subscribe((state, previous) => {
   sourceConnectionIntents.clear();
   sourceMutations.clear();
   completionLoads.clear();
+  duckdbCatalogLoads.clear();
   preparingConsoles.clear();
   lastUsed.clear();
   if (useDatabase.getState().pausedConsoleMetadata.size) useDatabase.setState({ pausedConsoleMetadata: new Set() });
@@ -1222,8 +1276,14 @@ function promptOf(id: string): string {
   return useDatabase.getState().completion[id]?.defaultSchema || sourceById(id)?.name || id;
 }
 
-function changesSchema(outcome: DbStatementOutcome): boolean {
-  return !outcome.error && /^\s*(create|drop|alter|rename)\b/i.test(outcome.statement.text);
+function changesSchema(id: string, outcome: DbStatementOutcome): boolean {
+  if (outcome.error) return false;
+  const { text } = outcome.statement;
+  if (sqlDriverOf(sourceById(id)) === "duckdb") {
+    const first = /^\s*([a-z_][\w$]*)/i.exec(text)?.[1]?.toUpperCase() ?? lex(text, "duckdb").tokens[0]?.upper;
+    return /^(ATTACH|DETACH|USE|CREATE|DROP|ALTER|RENAME)$/.test(first ?? "");
+  }
+  return /^\s*(create|drop|alter|rename)\b/i.test(text);
 }
 
 function outcomeUpdates(
@@ -1264,6 +1324,7 @@ async function syncDropped(id: string) {
   const current = databaseRequest(id);
   const server = await call(commands.dbConnected()).catch(() => null);
   if (!current() || !server || server.includes(id) || !useDatabase.getState().connected.has(id)) return;
+  duckdbCatalogLoads.delete(id);
   useDatabase.setState((s) => {
     const connected = new Set(s.connected);
     connected.delete(id);
@@ -1368,7 +1429,7 @@ async function run(
   // Consoles publish the same outcome updates alongside their progress and grids.
   if (progress) return outcomes;
   useDatabase.setState((s) => outcomeUpdates(s, id, schema, outcomes, !wasConnected));
-  if (outcomes.some(changesSchema)) void refresh(id);
+  if (outcomes.some((outcome) => changesSchema(id, outcome))) void refresh(id);
   return outcomes;
 }
 
@@ -1592,7 +1653,7 @@ export async function executeConsole(
         if (!inline) streamingResultTabs.add(tab.id);
         tabs.push(tab);
       }
-      schemaChanged ||= completed.some(changesSchema);
+      schemaChanged ||= completed.some((outcome) => changesSchema(id, outcome));
       useDatabase.setState((s) => {
         const executions = { ...s.executions, [path]: { ...execution, active } };
         const state = completed.length
