@@ -11,6 +11,7 @@ import {
   type TabStripHandle,
   type TabsDnd,
 } from "./Tabs";
+import { useI18n } from "@/platform/i18n";
 import { setDragRequiresAlt } from "./pointerDrag";
 import styles from "./Tabs.module.css";
 
@@ -503,4 +504,26 @@ describe("Tabs drag & drop", () => {
     pointer(window, "pointerup", 120);
     expect(onExternalDrop).toHaveBeenCalledWith({ type: TYPE, payload: "term-1" }, 1);
   });
+});
+
+it("shows a verbatim tab label as written and translates the others", () => {
+  const previous = useI18n.getState().texts;
+  useI18n.setState({ texts: { ...previous, test: "测试", Console: "控制台" } });
+  try {
+    render(
+      <Tabs
+        items={[
+          { id: "a", label: "test", verbatim: true },
+          { id: "b", label: "Console" },
+        ]}
+        activeId="a"
+        onSelect={() => {}}
+      />,
+    );
+    expect(screen.getByRole("tab", { name: /^test/ })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /控制台/ })).toBeInTheDocument();
+    expect(screen.queryByText("测试")).not.toBeInTheDocument();
+  } finally {
+    useI18n.setState({ texts: previous });
+  }
 });
