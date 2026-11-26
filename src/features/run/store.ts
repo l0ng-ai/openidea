@@ -809,8 +809,8 @@ function newRuntime(config: RunConfig): SessionRuntime {
   const stdout =
     framework === "go"
       ? new GoTestOutput(feed)
-      : framework === "phpunit" || framework === "jvm"
-        ? new TeamcityOutput(feed, framework === "jvm")
+      : framework === "phpunit" || framework === "jvm" || framework === "cypress" // Cypress: its `teamcity` reporter
+        ? new TeamcityOutput(feed, framework !== "phpunit")
         : framework === "ruby" && config.kind !== "rspec"
           ? new RubyTestOutput(feed)
           : framework === "node-test" || framework === "mocha" || framework === "jasmine"
@@ -1161,7 +1161,10 @@ async function startRunIn(
       }
       launch = resolved;
     }
-    const prepare = typeFor(launch.kind)?.prepareLaunch;
+    // `npm run` scripts running Cypress pass the test selection the way the installed Cypress takes it, too.
+    const prepare =
+      typeFor(launch.kind)?.prepareLaunch ??
+      (frameworkFor(launch) === "cypress" ? typeFor("cypress")?.prepareLaunch : undefined);
     if (prepare) {
       launch = await prepare(launch);
       if (!check && launch.kind === "tomcat") useRun.setState({ activeSession: sessionId });

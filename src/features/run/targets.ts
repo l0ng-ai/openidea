@@ -19,6 +19,7 @@ import { escapeRegExp } from "./testing/rerun";
 import { pestFilter, phpunitArgs, phpunitFilter } from "./testing/phpunit";
 import { frameworkFor } from "./testing";
 import { withNodeTestNamePattern } from "./testing/nodeTest";
+import { cypressSelection, cypressSpecs } from "./testing/cypress";
 
 export type TargetKind = "main" | "test" | "suite" | "generate";
 
@@ -403,7 +404,7 @@ export function detectRunTargets(
     case "rust":
       return rustTargets(lines, relPath);
     case "js":
-      return /\.(test|spec)\.[cm]?[jt]sx?$|(^|\/)__tests__\//.test(relPath) ||
+      return /\.(test|spec|cy)\.[cm]?[jt]sx?$|(^|\/)__tests__\//.test(relPath) ||
         (testDirectory && /(^|\/)test\//.test(relPath))
         ? jsTargets(lines)
         : [];
@@ -497,6 +498,9 @@ export function targetConfig(
     env: { ...file.env },
     detected: true,
   });
+  // Cypress has no name filter of its own: `@cypress/grep` reads the full title (see `testing/cypress.ts`).
+  if (frameworkFor(file) === "cypress")
+    return { ...named([]), ...cypressSelection(file, cypressSpecs(file.args), { grep: [target.path.join(" ")] }) };
   // Playwright selects by declaration line (`file:line`), which also covers a describe block.
   if (frameworkFor(file) === "playwright") return named(withLast(file.args, (f) => `${f}:${target.line + 1}`));
   // node:test selects by full name, through NODE_OPTIONS (see `nodeTest.ts`).

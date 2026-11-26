@@ -94,6 +94,7 @@ Vue、Astro 和 Angular 服务器也会使用这里选择的版本。TypeScript 
 
 - 每个 `package.json` 脚本一个配置（`npm run build`、`pnpm run dev` 等），覆盖根包、嵌套包和 workspace 成员。名为 `test`、`jest`、`vitest` 或 `test:*` 的脚本，以及运行 `playwright test`、`node --test`、`mocha` 或 `jasmine` 的脚本，是测试配置。
 - 有 `playwright.config.*` 但没有脚本运行它的包：通过 `npx` 运行的 `playwright test`。
+- 依赖 `cypress` 或有 `cypress.config.*`、但没有脚本运行 `cypress run` 的包：通过 `npx` 运行的 `cypress run`（运行它的脚本是测试配置）。它的 **Cypress** 配置可以选择测试类型（端到端或组件）、浏览器、spec 文件和其他选项。
 - `deno.json` / `deno.jsonc` 中每个 task 一个配置（`deno task <name>`）。
 
 在 `package.json` 中，每个 `scripts` 条目旁的边栏图标可以直接运行或调试该脚本。
@@ -105,6 +106,8 @@ Vue、Astro 和 Angular 服务器也会使用这里选择的版本。TypeScript 
 - `.ts` 文件在 Node.js 22.18+ / 23.6+ 上直接运行，在 22.6–22.17 和 23.0–23.5 上加 `--experimental-strip-types`，更早的版本则通过 `tsx` 或 `ts-node` 运行。
 
 Jest、Vitest、Playwright Test、`node --test`、Mocha 和 Jasmine 的输出会解析成测试树，支持 **重新运行失败的测试**。Playwright 运行时使用它的 `list` 报告器（配置里指定了其他报告器时除外）；从行号栏运行单个测试时按行号选择（`file:line`），有多个 project 的运行会在文件下按 project 分组。`node --test` 运行时，IDE 通过 `NODE_OPTIONS` 在 `spec` 旁加上自己的报告器（脚本自己指定了 `--test-reporter` 时不显示测试树）；单个测试和重新运行按完整名称选择（`--test-name-pattern`）。Mocha 运行保留它自己的报告器，并通过 `NODE_OPTIONS` 加载 IDE 的钩子，逐个报告测试及其所在行；单个测试和重新运行使用 `--grep`，在用 Mocha 或 `node --test` 测试的项目里，`test/` 目录下的测试不论文件名都有行号栏图标。Jasmine 运行的方式相同，用 `--filter=` 代替 `--grep`；`fdescribe`、`fit` 和 `xit` 也有行号栏图标，在用 Jasmine 测试的项目里，`spec/` 目录下的测试（`cartSpec.js`）也有。**使用覆盖率运行** 支持调用 `vitest` 或 `jest` 的脚本（Vitest 需要 `@vitest/coverage-v8` 之类的覆盖率 provider，缺失时 IDE 会提示添加），以及通过 `c8` 运行的 `node` / `tsx` / `ts-node`。详见[测试](/zh/guide/testing)和[覆盖率](/zh/guide/coverage)。
+
+Cypress 运行时使用 Cypress 内置的 `teamcity` 报告器（配置里指定了其他报告器时除外），测试树按 spec 列出其中的 suite 和测试；选中测试会打开它的声明处。`*.cy.*` 文件有行号栏图标，并用项目的 Cypress 配置运行（其他测试仍用项目的另一个测试运行器）；运行 spec 时使用 `--spec`，挂载组件（`cy.mount`）或位于 `cypress/component/` 的 spec 会加上 `--component`。`cypress run` 不能按名称选择测试，所以单个测试、suite 和 **重新运行失败的测试** 会把完整标题交给 [`@cypress/grep`](https://github.com/cypress-io/cypress/tree/develop/npm/grep) 插件：Cypress 15.10 及以上用 `--expose grep=…`（`@cypress/grep` 7），更早的版本用环境变量 `CYPRESS_grep`。依赖中没有 grep 插件（`@cypress/grep`、`cypress-grep`）时，会运行整个 spec 文件，并弹出通知说明，测试树显示实际运行的所有测试。
 
 ## 调试
 

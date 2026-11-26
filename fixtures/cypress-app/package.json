@@ -1,0 +1,15 @@
+{
+  "name": "openidea-fixture-cart",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OpenIDEA QA fixture: Cypress specs for a cart module (Cypress's own Electron, no server needed)",
+  "scripts": {
+    "e2e": "cypress run",
+    "lint": "tsc -p . --noEmit"
+  },
+  "devDependencies": {
+    "@cypress/grep": "^7.0.0",
+    "cypress": "^16.0.0",
+    "typescript": "^5.6.0"
+  }
+}

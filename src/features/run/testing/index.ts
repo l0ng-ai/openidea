@@ -2,6 +2,7 @@
 import type { RunConfig } from "@/platform/ipc";
 import { isJunitRunner } from "../application";
 import { cargoParser } from "./cargo";
+import { cypressParser, cypressSpecs } from "./cypress";
 import { goParser } from "./go";
 import { jsParser } from "./js";
 import { withJasmineHook } from "./jasmine";
@@ -47,6 +48,7 @@ export type Framework =
   | "cargo"
   | "js"
   | "playwright"
+  | "cypress"
   | "node-test"
   | "mocha"
   | "jasmine"
@@ -67,6 +69,7 @@ export function frameworkFor(config: FrameworkConfig): Framework {
   const cmd = [config.command, ...config.args].join(" ");
   // A `package.json` script names its runner only in package.json: detection records it.
   if (config.testRunner === "playwright" || /\bplaywright\s+test\b/.test(cmd)) return "playwright";
+  if (config.kind === "cypress" || config.testRunner === "cypress" || /\bcypress\s+run\b/.test(cmd)) return "cypress";
   if (config.testRunner === "node-test" || /(^|[\s/\\])(node|tsx)(\.exe)?(\s+-\S*)*\s+--test(\s|$)/.test(cmd))
     return "node-test";
   if (config.testRunner === "mocha" || /(^|[\s/\\])_?mocha(\.cmd|\.js)?(\s|$)/.test(cmd)) return "mocha";
@@ -143,6 +146,13 @@ export function withTestReporting<T extends FrameworkConfig>(config: T): T {
     const chosen = config.args.some((a) => a === "--reporter" || a.startsWith("--reporter="));
     return chosen ? config : { ...config, args: appendScriptArgs(config.command, config.args, ["--reporter=list"]) };
   }
+  if (frameworkFor(config) === "cypress") {
+    // Service messages per test; the project's own reporter (`spec`, `mochawesome`…) prints none the tree can read.
+    const chosen = config.args.some((a) => a === "--reporter" || a === "-r" || a.startsWith("--reporter="));
+    return chosen
+      ? config
+      : { ...config, args: appendScriptArgs(config.command, config.args, ["--reporter", "teamcity"]) };
+  }
   if (frameworkFor(config) === "go" && config.args[0] === "test") {
     const boundary = config.args.findIndex((a) => a === "-args" || a === "--");
     const tool = boundary < 0 ? config.args : config.args.slice(0, boundary);
@@ -180,6 +190,8 @@ export function createTestParser(config: FrameworkConfig): TestOutputParser {
       return jsParser(!!config.watch);
     case "playwright":
       return playwrightParser();
+    case "cypress":
+      return cypressParser(cypressSpecs(config.args));
     case "node-test":
     case "mocha":
     case "jasmine":
