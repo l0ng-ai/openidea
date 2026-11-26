@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Trusted workbench webviews only; child browser pages must not inherit their host window's permissions.",
-  "webviews": ["main", "project-*", "settings-*", "comparison-*", "diff-*", "editor-*", "deployment-*"],
+  "description": "Capability for the main window",
+  "windows": ["main", "project-*", "settings-*", "comparison-*", "diff-*", "editor-*", "deployment-*"],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",

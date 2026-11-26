@@ -63,6 +63,7 @@ import { PLUGIN_LOG_EDITOR_KIND } from "./views/logEditor";
 import type { PluginLogEditorData } from "./views/logTab";
 import { bumpView, deliverViewMessage } from "./views/viewStore";
 import { revealWindowView } from "./views/viewWindows";
+import { openPluginDialog } from "./views/dialog";
 import { runPluginCommand, usePlugins } from "./store";
 
 // --- status bar items ---------------------------------------------------------
@@ -825,7 +826,7 @@ export function handleRuntimeEvent(e: PluginEvent): boolean {
       void answerClipboard(e.requestId, e.pluginId);
       return true;
     case "revealView":
-      revealWindowView(e.pluginId, e.view);
+      if (!openPluginDialog(e.pluginId, e.view)) revealWindowView(e.pluginId, e.view);
       return true;
     default:
       return false;

@@ -36,7 +36,8 @@ const appRestart = vi.fn(async () => null);
 const cancelRequest = vi.fn(async () => null);
 const appBuildInfo = vi.fn(async () => ({ version: "0.1.21" }));
 const settingsSet = vi.fn(async () => ({ status: "ok", data: { general: {}, appearance: {} } }));
-const recordInstalledUpdate = vi.fn();
+const undoRecord = vi.fn();
+const recordInstalledUpdate = vi.fn((_version: string, _notes: string | null) => undoRecord);
 
 vi.mock("@/platform/releaseNotes", () => ({ recordInstalledUpdate }));
 
@@ -171,12 +172,24 @@ describe("Install and Restart", () => {
     expect(appInstallUpdate).toHaveBeenCalledTimes(2);
   });
 
+  it("records the notes before the install starts: the Windows installer ends the app inside it", async () => {
+    void installUpdate("0.1.22", "github", "## Fixed\n- a crash");
+    expect(appInstallUpdate).toHaveBeenCalledTimes(1);
+    expect(recordInstalledUpdate).toHaveBeenCalledWith("0.1.22", "## Fixed\n- a crash");
+    expect(recordInstalledUpdate.mock.invocationCallOrder[0]).toBeLessThan(
+      appInstallUpdate.mock.invocationCallOrder[0]!,
+    );
+    install.resolve(ok(null));
+    await tick();
+    expect(undoRecord).not.toHaveBeenCalled();
+  });
+
   it("reports a failure with Retry, and a cancellation", async () => {
     const failed = installUpdate("0.1.22");
     install.resolve({ status: "error", error: { kind: "unavailable", message: "connection reset" } });
     await failed;
     expect(appRestart).not.toHaveBeenCalled();
-    expect(recordInstalledUpdate).not.toHaveBeenCalled();
+    expect(undoRecord).toHaveBeenCalledTimes(1);
     expect(task(INSTALL_TASK_ID)?.done).toBe(true);
     expect(notes.at(-1)).toMatchObject({
       level: "error",
@@ -194,6 +207,7 @@ describe("Install and Restart", () => {
     await cancelled;
     expect(notes.at(-1)).toMatchObject({ level: "info", title: "Update cancelled", key: UPDATE_KEY });
     expect(appRestart).not.toHaveBeenCalled();
+    expect(undoRecord).toHaveBeenCalledTimes(2);
   });
 
   it.each([

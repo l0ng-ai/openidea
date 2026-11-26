@@ -261,7 +261,7 @@ async fn scenario(case: &Case) -> Result<Vec<String>, String> {
     let m = &run.manager;
     let line_bp =
         Breakpoint { line: case.loop_line, condition: None, hit_condition: None, log_message: None, enabled: true };
-    m.set_breakpoints(case.source.clone(), vec![line_bp]).await.map_err(|e| e.message)?;
+    m.set_breakpoints("test", case.source.clone(), vec![line_bp]).await.map_err(|e| e.message)?;
 
     let seen = run.seen();
     let id = m.start(case.config.clone(), run.owner.clone()).await.map_err(|e| format!("start: {}", e.message))?;
@@ -356,9 +356,9 @@ async fn scenario(case: &Case) -> Result<Vec<String>, String> {
     // Method breakpoint: continue → stops in `parse`.
     if caps.function_breakpoints {
         let fb = FunctionBreakpoint { name: case.function.into(), condition: None, hit_condition: None, enabled: true };
-        let states = m.set_function_breakpoints(vec![fb]).await.map_err(|e| e.message)?;
+        let states = m.set_function_breakpoints("test", vec![fb]).await.map_err(|e| e.message)?;
         report.push(format!("method breakpoint `{}`: verified={}", case.function, states[0].verified));
-        m.set_breakpoints(case.source.clone(), vec![]).await.map_err(|e| e.message)?;
+        m.set_breakpoints("test", case.source.clone(), vec![]).await.map_err(|e| e.message)?;
         let seen = run.seen();
         m.resume(s, thread).await.map_err(|e| e.message)?;
         match run.stopped_after(seen).await {
@@ -368,8 +368,10 @@ async fn scenario(case: &Case) -> Result<Vec<String>, String> {
             }
             None => report.push("method breakpoint: NOT HIT".into()),
         }
-        m.set_function_breakpoints(vec![]).await.map_err(|e| e.message)?;
-        m.set_breakpoints(case.source.clone(), vec![line_bp_at(case.loop_line)]).await.map_err(|e| e.message)?;
+        m.set_function_breakpoints("test", vec![]).await.map_err(|e| e.message)?;
+        m.set_breakpoints("test", case.source.clone(), vec![line_bp_at(case.loop_line)])
+            .await
+            .map_err(|e| e.message)?;
         let seen = run.seen();
         m.step(s, thread, StepKind::Out).await.map_err(|e| e.message)?;
         run.stopped_after(seen).await.ok_or("no stop after step out of parse")?;
@@ -378,7 +380,7 @@ async fn scenario(case: &Case) -> Result<Vec<String>, String> {
     }
 
     // Force Step Over ignores the breakpoint inside parse.
-    m.set_breakpoints(case.source.clone(), vec![line_bp_at(case.loop_line)]).await.map_err(|e| e.message)?;
+    m.set_breakpoints("test", case.source.clone(), vec![line_bp_at(case.loop_line)]).await.map_err(|e| e.message)?;
     let seen = run.seen();
     m.force_step_over(s, thread).await.map_err(|e| e.message)?;
     let (_, t, reason) = run.stopped_after(seen).await.ok_or("no stop after force step over")?;
@@ -409,8 +411,8 @@ async fn scenario(case: &Case) -> Result<Vec<String>, String> {
                     hit_condition: None,
                     enabled: true,
                 };
-                let states = m.set_data_breakpoints(vec![wp]).await.map_err(|e| e.message)?;
-                m.set_breakpoints(case.source.clone(), vec![]).await.map_err(|e| e.message)?;
+                let states = m.set_data_breakpoints("test", vec![wp]).await.map_err(|e| e.message)?;
+                m.set_breakpoints("test", case.source.clone(), vec![]).await.map_err(|e| e.message)?;
                 let seen = run.seen();
                 m.resume(s, thread).await.map_err(|e| e.message)?;
                 match run.stopped_after(seen).await {
@@ -425,8 +427,8 @@ async fn scenario(case: &Case) -> Result<Vec<String>, String> {
                     }
                     None => report.push(format!("watchpoint `{data_id}`: NOT HIT")),
                 }
-                m.set_data_breakpoints(vec![]).await.map_err(|e| e.message)?;
-                m.set_breakpoints(case.source.clone(), vec![line_bp_at(case.loop_line)])
+                m.set_data_breakpoints("test", vec![]).await.map_err(|e| e.message)?;
+                m.set_breakpoints("test", case.source.clone(), vec![line_bp_at(case.loop_line)])
                     .await
                     .map_err(|e| e.message)?;
             }
@@ -623,7 +625,7 @@ async fn attach_to_processes() {
             };
             let run = Run::new();
             run.manager
-                .set_breakpoints(case.source.clone(), vec![line_bp_at(case.line)])
+                .set_breakpoints("test", case.source.clone(), vec![line_bp_at(case.line)])
                 .await
                 .map_err(|e| e.message)?;
             let id =

@@ -244,12 +244,16 @@ impl PluginHost {
         if self.shared.client_closed(client) {
             return;
         }
-        self.queues
-            .lock()
-            .entry((plugin.into(), Some(client.into())))
-            .or_insert_with(|| EventQueue { since: Instant::now(), events: Vec::new(), files_source: None })
-            .events
-            .push(event);
+        let now = Instant::now();
+        let mut queues = self.queues.lock();
+        let queue = queues.entry((plugin.into(), Some(client.into()))).or_insert_with(|| EventQueue {
+            since: now,
+            last_event: now,
+            events: Vec::new(),
+            files_source: None,
+        });
+        queue.last_event = now;
+        queue.events.push(event);
     }
 }
 

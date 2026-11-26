@@ -157,6 +157,8 @@ work), but 0.1 code no longer runs: rebuild it against the 1.0 SDK.
 | `views`             | `id`, `title`, `icon?` (an icon name or a package SVG), `location` (`left`, `right`, `bottom`, `services`), `web?` (_Web views_), `frames?` (API 1.16), `group?`, `when?` (API 1.3)                                                    | without `web` |
 | `customEditors`     | `id`, `title`, `patterns` (file names), `priority` (`default`, `option`), `layout?`, `web?`, `frames?`, `binary?` (API 1.16)                                                                                                           | without `web` |
 | `editorPanels`      | `id`, `web`, `width` (pixels, 40–400), `when?`, `frames?` (API 1.16) — needs `editor.read` (API 1.9; _Editor panels_)                                                                                                                  | no            |
+| `overlays`          | `id`, `web`, `width`, `height` (pixels, 40–800), `anchor?`, `when?`, `interactive?` — floats over the workbench, never takes the focus (API 1.18; _Overlays_)                                                                          | no            |
+| `dialogs`           | `id`, `title`, `web`, `width` (320–1600), `height` (200–1200) — a modal, resizable dialog opened by `views::reveal(id)` (API 1.18; _Dialogs_)                                                                                          | no            |
 | `fileIcons`         | `id`, `patterns` (file names), `icon` (SVG), `iconDark?` — whatever icon theme is in use                                                                                                                                               | no            |
 | `fileTemplates`     | `id`, `name`, `extension`, `path`; API 1.3: `fileName`, `variables = [{ name, prompt }]` — New menu                                                                                                                                    | no            |
 | `commitChecks`      | `id`, `title` — a before-commit check in Commit Options (see _Commits_)                                                                                                                                                                | yes           |
@@ -170,7 +172,11 @@ its first `:`, so `pod` for `pod:default/nginx`; the whole key when it has no
 `:`). Only the menu's `when` sees them, not the command's own `when`; a command
 whose `when` is false shows greyed out. Other menus refuse `view`, a web view
 has no item menu, and no menu opens when no declaration matches the item.
-The menu is new in API 1.2, so a plugin using it declares
+A command run without an argument (its shortcut, Find Action) while one of the
+plugin's views has the keyboard focus gets the selected item's key too, when
+that item's `viewItem.context` menu offers the command: a shortcut acts on the
+selected item like the menu entry. With nothing selected, the focus elsewhere or
+the command not in the item's menu, it gets none. The menu is new in API 1.2, so a plugin using it declares
 `engines.openidea = "^1.2"`. For example:
 
 ```toml
@@ -432,6 +438,23 @@ are always available. Calling a gated function without its capability returns
 API 1.18.0 is in development on `main`. Use `engines.openidea = "^1.18"` and the
 matching SDK. Plugins for 1.17 and earlier keep working. New in 1.18:
 
+- **Overlays (`[[contributes.overlays]]`).** A web page of the package floats over
+  the workbench at one of nine anchors while its `when` holds, without ever taking
+  the keyboard focus — a mascot, a reaction, a timer. The page moves and resizes
+  itself with `openidea.overlay`. No code or capability needed. See [Overlays](#overlays).
+- **Dialogs (`[[contributes.dialogs]]`).** A web page of the package in a modal,
+  resizable IDE dialog with a title bar, opened by the plugin's code with
+  `views::reveal(id)`; closing it sends the view a `closed` event
+  (`ViewEvent::closed()`), and the page can close it with `openidea.dialog.close()`.
+  See [Dialogs](#dialogs).
+- `host::subscribe_paths_with_options(kind, &SubscriptionOptions)` (`events.subscribe-paths-with-options`)
+  adds optional `debounce_ms` coalescing for `files-changed` events on the host side (up to 5 s) and
+  cooperatively cancels in-flight event-handler work via `cancel_soft()` when a newer delta arrives.
+- `Project::generation()` (`workspace.project.generation`) returns a monotonically increasing project state
+  generation; `FilesChanged` carries `project` and `generation`, and registering run targets or run
+  configurations from a superseded generation is rejected with `Error::Stale`.
+- `EventKind::ProjectClosed` (`project-closed`) notifies subscribed plugins when a project closes,
+  after queued project events are dropped and project run targets and configurations are withdrawn.
 - **Run output transport (`pipes` or `pty`).** Non-test plugin run
   configurations can request pseudo-terminal emulation (`OutputMode::Pty`,
   matching **Emulate terminal in output console**) instead of separate stdout
@@ -1403,6 +1426,7 @@ log/blame return empty lists and diff returns `None`.
 | `editor-focused`     | `events`       | the focused editor changes (path, or none)                                                                                                 |
 | `vcs-changed`        | `events`       | a repository's state changed (commit, checkout, fetch…; its root)                                                                          |
 | `action-performed`   | `events.input` | an IDE action ran: id, title, source (keyboard, menu, toolbar…), shortcut                                                                  |
+| `project-closed`     | `events`       | API 1.18: a project was closed or detached; JSON root path string (`Event::ProjectClosed`)                                                 |
 | `scheduled`          | —              | the `on-schedule` period elapsed                                                                                                           |
 
 Events are batched: a running plugin gets them within a fraction of a second,
@@ -1436,6 +1460,20 @@ its own project, which the event names in `project` (the root's absolute path):
 two open projects can hold the same relative path, so key per-document state by
 both. IDEs before this field omit it. For `files-changed`, each category is filtered and an empty batch
 is omitted; replacing or pausing a filter also affects batches already queued.
+API 1.18 adds `project` (the project root path) and `generation` (the monotonic project workspace generation)
+to `FilesChanged`.
+
+API 1.18 adds `host::subscribe_paths_with_options(kind, &SubscriptionOptions)` (`events.subscribe-paths-with-options`)
+with an optional `debounce_ms` setting. When configured, incoming filesystem events for `files-changed` are debounced on the
+host side across rapid edits, coalescing deltas and avoiding redundant plugin invocations (with a maximum delay cap of 5 s
+during continuous changes). In-flight `files-changed` discovery work is cooperatively cancelled via `cancel_soft()` when a newer
+delta arrives for the same project.
+
+Each project maintains an internal monotonic `generation` incremented on filesystem changes and project transitions. Plugins
+can read it via `project.generation()` (API 1.18). If a plugin attempts to publish run targets or run configurations discovered
+with an older generation after the project generation has moved forward, the registration is rejected with `Error::Stale`. When
+a project closes, in-flight work and queued events for that project are cancelled and dropped, run targets and configurations
+under that root are withdrawn, and `project-closed` (`Event::ProjectClosed`) is delivered to subscribed plugins.
 Patterns use `/`, `*` stays within a directory, and `**` crosses
 directories. Up to 64 patterns of 1024 bytes each are accepted; absolute paths,
 parent traversal and malformed patterns fail without replacing the old filter.
@@ -2307,6 +2345,82 @@ line's length until it lays the line out; `onLayout` follows when it does.
 `crates/ide-plugin/tests/fixtures/editor-panel` is a minimal minimap (each line
 2 px, its frame draggable, problems marked at its right edge, folded lines left out, the selected lines and the caret's line tinted, VCS changes at its left edge) to install and try.
 
+#### Overlays
+
+With API 1.18 (`engines.openidea = "^1.18"`), a web page can float over the
+workbench — over the editor, tool windows and all — without ever taking the
+keyboard focus: a mascot reacting to your work, a timer, a reaction GIF. It needs
+no code and no capability, since it sees nothing of the IDE:
+
+```toml
+[[contributes.overlays]]
+id = "stage"
+web = "web/stage.html"        # the same rules as a web view's page
+width = 320                   # pixels, 40–800
+height = 240
+anchor = "bottom-right"       # optional: top-left, top-center, top-right, middle-left,
+                              # center, middle-right, bottom-left, bottom-center, bottom-right
+when = "plugin.<id>.showing"  # optional: the plugin's own key through `host::set_context`
+interactive = true            # optional: false lets every click through to the IDE
+```
+
+The overlay is in the window while `when` holds (always, without one), clear of
+the title and status bars, under dialogs, popups and notifications. Its frame is
+out of the tab order and is never focused when it appears, so typing carries on in
+the editor; a click in an interactive overlay goes to its page, as any click does.
+With `interactive = false` the frame lets every click through. The frame is
+transparent: draw only what should show. When the page can't be loaded (the
+plugin was disabled meanwhile), the overlay shows nothing.
+
+The page gets `openidea.overlay` (only an overlay's page has it), besides
+`postMessage` / `onMessage` to the plugin's code and the theme:
+
+| `openidea.overlay`                    | What it does                                                                                                                                        |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `get()`                               | `{ anchor, width, height }`: where the overlay is and its size, the declaration's until the page changes them                                       |
+| `place({ anchor?, width?, height? })` | Moves the overlay to another anchor and/or resizes it (sizes clamped to 40–800 and to the window); resolves with `get()`, rejects an unknown anchor |
+
+The placement lasts while the overlay is shown; the next time `when` holds it
+starts again from the declaration. To fit a picture, the page measures it and
+places the overlay at that size. `crates/ide-plugin/tests/fixtures/overlay` is a
+minimal card that moves itself around the window.
+
+#### Dialogs
+
+With API 1.18 (`engines.openidea = "^1.18"`), a web page of the package can open
+in a modal dialog of the IDE, as IntelliJ's `DialogWrapper` does: the platform's
+title bar with the dialog's title, a close button, Escape, and a grip to resize
+it. A SQL preview, a parameter form beside its result, a confirmation with
+a picture:
+
+```toml
+[[contributes.dialogs]]
+id = "preview"                # not the id of one of the plugin's views
+title = "SQL Preview"         # the title bar; translated by the plugin's catalog
+web = "web/preview.html"      # the same rules as a web view's page
+width = 900                   # pixels, 320–1600: the size it first opens at
+height = 600                  # pixels, 200–1200
+```
+
+The plugin's code opens it in the window of the current command or event with
+`views::reveal("preview")` (`views.reveal`, `invalid` outside one), the same call
+that brings a tool window to the front; revealing an open dialog does nothing.
+The dialog keeps the size the user last gave it. It closes with its close button,
+Escape (unless the page handles Escape itself and calls `preventDefault()`), or
+the page's `openidea.dialog.close()`; then the view gets a `closed` event:
+
+```rust
+fn handle(view: &str, event: ViewEvent) {
+    if view == "preview" && event.closed() { /* forget the preview's state */ }
+}
+```
+
+The page talks to the plugin's code as any web view does (`openidea.postMessage`
+/ `onMessage`, `views::post_message("preview", …)`), and sees nothing else of the
+IDE, so a dialog needs no capability. Only a dialog's page has `openidea.dialog`.
+For something that stays open beside the editor without taking the keyboard,
+use an [overlay](#overlays) or a tool window.
+
 ### Web frame PTYs (API 1.3)
 
 Packages requiring `engines.openidea = "^1.3"` can exchange JSON strings through
@@ -3174,7 +3288,7 @@ the API itself follows _Evolving the plugin API_ below.
 
 Released versions are frozen: 1.0.0 shipped with OpenIDEA 0.1.36, 1.1.0
 with 0.1.37, 1.2.0 with 0.1.38, 1.3.0 with 0.1.39 and 1.4.0 with 0.1.40.
-API 1.5.0 shipped with 0.1.41, 1.6.0 with 0.1.43, 1.7.0 with 0.1.44, 1.8.0 with 0.1.45, 1.9.0 with 0.1.46, 1.10.0 with 0.1.47, 1.16.0 with 0.1.52 and 1.17.0 with 0.1.53; API 1.11.0, 1.12.0, 1.13.0, 1.14.0, 1.15.0 and 1.18.0 are in development on `main`. wasmtime decides what stays compatible: it resolves interface names
+API 1.5.0 shipped with 0.1.41, 1.6.0 with 0.1.43, 1.7.0 with 0.1.44, 1.8.0 with 0.1.45, 1.9.0 with 0.1.46, 1.10.0 with 0.1.47, 1.13.0 with 0.1.49, 1.16.0 with 0.1.52 and 1.17.0 with 0.1.53; API 1.11.0, 1.12.0, 1.14.0, 1.15.0 and 1.18.0 are in development on `main`. wasmtime decides what stays compatible: it resolves interface names
 by semver (a component importing `openidea:plugin/x@1.0.0` links against a
 host defining `@1.1.0`, and the host finds its exports the same way), but
 function types must match exactly — a record with another field count, or a

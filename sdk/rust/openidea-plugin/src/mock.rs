@@ -133,6 +133,8 @@ struct State {
     storage: BTreeMap<String, String>,
     subscriptions: BTreeSet<EventKind>,
     path_subscriptions: BTreeMap<String, Vec<String>>,
+    project_generations: BTreeMap<String, u64>,
+    debounce_ms: BTreeMap<String, u32>,
     tasks: Vec<MockTask>,
     vcs: Option<RepositoryStatus>,
     repositories: Vec<RepositoryInfo>,
@@ -385,6 +387,21 @@ impl MockHost {
     /// More open projects (for [`crate::host::projects`]).
     pub fn add_project(&self, root: &str) {
         self.state.borrow_mut().other_projects.push(root.to_owned());
+    }
+
+    /// Bumps the generation for project `root` and returns the new generation.
+    pub fn bump_project_generation(&self, root: &str) -> u64 {
+        let mut s = self.state.borrow_mut();
+        let entry = s.project_generations.entry(root.to_owned()).or_insert(1);
+        *entry += 1;
+        *entry
+    }
+
+    /// Simulates closing project `root`: removes its generation and run targets.
+    pub fn project_closed(&self, root: &str) {
+        let mut s = self.state.borrow_mut();
+        s.project_generations.remove(root);
+        s.run_targets.retain(|(r, _), _| r != root);
     }
 
     /// Replaces a project's indexed symbols. Filtering in the mock is a
@@ -888,6 +905,12 @@ pub struct MockInvocation<'a>(PhantomData<&'a ()>);
 #[doc(hidden)]
 pub struct MockProject {
     root: String,
+    generation: u64,
+}
+
+fn make_mock_project(s: &State, root: String) -> MockProject {
+    let generation = s.project_generations.get(&root).copied().unwrap_or(1);
+    MockProject { root, generation }
 }
 
 #[doc(hidden)]
@@ -1358,7 +1381,7 @@ pub mod current {
     pub fn projects() -> Result<Vec<ProjectRes>, Error> {
         with(|s| {
             require(s, "project.read")?;
-            Ok(s.root.iter().chain(&s.other_projects).map(|root| MockProject { root: root.clone() }).collect())
+            Ok(s.root.iter().chain(&s.other_projects).map(|root| make_mock_project(s, root.clone())).collect())
         })
     }
 
@@ -1379,7 +1402,7 @@ pub mod current {
                         || path.strip_prefix(root.trim_end_matches('/')).is_some_and(|rest| rest.starts_with('/'))
                 })
                 .max_by_key(|root| root.replace('\\', "/").split('/').count())
-                .map(|root| MockProject { root: root.clone() })
+                .map(|root| make_mock_project(s, root.clone()))
         })
     }
 
@@ -1388,6 +1411,10 @@ pub mod current {
             require(s, "project.read")?;
             Ok(p.root.clone())
         })
+    }
+
+    pub fn project_generation(p: &ProjectRes) -> Result<u64, Error> {
+        Ok(p.generation)
     }
 
     /// `path` inside `p`'s root as a project-relative key, or `Invalid` for a
@@ -1606,7 +1633,7 @@ pub mod current {
     }
 
     pub fn invocation_project(_: InvocationRef<'_>) -> Option<ProjectRes> {
-        with(|s| s.root.clone().map(|root| MockProject { root }))
+        with(|s| s.root.clone().map(|root| make_mock_project(s, root)))
     }
 
     pub fn invocation_editor(_: InvocationRef<'_>) -> Option<EditorRes> {
@@ -1749,7 +1776,7 @@ pub mod current {
                 return s.external.get(path).cloned().ok_or_else(|| Error::NotFound(path.into()));
             }
             require(s, "project.read")?;
-            let p = MockProject { root: s.root.clone().ok_or_else(|| Error::Invalid("no project".into()))? };
+            let p = make_mock_project(s, s.root.clone().ok_or_else(|| Error::Invalid("no project".into()))?);
             let rel = rel_in_root(&p, path)?;
             s.files.get(rel).or_else(|| s.files.get(path)).cloned().ok_or_else(|| Error::NotFound(path.into()))
         })?;
@@ -1805,7 +1832,7 @@ pub mod current {
     pub fn problems(path: Option<&str>) -> Result<Vec<FileProblems>, Error> {
         with(|s| {
             require(s, "project.read")?;
-            let p = MockProject { root: s.root.clone().ok_or_else(|| Error::Invalid("no project".into()))? };
+            let p = make_mock_project(s, s.root.clone().ok_or_else(|| Error::Invalid("no project".into()))?);
             let wanted = path.map(|path| rel_in_root(&p, path).map(|rel| format!("{}/{rel}", p.root))).transpose()?;
             Ok(s.diagnostics
                 .iter()
@@ -1820,7 +1847,7 @@ pub mod current {
         })
     }
     fn decoration_path(s: &State, path: &str) -> Result<String, Error> {
-        let p = MockProject { root: s.root.clone().ok_or_else(|| Error::Invalid("no project".into()))? };
+        let p = make_mock_project(s, s.root.clone().ok_or_else(|| Error::Invalid("no project".into()))?);
         Ok(format!("{}/{}", p.root, rel_in_root(&p, path)?))
     }
     fn style(s: &str) -> bool {
@@ -2217,6 +2244,17 @@ pub mod current {
                 _ => {}
             }
             s.path_subscriptions.insert(kind.to_owned(), globs.iter().map(|g| (*g).to_owned()).collect());
+            Ok(())
+        })
+    }
+
+    pub fn subscribe_paths_with_options(kind: &str, options: &crate::SubscriptionOptions) -> Result<(), Error> {
+        let globs_ref: Vec<&str> = options.globs.iter().map(|s| s.as_str()).collect();
+        subscribe_paths(kind, &globs_ref)?;
+        with(|s| {
+            if let Some(ms) = options.debounce_ms {
+                s.debounce_ms.insert(kind.to_owned(), ms);
+            }
             Ok(())
         })
     }
@@ -2698,6 +2736,10 @@ pub mod current {
             require(s, &format!("process:{}", target.program))?;
             if s.restricted {
                 return Err(Error::Denied("project is not trusted".into()));
+            }
+            let cur_gen = s.project_generations.get(&project.root).copied().unwrap_or(1);
+            if project.generation < cur_gen {
+                return Err(Error::Stale);
             }
             if target.id.is_empty()
                 || target.name.is_empty()

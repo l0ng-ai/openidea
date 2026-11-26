@@ -245,6 +245,10 @@
   color: var(--link-hover);
   text-decoration-color: currentColor;
 }
+/* The link Up / Down the Stack Trace stepped to (IDEA selects it). */
+.currentLink {
+  background: var(--bg-editor-selection);
+}
 
 /* Test runner */
 
