@@ -374,3 +374,39 @@ pub trait RunTargetValidation {
     /// Refuse with a user-facing explanation, or allow with `Ok(())`.
     fn validate(&mut self, project: &str, target_id: &str, launch: &RunTargetLaunch) -> Result<(), String>;
 }
+
+/// A completion for a field of one of the plugin's own run configurations (API 1.18).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RunConfigurationCompletionItem {
+    /// What the list shows, such as `build`.
+    pub label: String,
+    /// Grey text after the label, such as the file the entry comes from.
+    pub detail: Option<String>,
+    /// The text replacing `replace_start..replace_end`; `label` when `None`.
+    pub insert: Option<String>,
+    /// UTF-16 offsets into the field's text; the caret ends after the inserted text.
+    pub replace_start: u32,
+    pub replace_end: u32,
+}
+
+/// Completion in the fields of the plugin's own run configurations, in the Run/Debug
+/// Configurations dialog (API 1.18); register with
+/// `register_plugin!(T, …, run_configuration_completion)`.
+pub trait RunConfigurationCompletion {
+    /// Completions for `field` (`"arguments"` today; answer none for a field you don't
+    /// know) of the configuration `config` (its id as the plugin reported it) in
+    /// `project`. `text` is the field as typed: whitespace separates arguments and `'`
+    /// or `"` quote, as in a shell. `caret` is a UTF-16 offset into it. Replace only the
+    /// token being completed, so other options, quoted values and arguments after `--`
+    /// stay. Called while the user types: answer from what the plugin already knows.
+    /// The IDE keeps the first 200 items, drops those whose range is outside `text`, and
+    /// drops answers slower than 300 ms.
+    fn complete(
+        &mut self,
+        project: &str,
+        config: &str,
+        field: &str,
+        text: &str,
+        caret: u32,
+    ) -> Vec<RunConfigurationCompletionItem>;
+}

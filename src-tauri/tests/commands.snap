@@ -497,6 +497,7 @@ plugin_roll_back                             outside_restricted desktop      bin
 plugin_run_anything_run                      trusted            project_host bindings async
 plugin_run_anything_suggest                  trusted            project_host bindings async
 plugin_run_command                           trusted            project_host bindings async
+plugin_run_configuration_complete            trusted            project_host bindings async
 plugin_run_targets                           trusted            project_host bindings async
 plugin_search                                trusted            project_host bindings async
 plugin_secrets                               trusted            desktop      bindings async

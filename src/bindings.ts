@@ -1325,6 +1325,8 @@ export const commands = {
 	language: string,
 	selections: Range[],
 } | null, paths: string[] | null, settingsScope: "global" | "project" | null, commandChain: string[] | null, request: number | null) => typedError<string | null, IdeError>(__TAURI_INVOKE("plugin_run_command", { pluginId, commandId, arg, editor, paths, settingsScope, commandChain, request })),
+	/**  Completions for a field of a plugin's own run configuration (API 1.18). */
+	pluginRunConfigurationComplete: (configId: string, field: string, text: string, caret: number) => typedError<RunConfigCompletion[], IdeError>(__TAURI_INVOKE("plugin_run_configuration_complete", { configId, field, text, caret })),
 	pluginRunTargets: () => typedError<RegisteredRunTarget[], IdeError>(__TAURI_INVOKE("plugin_run_targets")),
 	/**
 	 *  One page of `plugin_id`'s results for its search `category`. Cancellable with
@@ -12424,6 +12426,16 @@ export type RunAttach_Serialize = {
 };
 
 export type RunConfig = RunConfig_Serialize | RunConfig_Deserialize;
+
+/**  A completion for a field of a plugin's own run configuration (API 1.18). */
+export type RunConfigCompletion = {
+	label: string,
+	detail: string | null,
+	/**  Replaces the UTF-16 range `[replace_start, replace_end)` of the field's text. */
+	insert: string,
+	replaceStart: number,
+	replaceEnd: number,
+};
 
 export type RunConfig_Deserialize = {
 	/**  Stable id, e.g. `npm:dev`, `cargo:run:app`, or a uuid for user-defined. */

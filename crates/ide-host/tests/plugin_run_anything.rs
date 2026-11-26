@@ -39,3 +39,45 @@ fn the_plugin_suggests_and_claims_lines_of_its_prefix() {
     let ran = p.run_command(ID, "ran", None, invocation).unwrap();
     assert_eq!(ran.as_deref(), Some("build\ndocs:serve"));
 }
+
+#[test]
+fn the_plugins_configuration_completes_only_the_argument_under_the_caret() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(tmp.path()).unwrap();
+    let (root, other) = (base.join("project"), base.join("other"));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(root.join("Taskfile.yml"), "version: '3'\n").unwrap();
+    let p = plugins(&base);
+    let config = "plugin:test.run-anything:tasks";
+    // Not provided until its program is approved.
+    assert!(p.run_configuration_complete("main", &root, config, "arguments", "b", 1).is_err());
+    p.choose_program(ID, "process:task", Some(&root), Some(Path::new("/bin/echo"))).unwrap();
+    assert!(p.run_detection().detect(&root).iter().any(|c| c.id == config));
+    let complete = |text: &str, caret: u32| -> Vec<(String, String, u32, u32)> {
+        p.run_configuration_complete("main", &root, config, "arguments", text, caret)
+            .unwrap()
+            .into_iter()
+            .map(|c| (c.label, c.insert, c.replace_start, c.replace_end))
+            .collect()
+    };
+    // Options, quoted values and the task's own arguments after `--` stay outside the range.
+    let text = "--dry 'a b' d -- x";
+    assert_eq!(complete(text, 13), [("docs:serve".into(), "docs:serve".into(), 12, 13)]);
+    assert!(complete(text, 18).is_empty(), "after `--` the arguments are the task's");
+    assert!(complete(text, 3).is_empty(), "an option is not a task");
+    // UTF-16 offsets.
+    assert_eq!(complete("é b", 3), [("build".into(), "build".into(), 2, 3)]);
+    assert_eq!(complete("", 0).len(), 3);
+    assert!(p.run_configuration_complete("main", &root, config, "env", "b", 1).unwrap().is_empty());
+    // Out-of-range carets, other configurations and projects without it are refused.
+    assert!(p.run_configuration_complete("main", &root, config, "arguments", "b", 2).is_err());
+    assert!(
+        p.run_configuration_complete("main", &root, "plugin:test.run-anything:other", "arguments", "b", 1).is_err()
+    );
+    assert!(p.run_configuration_complete("main", &root, "npm:dev", "arguments", "b", 1).is_err());
+    assert!(p.run_configuration_complete("main", &other, config, "arguments", "b", 1).is_err());
+    // Revoking the program withdraws the configuration, and with it the completion.
+    p.set_capability(ID, "process:task", false).unwrap();
+    assert!(p.run_configuration_complete("main", &root, config, "arguments", "b", 1).is_err());
+}

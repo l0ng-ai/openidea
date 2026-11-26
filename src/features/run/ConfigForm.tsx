@@ -57,6 +57,8 @@ import {
 } from "./configs";
 import { gradleContainsModule } from "./gradleRun";
 import { EnvDialog } from "./EnvDialog";
+import { PluginArgsInput } from "./PluginArgsInput";
+import { pluginOwnedConfig } from "./pluginArgsCompletion";
 import { useBuildModel } from "@/platform/buildModel";
 import { COMPOUND, formParams, terminalApplies, withParams } from "./types";
 import { TomcatSettings } from "./TomcatSettings";
@@ -346,6 +348,12 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
   });
   const [shown, setShown] = useState<ReadonlySet<OptionId>>(() => new Set());
   const [argsText, setArgsText] = useState<string | null>(null);
+  const setArgs = (text: string) => {
+    setArgsText(text);
+    const args = parseArgs(text);
+    const module = parseJavaArgs(args).mainClass === parseJavaArgs(config.args).mainClass ? config.module : undefined;
+    update({ args, params: {}, module });
+  };
   const [envText, setEnvText] = useState<string | null>(null);
   const [envFilesText, setEnvFilesText] = useState<string | null>(null);
   const [envOpen, setEnvOpen] = useState(false);
@@ -622,21 +630,22 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
                 />
               </Field>
               <Field label="Arguments">
-                <Input
-                  mono
-                  aria-label="Arguments"
-                  value={argsText ?? formatArgs(config.args)}
-                  placeholder="Space separated; quote with ' or &quot;"
-                  onChange={(e) => {
-                    setArgsText(e.target.value);
-                    const args = parseArgs(e.target.value);
-                    const module =
-                      parseJavaArgs(args).mainClass === parseJavaArgs(config.args).mainClass
-                        ? config.module
-                        : undefined;
-                    update({ args, params: {}, module });
-                  }}
-                />
+                {pluginOwnedConfig(config) ? (
+                  <PluginArgsInput
+                    configId={config.id}
+                    value={argsText ?? formatArgs(config.args)}
+                    placeholder="Space separated; quote with ' or &quot;"
+                    onChange={setArgs}
+                  />
+                ) : (
+                  <Input
+                    mono
+                    aria-label="Arguments"
+                    value={argsText ?? formatArgs(config.args)}
+                    placeholder="Space separated; quote with ' or &quot;"
+                    onChange={(e) => setArgs(e.target.value)}
+                  />
+                )}
               </Field>
             </>
           )}
