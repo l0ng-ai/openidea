@@ -697,6 +697,7 @@ async fn typescript() {
 }
 
 /// The latest `tsc` diagnostics of `path` (Problems › TypeScript Project Errors), `None` before any.
+#[cfg(unix)]
 fn tsc_errors(events: &Events, path: &Path) -> Option<Vec<String>> {
     events.lock().unwrap().iter().rev().find_map(|e| match e {
         IdeEvent::Diagnostics { path: p, source, items } if source == "tsc" && **p == *path => {
