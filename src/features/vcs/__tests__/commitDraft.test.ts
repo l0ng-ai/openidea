@@ -254,6 +254,41 @@ describe("commit message draft (#4423)", () => {
     });
   });
 
+  it("loads the last message of the included files' repository, not the selected one (#6149)", async () => {
+    const change = (relPath: string): FileStatus => ({
+      relPath,
+      path: `/p/${relPath}`,
+      staged: null,
+      unstaged: "modified",
+      renamedFrom: null,
+    });
+    vcsLog.mockImplementation(async (repo) => ({
+      status: "ok",
+      data: [{ id: `${repo}-head`, message: `last commit in ${repo}` }],
+    }));
+    useVcs.setState({ root: "/p", repo: "/p/api", roots: ["/p/api", "/p/web"], status: [change("web/b.txt")] });
+    type("draft");
+    await setAmend(true);
+    expect(vcsLog).toHaveBeenCalledWith("/p/web", expect.objectContaining({ branch: "HEAD", limit: 1 }));
+    expect(message()).toBe("last commit in /p/web");
+    await setAmend(false);
+
+    // Files from both repositories: no single commit to take the message from.
+    vcsLog.mockClear();
+    useVcs.setState({ status: [change("api/a.txt"), change("web/b.txt")] });
+    await setAmend(true);
+    expect(vcsLog).not.toHaveBeenCalled();
+    expect(message()).toBe("draft");
+    await setAmend(false);
+
+    // Nothing included: the selected repository is the one amended.
+    useVcs.setState({ status: [] });
+    await setAmend(true);
+    expect(vcsLog).toHaveBeenCalledWith("/p/api", expect.anything());
+    expect(message()).toBe("last commit in /p/api");
+    await setAmend(false);
+  });
+
   it("recognizes author name variants independently of the original committer", async () => {
     vcsConfigGet.mockImplementation(async (_, key) => ({
       status: "ok",

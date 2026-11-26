@@ -17,7 +17,8 @@ import {
 } from "./changelists";
 import { gitPersonKey, readConfiguredGitIdentity } from "./gitIdentity";
 import { stagingAreaOn } from "./staging";
-import { currentRepo, useVcs } from "./store";
+import { currentPlan } from "./commitSelection";
+import { useVcs } from "./store";
 
 export type AmendPreview =
   | { root: string; status: "loading" }
@@ -451,10 +452,11 @@ export async function setAmend(on: boolean, target: EarlierAmend | null = null) 
   }
   const current = () => request === amendRequest && useCommit.getState().amend && useVcs.getState().root === project;
   let head = target?.commit;
+  const source = previewRoot ?? amendedRepository();
   try {
-    if (!head)
+    if (!head && source !== undefined)
       [head] = await call(
-        commands.vcsLog(previewRoot ?? currentRepo(), {
+        commands.vcsLog(source, {
           branch: "HEAD",
           path: null,
           author: null,
@@ -505,6 +507,16 @@ export async function setAmend(on: boolean, target: EarlierAmend | null = null) 
     return;
   }
   if (current()) useCommit.setState({ amendPreview: null });
+}
+
+/**
+ * The repository whose last commit Commit would amend: the one holding the included
+ * files (the selected one when none are; `null` is the primary one). With several, there
+ * is no single message to load.
+ */
+function amendedRepository(): string | null | undefined {
+  const repos = currentPlan().repositories;
+  return repos.length === 1 ? repos[0] : undefined;
 }
 
 function resetAmendDraft() {
