@@ -31,6 +31,8 @@ export function activateList(what: string, list: ReadonlyArray<readonly [string,
 }
 
 export async function installCommonWindowBoot(): Promise<void> {
+  const os = guessOs();
+  document.documentElement.dataset.os = os;
   if (import.meta.env.DEV && isTauri()) {
     // The Tauri MCP bridge returns eval results via `window.__TAURI__` on Windows/Linux
     // (macOS evaluates natively). Dev only, so release builds keep withGlobalTauri off.
@@ -42,8 +44,8 @@ export async function installCommonWindowBoot(): Promise<void> {
   // WebKit only (bug 219670). In Chromium (the e2e browser) a scripted double-click stamps its
   // second press like the release before it, which the shim would take for a reordered tap and
   // click twice.
-  if (guessOs() === "macos" && !/Chrome|Firefox/.test(navigator.userAgent)) installReorderedTapClick();
-  if (guessOs() === "linux" && isTauri()) {
+  if (os === "macos" && !/Chrome|Firefox/.test(navigator.userAgent)) installReorderedTapClick();
+  if (os === "linux" && isTauri()) {
     installWebKitClipboardGuard();
     installMiddleClickPasteGuard();
   }
@@ -52,7 +54,7 @@ export async function installCommonWindowBoot(): Promise<void> {
   installWindowDrag({
     toggleMaximize: () => call(commands.windowToggleZoom()).catch((e) => console.warn("cannot zoom the window", e)),
   });
-  if (guessOs() !== "macos" && isTauri()) installFullscreenDragGuard(trackFullscreen());
+  if (os !== "macos" && isTauri()) installFullscreenDragGuard(trackFullscreen());
   installPointerFocus();
   installMiddleClickLinks();
   installImeKeyGuard();
