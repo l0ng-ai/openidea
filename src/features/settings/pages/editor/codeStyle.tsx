@@ -160,7 +160,7 @@ const CASE = { id: "case", label: "Case", keywords: ["Keywords", "Identifiers", 
 const IMPORTS = {
   id: "imports",
   label: "Imports",
-  keywords: ["IntelliSort", "static imports", "wildcard", "class count", "import with *"],
+  keywords: ["imports", "static imports", "wildcard", "class count", "import with *"],
 };
 
 const WORD_CASES: SelectOption<SqlWordCase>[] = [
@@ -264,23 +264,30 @@ function LanguageStyle({ lang }: { lang: LanguageInfo }) {
       ...IMPORTS,
       content: (
         <FormGroup>
-          <Toggle
-            checked={own.keepStaticImportsFirst ?? false}
-            onChange={(v) => set({ keepStaticImportsFirst: v })}
-            label="Keep static imports first"
-            hint="Static imports stay above ordinary imports when Optimize Imports organizes the file."
-          />
           <Row
             label="Class count to use import with '*'"
-            hint="Use a wildcard import once this many classes of one package are used; 999 keeps single-class imports."
+            hint="Use a wildcard import once this many classes of one package are used (5 by default; 999 keeps single-class imports)."
           >
             <NumberInput
-              value={own.classCountToUseImportWithWildcard ?? 5}
-              onChange={(n) => set({ classCountToUseImportWithWildcard: n })}
+              value={own.classCountToUseImportWithStar ?? 5}
+              onChange={(n) => set({ classCountToUseImportWithStar: n })}
               min={1}
               max={999}
               integer
               aria-label="Class count to use import with *"
+            />
+          </Row>
+          <Row
+            label="Names count to use static import with '*'"
+            hint="Use a wildcard static import once this many names are imported statically (3 by default; 999 keeps single imports)."
+          >
+            <NumberInput
+              value={own.namesCountToUseStaticImportWithStar ?? 3}
+              onChange={(n) => set({ namesCountToUseStaticImportWithStar: n })}
+              min={1}
+              max={999}
+              integer
+              aria-label="Names count to use static import with *"
             />
           </Row>
         </FormGroup>

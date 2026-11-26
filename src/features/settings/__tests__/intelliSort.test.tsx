@@ -47,12 +47,14 @@ async function page(language: string) {
 const value = () => stagedValue(useSettingsDialog.getState(), "global", "editor.codeStyle.languages");
 
 describe("Java Imports (IntelliSort)", () => {
-  it("stages static-first and class-count options on the Java code style", async () => {
+  it("stages the class-count and static-count options on the Java code style", async () => {
     await page("java");
     fireEvent.click(screen.getByRole("tab", { name: "Imports" }));
-    fireEvent.click(screen.getByRole("checkbox", { name: "Keep static imports first" }));
-    fireEvent.change(screen.getByLabelText("Class count to use import with *"), { target: { value: "3" } });
-    expect(value()).toEqual({ java: { keepStaticImportsFirst: true, classCountToUseImportWithWildcard: 3 } });
+    fireEvent.change(screen.getByLabelText("Class count to use import with *"), { target: { value: "7" } });
+    fireEvent.change(screen.getByLabelText("Names count to use static import with *"), { target: { value: "2" } });
+    expect(value()).toEqual({
+      java: { classCountToUseImportWithStar: 7, namesCountToUseStaticImportWithStar: 2 },
+    });
     fireEvent.click(screen.getByRole("button", { name: "Reset to Language Defaults" }));
     expect(value()).toEqual({});
   });

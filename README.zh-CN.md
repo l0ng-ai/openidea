@@ -35,6 +35,12 @@ OpenIDEA 把 IntelliJ IDEA 的使用方式（快捷键、工具窗口、随处�
 编辑器、代码洞察、调试器、Git、终端、数据库客户端和 HTTP 客户端，支持 60 多种语言。
 提供 macOS、Windows 和 Linux 版本。
 
+在 macOS 上也可以用 Homebrew 安装：
+
+```bash
+brew install --cask l0ng-ai/tap/openidea
+```
+
 ## 性能对比
 
 在缓存已预热的情况下打开 [freqtrade](https://github.com/freqtrade/freqtrade)（Python，约 770 个文件），

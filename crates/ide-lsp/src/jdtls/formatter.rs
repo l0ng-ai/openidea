@@ -34,6 +34,26 @@ fn indent_settings(style: &LanguageCodeStyle) -> Option<Vec<(&'static str, Strin
     Some(settings)
 }
 
+/// Java sources organize-imports thresholds as jdtls settings (IDEA's
+/// "Class count to use import with '*' / with static import '*'"). `None`
+/// keeps the language server's defaults, 5 and 3 as in IDEA.
+fn organize_imports_settings(style: &LanguageCodeStyle) -> Option<serde_json::Value> {
+    let class_count = style.class_count_to_use_import_with_star;
+    let static_count = style.names_count_to_use_static_import_with_star;
+    if class_count.is_none() && static_count.is_none() {
+        return None;
+    }
+    // Only the set keys go over the wire: an omitted key keeps the server's default.
+    let mut imports = serde_json::Map::new();
+    if let Some(count) = class_count {
+        imports.insert("starThreshold".into(), json!(count));
+    }
+    if let Some(count) = static_count {
+        imports.insert("staticStarThreshold".into(), json!(count));
+    }
+    Some(serde_json::Value::Object(imports))
+}
+
 fn patch_profile_xml(mut xml: String, settings: &[(&'static str, String)]) -> String {
     for (id, value) in settings {
         let marker = format!(r#"<setting id="{id}" value=""#);
@@ -84,6 +104,11 @@ pub fn configure_formatter(
     });
     let mut settings = cfg.settings.take().unwrap_or_else(|| json!({}));
     settings["java"]["format"]["settings"] = formatter_overrides(defaults, overrides);
+    if let Some(style) = style {
+        if let Some(organize_imports) = organize_imports_settings(style) {
+            settings["java"]["sources"]["organizeImports"] = organize_imports;
+        }
+    }
     cfg.settings = Some(settings);
     let Some(style) = style else { return Ok(()) };
     let indent = indent_settings(style);
@@ -298,6 +323,44 @@ mod tests {
             assert!(cfg.launch_error.is_none());
             assert_eq!(crate::handler::all_settings(&cfg)["java"]["format"]["settings"]["url"], "");
         }
+    }
+
+    #[test]
+    fn organize_imports_thresholds_reach_the_settings_and_omit_unset_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir_all(&root).unwrap();
+
+        // Both thresholds set: they land in the settings as organizeImports.
+        let mut cfg = config("jdtls");
+        let style = LanguageCodeStyle {
+            class_count_to_use_import_with_star: Some(7),
+            names_count_to_use_static_import_with_star: Some(4),
+            ..Default::default()
+        };
+        configure_formatter(&mut cfg, Some(&style), &root, dir.path(), None).unwrap();
+        assert_eq!(
+            crate::handler::all_settings(&cfg)["java"]["sources"]["organizeImports"],
+            json!({"starThreshold": 7, "staticStarThreshold": 4})
+        );
+
+        // One threshold set: the other keeps the language server's default.
+        let mut cfg = config("jdtls");
+        let style = LanguageCodeStyle { names_count_to_use_static_import_with_star: Some(2), ..Default::default() };
+        configure_formatter(&mut cfg, Some(&style), &root, dir.path(), None).unwrap();
+        assert_eq!(
+            crate::handler::all_settings(&cfg)["java"]["sources"]["organizeImports"],
+            json!({"staticStarThreshold": 2})
+        );
+
+        // Neither set: no organizeImports object, so jdtls defaults (5 and 3) apply.
+        let mut cfg = config("jdtls");
+        configure_formatter(&mut cfg, None, &root, dir.path(), None).unwrap();
+        assert!(crate::handler::all_settings(&cfg)["java"]["sources"]["organizeImports"].is_null());
+        // Other servers are untouched.
+        let mut cfg = config("rust-analyzer");
+        configure_formatter(&mut cfg, None, &root, dir.path(), None).unwrap();
+        assert!(crate::handler::all_settings(&cfg)["java"].is_null());
     }
 
     #[test]

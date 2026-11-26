@@ -320,7 +320,6 @@
 .toolOptions > summary {
   width: fit-content;
   padding-block: var(--space-1);
-  cursor: pointer;
 }
 .toolOptions > div {
   padding-top: var(--space-1);

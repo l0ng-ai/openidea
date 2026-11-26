@@ -5,14 +5,6 @@ description: "Carets and selections, line editing, the clipboard history, foldin
 
 The editor follows IntelliJ IDEA's behaviour and default keymap. Shortcuts below are the defaults of the **macOS** keymap on macOS and the **Windows** keymap on Windows and Linux; you can change any of them in **Settings › Keymap** (see [Keymaps](/en/guide/keymap)). Every command is also available from **Find Action** (`⇧⌘A` / `Ctrl+Shift+A`).
 
-## Browse a local development server
-
-In a trusted local project, use **Find Action › Open Local Browser**. Enter a loopback HTTP or HTTPS URL, then choose **Open**. Links, **Back**, **Forward**, and **Reload** operate on the page in the panel. Hiding the panel preserves the page and its history; **Close** ends the session. Navigation stays on the original origin. To switch development servers or ports, close the session and open the new address.
-
-Clicking a URL in a Run or Debug console still opens it in the external browser. To open a localhost URL in the panel instead, right-click it and choose **Open in Browser Tool Window**.
-
-Choose **Inspect Element**, then click an element in the page. Review its selector, opening tag and styles before choosing **Add to Agent Draft**. This appends to the draft without sending it. Press **Escape** in the page to return to normal browsing without selecting anything.
-
 ## Carets and selections
 
 | Action                                   | macOS      | Windows / Linux    |
@@ -32,6 +24,8 @@ Choose **Inspect Element**, then click an element in the page. Review its select
 - **Add Selection for Next Occurrence** selects the word at the caret first, then adds the next match on every press. When nothing more is found, a hint appears; press again to continue from the top of the file.
 - Drag with `⌥` / `Alt` held (or with the middle mouse button on macOS and Windows) to make a rectangular selection without switching modes.
 - **Extend Selection** grows the selection to the enclosing word, expression, statement and block, using the syntax tree.
+- **Swap Selection Boundaries** moves the caret of each selection to its other end and keeps the text selected, so `⇧` / `Shift` with the arrow keys then extends or shrink it from that side. It has no default shortcut.
+- **Select Line at Caret** selects the whole line at each caret together with its line break; a selection grows to the whole lines it touches. It has no default shortcut.
 
 ## Editing lines and code
 
@@ -58,6 +52,8 @@ Choose **Inspect Element**, then click an element in the page. Review its select
 | **Toggle Insert/Overwrite**                     | `Insert`        | `Insert`                                       |
 
 **Move Caret to Page Top** / **Bottom** put the caret on the first / last line the editor shows in full, in the same column, without scrolling; with `⇧` / `Shift` added they select up to it.
+
+**Move Caret Forward a Paragraph** / **Backward a Paragraph** jump each caret over a run of non-blank lines to the blank line after or before it (a line of only spaces or tabs counts as blank), or to the end or start of the file; their **with Selection** variants select up to there. They have no default shortcut.
 
 **Edit › Sort Lines** and **Edit › Reverse Lines** reorder the selected lines (the whole file without a selection); they have no default shortcut. Sort Lines orders by character code, so uppercase letters come before lowercase ones.
 
@@ -116,7 +112,7 @@ All folding commands are also in **Code › Folding**. Fold regions come from th
 
 Indentation and other style options are under **Settings › Editor › Code Style**, with a page per language. `.editorconfig` files in the project are read too.
 
-Java has an **Imports** tab for IntelliSort-style options: **Keep static imports first** places static imports above ordinary ones, and **Class count to use import with '\*'** switches to a wildcard import once that many classes of one package are used (the default is 5; 5 or fewer imports gives 999, which keeps single-class imports). Both apply when **Optimize Imports** organizes a Java file.
+Java has an **Imports** tab for IntelliSort-style options: **Class count to use import with '\*'** switches to a wildcard import once that many classes of one package are used, and **Names count to use static import with '\*'** does the same for statically imported names (999 keeps single imports). Both are passed through to the Java language server, whose defaults are 5 and 3, as in IDEA.
 
 To format on every save, enable **Reformat code** (and optionally **Optimize imports**) in **Settings › Tools › Actions on Save**. Trailing spaces and the final line break on save are set in **Settings › Editor › General**, section **Save Files**.
 
@@ -156,8 +152,10 @@ With tabs placed left or right, the tab column is as wide as its longest name, u
 | **Scroll to Center**   | `⌃L`  | `Ctrl+M`        |
 | **Scroll Up**          | —     | `Ctrl+Up`       |
 | **Scroll Down**        | —     | `Ctrl+Down`     |
+| **Scroll to Top**      | —     | —               |
+| **Scroll to Bottom**   | —     | —               |
 
-**Scroll Up** and **Scroll Down** move the view by one line and leave the caret where it is, even when it scrolls out of sight.
+**Scroll Up** and **Scroll Down** move the view by one line and leave the caret where it is, even when it scrolls out of sight. **Scroll to Top** and **Scroll to Bottom** show the start and the end of the file; the caret stays where it is too. They have no default shortcut: run them from Find Action or assign one in **Settings › Keymap**.
 
 - **View › Active Editor › Soft-Wrap** wraps long lines in the current editor. To wrap some file types by default, use **Settings › Editor › General**, section **Soft Wraps**.
 - **View › Reset Font Size** undoes font zoom in the active editor or focused surface (**View › Reset Font Size in All Editors** resets every open editor). Changing the font size with `⌘` / `Ctrl` + mouse wheel (scoped to **Active editor** by default, or **All editors**) can be turned on in **Settings › Editor › General**, section **Mouse Control**.

@@ -486,12 +486,16 @@ pub struct LanguageCodeStyle {
     /// SQL › Case › Identifiers (unquoted names): `upper` | `lower` | `keep`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub identifier_case: Option<String>,
-    /// IntelliSort: keep static imports before ordinary ones when organizing imports.
+    /// Java: organize imports switches to a wildcard import once this many
+    /// classes of one package are used (jdtls `starThreshold`; IDEA's default
+    /// 5; unset keeps the language server's default).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub keep_static_imports_first: Option<bool>,
-    /// IntelliSort: use a wildcard import once this many classes of one package are used.
+    pub class_count_to_use_import_with_star: Option<u32>,
+    /// Java: organize imports switches to a wildcard static import once this
+    /// many statically imported names are used (jdtls `staticStarThreshold`;
+    /// IDEA's default 3; unset keeps the language server's default).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub class_count_to_use_import_with_wildcard: Option<u32>,
+    pub names_count_to_use_static_import_with_star: Option<u32>,
 }
 
 /// Editor › Code Style (General tab + per-language overrides).

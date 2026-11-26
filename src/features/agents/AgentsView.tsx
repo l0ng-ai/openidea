@@ -16,28 +16,41 @@ import {
   registerDropTarget,
   showContextMenu,
   startPointerDrag,
-  type IconName,
   type TreeHandle,
 } from "@/ui";
 import {
+  GROUP_DRAG,
   SESSION_KIND,
   TASK_DRAG,
   age,
   branchLabel,
   groupStatus,
-  groupTasks,
   providerIcon,
   sessionKey,
   type TaskGroup,
 } from "./model";
-import { groupMembers, pinnedMembers, ungroupedMembers, type OrganizeGroup } from "./organize";
+import {
+  PINNED_SECTION,
+  canReorderTask,
+  customSection,
+  groupMembers,
+  pinnedMembers,
+  sectionOfTask,
+  statusGroups,
+  statusSection,
+  type OrganizeGroup,
+} from "./organize";
 import {
   externalKey,
+  forkExternalSession,
   importExternalSession,
   moveTasksToGroup,
+  moveTasksToStatusGroup,
   openHome,
   pinTasks,
   refreshExternalSessions,
+  reorderTask,
+  reorderTaskGroup,
   showImportSessions,
   useAgents,
 } from "./store";
@@ -60,11 +73,6 @@ export function AgentsHeaderActions() {
   );
 }
 
-/** Key of the pinned section, above the groups. */
-const PINNED_KEY = "pinned";
-/** Key of a group the user made. */
-const customKey = (group: string) => `ug:${group}`;
-
 type Node =
   | { kind: "pinned"; tasks: AgentTask[] }
   | { kind: "custom"; group: OrganizeGroup; tasks: AgentTask[] }
@@ -74,11 +82,11 @@ type Node =
 function nodeKey(n: Node): string {
   switch (n.kind) {
     case "pinned":
-      return PINNED_KEY;
+      return PINNED_SECTION;
     case "custom":
-      return customKey(n.group.id);
+      return customSection(n.group.id);
     case "group":
-      return `g:${n.group.status}`;
+      return statusSection(n.group.status);
     case "task":
       return n.task.id;
   }
@@ -86,43 +94,23 @@ function nodeKey(n: Node): string {
 
 /** Where a task shows: the pinned section first, else its group, else its status group. */
 function keysOf(task: AgentTask): string[] {
-  const organize = useAgents.getState().organize;
-  if (organize.pinned.includes(task.id)) return [PINNED_KEY];
-  const group = organize.groupOf[task.id];
-  if (group && organize.groups.some((g) => g.id === group)) return [customKey(group)];
-  return [`g:${groupStatus(task.status)}`];
+  return [sectionOfTask(task, useAgents.getState().organize)];
 }
 
-/** A group header; tasks dropped on it go into the group (or into the pinned section). */
-function GroupRow({
-  label,
-  count,
-  icon,
-  onDropTask,
-}: {
-  label: ReactNode;
-  count: number;
-  icon?: IconName;
-  onDropTask?: (task: string) => void;
-}) {
-  const ref = useRef<HTMLSpanElement>(null);
-  const [over, setOver] = useState(false);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el || !onDropTask) return;
-    return registerDropTarget(el, {
-      accepts: (type) => type === TASK_DRAG,
-      over: () => setOver(true),
-      leave: () => setOver(false),
-      drop: (data) => {
-        setOver(false);
-        onDropTask(data.payload);
-      },
-    });
-  }, [onDropTask]);
+type DropIndicator = { kind: "section"; key: string } | { kind: "row"; key: string; position: "before" | "after" };
+
+const sameIndicator = (a: DropIndicator | null, b: DropIndicator | null) =>
+  a === b ||
+  (!!a &&
+    !!b &&
+    a.kind === b.kind &&
+    a.key === b.key &&
+    (a.kind !== "row" || b.kind !== "row" || a.position === b.position));
+
+/** A group header row inside the task tree. */
+function GroupRow({ label, count }: { label: ReactNode; count: number }) {
   return (
-    <span ref={ref} className={clsx(styles.row, over && styles.dropOver)}>
-      {icon && <Icon name={icon} size={12} />}
+    <span className={styles.row}>
       <span className={styles.groupLabel}>{label}</span>
       <span className={styles.count}>{count}</span>
     </span>
@@ -229,13 +217,133 @@ export function AgentsView() {
         const members = groupMembers(all, organize, group.id);
         return matches && !members.length ? [] : [{ kind: "custom", group, tasks: members }];
       }),
-      ...groupTasks(ungroupedMembers(all, organize)).map((group): Node => ({ kind: "group", group })),
+      ...statusGroups(all, organize).map((group): Node => ({ kind: "group", group })),
     ];
   }, [tasks, organize, matches]);
   const expanded = useMemo(
     () => new Set(roots.map(nodeKey).filter((k) => matches || !collapsed.has(k))),
     [roots, collapsed, matches],
   );
+  const searchingRef = useRef(false);
+  useEffect(() => {
+    searchingRef.current = matches !== null;
+  }, [matches]);
+  const cancelDragRef = useRef<(() => void) | undefined>(undefined);
+  const [tasksEl, setTasksEl] = useState<HTMLDivElement | null>(null);
+  const [dropIndicator, setDropIndicator] = useState<DropIndicator | null>(null);
+  useEffect(() => {
+    if (!tasksEl) return;
+    let frame = 0;
+    let pointer: { data: { type: string; payload: string }; x: number; y: number } | null = null;
+    const resolveDrop = (data: { type: string; payload: string }, x: number, y: number) => {
+      const rowEl = document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-tree-key]");
+      if (!rowEl || !tasksEl.contains(rowEl)) return null;
+      const targetKey = rowEl.dataset.treeKey;
+      if (!targetKey) return null;
+      const rect = rowEl.getBoundingClientRect();
+      const position: "before" | "after" = y < rect.top + rect.height / 2 ? "before" : "after";
+
+      if (data.type === GROUP_DRAG) {
+        if (searchingRef.current || !targetKey.startsWith("ug:")) return null;
+        const targetGroup = targetKey.slice(3);
+        if (targetGroup === data.payload) return null;
+        return {
+          indicator: { kind: "row", key: targetKey, position } as DropIndicator,
+          apply: () => reorderTaskGroup(data.payload, targetGroup, position),
+        };
+      }
+
+      if (data.type !== TASK_DRAG) return null;
+      const { tasks, organize } = useAgents.getState();
+      const source = tasks.get(data.payload);
+      if (!source) return null;
+
+      if (targetKey === PINNED_SECTION) {
+        return {
+          indicator: { kind: "section", key: targetKey } as DropIndicator,
+          apply: () => pinTasks([source.id], true),
+        };
+      }
+      if (targetKey.startsWith("ug:")) {
+        const groupId = targetKey.slice(3);
+        if (!organize.groups.some((g) => g.id === groupId)) return null;
+        return {
+          indicator: { kind: "section", key: targetKey } as DropIndicator,
+          apply: () => moveTasksToGroup([source.id], groupId),
+        };
+      }
+      if (targetKey.startsWith("g:")) {
+        if (sectionOfTask(source, organize) === targetKey) return null;
+        if (statusSection(groupStatus(source.status)) !== targetKey) return null;
+        return {
+          indicator: { kind: "section", key: targetKey } as DropIndicator,
+          apply: () => moveTasksToStatusGroup([source.id]),
+        };
+      }
+      if (searchingRef.current) return null;
+      const target = tasks.get(targetKey);
+      if (!target || !canReorderTask(source, target, organize)) return null;
+      return {
+        indicator: { kind: "row", key: targetKey, position } as DropIndicator,
+        apply: () => reorderTask(source.id, target.id, position),
+      };
+    };
+    const update = () => {
+      const next = pointer ? (resolveDrop(pointer.data, pointer.x, pointer.y)?.indicator ?? null) : null;
+      setDropIndicator((cur) => (sameIndicator(cur, next) ? cur : next));
+    };
+    const scroll = () => {
+      frame = 0;
+      if (!pointer) return;
+      const scroller = tasksEl.querySelector<HTMLElement>('[role="tree"]');
+      if (!scroller) return;
+      const rect = scroller.getBoundingClientRect();
+      const delta = pointer.y < rect.top + 24 ? -8 : pointer.y > rect.bottom - 24 ? 8 : 0;
+      if (!delta) return;
+      const before = scroller.scrollTop;
+      scroller.scrollTop = Math.max(0, Math.min(scroller.scrollHeight - scroller.clientHeight, before + delta));
+      if (scroller.scrollTop !== before) {
+        update();
+        frame = requestAnimationFrame(scroll);
+      }
+    };
+    const leave = () => {
+      pointer = null;
+      cancelAnimationFrame(frame);
+      frame = 0;
+      setDropIndicator(null);
+    };
+    const unregister = registerDropTarget(tasksEl, {
+      accepts: (type) => type === TASK_DRAG || type === GROUP_DRAG,
+      over: (data, x, y) => {
+        pointer = { data, x, y };
+        update();
+        if (!frame) frame = requestAnimationFrame(scroll);
+      },
+      leave,
+      drop: (data, x, y) => {
+        const hit = resolveDrop(data, x, y);
+        leave();
+        hit?.apply();
+      },
+    });
+    return () => {
+      cancelDragRef.current?.();
+      leave();
+      unregister();
+    };
+  }, [tasksEl]);
+  const suppressClickRef = useRef(false);
+  const mouseSelectingRef = useRef(false);
+  const mouseSelectTimerRef = useRef<number | undefined>(undefined);
+  const resetMouseSelecting = () => {
+    mouseSelectingRef.current = false;
+    if (mouseSelectTimerRef.current !== undefined) {
+      window.clearTimeout(mouseSelectTimerRef.current);
+      mouseSelectTimerRef.current = undefined;
+    }
+  };
+  useEffect(() => resetMouseSelecting, []);
   // Dropping a session editor tab anywhere on the tool window docks it.
   const viewRef = useRef<HTMLDivElement>(null);
   const [tabOver, setTabOver] = useState(false);
@@ -267,8 +375,36 @@ export function AgentsView() {
     void executeAction("agents.openTask", task);
   };
   const dockedTitle = docked ? (tasks.get(docked)?.title ?? docked) : null;
-  const dragTask = (e: ReactPointerEvent<HTMLSpanElement>, task: string) =>
-    startPointerDrag(e, e.currentTarget, { type: TASK_DRAG, payload: task });
+  const dragTask = (e: ReactPointerEvent<HTMLElement>, task: string, source: HTMLElement = e.currentTarget) => {
+    suppressClickRef.current = false;
+    if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    cancelDragRef.current?.();
+    cancelDragRef.current = startPointerDrag(
+      e,
+      source,
+      { type: TASK_DRAG, payload: task },
+      {
+        onEnd: (dragged) => {
+          suppressClickRef.current = dragged;
+          cancelDragRef.current = undefined;
+        },
+      },
+    );
+  };
+  const dragGroup = (e: ReactPointerEvent<HTMLElement>, group: string, source: HTMLElement = e.currentTarget) => {
+    if (matches || organize.groups.length < 2 || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    cancelDragRef.current?.();
+    cancelDragRef.current = startPointerDrag(
+      e,
+      source,
+      { type: GROUP_DRAG, payload: group },
+      {
+        onEnd: () => {
+          cancelDragRef.current = undefined;
+        },
+      },
+    );
+  };
 
   // The tasks under `task` in its section, for Archive All Below.
   const tasksBelow = (task: string): AgentTask[] => {
@@ -300,7 +436,41 @@ export function AgentsView() {
 
   const taskList = (
     <div
+      ref={setTasksEl}
       className={styles.tasks}
+      onPointerDownCapture={() => {
+        suppressClickRef.current = false;
+      }}
+      onPointerDown={(e) => {
+        if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey) return;
+        if ((e.target as Element).closest("button, input, textarea, [data-tree-toggle]")) return;
+        const rowEl = (e.target as Element).closest<HTMLElement>("[data-tree-key]");
+        const key = rowEl?.dataset.treeKey;
+        if (!rowEl || !key) return;
+        const ghostSource = rowEl.querySelector<HTMLElement>(`.${styles.row}`) ?? rowEl;
+        if (tasks.has(key)) dragTask(e, key, ghostSource);
+        else if (key.startsWith("ug:")) dragGroup(e, key.slice(3), ghostSource);
+      }}
+      onMouseDownCapture={(e) => {
+        if (e.button !== 0 || (e.target as Element).closest("button, input, textarea, [data-tree-toggle]")) return;
+        // Macrotask fallback (not microtask): browsers flush microtasks between React's capture
+        // and bubble root listeners on real user clicks, which would clear this flag too early.
+        mouseSelectingRef.current = true;
+        if (mouseSelectTimerRef.current !== undefined) window.clearTimeout(mouseSelectTimerRef.current);
+        mouseSelectTimerRef.current = window.setTimeout(resetMouseSelecting, 0);
+      }}
+      onMouseDown={resetMouseSelecting}
+      onKeyDownCapture={resetMouseSelecting}
+      onClick={(e) => {
+        if (suppressClickRef.current) {
+          suppressClickRef.current = false;
+          return;
+        }
+        if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey) return;
+        if ((e.target as Element).closest("button, input, textarea, [data-tree-toggle]")) return;
+        const key = (e.target as Element).closest<HTMLElement>("[data-tree-key]")?.dataset.treeKey;
+        if (key && tasks.has(key)) showTask(key);
+      }}
       onFocus={() => setFocusedTaskList(() => [...selectedRef.current])}
       onBlur={(e) => {
         if (!(e.relatedTarget instanceof Element && e.currentTarget.contains(e.relatedTarget)))
@@ -366,7 +536,15 @@ export function AgentsView() {
         selected={selected}
         onSelectionChange={(sel, lead, reason) => {
           setSelected(sel);
-          if (reason !== "contextMenu" && !inline && sel.size === 1 && lead?.kind === "task" && sel.has(lead.task.id))
+          // Mouse clicks open on release (`onClick`) so starting a drag never opens the task.
+          if (
+            reason !== "contextMenu" &&
+            !mouseSelectingRef.current &&
+            !inline &&
+            sel.size === 1 &&
+            lead?.kind === "task" &&
+            sel.has(lead.task.id)
+          )
             showTask(lead.task.id);
         }}
         onActivate={(n) => n.kind === "task" && showTask(n.task.id)}
@@ -383,37 +561,22 @@ export function AgentsView() {
           });
           showContextMenu(e, taskMenu(selection, selection.length === 1 ? tasksBelow(n.task.id) : []));
         }}
+        rowClassName={(n) => {
+          if (!dropIndicator || dropIndicator.key !== nodeKey(n)) return undefined;
+          if (dropIndicator.kind === "section") return styles.dropOver;
+          return dropIndicator.position === "before" ? styles.dropBefore : styles.dropAfter;
+        }}
         renderNode={(n) => {
           switch (n.kind) {
             case "pinned":
-              return (
-                <GroupRow
-                  icon="pin"
-                  label={<T>Pinned</T>}
-                  count={n.tasks.length}
-                  onDropTask={(task) => pinTasks([task], true)}
-                />
-              );
+              return <GroupRow label={<T>Pinned</T>} count={n.tasks.length} />;
             case "custom":
-              return (
-                <GroupRow
-                  label={n.group.name}
-                  count={n.tasks.length}
-                  onDropTask={(task) => moveTasksToGroup([task], n.group.id)}
-                />
-              );
+              return <GroupRow label={n.group.name} count={n.tasks.length} />;
             case "group":
               return <GroupRow label={<T>{n.group.label}</T>} count={n.group.tasks.length} />;
             case "task":
               return (
-                <span
-                  className={styles.row}
-                  title={n.task.error ?? n.task.title}
-                  onPointerDown={(e) => dragTask(e, n.task.id)}
-                  onClick={(e) => {
-                    if (inline && !e.metaKey && !e.ctrlKey && !e.shiftKey) showTask(n.task.id);
-                  }}
-                >
+                <span className={styles.row} title={n.task.error ?? n.task.title}>
                   <Icon name={providerIcon(n.task.provider)} size={16} label={providerName(n.task.provider)} />
                   <span className={styles.title} data-unread={unread.has(n.task.id) || undefined}>
                     {matches?.get(n.task.id)?.length ? (
@@ -555,6 +718,21 @@ export function AgentsView() {
                             onClick={() => void importExternalSession(s.provider, s.sessionId).catch(() => {})}
                           >
                             <T>Import</T>
+                          </button>
+                          <button
+                            type="button"
+                            className={styles.link}
+                            disabled={importing.has(key)}
+                            title={tx("Fork into a new task")}
+                            onClick={() =>
+                              void forkExternalSession(
+                                s.provider,
+                                s.sessionId,
+                                s.cwd ?? useProject.getState().project?.root ?? "",
+                              ).catch(() => {})
+                            }
+                          >
+                            <T>Fork</T>
                           </button>
                         </div>
                       );

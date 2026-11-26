@@ -4,11 +4,26 @@
  */
 import { executeAction, registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
-import { registerRunExecutor, registerToolWindow } from "@/workbench/contributions";
-import { showCpuProfiles } from "./cpuProfiles";
+import {
+  registerEditorBanner,
+  registerMenuGroup,
+  registerRunExecutor,
+  registerToolWindow,
+  type EditorBanner,
+} from "@/workbench/contributions";
+import { isCpuProfilePath, openCpuProfileFiles, showCpuProfiles } from "./cpuProfiles";
 import { profilerExecutor } from "./executor";
-import { ProfilerTabs, ProfilerView } from "./ProfilerView";
+import { ProfilerHeaderActions, ProfilerTabs, ProfilerView } from "./ProfilerView";
 import { resetProfiler } from "./store";
+
+function useCpuProfileBanner(path: string): EditorBanner | null {
+  if (!isCpuProfilePath(path)) return null;
+  return {
+    text: "This file is a V8 CPU profile",
+    icon: "profile",
+    actions: [{ label: "Open in Profiler", run: () => void openCpuProfileFiles(path) }],
+  };
+}
 
 export function activate(): () => void {
   const disposers: Array<() => void> = [
@@ -24,6 +39,17 @@ export function activate(): () => void {
       order: 25,
       component: ProfilerView,
       headerContent: ProfilerTabs,
+      headerActions: ProfilerHeaderActions,
+    }),
+    registerEditorBanner({ id: "profiler.cpuProfile", order: 30, useBanner: useCpuProfileBanner }),
+    registerMenuGroup({
+      id: "profiler.openInProfiler",
+      menus: ["projectView", "editor", "editorTab"],
+      order: 45,
+      items: (_menu, { paths, dirs }) =>
+        paths.length && paths.every((p, i) => !dirs?.[i] && isCpuProfilePath(p))
+          ? [{ kind: "action", action: "profiler.openInProfiler", arg: paths }]
+          : [],
     }),
     registerActions([
       {
@@ -45,6 +71,26 @@ export function activate(): () => void {
         icon: "profile",
         hidden: true,
         run: ({ arg }) => showCpuProfiles(arg),
+      },
+      {
+        id: "profiler.openSnapshot",
+        title: "Open Snapshot…",
+        description: "Open V8 .cpuprofile files saved by node --cpu-prof or Chrome DevTools in the Profiler",
+        category: "Profiler",
+        icon: "profile",
+        when: "projectOpen",
+        keywords: ["cpuprofile", "profiler", "snapshot", "flame graph"],
+        run: () => openCpuProfileFiles(undefined),
+      },
+      {
+        id: "profiler.openInProfiler",
+        title: "Open in Profiler",
+        description: "Open the selected .cpuprofile files as Profiler snapshots",
+        category: "Profiler",
+        icon: "profile",
+        hidden: true,
+        when: "projectOpen",
+        run: ({ arg }) => (arg === undefined ? undefined : openCpuProfileFiles(arg)),
       },
       {
         id: "run.profileAllocations",

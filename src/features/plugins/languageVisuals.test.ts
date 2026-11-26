@@ -149,3 +149,33 @@ it("retains buttons on refresh failures and removes them when the provider confi
   await vi.advanceTimersByTimeAsync(300);
   expect(view.dom.querySelector(".cm-plugin-gutter-action")).toBeNull();
 });
+
+it("leaves actions inert from an edit until the plugin answers for the new text", async () => {
+  vi.useFakeTimers();
+  const action = { line: 0, icon: "run", tooltip: "Run build", command: "run", argument: "build" };
+  const visual = { version: 1, injections: [], colors: [], gutterActions: [["task", action]] };
+  ipc.pluginLanguageVisuals.mockResolvedValueOnce({ status: "ok", data: visual });
+  const view = new EditorView({
+    state: EditorState.create({ doc: "build:", extensions: [iconAreaExtension, pluginLanguageVisuals(ctx)] }),
+    parent: document.body,
+  });
+  views.push(view);
+  await vi.advanceTimersByTimeAsync(300);
+  const button = view.dom.querySelector<HTMLButtonElement>(".cm-plugin-gutter-action")!;
+  expect(view.dom.classList.contains("cm-plugin-actions-stale")).toBe(false);
+
+  let answer!: (value: unknown) => void;
+  ipc.pluginLanguageVisuals.mockImplementationOnce(() => new Promise((resolve) => (answer = resolve)));
+  view.dispatch({ changes: { from: 0, to: 5, insert: "test" } });
+  expect(view.dom.classList.contains("cm-plugin-actions-stale")).toBe(true);
+  button.click();
+  await vi.advanceTimersByTimeAsync(300);
+  button.click();
+  expect(ipc.lspExecuteCommand).not.toHaveBeenCalled();
+
+  answer({ status: "ok", data: { ...visual, gutterActions: [["task", { ...action, argument: "test" }]] } });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(view.dom.classList.contains("cm-plugin-actions-stale")).toBe(false);
+  view.dom.querySelector<HTMLButtonElement>(".cm-plugin-gutter-action")!.click();
+  expect(ipc.lspExecuteCommand).toHaveBeenCalledWith(7, expect.objectContaining({ arguments: ['"test"'] }));
+});

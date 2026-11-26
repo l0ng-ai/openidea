@@ -1,6 +1,7 @@
 import { isTauri } from "@/platform/ipc";
 import { isRemoteWindow } from "@/platform/remote";
 import type { DialogFilter, SaveDialogOptions } from "@/platform/dialog";
+import { isWebMode } from "@/platform/webBridge";
 
 export interface ChoosePathOptions {
   directory: boolean;
@@ -18,6 +19,8 @@ export interface HostPathOptions extends ChoosePathOptions {
 type HostChooser = (opts: HostPathOptions) => Promise<string[] | null>;
 let hostChooser: HostChooser | null = null;
 
+const shouldUseHostChooser = () => isRemoteWindow() || isWebMode();
+
 /**
  * Registers the in-app chooser that browses the remote host (the workbench's, in `inputDialogs`):
  * the desktop's own dialog would show this machine's files.
@@ -31,11 +34,11 @@ export function registerHostPathChooser(chooser: HostChooser): () => void {
 
 /**
  * File / folder chooser for a path on the host this window's commands run on: the desktop's dialog
- * locally, the in-app chooser in a remote window. Null when cancelled or outside Tauri.
+ * locally, the in-app chooser in a remote or web-server window. Null when cancelled or outside Tauri.
  */
 export async function choosePath(opts: ChoosePathOptions, signal?: AbortSignal): Promise<string | null> {
   if (!isTauri() || signal?.aborted) return null;
-  if (isRemoteWindow()) return (await hostChooser?.({ ...opts, signal }))?.[0] ?? null;
+  if (shouldUseHostChooser()) return (await hostChooser?.({ ...opts, signal }))?.[0] ?? null;
   // Lazy on purpose: loading platform/dialog starts its GTK capability probe at module load.
   const { open } = await import("@/platform/dialog");
   if (signal?.aborted) return null;
@@ -46,7 +49,7 @@ export async function choosePath(opts: ChoosePathOptions, signal?: AbortSignal):
 /** Pick multiple existing paths on the project host. */
 export async function choosePaths(opts: ChoosePathOptions): Promise<string[]> {
   if (!isTauri()) return [];
-  if (isRemoteWindow()) return (await hostChooser?.({ ...opts, multiple: true })) ?? [];
+  if (shouldUseHostChooser()) return (await hostChooser?.({ ...opts, multiple: true })) ?? [];
   const { open } = await import("@/platform/dialog");
   const picked = await open({ ...opts, multiple: true });
   return typeof picked === "string" ? [picked] : (picked ?? []);
@@ -55,7 +58,7 @@ export async function choosePaths(opts: ChoosePathOptions): Promise<string[]> {
 /** Choose a destination on the project host and confirm replacement if it exists. */
 export async function chooseSavePath(opts: SaveDialogOptions, signal?: AbortSignal): Promise<string | null> {
   if (signal?.aborted) return null;
-  if (isRemoteWindow())
+  if (shouldUseHostChooser())
     return (await hostChooser?.({ ...opts, directory: false, save: true, ...(signal && { signal }) }))?.[0] ?? null;
   const { save } = await import("@/platform/dialog");
   return signal?.aborted ? null : save(opts);

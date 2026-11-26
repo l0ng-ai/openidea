@@ -281,6 +281,21 @@ pub async fn agent_import_session(
     blocking(move || agents.import_session(&provider, &session_id)).await
 }
 
+/// Forks a recorded external session into a new task: its first turn continues the recording
+/// as the agent's own fork, under an id the host chooses. `cwd` must be where it was recorded.
+#[command(trust = trusted)]
+pub async fn agent_fork_session(
+    host: &Host,
+    window: &str,
+    provider: String,
+    session_id: String,
+    cwd: String,
+) -> IdeResult<AgentTask> {
+    host.require_trust(window)?;
+    let agents = host.project(window)?.agents.clone();
+    blocking(move || agents.fork_session(&provider, &session_id, std::path::Path::new(&cwd))).await
+}
+
 #[command(trust = trusted)]
 pub async fn agent_create(host: &Host, window: &str, request: NewAgentTask) -> IdeResult<AgentTask> {
     host.require_trust(window)?;
@@ -1445,6 +1460,7 @@ ide_command::domain!(
     agent_entries,
     agent_external_sessions,
     agent_fork,
+    agent_fork_session,
     agent_grouped_changes,
     agent_hermes_profiles,
     agent_import_session,

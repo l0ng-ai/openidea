@@ -12,6 +12,7 @@ import {
   registerOverlay,
   registerStatusItem,
   registerToolWindow,
+  registerWorkbenchBanner,
 } from "./contributions";
 import { installBrowserGuards } from "./browserGuards";
 import { installDistractionFree } from "./distractionFree";
@@ -34,6 +35,8 @@ import {
   toolWindowServiceImpl,
 } from "./toolwindows/store";
 import { TabColorPicker } from "./TabColorPicker";
+import { WebConnectionBanner } from "./WebConnectionBanner";
+import { installWebSessionGuard } from "./webSessionGuard";
 
 export function activateWorkbench(): () => void {
   provideToolWindowService(toolWindowServiceImpl);
@@ -81,7 +84,9 @@ export function activateWorkbench(): () => void {
     installTaskEvents(),
     installNotifyEvents(),
     installBrowserGuards(),
+    installWebSessionGuard(),
     installFileDrop(),
+    registerWorkbenchBanner({ id: "workbench.webConnection", component: WebConnectionBanner }),
     registerOverlay({ id: "workbench.customizeToolbar", component: MainToolbarDialogHost }),
     registerOverlay({ id: "workbench.backgroundTasks", component: BackgroundTasksHost }),
     registerOverlay({ id: "workbench.projectColor", component: TabColorPicker }),
