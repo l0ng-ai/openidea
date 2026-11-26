@@ -18,6 +18,7 @@
   "Workspace SQL": "Workspace SQL",
   "Left data source": "Left data source",
   "Right data source": "Right data source",
+  "In memory": "In memory",
   "Workspace DuckDB driver": "Workspace DuckDB driver",
   "Select data source": "Select data source",
   "Select DuckDB driver": "Select DuckDB driver",

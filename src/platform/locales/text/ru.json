@@ -18,6 +18,7 @@
   "Workspace SQL": "SQL рабочей области",
   "Left data source": "Левый источник данных",
   "Right data source": "Правый источник данных",
+  "In memory": "В памяти",
   "Workspace DuckDB driver": "Драйвер DuckDB рабочей области",
   "Select data source": "Выберите источник данных",
   "Select DuckDB driver": "Выберите драйвер DuckDB",
