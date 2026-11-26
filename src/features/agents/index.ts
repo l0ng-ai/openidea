@@ -164,6 +164,13 @@ export function activate(): () => void {
       trailing: (input) => createElement(TaskStatusMark, { task: (input.data as { task: string }).task }),
       // Tabs of tasks deleted meanwhile are closed when the tasks load (`connect`).
       restorable: true,
+      canNavigate: (input, open) => {
+        if (open) return true;
+        const task = (input.data as { task?: string } | undefined)?.task;
+        if (!task) return false;
+        const s = useAgents.getState();
+        return !s.loaded || s.tasks.has(task);
+      },
       onTabClose: (tabId) => clearAgentTabFontZoom(tabId),
       prepareWindowInput: prepareTaskWindowInput,
       onClose: (input) => {
@@ -187,6 +194,13 @@ export function activate(): () => void {
       },
       icon: () => "diff",
       restorable: true,
+      canNavigate: (input, open) => {
+        if (open) return true;
+        const task = (input.data as { task?: string } | undefined)?.task;
+        if (!task) return false;
+        const s = useAgents.getState();
+        return !s.loaded || s.tasks.has(task);
+      },
       onClose: (input) => releaseClosedTaskCache((input.data as { task: string }).task),
     }),
     registerEditorKind({

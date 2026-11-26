@@ -881,6 +881,94 @@ async fn vue_hybrid_mode_end_to_end() {
     }
 }
 
+/// The path-alias tsserver plugin (`ide-sdk/src/path-aliases.js`) on vtsls: a Vite alias the
+/// tsconfig doesn't define resolves, completes and isn't reported; one it defines keeps the
+/// tsconfig's target. Set `OPENIDEA_TEST_NPM_TOOLS` to a dir with `npm i @vtsls/language-server typescript@6`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires @vtsls/language-server (OPENIDEA_TEST_NPM_TOOLS)"]
+async fn bundler_path_aliases_resolve_below_tsconfig_paths() {
+    let tools = std::path::PathBuf::from(std::env::var("OPENIDEA_TEST_NPM_TOOLS").expect("OPENIDEA_TEST_NPM_TOOLS"));
+    let dir = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(dir.path()).unwrap();
+    let slash = |p: &Path| p.to_string_lossy().replace('\\', "/");
+    for dir in ["src", "own", "plugin/node_modules/openidea-path-aliases"] {
+        std::fs::create_dir_all(root.join(dir)).unwrap();
+    }
+    // What the settings hook writes for `alias: { '@': path.resolve(__dirname, 'src') }`.
+    let plugin = root.join("plugin/node_modules/openidea-path-aliases");
+    std::fs::write(plugin.join("index.js"), include_str!("../../ide-sdk/src/path-aliases.js")).unwrap();
+    let src = slash(&root.join("src"));
+    let paths = serde_json::json!({ slash(&root): { "@": [src], "@/*": [format!("{src}/*")] } });
+    std::fs::write(plugin.join("paths.json"), paths.to_string()).unwrap();
+    std::fs::write(root.join("package.json"), "{\"name\":\"app\",\"private\":true}").unwrap();
+    let tsconfig = |paths: &str| {
+        format!(
+            "{{\"compilerOptions\":{{\"strict\":true,\"module\":\"ESNext\",\"moduleResolution\":\"Bundler\"{paths}}},\"include\":[\"src\"]}}"
+        )
+    };
+    std::fs::write(root.join("tsconfig.json"), tsconfig("")).unwrap();
+    std::fs::write(root.join("src/a.ts"), "export const answer = 42;\n").unwrap();
+    std::fs::write(root.join("own/a.ts"), "export const answer = 1;\n").unwrap();
+    let main = root.join("src/main.ts");
+    let text = "import { answer } from '@/a';\nimport '@/';\nconst n: number = answer + '';\n";
+    std::fs::write(&main, text).unwrap();
+    let init = serde_json::json!({ "vtsls": { "tsserver": { "globalPlugins": [{
+        "name": "openidea-path-aliases",
+        "location": root.join("plugin").to_string_lossy(),
+        "enableForWorkspaceTypeScriptVersions": true,
+    }] } } });
+    let ts = || lang("typescript", "ts", npm_server(&tools, "vtsls", "vtsls", Some(init.clone())));
+
+    let (mgr, events) = manager(&root, LanguageRegistry::from_configs(vec![ts()]));
+    let doc = DocId::next();
+    mgr.did_open(doc, &main, &LanguageId::new("typescript"), 1, text);
+    let defs = retry("definition through the alias", Duration::from_secs(90), || {
+        let mgr = mgr.clone();
+        let a = root.join("src/a.ts");
+        // The syntax server answers with the import itself until the project is loaded.
+        async move {
+            mgr.goto(doc, Pos::new(0, 10), GotoKind::Definition).await.ok().filter(|d| d.iter().any(|d| d.path == a))
+        }
+    })
+    .await;
+    assert_eq!(defs.len(), 1);
+    retry("path completion after @/", Duration::from_secs(30), || {
+        let mgr = mgr.clone();
+        async move {
+            let list = mgr.completion(doc, Pos::new(1, 10), Some("/".into()), Default::default()).await.ok()?;
+            list.items.iter().any(|i| i.label == "a" || i.label == "a.ts").then_some(())
+        }
+    })
+    .await;
+    // The deliberate type error is reported; the aliased import is not.
+    let diagnostics = retry("diagnostics", Duration::from_secs(30), || {
+        let found = events.lock().iter().rev().find_map(|e| match e {
+            IdeEvent::Diagnostics { path, items, .. } if path == &main && !items.is_empty() => Some(items.clone()),
+            _ => None,
+        });
+        async move { found }
+    })
+    .await;
+    assert!(diagnostics.iter().all(|d| !d.message.contains("Cannot find module")), "{diagnostics:?}");
+    tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
+
+    // The tsconfig's own `@/*` wins.
+    std::fs::write(root.join("tsconfig.json"), tsconfig(",\"paths\":{\"@/*\":[\"./own/*\"]}")).unwrap();
+    let (mgr, _events) = manager(&root, LanguageRegistry::from_configs(vec![ts()]));
+    let doc = DocId::next();
+    mgr.did_open(doc, &main, &LanguageId::new("typescript"), 1, text);
+    let defs = retry("definition through the tsconfig paths", Duration::from_secs(90), || {
+        let mgr = mgr.clone();
+        let own = root.join("own/a.ts");
+        async move {
+            mgr.goto(doc, Pos::new(0, 10), GotoKind::Definition).await.ok().filter(|d| d.iter().any(|d| d.path == own))
+        }
+    })
+    .await;
+    assert_eq!(defs.len(), 1);
+    tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
+}
+
 const NG_APP_TS: &str = "import { Component } from '@angular/core';\n\n@Component({\n  selector: 'app-root',\n  templateUrl: './app.html',\n})\nexport class App {\n  title = 'demo';\n}\n";
 const NG_APP_HTML: &str = "<h1>{{ title }}</h1>\n<p>{{ missing }}</p>\n";
 const NG_INLINE_TS: &str = "import { Component } from '@angular/core';\n\n@Component({\n  selector: 'app-inline',\n  template: `<b>{{ count }}</b>`,\n})\nexport class Inline {\n  count = 1;\n}\n";

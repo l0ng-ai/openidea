@@ -20,12 +20,19 @@ Open it from **Tools › Database** or **View › Tool Windows › Database**. T
 | ClickHouse | ClickHouse (over HTTP)                                                                       |
 | Snowflake  | Snowflake (over HTTPS, see below)                                                            |
 | SQLite     | SQLite                                                                                       |
+| DuckDB     | DuckDB (official JDBC driver)                                                                |
 
 Presets set the default port and, where needed, SSL (for example Redshift, Neon and Supabase require SSL).
 
+## DuckDB
+
+Choose **New › Data Source › DuckDB**. In **Manage Drivers…**, add the [official DuckDB JDBC JAR](https://duckdb.org/docs/stable/clients/java) and save the profile. OpenIDEA fills in the driver class and URL template. A Java 17 or newer runtime is required.
+
+Choose **File** to open an existing database or create a new file, **In memory** for a temporary database that lasts until disconnect, or **JDBC URL** to enter a DuckDB URL directly. To inspect an existing file without changing it, enable **Read-only** in **Options**. The official driver applies this setting when it opens the file.
+
 ## JDBC drivers
 
-In a named data source's **General** tab, **Driver** defaults to **Built-in**. Use **Manage Drivers…** to view or add JDBC profiles for that data source type. Select the profile from **Driver** to use JDBC while keeping the source type and icon. **Go to Driver** opens the selected profile and its JAR list. Choose **New › Data Source › Custom JDBC** for databases without a preset, or open its **Manage Drivers…** to see all profiles and change their associated types.
+For presets with a built-in driver, **Driver** defaults to **Built-in** in the **General** tab. Use **Manage Drivers…** to view or add JDBC profiles for that data source type. Select the profile from **Driver** to use JDBC while keeping the source type and icon. **Go to Driver** opens the selected profile and its JAR list. Choose **New › Data Source › Custom JDBC** for databases without a preset, or open its **Manage Drivers…** to see all profiles and change their associated types.
 
 Add a named profile with the vendor's driver JAR, any dependency JARs, the fully qualified driver class, and an optional JDBC URL template. OpenIDEA reads the driver classes declared in the selected JARs. You can choose a different class or enter its full name manually. Use `{host}`, `{port}`, `{database}` or `{file}` in a template to get matching connection fields, or edit the JDBC URL directly. Only import drivers you trust. OpenIDEA loads their code in a separate process using an installed Java 17 or newer runtime.
 
@@ -42,7 +49,7 @@ Profiles are reused across projects. If a project file changes a connection's UR
 Click **+** in the Database tool window (or press `⌘N` / `Alt+Insert` there) and choose:
 
 - **Data Source ›** a preset from the list above.
-- **Data Source from File…** to open a SQLite file.
+- **Data Source from File…** to open a DuckDB (`.duckdb`) or SQLite file.
 - **Data Source from URL…** to paste a URL such as `postgresql://user@localhost:5432/db`. Schemes like `mysql://`, `mariadb://`, `sqlserver://`, `oracle://`, `clickhouse://`, `sqlite:path` and `jdbc:` URLs are accepted.
 - **Import from Clipboard** to read a connection URL from the clipboard.
 

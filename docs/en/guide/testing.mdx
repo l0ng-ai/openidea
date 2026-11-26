@@ -70,6 +70,12 @@ Detected test configurations show results in the tree automatically. For your ow
 
 **Rerun Failed Tests** (in the Run tool window toolbar and Find Action) runs only the tests that failed in the last run, using each tool's filter syntax. It works for Cargo, Jest / Vitest, Playwright, `node --test`, Mocha, pytest, Django, PHPUnit, Go, Maven / Gradle and .NET runs, and for plugin test frameworks.
 
+Jasmine runs get it too, selecting the failed specs with `--filter=`.
+
+### Watch mode (Jest, Vitest)
+
+Turn on **Modify options › Watch for changes** in a Jest or Vitest test configuration, or the **Rerun Automatically** toggle in the test tree toolbar, to keep the runner watching (`jest --watchAll`, `vitest watch`). After each edit the tests run again in the same tab, and each cycle's results replace the previous ones in the tree. **Stop**, turning the toggle off, or closing the tab ends the watcher. Debug, **Rerun Failed Tests** and runs of selected tests run once. A script that runs `vitest run` is started as `vitest watch` through the package manager; a script that runs more than Jest or Vitest (`jest && eslint .`, `tsc && vitest run`) runs once.
+
 ## Navigate between code and tests
 
 **Navigate › Test** (`⌘⇧T` / `Ctrl+Shift+T`) jumps from a class to its tests and back, using common naming conventions (`FooTest`, `test_foo.py`, `foo.test.ts`…) and the project's source and test roots. With several matches it shows a chooser. With none, **Create New Test…** creates one from the file templates.
