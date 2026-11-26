@@ -190,7 +190,7 @@ export function analyze(text: string, pos: number, driver: SqlDriver, lexed: Lex
   const block = blocks[0]!;
   const range = blockRange(st, parens, block, nb);
 
-  const ctes = parseCtes(st, parens, driver);
+  const { ctes, bodyStart } = parseCtes(st, parens, driver);
   const refs: TableRef[] = [];
   const refEnds = new Map<number, TableRef>();
   blocks.forEach((g, depth) => {
@@ -254,9 +254,11 @@ export function analyze(text: string, pos: number, driver: SqlDriver, lexed: Lex
     else context = { kind: "column", clause };
   }
 
-  const firstProjectionClause = duckdb
-    ? parens.level(block, range[0], Math.min(nb, range[1])).find((i) => isW(st[i], "SELECT", "FROM"))
-    : undefined;
+  const queryStart = block === -1 ? Math.max(range[0], bodyStart) : range[0];
+  const firstProjectionClause =
+    duckdb && !isW(st[queryStart], "DELETE", "UPDATE")
+      ? parens.level(block, queryStart, Math.min(nb, range[1])).find((i) => isW(st[i], "SELECT", "FROM"))
+      : undefined;
   return {
     context,
     qualifier: qualifier.length ? qualifier : null,
@@ -321,9 +323,10 @@ function clauseAt(
   return clause;
 }
 
-function parseCtes(st: Token[], parens: Parens, driver: SqlDriver): TableRef[] {
-  const out: TableRef[] = [];
-  if (!isW(st[0], "WITH")) return out;
+function parseCtes(st: Token[], parens: Parens, driver: SqlDriver): { ctes: TableRef[]; bodyStart: number } {
+  const ctes: TableRef[] = [];
+  let bodyStart = 0;
+  if (!isW(st[0], "WITH")) return { ctes, bodyStart };
   let i = 1;
   if (isW(st[i], "RECURSIVE")) i++;
   while (i < st.length && isIdent(st[i])) {
@@ -344,7 +347,7 @@ function parseCtes(st: Token[], parens: Parens, driver: SqlDriver): TableRef[] {
     if (!isP(st[i], "(")) break;
     const c = parens.close.get(i)!;
     columns ??= outputColumns(st, parens, i, i + 1, c, driver);
-    out.push({
+    ctes.push({
       schema: null,
       name: identName(nameTok),
       alias: null,
@@ -356,11 +359,11 @@ function parseCtes(st: Token[], parens: Parens, driver: SqlDriver): TableRef[] {
       depth: 0,
       viaJoin: false,
     });
-    i = c + 1;
+    i = bodyStart = c + 1;
     if (!isP(st[i], ",")) break;
     i++;
   }
-  return out;
+  return { ctes, bodyStart };
 }
 
 /** Output column names of the query in group `g` (`a..b`): aliases and plain column references. */

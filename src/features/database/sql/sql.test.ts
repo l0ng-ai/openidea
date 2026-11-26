@@ -108,6 +108,23 @@ describe("DuckDB SQL", () => {
     expect(nested.fromInsert).toBeNull();
   });
 
+  it.each(["delete from orders |", "update orders set total = 1 from users |"])(
+    "omits a SELECT continuation after %s",
+    (sql) => {
+      const withCte = "with source as (select id from users) " + sql;
+      expect(labels(complete(withCte, "duckdb"), "keyword")).not.toContain("select");
+      expect(at(sql, "duckdb").fromFirst).toBe(false);
+    },
+  );
+
+  it("offers SELECT when a query begins with FROM after a CTE or a set operator", () => {
+    expect(labels(complete("with source as (select id from users) from source |", "duckdb"), "keyword")).toContain(
+      "select",
+    );
+    expect(labels(complete("select 1 union all from orders |", "duckdb"), "keyword")).toContain("select");
+    expect(at("insert into orders from users |", "duckdb").fromFirst).toBe(true);
+  });
+
   it("recognizes QUALIFY and suggests the window result alias", () => {
     const sql = "select row_number() over (order by id) as WinRank from orders qualify |";
     expect(at(sql, "duckdb").context).toEqual({ kind: "column", clause: "qualify" });
