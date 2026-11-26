@@ -49,11 +49,17 @@ pub async fn db_workspace_join(
     left: WorkspaceJoinTable,
     right: WorkspaceJoinTable,
 ) -> IdeResult<QueryResult> {
-    let db = host.project(window)?.db.clone();
-    let (left, left_key) = left.input();
-    let (right, right_key) = right.input();
-    let cancel = host.begin_request(request);
-    let result = db.workspace_join(&driver, [&left, &right], [&left_key, &right_key], &cancel).await;
+    let cancel = host.begin_project_request(window, request);
+    let result = async {
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        let db = host.project(window)?.db.clone();
+        let (left, left_key) = left.input();
+        let (right, right_key) = right.input();
+        db.workspace_join(&driver, [&left, &right], [&left_key, &right_key], &cancel).await
+    }
+    .await;
     host.end_request(request);
     result
 }
@@ -782,6 +788,129 @@ mod tests {
         .unwrap();
 
         host
+    }
+
+    fn workspace_test_table(source: &str) -> WorkspaceJoinTable {
+        WorkspaceJoinTable {
+            source_id: source.into(),
+            database: "default".into(),
+            schema: "default".into(),
+            table: "items".into(),
+            key: "id".into(),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn workspace_join_respects_an_early_cancel() {
+        let temp = tempfile::tempdir().unwrap();
+        let host = host_with_sqlite(&temp).await;
+        let request = RequestId(1);
+        host.cancel_request(request);
+        let error = db_workspace_join(
+            &host,
+            "main",
+            request,
+            "no driver installed".into(),
+            workspace_test_table("left"),
+            workspace_test_table("right"),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind, ide_core::error::ErrorKind::Cancelled);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn workspace_join_cannot_resolve_a_project_after_its_requests_are_drained() {
+        use std::time::{Duration, Instant};
+
+        let temp = tempfile::tempdir().unwrap();
+        let host = host_with_sqlite(&temp).await;
+        let window = "main";
+        let active = host.begin_project_request(window, RequestId(1));
+        std::thread::scope(|threads| {
+            // Hold close at heap cleanup, which follows cancellation of registered requests.
+            let heap = host.heap_windows.lock();
+            let close = threads.spawn(|| host.close_project_detached(window));
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !active.is_cancelled() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let drained = active.is_cancelled();
+            let detached = host.project(window).is_err();
+            drop(heap);
+            close.join().unwrap();
+
+            assert!(drained, "close did not reach the cancellation step");
+            assert!(detached, "close drained its requests while the old project was still available");
+        });
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "requires DUCKDB_JDBC_JAR and Java 17+"]
+    async fn workspace_join_stops_when_its_project_closes() {
+        use std::time::Duration;
+
+        let temp = tempfile::tempdir().unwrap();
+        let host = host_with_sqlite(&temp).await;
+        let window = "main";
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        db_save_sources(
+            &host,
+            window,
+            vec![DataSource {
+                id: "left".into(),
+                name: "ClickHouse fixture".into(),
+                driver: DbDriver::Clickhouse,
+                host: "127.0.0.1".into(),
+                port: Some(listener.local_addr().unwrap().port()),
+                ..Default::default()
+            }],
+        )
+        .await
+        .unwrap();
+        host.project(window)
+            .unwrap()
+            .db
+            .save_jdbc_driver(ide_db::DbJdbcDriver {
+                id: "duck".into(),
+                name: "DuckDB".into(),
+                vendor: Some("duckdb".into()),
+                jars: vec![std::env::var("DUCKDB_JDBC_JAR").expect("official JDBC fixture")],
+                class_name: "org.duckdb.DuckDBDriver".into(),
+                url_template: "jdbc:duckdb:".into(),
+            })
+            .unwrap();
+
+        for (request, close_project) in [(RequestId(2), false), (RequestId(3), true)] {
+            let join = db_workspace_join(
+                &host,
+                window,
+                request,
+                "duck".into(),
+                workspace_test_table("left"),
+                workspace_test_table("right"),
+            );
+            tokio::pin!(join);
+            // Accept the source connection and leave it open without replying.
+            let (socket, _) = tokio::select! {
+                result = &mut join => panic!("workspace ended before reaching the source: {result:?}"),
+                peer = tokio::time::timeout(Duration::from_secs(15), listener.accept()) => peer.unwrap().unwrap(),
+            };
+            if close_project {
+                host.close_project_detached(window);
+            } else {
+                host.cancel_request(request);
+            }
+            let stopped = tokio::time::timeout(Duration::from_secs(3), &mut join).await;
+            if stopped.is_err() {
+                host.cancel_request(request);
+                let _ = tokio::time::timeout(Duration::from_secs(5), &mut join).await;
+            }
+            let error = stopped.expect("workspace JOIN did not stop after cancellation").unwrap_err();
+            assert_eq!(error.kind, ide_core::error::ErrorKind::Cancelled);
+            assert!(!host.project_requests.read().values().flatten().any(|entry| *entry == request));
+            drop(socket);
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
