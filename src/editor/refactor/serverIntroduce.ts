@@ -189,7 +189,8 @@ function insertedTokens(before: Token[], after: Token[]): Token[] {
 }
 
 /** Names servers give new declarations before the user names them. */
-const SERVER_DEFAULT = /^(new[A-Z_]\w*|NewType\d*|newLocal\w*|var_name\d*|fun_name\d*|extracted\w*|new_\w+|value\d*)$/;
+const SERVER_DEFAULT =
+  /^(new[A-Z_]\w*|NewType(?:_\d+)?|newLocal\w*|var_name\d*|fun_name\d*|extracted\w*|new_\w+|value\d*)$/;
 
 /**
  * The name a refactoring introduced, and every place the edit wrote it, from
