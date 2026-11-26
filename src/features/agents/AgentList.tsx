@@ -902,7 +902,7 @@ function ProviderSettings({
             <Row
               label={<T>Executable</T>}
               htmlFor={`agent-executable-${agent.id}`}
-              hint={<T>Leave empty to find the executable on PATH. Changes apply to new sessions.</T>}
+              hint={<T>Empty: found on PATH. Applies to new sessions.</T>}
             >
               <div className={styles.field}>
                 <Input
@@ -945,9 +945,7 @@ function ProviderSettings({
             <Row
               label={<T>Environment variables</T>}
               htmlFor={`agent-env-${agent.id}`}
-              hint={
-                <T>Passed to the agent process, replacing variables of the same name. Changes apply to new sessions.</T>
-              }
+              hint={<T>Override the agent process environment. Applies to new sessions.</T>}
             >
               <div className={styles.field}>
                 <Input
