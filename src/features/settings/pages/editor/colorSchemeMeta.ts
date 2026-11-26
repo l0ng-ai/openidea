@@ -4,11 +4,15 @@ export const LANGUAGES = [...new Set(ATTRIBUTES.map((a) => a.path[0]!))].filter(
   (s) => !["General", "Debugger", "Language Defaults", "Console Colors", "Git", "Diff & Merge"].includes(s),
 );
 
-/** A sub-page id: `C#` → `csharp`, `Diff & Merge` → `diff-and-merge` (`#`/`&` end a settings link). */
+/**
+ * A sub-page id: `C#` → `csharp`, `C++` → `cpp`, `Diff & Merge` → `diff-and-merge` (`#`/`&` end a
+ * settings link, `+` reads as a space in one).
+ */
 export const languagePageId = (language: string) =>
   `editor.colorScheme.${language
     .toLowerCase()
     .replace(/#/g, "sharp")
+    .replace(/\+/g, "p")
     .replace(/&/g, "and")
     .replace(/\s+/g, "-")
     .replace(/-+/g, "-")}`;

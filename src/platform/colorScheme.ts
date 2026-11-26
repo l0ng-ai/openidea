@@ -438,6 +438,7 @@ const BASE_ATTRIBUTES: readonly AttributeDef[] = [
 const JS = "JavaScript and TypeScript";
 const SCHEME_LANGUAGES = {
   csharp: "C#",
+  cpp: "C++",
   go: "Go",
   java: "Java",
   javascript: JS,
