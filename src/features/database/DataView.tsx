@@ -70,6 +70,56 @@ export function ExtractorSelect({ value, onChange }: { value: ExportFormat; onCh
 export const copyFormatOf = (extractor: ExportFormat): CopyFormat =>
   extractor === "csv" ? "csv" : extractor === "onerow" ? "onerow" : "tsv";
 
+/** The toolbar's extractor; `table` is the whole table to export (`null`: nothing, already reported). */
+export interface ExtractorMenu {
+  value: ExportFormat;
+  onChange: (f: ExportFormat) => void;
+  table: () => ExportData | null | Promise<ExportData | null>;
+}
+
+const PANEL_ENTRIES: ReadonlyArray<{ panel: DataPanel; label: string }> = [
+  { panel: "record", label: "Show Record View" },
+  { panel: "value", label: "Open in Value Editor" },
+  { panel: "aggregates", label: "Show Aggregate View" },
+];
+
+/**
+ * The view's entries of the grid's context menu (DataGrip's): the side panels, checked while
+ * shown, then the toolbar's extractor and Export Table to Clipboard when the view has them.
+ */
+export function viewMenu(
+  panel: DataPanel | null,
+  onPanelChange: (panel: DataPanel | null) => void,
+  extractor?: ExtractorMenu,
+): MenuItem[] {
+  const items: MenuItem[] = PANEL_ENTRIES.map(({ panel: p, label }) => ({
+    label,
+    checked: panel === p,
+    run: () => onPanelChange(panel === p ? null : p),
+  }));
+  if (!extractor) return items;
+  return [
+    ...items,
+    { kind: "separator" },
+    {
+      label: "Data Extractor",
+      submenu: EXPORT_FORMATS.map((f) => ({
+        label: f.label,
+        checked: f.id === extractor.value,
+        run: () => extractor.onChange(f.id),
+      })),
+    },
+    {
+      label: "Export Table to Clipboard",
+      icon: "copy",
+      run: () =>
+        void Promise.resolve(extractor.table()).then(
+          (data) => data && writeClipboardText(exportData(extractor.value, data)),
+        ),
+    },
+  ];
+}
+
 /** The Record / Value / Aggregates panel's toggle (IDEA's "Show Value Editor"). */
 export function PanelToggle({ panel, onChange }: { panel: DataPanel | null; onChange: (p: DataPanel | null) => void }) {
   return (
@@ -117,6 +167,8 @@ export interface DataViewProps extends Pick<
   onPanelChange: (panel: DataPanel | null) => void;
   /** Plain ⌘C's copy format (the toolbar's extractor; TSV by default). */
   copyFormat?: CopyFormat;
+  /** The toolbar's extractor, also offered in the grid's context menu with the whole table to copy. */
+  extractor?: ExtractorMenu;
   /** The search bar is shown (the toolbar's search button, ⌘F in the grid). */
   searchOpen?: boolean;
   onSearchOpenChange?: (open: boolean) => void;
@@ -248,7 +300,11 @@ export function DataView(props: DataViewProps) {
             driver={props.driver}
             sort={sort}
             onSort={onSort}
-            rowMenu={props.rowMenu && ((rows) => props.rowMenu!(rows.map(at)))}
+            rowMenu={(rows) => {
+              const own = props.rowMenu?.(rows.map(at)) ?? [];
+              const view = viewMenu(panel, onPanelChange, props.extractor);
+              return own.length ? [...own, { kind: "separator" }, ...view] : view;
+            }}
             rowNumber={(r) => (props.firstRowNumber ?? 1) + at(r)}
             copyFormat={props.copyFormat}
             onSelectionChange={setRange}

@@ -10163,5 +10163,10 @@
   "Allowed command pattern": "Шаблон разрешённой команды",
   "Blocked command pattern": "Шаблон заблокированной команды",
   "Mode applies to": "Режим действует для",
-  "Allow all optional permissions": "Разрешить все необязательные разрешения"
+  "Allow all optional permissions": "Разрешить все необязательные разрешения",
+  "Show Record View": "Показать представление записи",
+  "Open in Value Editor": "Открыть в редакторе значений",
+  "Show Aggregate View": "Показать агрегаты",
+  "Data Extractor": "Экстрактор данных",
+  "Export Table to Clipboard": "Экспортировать таблицу в буфер обмена"
 }
