@@ -27,9 +27,9 @@ import { loadGoModules } from "./goModules";
 import { onServerSettled } from "@/editor/lsp/availability";
 import { resolveCandidates, retryNegativeInheritedMain, unresolvedCandidates } from "./inheritedMain";
 import { fileTargets, OPTIMISTIC, produceContextChoices, type ContextInput } from "./producers";
-import { loadConfigs, useRun } from "./store";
+import { loadConfigs, snapshotFailuresAt, updateSnapshots, useRun } from "./store";
 import { targetLanguage, type RunTarget } from "./targets";
-import { onTestStatesChanged, testState, testStatesVersion, type TestState } from "./testing/states";
+import { onTestStatesChanged, testState, testStatesVersion, type StateQuery, type TestState } from "./testing/states";
 
 /** Languages with gutter run targets (C / C++ `main` included). */
 const hasGutterTargets = (path: string) => !!targetLanguage(path) || /\.(c|cpp|cc|cxx|zig)$/.test(path);
@@ -108,6 +108,7 @@ export function targetMenuItems(target: RunTarget, path: string, content: string
       ? { submenu: choiceItems(choices, debug).filter((i) => i.kind !== "header") }
       : { run: () => void launch(target, path, debug, content) };
   const debuggable = !p || canDebugProduced(p);
+  const snapshots = gutterTestState(target, path) === "failed" ? snapshotFailuresAt(stateQuery(target, path)) : null;
   return [
     {
       label: tx`Run '${name}'`,
@@ -131,6 +132,15 @@ export function targetMenuItems(target: RunTarget, path: string, content: string
       .filter((e) => !!p?.config && e.supports(p.config))
       .map((e) => ({ label: e.label(name), icon: e.icon, run: () => void executeContext(e.id, context) })),
     ...fuzzItems(input, context),
+    ...(snapshots
+      ? [
+          {
+            label: "Update Snapshot",
+            icon: "rerun",
+            run: () => void updateSnapshots(snapshots.sessionId, snapshots.nodeIds),
+          },
+        ]
+      : []),
     { kind: "separator" },
     { label: "Modify Run Configuration…", icon: "edit", run: () => void modifyContext(context) },
   ];
@@ -144,9 +154,14 @@ function showTargetMenu(view: EditorView, target: RunTarget, path: string, at: {
 const fileRootedResults = (path: string) => /\.(py|[cm]?[jt]sx?|zig)$/.test(path);
 
 /** Last test result of a gutter target (IDEA: green / red run icons after a test run). */
+const stateQuery = (target: RunTarget, path: string): StateQuery => ({
+  path: target.path,
+  file: fileRootedResults(path) ? path : undefined,
+});
+
 export function gutterTestState(target: RunTarget, path: string): TestState | null {
   if (target.kind === "main" || target.kind === "generate") return null;
-  return testState({ path: target.path, file: fileRootedResults(path) ? path : undefined });
+  return testState(stateQuery(target, path));
 }
 
 export function markerIcon(kind: RunTarget["kind"], state: TestState | null): string {

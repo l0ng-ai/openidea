@@ -1,0 +1,35 @@
+FAIL ./a.test.js
+  cart
+    ✓ file snap (4 ms)
+    ✓ other snap
+    ✓ inline snap
+    ✕ plain fail (2 ms)
+
+  ● cart › plain fail
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 2
+    Received: 1
+
+      4 |   test("other snap", () => { expect({ other: v }).toMatchSnapshot(); });
+      5 |   test("inline snap", () => { expect(v).toMatchInlineSnapshot(`"one"`); });
+    > 6 |   test("plain fail", () => { if (process.env.V) expect(1).toBe(2); });
+        |                                                           ^
+      7 | });
+      8 |
+
+      at Object.toBe (a.test.js:6:59)
+
+ › 1 snapshot obsolete.
+   • cart gone 1
+Snapshot Summary
+ › 1 snapshot obsolete from 1 test suite. To remove it, re-run jest with `-u`.
+   ↳ ./a.test.js
+       • cart gone 1
+
+Test Suites: 1 failed, 1 total
+Tests:       1 failed, 3 passed, 4 total
+Snapshots:   1 obsolete, 3 passed, 3 total
+Time:        0.515 s
+Ran all test suites.

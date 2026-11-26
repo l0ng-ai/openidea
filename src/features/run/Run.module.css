@@ -139,6 +139,9 @@
   color: var(--link-hover);
   text-decoration: underline;
 }
+.noticeLink + .noticeLink {
+  margin-left: var(--space-3);
+}
 
 /* Console */
 
