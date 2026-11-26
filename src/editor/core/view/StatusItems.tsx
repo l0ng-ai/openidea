@@ -14,6 +14,7 @@ import {
   Menu,
   Popup,
   SelectListbox,
+  showContextMenu,
   badgeKind,
   fileIconName,
   revealHorizontally,
@@ -33,6 +34,7 @@ import { editorController, isTextInput, useEditorStatus, useGotoLine, useTabs } 
 import { languageInfo } from "../cm/languages";
 import { useDocMeta, useOutline, type DocMeta } from "../model/document";
 import { symbolChain } from "./outline";
+import { siblingSegment } from "./navBar";
 import { NavChildrenPopup } from "./NavBarPopup";
 import type { NavSegment } from "./navBar";
 import styles from "./EditorArea.module.css";
@@ -166,9 +168,15 @@ function updateBreadcrumbEdges(row: HTMLDivElement) {
 function BreadcrumbStrip({
   trail,
   activateOnDown = false,
+  onActivateAltDown,
   children,
   ...props
-}: ComponentPropsWithoutRef<"nav"> & { trail: string; activateOnDown?: boolean }) {
+}: ComponentPropsWithoutRef<"nav"> & {
+  trail: string;
+  activateOnDown?: boolean;
+  /** Alt+Down on a focused crumb opens its chooser (the crumb's element is passed). */
+  onActivateAltDown?: (crumb: HTMLElement) => void;
+}) {
   const strip = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const row = strip.current;
@@ -189,10 +197,16 @@ function BreadcrumbStrip({
     <nav
       {...props}
       onKeyDown={(e) => {
-        if (e.altKey || e.ctrlKey || e.metaKey) return;
         const buttons = [...(strip.current?.querySelectorAll("button") ?? [])];
         const index = buttons.indexOf(e.target as HTMLButtonElement);
         if (index < 0) return;
+        if (e.altKey && !e.ctrlKey && !e.metaKey && e.key === "ArrowDown" && onActivateAltDown) {
+          e.preventDefault();
+          e.stopPropagation();
+          onActivateAltDown?.(buttons[index]!);
+          return;
+        }
+        if (e.altKey || e.ctrlKey || e.metaKey) return;
         let next: number;
         if (e.key === "ArrowLeft") next = Math.max(0, index - 1);
         else if (e.key === "ArrowRight") next = Math.min(buttons.length - 1, index + 1);
@@ -354,6 +368,7 @@ export function CodeBreadcrumbs({
   const editorSettings = useProject((s) => s.settings?.editor);
   const language = useDocMeta((s) => s[path]?.language);
   const outline = useOutline((s) => s[path]);
+  const [popup, setPopup] = useState<{ nav: NavSegment; anchor: HTMLElement } | null>(null);
   let chain = useCaretSymbols(path, outline);
   if (!chain) {
     // Not the active editor (another split): its own caret, as of this render.
@@ -373,28 +388,57 @@ export function CodeBreadcrumbs({
       ? monoFontFamily(family, fallbackFont, "var(--font-mono)")
       : undefined;
   const fontSize = editorSettings?.fontSize ?? undefined;
+  const navigate = (item: OutlineItem) =>
+    void editorController().openFile(path, {
+      selection: { line: item.selection_range.start.line, col: item.selection_range.start.col },
+    });
+  // IDEA's breadcrumb chooser lives off the click: right-click or Alt+Down on a
+  // crumb lists its siblings (Navigation Bar only).
+  const chooseSiblings = (i: number, anchor: HTMLElement) => {
+    if (!outline) return;
+    setPopup({ nav: siblingSegment(path, chain, i), anchor });
+  };
+  const crumbMenu = (
+    i: number,
+    crumb: HTMLElement,
+    e: { clientX: number; clientY: number; preventDefault: () => void },
+  ) => {
+    e.preventDefault();
+    if (outline)
+      showContextMenu(e, [{ id: "chooseSymbol", label: "Choose a symbol", run: () => chooseSiblings(i, crumb) }]);
+  };
   return (
     <BreadcrumbStrip
       trail={JSON.stringify([path, fontFamily, fontSize, ...chain.map((item) => item.name)])}
       style={{ fontFamily, fontSize }}
       className={clsx(styles.codeCrumbs, position === "top" ? styles.codeCrumbsTop : styles.codeCrumbsBottom)}
       aria-label={tx("Code breadcrumbs")}
+      onActivateAltDown={(crumb) => chooseSiblings(Number(crumb.dataset.crumbIndex), crumb)}
     >
       {chain.map((item, i) => (
         <BarButton
           key={`${item.name}:${item.detail ?? ""}:${item.selection_range.start.line}:${item.selection_range.start.col}`}
+          data-crumb-index={i}
           className={styles.crumbButton}
           tooltip={item.detail ?? item.name}
           aria-current={i === chain.length - 1 ? "location" : undefined}
-          onClick={() =>
-            void editorController().openFile(path, {
-              selection: { line: item.selection_range.start.line, col: item.selection_range.start.col },
-            })
-          }
+          aria-haspopup={outline ? "listbox" : undefined}
+          onClick={() => navigate(item)}
+          onContextMenu={(e) => crumbMenu(i, e.currentTarget, e)}
         >
           <span className={styles.crumbLabel}>{item.name}</span>
         </BarButton>
       ))}
+      {popup && (
+        <NavChildrenPopup
+          key={`${popup.nav.kind}:${popup.nav.path}:${popup.nav.label}`}
+          segment={popup.nav}
+          anchor={popup.anchor}
+          openAbove={position === "bottom"}
+          label={tx("Choose a symbol")}
+          onClose={() => setPopup(null)}
+        />
+      )}
     </BreadcrumbStrip>
   );
 }

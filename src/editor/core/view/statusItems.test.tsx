@@ -1,13 +1,15 @@
 import { Profiler } from "react";
-import { describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { OutlineItem, Settings } from "@/platform/ipc";
 import type { EditorStatus } from "../controller";
+
+const { openFile } = vi.hoisted(() => ({ openFile: vi.fn(async () => {}) }));
 
 vi.mock("../controller", async () => {
   const { create } = await import("zustand");
   return {
-    editorController: () => ({ openFile: vi.fn(), slots: new Map() }),
+    editorController: () => ({ openFile, slots: new Map() }),
     useEditorStatus: create<{ status: EditorStatus | null }>(() => ({ status: null })),
     useGotoLine: create(() => ({ open: false })),
     useTabs: create(() => ({ panes: {}, activePane: "" })),
@@ -21,6 +23,7 @@ const { useProject } = await import("@/platform/project");
 const { clearProjectViewLead, setProjectViewLead } = await import("@/workbench/contributions");
 const { Breadcrumbs, CodeBreadcrumbs } = await import("./StatusItems");
 const { NavBarPopup, openNavBarPopup, useNavBarPopup } = await import("./NavBarPopup");
+const { useContextMenuStore } = await import("@/ui");
 
 const PATH = "/p/Orders.ts";
 const span = (from: number, to: number) => ({ start: { line: from, col: 0 }, end: { line: to, col: 0 } });
@@ -306,4 +309,79 @@ it("elides the middle of a deep path without a duplicate React key", () => {
   error.mockRestore();
   view.unmount();
   useProject.setState({ project: null, settings: null });
+});
+
+describe("code breadcrumb symbol chooser", () => {
+  beforeEach(() => {
+    openFile.mockClear();
+    useProject.setState({
+      settings: {
+        editor: { breadcrumbs: { show: true, placement: "bottom", disabledLanguages: [] } },
+      } as unknown as Settings,
+    });
+    useEditorStatus.setState({ status: caret(3, 4) });
+  });
+
+  it("navigates to the crumb's symbol on plain click, as the IDE does", async () => {
+    // Orders class with place/cancel methods; caret sits inside `place`.
+    useOutline.setState({ [PATH]: [item("Orders", 0, 40, [item("place", 2, 10), item("cancel", 12, 20)])] });
+    const view = render(<CodeBreadcrumbs path={PATH} tabId="t1" position="bottom" />);
+    const crumbs = screen.getAllByRole("button");
+    // The last crumb is the innermost symbol (place).
+    const place = crumbs[crumbs.length - 1]!;
+    expect(place.getAttribute("aria-haspopup")).toBe("listbox");
+    fireEvent.click(place);
+    await waitFor(() => expect(openFile).toHaveBeenCalledWith(PATH, { selection: { line: 2, col: 0 } }));
+    // No chooser opened with the click: that belongs to the context menu / Alt+Down.
+    expect(screen.queryByRole("listbox")).toBeNull();
+    view.unmount();
+  });
+
+  it("opens the sibling chooser from the crumb's context menu", async () => {
+    useOutline.setState({ [PATH]: [item("Orders", 0, 40, [item("place", 2, 10), item("cancel", 12, 20)])] });
+    const view = render(<CodeBreadcrumbs path={PATH} tabId="t1" position="bottom" />);
+    const crumbs = screen.getAllByRole("button");
+    fireEvent.contextMenu(crumbs[crumbs.length - 1]!);
+    const menuItem = useContextMenuStore
+      .getState()
+      .menu?.items.find((i) => "label" in i && i.label === "Choose a symbol") as { run?: () => void } | undefined;
+    expect(menuItem?.run).toBeTruthy();
+    act(() => menuItem!.run!());
+    const list = await screen.findByRole("listbox", { name: "Orders" });
+    expect(list.querySelectorAll('[role="option"]').length).toBeGreaterThan(0);
+    // Selecting a sibling navigates.
+    fireEvent.click(screen.getByRole("option", { name: "cancel" }));
+    await waitFor(() =>
+      expect(openFile).toHaveBeenCalledWith(PATH, {
+        selection: { line: 12, col: 0 },
+        focus: true,
+      }),
+    );
+    view.unmount();
+  });
+
+  it("opens the sibling chooser with Alt+Down while the strip has focus", async () => {
+    useOutline.setState({ [PATH]: [item("Orders", 0, 40, [item("place", 2, 10), item("cancel", 12, 20)])] });
+    const view = render(<CodeBreadcrumbs path={PATH} tabId="t1" position="bottom" />);
+    const crumbs = screen.getAllByRole("button");
+    const place = crumbs[crumbs.length - 1]!;
+    place.focus();
+    fireEvent.keyDown(place, { key: "ArrowDown", altKey: true });
+    await screen.findByRole("listbox", { name: "Orders" });
+    fireEvent.click(screen.getByRole("option", { name: "cancel" }));
+    await waitFor(() =>
+      expect(openFile).toHaveBeenCalledWith(PATH, {
+        selection: { line: 12, col: 0 },
+        focus: true,
+      }),
+    );
+    view.unmount();
+  });
+
+  it("hides the bar when there is no outline chain", () => {
+    useOutline.setState({ [PATH]: [] });
+    const view = render(<CodeBreadcrumbs path={PATH} tabId="t1" position="bottom" />);
+    expect(screen.queryByRole("navigation", { name: "Code breadcrumbs" })).toBeNull();
+    view.unmount();
+  });
 });
