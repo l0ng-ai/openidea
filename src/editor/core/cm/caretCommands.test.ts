@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { EditorSelection, EditorState } from "@codemirror/state";
+import { EditorSelection, EditorState, StateEffect } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { indentService, type LanguageSupport } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
@@ -10,6 +10,8 @@ import {
   cursorPageBottom,
   cursorPageTop,
   scrollDown,
+  scrollToBottom,
+  scrollToTop,
   scrollUp,
   selectPageBottom,
   selectPageTop,
@@ -101,6 +103,63 @@ describe("Scroll Up / Scroll Down", () => {
     scrollUp(view);
     expect(view.state.selection.eq(before)).toBe(true);
     expect(view.state.doc.toString()).toBe("a\nb\nc");
+  });
+});
+
+describe("Scroll to Top / Scroll to Bottom", () => {
+  /** jsdom has no layout: record where each command asks the view to scroll. */
+  function scrolls(text: string) {
+    const targets: { from: number; to: number; y: unknown }[] = [];
+    const view = make(text);
+    view.dispatch({
+      effects: StateEffect.appendConfig.of(
+        EditorView.scrollHandler.of(
+          (_, range, options) => (targets.push({ from: range.from, to: range.to, y: options.y }), true),
+        ),
+      ),
+    });
+    return { view, targets };
+  }
+  /** The view scrolls in its next measure, on an animation frame. */
+  const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+
+  it("scrolls to the very top, keeping the horizontal position", async () => {
+    const view = make("a\nb|\nc\nd");
+    let top = 120;
+    Object.defineProperty(view.scrollDOM, "scrollTop", {
+      configurable: true,
+      get: () => top,
+      set: (v: number) => (top = v),
+    });
+    view.scrollDOM.scrollLeft = 40;
+    expect(scrollToTop(view)).toBe(true);
+    await frame();
+    expect(top).toBe(0);
+    expect(view.scrollDOM.scrollLeft).toBe(40);
+  });
+
+  it("brings the end of the file toward the middle", async () => {
+    const { view, targets } = scrolls("a\nb|\nc\nd");
+    expect(scrollToBottom(view)).toBe(true);
+    await frame();
+    expect(targets).toEqual([{ from: 7, to: 7, y: "center" }]);
+  });
+
+  it("leaves the carets, the selection and the document as they are", () => {
+    const { view } = scrolls("|a\nb\nc");
+    view.dispatch({ selection: EditorSelection.create([EditorSelection.range(0, 3), EditorSelection.cursor(5)], 1) });
+    const before = view.state.selection;
+    scrollToBottom(view);
+    scrollToTop(view);
+    expect(view.state.selection.eq(before)).toBe(true);
+    expect(view.state.doc.toString()).toBe("a\nb\nc");
+  });
+
+  it("works in an empty file", async () => {
+    const { view, targets } = scrolls("|");
+    scrollToBottom(view);
+    await frame();
+    expect(targets).toEqual([{ from: 0, to: 0, y: "center" }]);
   });
 });
 
