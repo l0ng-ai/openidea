@@ -2220,7 +2220,6 @@
   "Install a plugin folder with": "安装插件文件夹：",
   "Install and Debug": "安装并调试",
   "Reinstall and Debug": "重新安装并调试",
-  "Install gh…": "安装 gh…",
   "Installed": "已安装",
   "Installed packages": "已安装的软件包",
   "Installed plugins": "已安装的插件",
@@ -10628,5 +10627,7 @@
   "Column comment": "列注释",
   "SVG editor layout": "SVG 编辑器布局",
   "Resize SVG preview": "调整 SVG 预览大小",
-  "The SVG source is not valid.": "SVG 源代码无效。"
+  "The SVG source is not valid.": "SVG 源代码无效。",
+  "Install GitHub CLI": "安装 GitHub CLI",
+  "Download manually…": "手动下载…"
 }

@@ -1428,3 +1428,27 @@ fn a_mirror_never_installs_what_it_alone_vouches_for() {
     let err = check_sha256(&archive, &dl(Some(&digest)), Some(&"0".repeat(64)), true, &emit).unwrap_err();
     assert!(err.message.contains("checksum mismatch"), "{}", err.message);
 }
+
+#[cfg(unix)]
+#[test]
+fn managed_gh_is_detected_on_tools_bin_dirs_and_available_to_http() {
+    let env = Env::new();
+    env.script(&env.sys, "curl", "exit 0");
+    let app_data = env.root.parent().unwrap();
+    let gh_bin = env.root.join("gh/bin");
+    assert!(tools_bin_dirs(app_data).contains(&gh_bin));
+
+    let missing = env.tools().info("gh", &[]).unwrap();
+    assert_eq!(missing.kind, ToolKind::Cli);
+    assert_eq!(missing.status, ToolStatus::Missing);
+    assert!(missing.can_install);
+
+    env.script(&gh_bin, "gh", "echo 'gh version 2.106.0 (2026-11-20)'");
+    let installed = env.tools().info("gh", &[]).unwrap();
+    assert_eq!(installed.status, ToolStatus::Installed);
+    assert_eq!(installed.version.as_deref(), Some("2.106.0"));
+    assert!(installed.can_uninstall);
+
+    let http = env.tools().http().unwrap();
+    assert_eq!(http.gh_path(), Some(gh_bin.join("gh").as_path()));
+}

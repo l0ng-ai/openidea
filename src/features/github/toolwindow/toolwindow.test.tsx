@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, render, screen } from "@testing-library/react";
-import { getAction } from "@/platform/actions";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { getAction, registerAction } from "@/platform/actions";
 import { getContext } from "@/platform/context";
 import * as ipc from "@/platform/ipc";
 import { provideToolWindowService, useContributions, type ToolWindowService } from "@/workbench/contributions";
 import { activate } from "../index";
 import { setCurrentRepository } from "../api/client";
 import type { GHRepository, GHUser } from "../api/types";
+import * as repositoryData from "../data/repository";
 import { useGhRepository } from "../data/repository";
 import { PullRequestsTabs, PullRequestsToolWindow } from "./PullRequestsToolWindow";
 import {
@@ -122,10 +123,21 @@ describe("tool window", () => {
     expect(show).toHaveBeenCalledWith("pullRequests", true);
   });
 
-  it("shows gh's state when it is not ready", () => {
-    useGhRepository.setState({ availability: { kind: "notInstalled" } });
-    render(<PullRequestsToolWindow />);
-    expect(screen.getByText("GitHub CLI is not installed")).toBeTruthy();
+  it("shows gh's state when it is not ready and installs gh on click", async () => {
+    const install = vi.fn().mockResolvedValue(undefined);
+    const dispose = registerAction({ id: "tools.install", title: "Install", run: install });
+    const refresh = vi.spyOn(repositoryData, "refreshConnection").mockResolvedValue(undefined);
+    try {
+      useGhRepository.setState({ availability: { kind: "notInstalled" } });
+      render(<PullRequestsToolWindow />);
+      expect(screen.getByText("GitHub CLI is not installed")).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Install GitHub CLI" }));
+      await waitFor(() => expect(install).toHaveBeenCalledWith(expect.objectContaining({ arg: "gh" })));
+      await waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+    } finally {
+      refresh.mockRestore();
+      dispose();
+    }
   });
 
   it("offers the repository selector for several GitHub remotes", () => {

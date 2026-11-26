@@ -7,6 +7,8 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import type { GhAvailability } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
+import { GH_MANUAL_INSTALL_URL, installGhTool } from "@/platform/ghTool";
+import { isCancelled } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { Button, EmptyState, IconButton, Select, Spinner, Tabs, T, showContextMenu, type MenuItem } from "@/ui";
 import { CreatePanel } from "../create/CreatePanel";
@@ -28,6 +30,21 @@ import { closeTab, selectTab, tabId, useGhTabs, type GhTabId } from "./store";
 import styles from "./ToolWindow.module.css";
 
 function Unavailable({ availability }: { availability: GhAvailability }) {
+  const [installingGh, setInstallingGh] = useState(false);
+  const [installError, setInstallError] = useState<string | null>(null);
+  const installGh = () => {
+    if (installingGh) return;
+    setInstallingGh(true);
+    setInstallError(null);
+    void installGhTool()
+      .promise.then((installed) => {
+        if (installed) void refreshConnection();
+      })
+      .catch((e: unknown) => {
+        if (!isCancelled(e)) setInstallError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => setInstallingGh(false));
+  };
   const retry = (
     <Button size="small" onClick={() => void refreshConnection()}>
       <T>Retry</T>
@@ -40,15 +57,24 @@ function Unavailable({ availability }: { availability: GhAvailability }) {
           title="GitHub CLI is not installed"
           actions={
             <>
-              <Button size="small" onClick={() => void openInBrowser("https://cli.github.com")}>
-                <T>Install gh…</T>
+              <Button size="small" variant="primary" disabled={installingGh} onClick={installGh}>
+                {installingGh ? (
+                  <>
+                    <Spinner size={12} /> <T>Installing…</T>
+                  </>
+                ) : (
+                  <T>Install GitHub CLI</T>
+                )}
+              </Button>
+              <Button size="small" onClick={() => void openInBrowser(GH_MANUAL_INSTALL_URL)}>
+                <T>Download manually…</T>
               </Button>
               {retry}
             </>
           }
         >
           <T>Pull requests use the</T> <code>gh</code> <T>command line tool. Install it, then run</T>{" "}
-          <code>gh auth login</code>.
+          <code>gh auth login</code>.{installError && <div className={styles.hint}>{installError}</div>}
         </EmptyState>
       );
     case "notLoggedIn":
