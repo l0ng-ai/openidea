@@ -24,6 +24,22 @@ import { installKeyboardDispatcher } from "@/platform/keymap";
 import { TEXT_WHEN } from "./actions";
 import { EDITOR_WHEN } from "@/editor/lsp/actions";
 import { setShownLine } from "@/editor/api";
+import { registerProjectActions } from "@/features/project-tree/actions";
+
+/** `isTauri` is a spy (File Color writes need it true); the settings commands stand in for the backend. */
+const ipc = vi.hoisted(() => ({
+  isTauri: vi.fn(() => false),
+  settingsSet: vi.fn(async () => ({ status: "ok" as const, data: {} })),
+  settingsGet: vi.fn(async () => ({})),
+}));
+vi.mock("@/platform/ipc", async (orig) => {
+  const real = await orig<typeof import("@/platform/ipc")>();
+  return {
+    ...real,
+    isTauri: ipc.isTauri,
+    commands: { ...real.commands, settingsSet: ipc.settingsSet, settingsGet: ipc.settingsGet },
+  };
+});
 
 let ctrl: EditorController | null = null;
 
@@ -422,6 +438,42 @@ describe("EditorController", () => {
     expect(pane().tabs.map((t) => t.input.path)).toEqual(["/p/a.ts", "/p/c.ts"]);
   });
 
+  it("offers the project view's File Color submenu through actions", async () => {
+    useProject.setState({
+      project: { name: "p", root: "/p", trusted: true, isGit: false, settings: {} } as never,
+      settings: {} as never,
+    });
+    ipc.isTauri.mockReturnValue(true);
+    const disposeActions = registerProjectActions();
+    try {
+      ctrl = new EditorController(createMemoryBackend({ "/p/a.ts": "", "/p/b.ts": "" }));
+      ctrl.start();
+      await ctrl.openFile("/p/a.ts", { focus: false });
+      const pane = () => useTabs.getState().panes[useTabs.getState().activePane]!;
+      const raw = ctrl!.tabMenu(pane().id, pane().tabs[0]!);
+      const entry = raw.find((i) => "label" in i && i.label === "File Color");
+      expect(entry).toBeDefined();
+      const items = resolveMenuItems((entry as { submenu: typeof raw }).submenu);
+      expect(items.map((i) => i.label)).toEqual([
+        "Blue",
+        "Green",
+        "Orange",
+        "Rose",
+        "Violet",
+        "Yellow",
+        "Gray",
+        "Edit File Colors…",
+      ]);
+      items.find((i) => i.label === "Blue")!.run!();
+      await vi.waitFor(() => expect(ipc.settingsSet).toHaveBeenCalledTimes(2));
+      expect(ipc.settingsSet).toHaveBeenNthCalledWith(1, "project", "scopes", expect.stringContaining('"file:a.ts"'));
+      expect(ipc.settingsSet).toHaveBeenNthCalledWith(2, "project", "fileColors", expect.stringContaining("blue"));
+      ipc.isTauri.mockReturnValue(false);
+      useProject.setState({ project: null, settings: null });
+    } finally {
+      disposeActions();
+    }
+  });
   it("keeps editor tabs and unsaved documents through attach and detach", async () => {
     const settings = {};
     useProject.setState({
