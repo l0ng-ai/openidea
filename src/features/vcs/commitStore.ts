@@ -450,30 +450,37 @@ export async function setAmend(on: boolean, target: EarlierAmend | null = null) 
     if (data) scheduleDraft();
     return;
   }
-  // With several repositories the commit to amend is ambiguous: as in IDEA, no message is
-  // loaded, and the one typed amends each repository's HEAD.
-  if (!target && roots.length > 1) return;
   const current = () => request === amendRequest && useCommit.getState().amend && useVcs.getState().root === project;
   let head = target?.commit;
-  const source = previewRoot ?? amendedRepository();
-  try {
-    if (!head && source !== undefined)
-      [head] = await call(
-        commands.vcsLog(source, {
-          branch: "HEAD",
-          path: null,
-          author: null,
-          text: null,
-          range: null,
-          skip: 0,
-          limit: 1,
-        }),
-      );
-  } catch {
-    // No commits yet.
+  let messages = head ? [head.message] : [];
+  if (!head) {
+    // As IDEA: the single root's HEAD; with several, the HEAD of each repository the included
+    // files belong to (their messages joined), and none while nothing is included.
+    const sources = previewRoot ? [previewRoot] : amendedRepositories();
+    const heads = await Promise.all(
+      sources.map((repo) =>
+        call(
+          commands.vcsLog(repo, {
+            branch: "HEAD",
+            path: null,
+            author: null,
+            text: null,
+            range: null,
+            skip: 0,
+            limit: 1,
+          }),
+        ).then(
+          ([commit]) => commit,
+          // No commits yet.
+          () => undefined,
+        ),
+      ),
+    );
+    if (previewRoot) head = heads[0];
+    messages = heads.flatMap((commit) => (commit ? [commit.message] : []));
   }
   if (!current()) return;
-  const last = head?.message.replace(/\s+$/, "");
+  const last = [...new Set(messages.map((m) => m.replace(/\s+$/, "")).filter((m) => m.trim()))].join("\n");
   const beforeMessage = useCommit.getState().message;
   if (last && beforeMessage.trim() !== last.trim()) {
     if (!amendData) rememberMessage(beforeMessage);
@@ -512,14 +519,10 @@ export async function setAmend(on: boolean, target: EarlierAmend | null = null) 
   if (current()) useCommit.setState({ amendPreview: null });
 }
 
-/**
- * The repository whose last commit Commit would amend: the one holding the included
- * files (the selected one when none are; `null` is the primary one). With several, there
- * is no single message to load.
- */
-function amendedRepository(): string | null | undefined {
-  const repos = currentPlan().repositories;
-  return repos.length === 1 ? repos[0] : undefined;
+/** With several repositories, those holding the included files; none while nothing is included. */
+function amendedRepositories(): Array<string | null> {
+  const plan = currentPlan();
+  return plan.included.length ? plan.repositories : [];
 }
 
 function resetAmendDraft() {

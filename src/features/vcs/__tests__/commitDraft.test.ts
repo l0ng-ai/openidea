@@ -221,7 +221,7 @@ describe("commit message draft (#4423)", () => {
     expect(useCommit.getState()).toMatchObject({ author: "", authorDate: scoped.authorDate, amend: false });
   });
 
-  it("loads no message for Amend with several repositories (#6149)", async () => {
+  it("loads no message for Amend with several repositories while nothing is included (#6149)", async () => {
     useVcs.setState({ root: "/a", roots: ["/a", "/a/b"] });
     type("my draft");
     await setAmend(true);
@@ -248,9 +248,7 @@ describe("commit message draft (#4423)", () => {
     let complete!: (result: { status: string; data: { path: string }[] }) => void;
     vcsCommitFiles.mockImplementation(() => new Promise((resolve) => (complete = resolve)));
     const pending = setAmend(true);
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(vcsCommitFiles).toHaveBeenCalledWith("/a", "head");
+    await vi.waitFor(() => expect(vcsCommitFiles).toHaveBeenCalledWith("/a", "head"));
     await setAmend(false);
     vcsLog.mockResolvedValue({ status: "ok", data: [{ id: "new-head", message: "new commit" }] });
     vcsCommitFiles.mockResolvedValue({ status: "ok", data: [{ path: "current.txt" }] });
@@ -264,7 +262,7 @@ describe("commit message draft (#4423)", () => {
     });
   });
 
-  it("loads the last message of the included files' repository, not the selected one (#6149)", async () => {
+  it("loads the last messages of the included files' repositories, not the selected one (#6149)", async () => {
     const change = (relPath: string): FileStatus => ({
       relPath,
       path: `/p/${relPath}`,
@@ -283,19 +281,19 @@ describe("commit message draft (#4423)", () => {
     expect(message()).toBe("last commit in /p/web");
     await setAmend(false);
 
-    // Files from both repositories: no single commit to take the message from.
-    vcsLog.mockClear();
+    // Files from both repositories: each one's last message, joined, as IDEA.
     useVcs.setState({ status: [change("api/a.txt"), change("web/b.txt")] });
+    await setAmend(true);
+    expect(message().split("\n").sort()).toEqual(["last commit in /p/api", "last commit in /p/web"]);
+    await setAmend(false);
+    expect(message()).toBe("draft");
+
+    // Nothing included: no repository to take a message from.
+    vcsLog.mockClear();
+    useVcs.setState({ status: [] });
     await setAmend(true);
     expect(vcsLog).not.toHaveBeenCalled();
     expect(message()).toBe("draft");
-    await setAmend(false);
-
-    // Nothing included: the selected repository is the one amended.
-    useVcs.setState({ status: [] });
-    await setAmend(true);
-    expect(vcsLog).toHaveBeenCalledWith("/p/api", expect.anything());
-    expect(message()).toBe("last commit in /p/api");
     await setAmend(false);
   });
 
