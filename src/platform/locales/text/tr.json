@@ -2757,6 +2757,7 @@
   "Shelve Silently": "Bildirim Vermeden Rafa Al",
   "Unshelve Silently": "Bildirim Vermeden Raftan Çıkar",
   "Fold Lines Like This": "Buna Benzer Satırları Daralt",
+  "Pause Output": "Çıktıyı Duraklat",
   "Remove All Watches": "İzlenen Tüm İfadeleri Kaldır",
   "GitHub account": "GitHub hesabı",
   "Leave empty to use the active GitHub CLI account. OpenIDEA resolves the token at launch and never stores it.": "Etkin GitHub CLI hesabını kullanmak için boş bırakın. OpenIDEA tokeni başlatma sırasında çözümler ve saklamaz.",

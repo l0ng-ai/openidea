@@ -3474,6 +3474,7 @@
   "Hold Shift to Run, F4 to edit, Delete to remove": "按住 Shift 執行，F4 編輯，Delete 刪除",
   "Send EOF": "傳送 EOF",
   "Fold Lines Like This": "摺疊與此類似的行",
+  "Pause Output": "暫停輸出",
   "Collapse folded lines": "摺疊行",
   "Close Tool Window Tab": "關閉工具視窗分頁",
   "No open files": "沒有開啟的檔案",
