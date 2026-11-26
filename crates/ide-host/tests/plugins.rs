@@ -7010,6 +7010,31 @@ fn markdown_decorations_publish_a_hover_card_and_clear() {
     assert!(f.host.decoration_sets()["decorations"].is_empty());
 }
 
+/// API 1.17: `set-styled` items carry their own colors, normalized by the host, and replace
+/// the set's earlier kind of items.
+#[test]
+fn styled_decorations_carry_normalized_colors() {
+    let f = fixture(Limits::default());
+    f.install(&sample("decorations"));
+    f.run("decorations", "publish", Some("src/notes.txt")).unwrap();
+    f.run("decorations", "styled", Some("src/notes.txt")).unwrap();
+    let sets = f.host.decoration_sets();
+    let set = &sets["decorations"][0];
+    assert_eq!(set.set_id, "example");
+    let colors: Vec<_> = set.items.iter().map(|d| (d.style.as_str(), d.colors.clone().unwrap())).collect();
+    assert_eq!(
+        colors,
+        [
+            (
+                "",
+                ide_plugin::DecorationColors { foreground: Some("#1a1a1a".into()), background: Some("#ffeb3b".into()) }
+            ),
+            ("", ide_plugin::DecorationColors { foreground: None, background: Some("#00e5ff80".into()) }),
+        ]
+    );
+    f.run("decorations", "clear", None).unwrap();
+}
+
 // ─── Project window groups ────────────────────────────────────────────────────
 // A group's container root holds only `.openidea` metadata; the files live in
 // the member projects. The plugin surface reaches them like the editor and the

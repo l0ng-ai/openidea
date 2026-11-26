@@ -720,3 +720,101 @@ test("⌘+hover turns existing terminal files and folders into hyperlinks and ro
     .poll(() => page.evaluate(() => (window as unknown as { __revealedInFinder: string[][] }).__revealedInFinder))
     .toEqual([["/tmp/outside-dir"]]);
 });
+
+test("New Terminal Tab in Editor shares ⌘T with Terminal tool window and routes by focus", async ({
+  workbench: page,
+}) => {
+  // 1) Assign ⌘T to New Terminal Tab in Editor in Settings › Keymap.
+  //    Conflict detection should flag Update Project… and NOT New Terminal Tab (disjoint keyWhen).
+  await page.keyboard.press("Meta+,");
+  const settings = page.getByRole("dialog", { name: "Settings", exact: true });
+  await settings.getByRole("treeitem", { name: "Keymap", exact: true }).click();
+  await settings.getByRole("textbox", { name: "Search actions", exact: true }).fill("New Terminal Tab in Editor");
+  const actionTree = settings.getByRole("tree", { name: "Actions" });
+  const row = actionTree.getByRole("treeitem", { name: /New Terminal Tab in Editor/ });
+  await row.click();
+  await settings.getByRole("button", { name: "Add Keyboard Shortcut", exact: true }).click();
+  const shortcutDialog = page.getByRole("dialog", {
+    name: "Keyboard Shortcut: New Terminal Tab in Editor",
+    exact: true,
+  });
+  await expect(shortcutDialog.getByRole("textbox", { name: "First stroke" })).toBeFocused();
+  await page.keyboard.press("Meta+t");
+  const conflicts = shortcutDialog.getByRole("list", { name: "Conflicts:" });
+  await expect(conflicts.getByText("Update Project…", { exact: true })).toBeVisible();
+  await expect(conflicts.getByText("New Terminal Tab", { exact: true })).toHaveCount(0);
+  await shortcutDialog.getByRole("button", { name: "OK", exact: true }).click();
+  const warning = page.getByRole("dialog", { name: "Warning", exact: true });
+  await warning.getByRole("button", { name: "Remove", exact: true }).click();
+  await settings.getByRole("button", { name: "OK", exact: true }).click();
+  await expect(settings).toBeHidden();
+
+  // Open a file, the Terminal tool window, and the Agents tool window.
+  await page.evaluate(async () => {
+    const contributions = "/src/workbench/contributions.ts";
+    const editor = (await import(contributions)).editorService();
+    await editor.openFile("/dev/acme-api/App.tsx", { focus: false });
+    const store = "/src/workbench/toolwindows/store.ts";
+    const layout = await import(store);
+    layout.setToolWindowSize("bottom", 220);
+    layout.showToolWindow("agents", false);
+    layout.showToolWindow("terminal", true);
+  });
+
+  const terminal = page.getByRole("region", { name: "Terminal", exact: true });
+  const termStrip = terminal.getByRole("tablist", { name: "Terminal sessions" });
+  const editorArea = page.locator("[data-editor-area]");
+  const editorTabs = page.getByRole("tablist", { name: "Editor tabs" });
+
+  await expect(terminal.locator(".xterm-helper-textarea")).toBeFocused();
+  await expect(termStrip.getByRole("tab")).toHaveCount(1);
+  await expect(editorTabs.getByRole("tab")).toHaveText(["App.tsx"]);
+
+  // 2) Focus in Terminal tool window: ⌘T opens a new tab in the Terminal tool window.
+  await page.keyboard.press("Meta+t");
+  await expect(termStrip.getByRole("tab")).toHaveCount(2);
+  await expect(terminal.getByRole("tabpanel", { name: "Local (2)" }).locator(".xterm-helper-textarea")).toBeFocused();
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  await expect(editorTabs.getByRole("tab")).toHaveText(["App.tsx"]);
+
+  // 3) Focus in Terminal Find Bar: ⌘T does not accidentally open an editor terminal tab.
+  await page.keyboard.press("Meta+f");
+  const findInput = terminal.getByRole("textbox", { name: "Find in terminal" });
+  await expect(findInput).toBeFocused();
+  await page.keyboard.press("Meta+t");
+  await expect(editorTabs.getByRole("tab")).toHaveText(["App.tsx"]);
+  await page.keyboard.press("Escape");
+  await expect(terminal.locator(".xterm-helper-textarea:focus")).toHaveCount(1);
+
+  // 4) Focus in a code editor file: ⌘T opens a new terminal tab in the editor area with focus in xterm.
+  await editorArea.locator(".cm-content").click();
+  await expect(editorArea.locator(".cm-content")).toBeFocused();
+  await page.keyboard.press("Meta+t");
+  await expect(editorTabs.getByRole("tab")).toHaveText(["App.tsx", "Local (3)"]);
+  await expect(editorArea.locator(".xterm-helper-textarea:focus")).toHaveCount(1);
+  await expect(termStrip.getByRole("tab")).toHaveCount(2);
+
+  // 5) Focus inside that editor terminal tab: ⌘T opens another terminal tab in the editor area.
+  await page.keyboard.press("Meta+t");
+  await expect(editorTabs.getByRole("tab")).toHaveText(["App.tsx", "Local (3)", "Local (4)"]);
+  await expect(editorArea.locator(".xterm-helper-textarea:focus")).toHaveCount(1);
+  await expect(termStrip.getByRole("tab")).toHaveCount(2);
+
+  // 6) Focus in another tool window (Agents): ⌘T opens a new terminal tab in the editor area.
+  const agents = page.getByRole("region", { name: "Agents", exact: true });
+  await expect(agents).toBeVisible();
+  await agents.click({ position: { x: 24, y: 24 } });
+  await expect(agents).toBeFocused();
+  await page.keyboard.press("Meta+t");
+  await expect(editorTabs.getByRole("tab")).toHaveText(["App.tsx", "Local (3)", "Local (4)", "Local (5)"]);
+  await expect(editorArea.locator(".xterm-helper-textarea:focus")).toHaveCount(1);
+  await expect(termStrip.getByRole("tab")).toHaveCount(2);
+
+  // 7) Popup open (Find Action): ⌘T does not spawn a terminal behind the popup.
+  await page.keyboard.press("Meta+Shift+a");
+  const popup = page.getByRole("dialog", { name: "Search Everywhere" });
+  await expect(popup).toBeVisible();
+  await page.keyboard.press("Meta+t");
+  await expect(editorTabs.getByRole("tab")).toHaveText(["App.tsx", "Local (3)", "Local (4)", "Local (5)"]);
+  await page.keyboard.press("Escape");
+});

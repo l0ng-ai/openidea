@@ -402,6 +402,7 @@ export async function importJetBrainsSettings(path: string) {
   if (button !== "import") return;
   let settings = useProject.getState().settings;
   for (const [key, value] of plan.writes)
+    // oxlint-disable-next-line no-await-in-loop -- each write updates the settings value stored once at the end
     settings = await call(commands.settingsSet("global", key, JSON.stringify(value)));
   useProject.setState({ settings });
   notifications().notify({ level: "info", title: "Settings imported", body: path, key: "app.settingsImport" });

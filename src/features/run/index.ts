@@ -4,6 +4,7 @@
  */
 import { registerEditorContribution } from "@/editor/api";
 import { executeAction, executeActionOrThrow, getAction, registerActions } from "@/platform/actions";
+import { useBuildModel } from "@/platform/buildModel";
 import { getContext, setContext, useContextKeys } from "@/platform/context";
 import { call, commands, onIdeEvent, type RunConfig } from "@/platform/ipc";
 import { projectFolder, useProject } from "@/platform/project";
@@ -63,10 +64,10 @@ import {
 } from "./services";
 import { liveServiceSession, serviceSessions } from "./serviceSessions";
 import { ServiceImportHost } from "./serviceImport";
-import { cmakeBuildId } from "./cmake";
+import { selectedBuildTarget } from "./buildTarget";
 import { configurationChecks } from "./configurationChecks";
 import { runBeforeLaunch } from "./beforeLaunch";
-import { compoundChildren } from "./configs";
+import { compoundChildren, createdConfigs } from "./configs";
 import { containerDebuggable, remoteDebugBlocked } from "./remote";
 import { debugInContainer } from "./containerDebug";
 import { isDebugOnly, registerBuiltinTypes } from "./types";
@@ -818,6 +819,15 @@ export function activate(): () => void {
         run: () => testTree.toggleDurations?.(),
       },
       {
+        id: "run.toggleSelectFirstFailedTest",
+        title: "Select First Failed Test When Finished",
+        category: "Run",
+        when: "projectOpen",
+        enabled: () => testTree.toggleSelectFirstFailed !== null,
+        toggled: () => testTree.selectFirstFailed === true,
+        run: () => testTree.toggleSelectFirstFailed?.(),
+      },
+      {
         id: "run.reloadConfigs",
         title: "Reload Run Configurations",
         category: "Run",
@@ -919,17 +929,18 @@ export function activate(): () => void {
       {
         id: "run.createConfig",
         title: "Create Run Configuration",
-        description: "Saves the given `RunConfig` as a user configuration and opens it in Edit Configurations.",
+        description:
+          "Saves the given `RunConfig` as a user configuration and opens it in Edit Configurations; a saved one with its id opens unchanged.",
         category: "Run",
         hidden: true,
         when: "projectOpen",
         run: async ({ arg }) => {
           if (!arg || typeof arg !== "object") return;
           await ensureConfigs();
-          const config: RunConfig = { ...(arg as RunConfig), detected: false };
+          const config = arg as RunConfig;
           const { configs, temporary } = useRun.getState();
-          const user = configs.filter((c) => !c.detected && !temporary.includes(c.id) && c.id !== config.id);
-          await saveUserConfigs([...user, config]);
+          const created = createdConfigs(configs, temporary, config);
+          if (created) await saveUserConfigs(created);
           selectConfig(config.id);
           useRun.setState({ editorOpen: true, chooserOpen: false, editTarget: config.id });
         },
@@ -937,16 +948,40 @@ export function activate(): () => void {
     ]),
     onIdeEvent("runExited", (e) => onRunExited(e.run, e.code)),
     onIdeEvent("projectRootsChanged", scheduleReload),
-    // Lets other title items follow the selected configuration (e.g. Build shows only for compiled ones).
-    useRun.subscribe((s) => {
-      const selected = s.configs.find((c) => c.id === s.selectedId);
-      setContext("run.selectedKind", selected?.kind ?? "");
-      const cmake = selected ?? s.configs.find((c) => c.kind === "cmake" && c.args[0] === "--build");
-      setContext("run.cmakeBuild", cmakeBuildId(cmake, s.configs));
-      setContext("run.updatableRunning", updatableSessions().length > 0);
-      syncFlutterRunApps(s.sessions);
-      setContext("run.flutterHotReloadable", !!hotReloadSession());
-    }),
+    // Lets other title items follow the selected configuration (e.g. Build targets the selected run configuration).
+    (() => {
+      const syncBuildTarget = () => {
+        const s = useRun.getState();
+        const selected = s.configs.find((c) => c.id === s.selectedId);
+        const projectRoot = useProject.getState().project?.root ?? null;
+        const gradle = useBuildModel.getState().model?.gradle ?? [];
+        const build = selectedBuildTarget(selected, s.configs, projectRoot, gradle);
+        setContext("run.selectedKind", selected?.kind ?? "");
+        setContext("run.cmakeBuild", build.cmake);
+        setContext("run.buildTarget", build.target);
+        setContext("run.buildTargetName", build.name);
+      };
+      syncBuildTarget();
+      const unsubRun = useRun.subscribe((s) => {
+        syncBuildTarget();
+        setContext("run.updatableRunning", updatableSessions().length > 0);
+        syncFlutterRunApps(s.sessions);
+        setContext("run.flutterHotReloadable", !!hotReloadSession());
+      });
+      const unsubModel = useBuildModel.subscribe(syncBuildTarget);
+      const unsubProject = useProject.subscribe((s, prev) => {
+        if (s.project?.root !== prev.project?.root) syncBuildTarget();
+      });
+      return () => {
+        unsubRun();
+        unsubModel();
+        unsubProject();
+        setContext("run.selectedKind", "");
+        setContext("run.cmakeBuild", null);
+        setContext("run.buildTarget", null);
+        setContext("run.buildTargetName", null);
+      };
+    })(),
     useFlutterRunApps.subscribe(() => setContext("run.flutterHotReloadable", !!hotReloadSession())),
     // Agent tabs (`run_command`): the archive keeps at most Settings' number of them.
     useRun.subscribe((s, prev) => {

@@ -505,7 +505,16 @@ impl Shim {
             "_openidea/context_usage" => {
                 let session = self.session(&params)?;
                 let proc = session.st.lock().proc.clone().ok_or_else(|| internal("Claude Code is not running"))?;
-                rt.block_on(proc.control(json!({ "subtype": "get_context_usage" }))).map_err(internal)
+                let usage = rt.block_on(proc.control(json!({ "subtype": "get_context_usage" }))).map_err(internal)?;
+                // The meter shows the same numbers as these details from now on.
+                let n = |k: &str| usage.get(k).and_then(Value::as_u64);
+                if let (Some(used), Some(size)) = (n("totalTokens"), n("maxTokens").filter(|m| *m > 0)) {
+                    let update = session.st.lock().tr.on_context_usage(used, size);
+                    if let Some(shim) = session.shim() {
+                        shim.notify(vec![update]);
+                    }
+                }
+                Ok(usage)
             }
             "_openidea/stop_task" => {
                 let session = self.session(&params)?;

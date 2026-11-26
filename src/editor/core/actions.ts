@@ -24,11 +24,14 @@ import {
   moveStatementUp,
   nextOccurrence,
   selectAllOccurrences,
+  selectLineAtCaret,
   startNewLine,
   startNewLineBefore,
+  swapSelectionBoundaries,
   toggleCase,
   unselectOccurrence,
 } from "./cm/editing";
+import { cutToLineEnd, deleteToLogicalLineEnd, deleteToLogicalLineStart, hungryBackspace } from "./cm/lineDeletion";
 import {
   emptyStack,
   extendSelection,
@@ -37,7 +40,7 @@ import {
   type SimpleRange,
 } from "./model/selectionStack";
 import type { EditorSlot } from "./model/slot";
-import type { Tab } from "./model/tabs";
+import type { SplitEdge, Tab } from "./model/tabs";
 import {
   findAgain,
   findPanelTarget,
@@ -54,6 +57,7 @@ import {
   collapseBlock,
   expandToLevelEffects,
   foldAtCaret,
+  foldRegions,
   foldSelection,
   unfoldAtCaret,
 } from "./cm/folding";
@@ -71,13 +75,19 @@ import {
   cursorMatchBrace,
   cursorPageBottom,
   cursorPageTop,
+  cursorParagraphBackward,
+  cursorParagraphForward,
   scrollDown,
+  scrollToBottom,
   scrollToCenter,
+  scrollToTop,
   scrollUp,
   selectCodeBlockEnd,
   selectCodeBlockStart,
   selectPageBottom,
   selectPageTop,
+  selectParagraphBackward,
+  selectParagraphForward,
   splitLine,
 } from "./cm/caretCommands";
 import { isOverwrite, toggleOverwrite } from "./cm/overwrite";
@@ -89,8 +99,13 @@ import { copyReferenceToClipboard, declaredName, qualifiedReference, referenceOf
 import { selectedLineContext, selectedLines } from "./selectedLines";
 import { declarationChain } from "./view/outline";
 import { recordClipboard } from "./clipboardHistory";
-import { useDocMeta, useOutline } from "./model/document";
-import { resetAllEditorsFontZoom, resetConfiguredEditorsFontZoom, stepConfiguredEditorsFontZoom } from "./cm/prefs";
+import { docCommentFolds, useDocMeta, useOutline } from "./model/document";
+import {
+  copyAs,
+  resetAllEditorsFontZoom,
+  resetConfiguredEditorsFontZoom,
+  stepConfiguredEditorsFontZoom,
+} from "./cm/prefs";
 import { useProject } from "@/platform/project";
 import { call, commands } from "@/platform/ipc";
 import { editorPrefs } from "@/platform/editorSettings";
@@ -501,6 +516,10 @@ function foldLevel(view: EditorView, level: number, all: boolean) {
   view.dispatch({ effects, selection: hiding ? { anchor: hiding.from } : undefined });
 }
 
+function foldDocComments(view: EditorView, slot: EditorSlot, collapse: boolean) {
+  return foldRegions(view, docCommentFolds(view.state, slot.model.info), collapse);
+}
+
 // --- cyclic expand word / copy reference ------------------------------------------------
 
 /** Text of the other open documents for Cyclic Expand Word (bounded). */
@@ -822,6 +841,21 @@ export function registerEditorActions(): () => void {
       if (t) await close(t.paneId, t.tabId);
     },
   });
+  /** The tab menu's Split and Move item for the active tab; a lone tab cannot leave its group. */
+  const splitAndMove = (id: string, title: string, edge: SplitEdge): Action => ({
+    id,
+    title,
+    category: "Window",
+    when: TABS_WHEN,
+    enabled: () => {
+      const t = activePaneTab();
+      return !!t && (useTabs.getState().panes[t.paneId]?.tabs.length ?? 0) > 1;
+    },
+    run: () => {
+      const t = activePaneTab();
+      if (t) ctrl.moveTabToSplit(t.paneId, t.tabId, t.paneId, edge);
+    },
+  });
   const occurrence = (id: string, title: string, run: (view: EditorView) => unknown): Action => ({
     id,
     title,
@@ -867,6 +901,23 @@ export function registerEditorActions(): () => void {
     edit("code.duplicateLine", "Duplicate Line or Selection", (v) => duplicateLineOrSelection(v)),
     edit("code.duplicateEntireLines", "Duplicate Entire Lines", (v) => duplicateEntireLines(v)),
     edit("code.deleteLine", "Delete Line", (v) => deleteLine(v)),
+    // Their keys (⌃K, ⇧⌘⌦) also edit a popup's text field, so they run only in a focused editor.
+    edit("code.deleteToLineStart", "Delete to Line Start", (v) => deleteToLogicalLineStart(v), {
+      category: "Editor Actions",
+      keyWhen: "editorTextFocus || diffEditorFocus",
+    }),
+    edit("code.deleteToLineEnd", "Delete to Line End", (v) => deleteToLogicalLineEnd(v), {
+      category: "Editor Actions",
+      keyWhen: "editorTextFocus || diffEditorFocus",
+    }),
+    edit("code.cutLineEnd", "Cut up to Line End", (v) => cutToLineEnd(v), {
+      category: "Editor Actions",
+      keyWhen: "editorTextFocus || diffEditorFocus",
+    }),
+    edit("code.hungryBackspace", "Hungry Backspace", (v) => hungryBackspace(v), {
+      category: "Editor Actions",
+      keyWhen: "editorTextFocus || diffEditorFocus",
+    }),
     edit("code.moveLineUp", "Move Line Up", (v) => moveLineUp(v)),
     edit("code.moveLineDown", "Move Line Down", (v) => moveLineDown(v)),
     edit("code.moveElementLeft", "Move Element Left", (v) => moveElementLeft(v), {
@@ -912,6 +963,17 @@ export function registerEditorActions(): () => void {
       category: "Edit",
       icon: "paste",
     }),
+    // Copy once in the format Settings › Editor › General › Rich-Text Copy doesn't give.
+    text("code.copyAsPlainText", "Copy as Plain Text", (v) => copyAs(v, "plain"), {
+      category: "Edit",
+      icon: "copy",
+      keywords: ["without formatting", "rich text"],
+    }),
+    text("code.copyAsRichText", "Copy as Rich Text", (v) => copyAs(v, "rich"), {
+      category: "Edit",
+      icon: "copy",
+      keywords: ["html", "syntax colors", "formatting"],
+    }),
     {
       id: "editor.toggleSoftWrap",
       title: "Soft-Wrap",
@@ -941,6 +1003,14 @@ export function registerEditorActions(): () => void {
     }),
     text("code.foldAll", "Collapse All", (v) => collapseAll(v), { category: "Folding", icon: "collapse-all" }),
     text("code.unfoldAll", "Expand All", (v) => expandAll(v), { category: "Folding", icon: "expand-all" }),
+    text("code.expandDocComments", "Expand Doc Comments", (v, slot) => foldDocComments(v, slot, false), {
+      category: "Folding",
+      keywords: ["unfold", "documentation comments", "javadoc"],
+    }),
+    text("code.collapseDocComments", "Collapse Doc Comments", (v, slot) => foldDocComments(v, slot, true), {
+      category: "Folding",
+      keywords: ["fold", "documentation comments", "javadoc"],
+    }),
     text("code.collapseRecursively", "Collapse Recursively", (v) => collapseRecursively(v), {
       category: "Folding",
       keywords: ["fold"],
@@ -958,6 +1028,8 @@ export function registerEditorActions(): () => void {
     caret("editor.scrollToCenter", "Scroll to Center", (v) => scrollToCenter(v), { category: "Editor Actions" }),
     caret("editor.scrollUp", "Scroll Up", (v) => scrollUp(v), { category: "Editor Actions" }),
     caret("editor.scrollDown", "Scroll Down", (v) => scrollDown(v), { category: "Editor Actions" }),
+    caret("editor.scrollToTop", "Scroll to Top", (v) => scrollToTop(v), { category: "Editor Actions" }),
+    caret("editor.scrollToBottom", "Scroll to Bottom", (v) => scrollToBottom(v), { category: "Editor Actions" }),
     caret("editor.moveToPageTop", "Move Caret to Page Top", (v) => cursorPageTop(v), { category: "Editor Actions" }),
     caret("editor.moveToPageBottom", "Move Caret to Page Bottom", (v) => cursorPageBottom(v), {
       category: "Editor Actions",
@@ -990,6 +1062,24 @@ export function registerEditorActions(): () => void {
       {
         category: "Editor Actions",
       },
+    ),
+    caret("editor.paragraphForward", "Move Caret Forward a Paragraph", (v) => cursorParagraphForward(v), {
+      category: "Editor Actions",
+    }),
+    caret("editor.paragraphBackward", "Move Caret Backward a Paragraph", (v) => cursorParagraphBackward(v), {
+      category: "Editor Actions",
+    }),
+    caret(
+      "editor.paragraphForwardWithSelection",
+      "Move Caret Forward a Paragraph with Selection",
+      (v) => selectParagraphForward(v),
+      { category: "Editor Actions" },
+    ),
+    caret(
+      "editor.paragraphBackwardWithSelection",
+      "Move Caret Backward a Paragraph with Selection",
+      (v) => selectParagraphBackward(v),
+      { category: "Editor Actions" },
     ),
     text("editor.contextInfo", "Context Info", (v) => showContextInfo(v), {
       category: "View",
@@ -1055,6 +1145,11 @@ export function registerEditorActions(): () => void {
     caret("code.addCaretsToLineEnds", "Add Carets to Ends of Selected Lines", (v) => addCaretsToLineEnds(v), {
       category: "Edit",
     }),
+    caret("editor.swapSelectionBoundaries", "Swap Selection Boundaries", (v) => swapSelectionBoundaries(v), {
+      category: "Editor Actions",
+      keywords: ["anchor", "exchange point and mark"],
+    }),
+    caret("editor.selectLine", "Select Line at Caret", (v) => selectLineAtCaret(v), { category: "Editor Actions" }),
     occurrence("code.unselectOccurrence", "Unselect Occurrence", unselectOccurrence),
     text("code.pasteFromHistory", "Paste from History…", (v) => pasteFromHistory(v), {
       category: "Edit",
@@ -1377,6 +1472,8 @@ export function registerEditorActions(): () => void {
       when: "editorTabsOpen",
       run: () => ctrl.split(useTabs.getState().activePane, "column"),
     },
+    splitAndMove("editor.splitAndMoveRight", "Split and Move Right", "right"),
+    splitAndMove("editor.splitAndMoveDown", "Split and Move Down", "bottom"),
     {
       id: "editor.nextSplitter",
       title: "Go to Next Splitter",

@@ -182,18 +182,33 @@ describe("build feature", () => {
     useProject.setState({ project: null, settings: null });
     setContext("projectOpen", false);
     setContext("run.cmakeBuild", null);
+    setContext("run.buildTarget", null);
+    setContext("run.buildTargetName", null);
+    setContext("run.selectedKind", "");
+    setContext("build.maven", false);
+    setContext("build.gradle", false);
     clearContext("editorPath");
   });
 
   it("shows the CMake hammer and builds the selected target through the shared action", async () => {
     setContext("run.cmakeBuild", "cmake:release:hello:build");
+    setContext("run.buildTargetName", "hello [Release]");
     render(<BuildTitleItem />);
-    expect(screen.getByRole("button", { name: "Build Project" })).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Build Project" }));
+    const button = screen.getByRole("button", { name: "Build 'hello [Release]'" });
+    expect(button).toBeVisible();
+    fireEvent.click(button);
     await act(async () => {});
     expect(fake.calls.at(-1)).toMatchObject({ cmake: "cmake:release:hello:build" });
     await act(async () => {
       fake.resolve(result([], true));
+    });
+    // Rerun repeats the same CMake target.
+    const rerun = rerunBuild();
+    await act(async () => {});
+    expect(fake.calls.at(-1)).toMatchObject({ cmake: "cmake:release:hello:build" });
+    await act(async () => {
+      fake.resolve(result([], true));
+      await rerun;
     });
     const explicit = executeAction("build.buildProject", { cmake: "cmake:debug:other:build", activate: false });
     await act(async () => {});
@@ -201,6 +216,44 @@ describe("build feature", () => {
     await act(async () => {
       fake.resolve(result([], true));
       await explicit;
+    });
+  });
+
+  it("builds the selected run configuration's module from the toolbar hammer while Cmd+F9 builds the project", async () => {
+    setContext("run.buildTarget", "/p/fixtures/java-app");
+    setContext("run.buildTargetName", "App");
+    setContext("run.selectedKind", "application");
+    render(<BuildTitleItem />);
+    const button = screen.getByRole("button", { name: "Build 'App'" });
+    expect(button).toBeVisible();
+    fireEvent.click(button);
+    await act(async () => {});
+    expect(fake.calls.at(-1)).toEqual({ kind: "build", file: "/p/fixtures/java-app", clear: [] });
+    await act(async () => {
+      fake.resolve(result([], true));
+    });
+
+    // Build Project action keeps project-wide semantics (`file: null`).
+    const projectBuild = executeAction("build.buildProject");
+    await act(async () => {});
+    expect(fake.calls.at(-1)).toEqual({ kind: "build", file: null, clear: [] });
+    await act(async () => {
+      fake.resolve(result([], true));
+      await projectBuild;
+    });
+  });
+
+  it("falls back to Build Project on the hammer when no module target is selected in a Maven project", async () => {
+    setContext("build.maven", true);
+    setContext("run.selectedKind", "");
+    render(<BuildTitleItem />);
+    const button = screen.getByRole("button", { name: "Build Project" });
+    expect(button).toBeVisible();
+    fireEvent.click(button);
+    await act(async () => {});
+    expect(fake.calls.at(-1)).toEqual({ kind: "build", file: null, clear: [] });
+    await act(async () => {
+      fake.resolve(result([], true));
     });
   });
 
@@ -269,6 +322,32 @@ describe("build feature", () => {
     });
     expect(notes.at(-1)).toMatchObject({ level: "info", title: "Build completed successfully in 3 s" });
     expect(show).toHaveBeenCalledTimes(3);
+  });
+
+  it("says how many earlier lines the console line cap discarded", async () => {
+    const run = startBuild("build");
+    await act(async () => {});
+    render(<BuildView />);
+    await act(async () => {
+      fake.emit!({ kind: "started", system: "maven", title: "demo" });
+      fake.emit!({ kind: "output", text: "line\n".repeat(MAX_CONSOLE_LINES + 5_000), stderr: false });
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    expect(useBuildRun.getState().lines).toHaveLength(MAX_CONSOLE_LINES);
+    expect(screen.getByText("5,000 earlier lines were discarded")).toBeInTheDocument();
+    await act(async () => {
+      fake.resolve(result([], true));
+      await run;
+    });
+
+    // The next build starts with an empty console and no notice.
+    const second = startBuild("build");
+    await act(async () => {});
+    expect(screen.queryByText(/earlier lines were discarded/)).not.toBeInTheDocument();
+    await act(async () => {
+      fake.resolve(result([], true));
+      await second;
+    });
   });
 
   it.each([

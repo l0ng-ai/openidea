@@ -178,6 +178,18 @@ pub struct TableDetails {
     pub triggers: Vec<TriggerInfo>,
 }
 
+/// One object privilege on a table: `grantee` may run `privilege` (`SELECT`, …), granted
+/// by `grantor` (unknown on MySQL), and may grant it on when `grantable`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+#[serde(rename = "DbTableGrant")]
+pub struct TableGrant {
+    pub grantee: String,
+    pub grantor: Option<String>,
+    pub privilege: String,
+    pub grantable: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 #[serde(rename = "DbCompletionColumn")]
@@ -394,7 +406,7 @@ pub(crate) fn keep_alive(pool: &Arc<Pool>, every: Duration) {
 async fn end_session(session: &Session) {
     let held = session.lock().await.take();
     if let Some(mut conn) = held
-        && (conn.command("ROLLBACK").await.is_err() || conn.restore_default().await.is_err())
+        && (conn.finish_manual(false).await.is_err() || conn.restore_default().await.is_err())
     {
         conn.discard().await;
     }
@@ -658,8 +670,7 @@ impl DbManager {
         let config = self.sources()?.into_iter().find(|s| s.id == id).and_then(|s| s.ssh).map(|s| s.config);
         if let Some(c) = config.filter(|c| !c.trim().is_empty()) {
             let save = self.ssh.config(&c).map(|c| c.save_secret).unwrap_or(save);
-            self.ssh.set_secret(&c, secret, save);
-            return Ok(());
+            return self.ssh.set_secret(&c, secret, save);
         }
         self.remember(self.saved_for(id), secrets::ssh_key(id), secret, save).await
     }
@@ -760,7 +771,9 @@ impl DbManager {
         } else {
             if let Some(s) = ssh_secret {
                 let save = self.ssh.config(config)?.save_secret;
-                self.ssh.set_secret(config, Some(s), save);
+                if let Err(e) = self.ssh.set_secret(config, Some(s), save) {
+                    tracing::warn!("could not save the SSH credential: {}", e.message);
+                }
             }
             self.ssh.session(config).await?
         })
@@ -836,11 +849,18 @@ impl DbManager {
             _ => pool.rows(version, 1).await,
         };
         pool.close().await;
-        let strict =
-            source.external_tunnel.is_some() || matches!(source.driver, DbDriver::Clickhouse | DbDriver::Snowflake);
+        let strict = pool.transaction_read_only()
+            || source.external_tunnel.is_some()
+            || matches!(source.driver, DbDriver::Clickhouse | DbDriver::Snowflake);
         let rows = if strict { result? } else { result.unwrap_or_default() };
         let v = rows.into_iter().next().and_then(|r| r.into_iter().next().flatten());
-        Ok(v.unwrap_or_else(|| "Connected".into()))
+        let mut message = v.unwrap_or_else(|| "Connected".into());
+        if pool.transaction_read_only() {
+            message.push_str(
+                "\nRead-only queries use BEGIN READ ONLY because this endpoint rejected the startup setting.",
+            );
+        }
+        Ok(message)
     }
 
     /// Runs `job` with the client tool at `executable` against target `id`, connected like the
@@ -1156,6 +1176,28 @@ impl DbManager {
         Ok(TableDetails { columns, indexes, foreign_keys, triggers })
     }
 
+    /// The object privileges granted on `table`; empty, without a query, on the engines
+    /// [`sql::table_grants`] doesn't cover.
+    pub async fn table_grants(&self, id: &str, schema: &str, table: &str) -> IdeResult<Vec<TableGrant>> {
+        let pool = self.pool(id).await?;
+        let Some(q) = sql::table_grants(pool.driver(), schema, table) else {
+            return Ok(Vec::new());
+        };
+        Ok(pool
+            .rows(&q, MAX_META_ROWS)
+            .await?
+            .into_iter()
+            .filter_map(|r| {
+                let mut it = r.into_iter();
+                let grantee = it.next().flatten()?;
+                let grantor = it.next().flatten().filter(|g| !g.is_empty());
+                let privilege = it.next().flatten()?.to_ascii_uppercase();
+                let grantable = flag(&it.next().flatten());
+                Some(TableGrant { grantee, grantor, privilege, grantable })
+            })
+            .collect())
+    }
+
     /// The routines and sequences of `schema`.
     pub async fn schema_objects(&self, id: &str, schema: &str) -> IdeResult<SchemaObjects> {
         let pool = self.pool(id).await?;
@@ -1454,6 +1496,22 @@ impl DbManager {
         self.execute_from(id, statement, 0, max_rows, cancel, None).await
     }
 
+    /// Refuses transaction control anywhere in a guarded console script before running its first statement.
+    pub async fn validate_script(&self, id: &str, statements: &[split::SqlStatement]) -> IdeResult<()> {
+        if statements.len() > 1
+            && self.source(id).is_ok_and(|s| s.driver == DbDriver::Postgres && s.read_only)
+            && self.pool(id).await?.transaction_read_only()
+        {
+            for statement in statements {
+                if let Err(error) = conn::validate_pg_read_only(&statement.text) {
+                    self.finish_transaction(id, false).await?;
+                    return Err(IdeError::invalid(error));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// [`execute`](Self::execute), reading past the first `skip` rows without keeping
     /// them: a later page of a result, where only that page is decoded and returned.
     /// `schema` is a query console's active context: the connection that runs the
@@ -1589,16 +1647,23 @@ impl DbManager {
             return p.query_in_schema(statement, skip, max_rows, cancel, schema).await;
         }
         let session = self.sessions.lock().get(id).cloned();
-        if !conn::cursor_statement(statement) {
+        let protected = pool.transaction_read_only();
+        let cursor = protected || conn::cursor_statement(statement);
+        if !cursor || (protected && skip == 0 && paging) {
             // A cursor's open statement could keep this one waiting (a lock), and would show data from before it.
             self.cursors.release_target(id);
         }
-        if paging && session.is_none() && skip > 0 && pool.keeps_cursors() && conn::cursor_statement(statement) {
+        if paging && session.is_none() && (skip > 0 || protected) && pool.keeps_cursors() && cursor {
             let key = conn::CursorKey::new(id, statement, schema);
             let started = std::time::Instant::now();
-            let page = match self.cursors.resume(&key, skip, max_rows, cancel).await {
+            let page = match self.cursors.resume(&key, skip, max_rows, cancel, protected).await {
                 Some(page) => page,
                 None => {
+                    if protected && skip > 0 {
+                        return Err(IdeError::invalid(
+                            "This read-only result is no longer open at this page. Run the query again.",
+                        ));
+                    }
                     let mut held = Held::acquire(&pool).await?;
                     held.apply_context(schema).await?;
                     self.cursors.start(held, pool.clone(), key, skip, max_rows, cancel).await
@@ -1626,10 +1691,32 @@ impl DbManager {
             return Err(IdeError::invalid("ClickHouse manual transactions are unsupported"));
         }
         let mut held = session.lock().await;
+        if pool.transaction_read_only() {
+            // Own the session during awaits so a dropped request cannot return an unfinished transaction.
+            let mut conn = match held.take() {
+                Some(conn) => conn,
+                None => {
+                    let mut conn = Held::acquire(&pool).await?;
+                    conn.begin_manual(pool.driver()).await?;
+                    conn
+                }
+            };
+            let result = async {
+                conn.apply_context(schema).await?;
+                conn.execute_from(&pool, statement, skip, max_rows, cancel).await
+            }
+            .await;
+            if result.is_ok() {
+                *held = Some(conn);
+            } else if cancel.is_cancelled() || conn.finish_manual(false).await.is_err() {
+                conn.discard().await;
+            }
+            return result;
+        }
         if held.is_none() {
             let mut conn = Held::acquire(&pool).await?;
             conn.apply_context(schema).await?;
-            conn.command(conn::begin_statement(pool.driver())).await?;
+            conn.begin_manual(pool.driver()).await?;
             *held = Some(conn);
         }
         let conn = held.as_mut().expect("opened above");
@@ -1675,7 +1762,7 @@ impl DbManager {
         let Some(session) = session else { return Ok(()) };
         let mut held = session.lock().await;
         let Some(mut conn) = held.take() else { return Ok(()) };
-        if let Err(e) = conn.command(if commit { "COMMIT" } else { "ROLLBACK" }).await {
+        if let Err(e) = conn.finish_manual(commit).await {
             // Discarding a Snowflake connection doesn't end its session, which the data source's
             // other targets share: the transaction stays open, so it stays held to be ended again.
             if matches!(conn, conn::Held::Snowflake(..)) {

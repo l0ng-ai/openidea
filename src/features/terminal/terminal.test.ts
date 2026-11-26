@@ -268,12 +268,19 @@ describe("terminal keys", () => {
       ["Ctrl+Shift+K", "vcs.push"],
       ["Shift+Escape", "toolwindow.hideActive"],
       ["Ctrl+W Ctrl+F", "terminal.find"],
+      ["Ctrl+T", "terminal.newInEditor"],
+      ["Ctrl+N", "terminal.new"],
     ];
     expect(isAllowedIdeShortcut("Ctrl+Shift+A", bindings)).toBe(true);
     expect(isAllowedIdeShortcut("Ctrl+N", bindings)).toBe(true);
     expect(isAllowedIdeShortcut("Ctrl+Shift+K", bindings)).toBe(true);
     expect(isAllowedIdeShortcut("Shift+Escape", bindings)).toBe(true);
     expect(isAllowedIdeShortcut("Ctrl+W", bindings)).toBe(true);
+    // terminal.newInEditor only escapes in an editor terminal tab, and terminal.new only in the tool window.
+    expect(isAllowedIdeShortcut("Ctrl+T", bindings, false)).toBe(false);
+    expect(isAllowedIdeShortcut("Ctrl+T", bindings, true)).toBe(true);
+    expect(isAllowedIdeShortcut("Ctrl+N", [["Ctrl+N", "terminal.new"]], false)).toBe(true);
+    expect(isAllowedIdeShortcut("Ctrl+N", [["Ctrl+N", "terminal.new"]], true)).toBe(false);
     // Ctrl+E (end of line) and actions outside the list stay with the shell.
     expect(isAllowedIdeShortcut("Ctrl+E", bindings)).toBe(false);
     expect(isAllowedIdeShortcut("Ctrl+K", bindings)).toBe(false);
@@ -466,6 +473,18 @@ describe("terminalFont", () => {
     expect(family.indexOf('"Microsoft YaHei"')).toBeGreaterThan(family.indexOf('"Symbols Nerd Font"'));
     expect(family).toContain('"PingFang SC", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC"');
     expect(family.endsWith(', "Source Han Sans SC", monospace')).toBe(true);
+  });
+  it("names Latin monospace faces before the CJK ones, whose Latin glyphs are proportional", () => {
+    // A Linux box without the chosen font: Latin must stop at a monospace face, not Noto Sans CJK.
+    for (const font of [
+      terminalFont(t, editor, BASE),
+      terminalFont({ ...t, useEditorFont: false, fontFamily: "Missing Mono" }, editor, BASE),
+    ]) {
+      const at = (face: string) => font.family.indexOf(`"${face}"`);
+      expect(at("DejaVu Sans Mono")).toBeGreaterThan(at("Symbols Nerd Font"));
+      expect(at("Consolas")).toBeLessThan(at("Microsoft YaHei"));
+      expect(at("DejaVu Sans Mono")).toBeLessThan(at("Noto Sans CJK SC"));
+    }
   });
 });
 

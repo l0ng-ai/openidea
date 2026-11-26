@@ -126,6 +126,26 @@ pub fn move_tab_to_new_window(window: &WebviewWindow) -> tauri::Result<()> {
     })
 }
 
+/// Hides `windows` together in a single main-thread turn so a closing window or tab group
+/// disappears at once instead of flipping through remaining tabs while webviews tear down.
+/// Native fullscreen windows are left for AppKit's own Space close transition.
+pub fn hide_windows(windows: Vec<WebviewWindow>) {
+    if windows.is_empty() {
+        return;
+    }
+    let first = windows[0].clone();
+    let _ = on_main(&first, move || {
+        for window in &windows {
+            if window.is_fullscreen().unwrap_or(false) {
+                continue;
+            }
+            if let Some(native) = native(window) {
+                native.orderOut(None);
+            }
+        }
+    });
+}
+
 fn has_tab_bar(view: &objc2_app_kit::NSView) -> bool {
     let class = view.class().name().to_string_lossy();
     class.contains("TabBar") || view.subviews().iter().any(|v| has_tab_bar(&v))

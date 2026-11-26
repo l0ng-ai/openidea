@@ -44,9 +44,16 @@ describe("plugin package inference uses built-in rules", () => {
   });
   it.each(["java", "kt"])("uses source sets reported by a Gradle sync for %s", async (extension) => {
     useProject.setState({ project: { root: "/p", name: "p" } as never });
-    useProjectRoots.setState({ root: "/p", detected: [{ path: "src/gen", kind: "source", detectedFrom: "Gradle" }] });
+    useProjectRoots.setState({
+      root: "/p",
+      detected: [
+        { path: "src/gen", kind: "source", detectedFrom: "Gradle" },
+        { path: "lib/src/gen", kind: "source", detectedFrom: "lib/Gradle" },
+      ],
+    });
     const builtin = BUILTIN_FILE_TEMPLATES.find((t) => t.extension === extension)!;
     expect(await packageFor(builtin, "/p/src/gen/com/acme")).toBe("com.acme");
+    expect(await packageFor(builtin, "/p/lib/src/gen/com/acme")).toBe("com.acme");
   });
   it("keeps the packages of a synced Gradle project's standard source and resource roots", async () => {
     // Root shapes a Gradle sync reports for the default layout.

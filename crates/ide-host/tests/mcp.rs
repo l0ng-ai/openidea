@@ -1572,7 +1572,7 @@ async fn a_run_started_without_confirmation_works_in_a_background_project_and_ho
         id: "serve".into(),
         name: "serve stock".into(),
         kind: "shell".into(),
-        command: "sleep 30".into(),
+        command: "cat".into(),
         args: vec![],
         cwd: None,
         env: Default::default(),
@@ -1598,11 +1598,11 @@ async fn a_run_started_without_confirmation_works_in_a_background_project_and_ho
         // The call still waits for the run: it holds the project first, the run second.
         let held = h.host.mcp_background.snapshot(&h.host, std::time::Instant::now()).remove(0);
         assert_eq!(held.kept_open_by, Some(ide_host::mcp::McpBackgroundHold::Request));
-        h.host.processes.stop(run.id).unwrap();
+        h.host.processes.close_stdin(run.id).unwrap();
     };
     let (result, ()) = tokio::join!(call, observe);
     let result: Value = serde_json::from_str(&result.unwrap()).unwrap();
-    assert!(result["exitCode"].is_number() || result["exitCode"].is_null(), "{result}");
+    assert_eq!(result["exitCode"], 0, "{result}");
     let loaded = h.host.mcp_background.snapshot(&h.host, std::time::Instant::now()).remove(0);
     assert_eq!(loaded.kept_open_by, None, "the call is over and the run has exited");
 }

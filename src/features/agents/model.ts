@@ -1,5 +1,6 @@
 /** Pure helpers: task grouping, entry updates, labels. */
 import type { AgentEntry, AgentStatus, AgentSubagentStatus, AgentTask } from "@/bindings";
+import { isIconName } from "@/ui/icons";
 
 export const SESSION_KIND = "agent-session";
 export const HOME_KIND = "agent-home";
@@ -52,26 +53,6 @@ export function subagentStatusLabel(s: AgentSubagentStatus): string {
   }
 }
 
-const PROVIDER_ICONS = new Set([
-  "claude",
-  "codex",
-  "gemini",
-  "copilot",
-  "cursor",
-  "opencode",
-  "qwen",
-  "qoder",
-  "qodercn",
-  "kimi",
-  "goose",
-  "auggie",
-  "kiro",
-  "vibe",
-  "omp",
-  "deepseek-harness",
-  "hermes",
-]);
-
 /** Suggests an agent-file id for a display name (`"My Agent!"` → `"my-agent"`). */
 export function slugifyId(name: string): string {
   return name
@@ -83,10 +64,18 @@ export function slugifyId(name: string): string {
 /** The agent a Hermes profile runs as: `hermes` for `default`, else `hermes-<slug>` (`hermes -p <name> acp`). */
 export const hermesAgentId = (profile: string) => (profile === "default" ? "hermes" : `hermes-${slugifyId(profile)}`);
 
+/** Providers whose logo is another provider's: legacy and ACP-adapter ids of the same agent. */
+const ICON_ALIASES: Record<string, string> = {
+  "claude-acp": "claude",
+  "codex-acp": "codex",
+  "kimi-code": "kimi",
+  "opencode-v2": "opencode",
+};
+
 /** The agent's logo; custom agents get the generic agents icon, Hermes profiles Hermes'. */
 export function providerIcon(provider: string): string {
-  if (PROVIDER_ICONS.has(provider)) return `agent-${provider}`;
-  return provider.startsWith("hermes-") ? "agent-hermes" : "toolwindow-agents";
+  const id = ICON_ALIASES[provider] ?? (provider.startsWith("hermes-") ? "hermes" : provider);
+  return isIconName(`agent-${id}`) ? `agent-${id}` : "toolwindow-agents";
 }
 
 export interface TaskGroup {

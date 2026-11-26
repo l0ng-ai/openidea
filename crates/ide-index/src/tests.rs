@@ -379,6 +379,23 @@ fn binary_and_huge_files_are_listed_without_symbols() {
 }
 
 #[test]
+fn binary_files_are_classified_from_their_head_and_text_is_read_past_it() {
+    let fx = Fixture::new(&[("img/logo.rs", "")]);
+    let mut binary = b"fn head() {}\0".to_vec();
+    binary.extend(std::iter::repeat_n(b'x', 64 * 1024));
+    std::fs::write(fx.root.join("img/logo.rs"), &binary).unwrap();
+    let long = format!("{}fn past_the_sniff() {{}}\n", "// pad\n".repeat(2000));
+    assert!(long.len() > 8192);
+    fx.write("src/long.rs", &long);
+    let idx = fx.open();
+    assert_eq!(symbols(&idx, "past_the_sniff", SymbolFilter::All), vec!["past_the_sniff"]);
+    assert!(symbols(&idx, "head", SymbolFilter::All).is_empty());
+    let data = idx.shared.data.read();
+    let logo = data.files.iter().flatten().find(|entry| entry.rel.as_ref() == "img/logo.rs").unwrap();
+    assert_eq!(logo.hash, [0; 32], "a binary file is not read whole to be hashed");
+}
+
+#[test]
 fn go_to_file_finds_ignored_files_but_not_their_symbols() {
     let fx = Fixture::new(&[
         (".gitignore", ".env\n*.local.ts\ndist/\n"),

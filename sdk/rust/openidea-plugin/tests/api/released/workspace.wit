@@ -1,4 +1,4 @@
-package openidea:plugin@1.15.0;
+package openidea:plugin@1.17.0;
 
 interface workspace {
     use types.{error, location};
@@ -224,6 +224,21 @@ interface vcs {
     status: func(project: borrow<project>) -> result<option<repository-status>, error>;
     /// Configured remotes (`name`, fetch `url`), in order. Requires `vcs.read`.
     remotes: func(project: borrow<project>) -> result<list<tuple<string, string>>, error>;
+    /// Mapped Git worktree roots within or enclosing this project. Requires vcs.read.
+    roots: func(project: borrow<project>) -> result<list<string>, error>;
+    record repository-info {
+        root: string,
+        /// Resolved path relative to the worktree; empty for its root.
+        relative-path: string,
+        branch: option<string>,
+        commit: option<string>,
+        upstream: option<string>,
+        ahead: u32,
+        remotes: list<tuple<string, string>>,
+    }
+    /// The innermost mapped repository of an existing project file or directory
+    /// (absolute or project-relative), or none outside Git. Requires vcs.read and trust.
+    repository-at: func(project: borrow<project>, path: string) -> result<option<repository-info>, error>;
     /// Fetches all remotes (pruning deleted branches). Requires `vcs.write`.
     /// Long-running: call it inside a task.
     fetch: func(project: borrow<project>) -> result<_, error>;

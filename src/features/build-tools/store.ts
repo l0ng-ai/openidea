@@ -9,7 +9,7 @@ import { confirm } from "@/workbench/messages";
 import { tx } from "@/platform/i18n";
 import { create } from "zustand";
 import { Channel } from "@tauri-apps/api/core";
-import { executeAction } from "@/platform/actions";
+import { executeAction, getAction, isActionEnabled } from "@/platform/actions";
 import { choosePath, choosePaths } from "@/platform/choosePath";
 import {
   call,
@@ -535,6 +535,18 @@ export async function importModuleFromExistingSources() {
       });
       return;
     }
+    const attach = getAction("project.attachFolder");
+    if (!attach || !isActionEnabled(attach)) {
+      // Another root can't be attached here (a remote window): say so instead of offering it.
+      notifications().notify({
+        group: "tools",
+        level: "warning",
+        title: tx`Module was not imported`,
+        body: tx`${name} has no pom.xml or Gradle build file, and a folder outside the project can't be attached as another root in this window. Move it into the project folder, or add a pom.xml or Gradle build file to it.`,
+        key: "module-import-no-attach",
+      });
+      return;
+    }
     if (
       await confirm({
         title: tx`Import Module from Existing Sources`,
@@ -699,6 +711,7 @@ export async function syncTool(tool: BuildTool, buildDir: string | null = null):
               settings.maven.profiles,
             )
           : [];
+      // oxlint-disable-next-line no-await-in-loop -- roots sync in order; cancellation is checked between them and the last model wins
       next = await call(commands.buildSync(tool, request, offline, profiles, dir, channel));
     }
     if (!next) return;
@@ -809,6 +822,7 @@ export async function generateSources(pom?: string | null): Promise<void> {
   const projects = maven.projects.filter((p) => (pom ? p.pom === pom : !p.aggregated));
   let ran = false;
   for (const project of projects) {
+    // oxlint-disable-next-line no-await-in-loop -- goals run one project at a time in the Run tool window and stop on cancellation
     const code = await runToExit(mavenGoalConfig(project, ["generate-sources"], maven, settings.maven));
     if (code === null) return;
     ran ||= code === 0;

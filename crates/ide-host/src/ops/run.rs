@@ -319,6 +319,7 @@ pub async fn run_start(
     on_output: Channel<OutputChunk>,
     request: Option<ide_core::RequestId>,
 ) -> IdeResult<RunInfo> {
+    super::term::apply_output_rate(host, window);
     let on_output: Emit<OutputChunk> = Arc::new(move |chunk| {
         let _ = on_output.send(chunk);
     });

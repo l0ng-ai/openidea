@@ -218,7 +218,7 @@ export const commands = {
 	 *  Async: the process walk runs on the blocking pool, not the main thread.
 	 */
 	appMetrics: () => typedError<AppMetrics, IdeError>(__TAURI_INVOKE("app_metrics")),
-	/**  Quits: closes every window, each of which runs its own unsaved-changes check. */
+	/**  Quits: closes every window in parallel, each of which runs its own unsaved-changes check. */
 	appQuit: () => __TAURI_INVOKE<void>("app_quit"),
 	/**
 	 *  Release notes of `version` from the update manifest (`latest.json`), read
@@ -305,7 +305,7 @@ export const commands = {
 	/**
 	 *  The clipboard's plain text, read natively as [`clipboard_write_text`] writes it: a Paste
 	 *  from a menu has no paste event, and WebKitGTK gives `navigator.clipboard.readText()` no
-	 *  text there (#3041). None on Windows, where the WebView's clipboard is used.
+	 *  text there (#3041); WebView2 asks the user before letting the page read it.
 	 */
 	clipboardText: () => typedError<string | null, IdeError>(__TAURI_INVOKE("clipboard_text")),
 	/**  Copies image pixels to this computer's clipboard, including from remote project windows. */
@@ -391,6 +391,7 @@ export const commands = {
 	dbSources: () => typedError<DataSource_Serialize[], IdeError>(__TAURI_INVOKE("db_sources")),
 	dbStatements: (id: string, text: string, from: number, to: number) => typedError<SqlStatement[], IdeError>(__TAURI_INVOKE("db_statements", { id, text, from, to })),
 	dbTableDetails: (id: string, schema: string, table: string) => typedError<DbTableDetails, IdeError>(__TAURI_INVOKE("db_table_details", { id, schema, table })),
+	dbTableGrants: (id: string, schema: string, table: string) => typedError<DbTableGrant[], IdeError>(__TAURI_INVOKE("db_table_grants", { id, schema, table })),
 	dbTablePage: (request: RequestId, id: string, schema: string, table: string, filter: string | null, sort: DbSortKey[], offset: number, limit: number) => typedError<DbTablePage, IdeError>(__TAURI_INVOKE("db_table_page", { request, id, schema, table, filter, sort, offset, limit })),
 	dbTables: (id: string, schema: string) => typedError<DbTableInfo[], IdeError>(__TAURI_INVOKE("db_tables", { id, schema })),
 	dbTest: (source: DataSource_Deserialize, password: string | null, sshSecret: string | null) => typedError<string, IdeError>(__TAURI_INVOKE("db_test", { source, password, sshSecret })),
@@ -847,7 +848,8 @@ export const commands = {
 	/**
 	 *  The JVM of OpenIDEA's JUnit runner for the module at `module`, given its resolved test classpath:
 	 *  the classpath with the runner and `junit-platform-launcher` of the engine's version (unless the
-	 *  classpath has one; from the engine's repository, else downloaded once from Maven Central), and,
+	 *  classpath has one, or has JUnit 4 alone; from the engine's repository, else downloaded once from
+	 *  Maven Central), and,
 	 *  for a Maven module, what its Surefire configuration gives the forked test JVM.
 	 */
 	javaJunitRunner: (module: string, classPaths: string[]) => typedError<JunitLaunch, IdeError>(__TAURI_INVOKE("java_junit_runner", { module, classPaths })),
@@ -858,8 +860,10 @@ export const commands = {
 	 *  A module with Kotlin / Groovy / Scala sources is built by its build system, whose class directories come first.
 	 *  The build streams its console, messages and progress on `on_event` while it runs; a launch
 	 *  whose build another launch's build joins receives that build's events.
+	 *  A Maven module is built by the IDE's Java build, except for a `debug` launch the language
+	 *  server serves: java-debug's HotSwap reloads the classes the language server compiles.
 	 */
-	javaResolveLaunch: (module: string, test: boolean, policy: BuildPolicy, request: RequestId, onEvent: Channel<BuildEvent>) => typedError<JavaLaunchInfo, IdeError>(__TAURI_INVOKE("java_resolve_launch", { module, test, policy, request, onEvent })),
+	javaResolveLaunch: (module: string, test: boolean, debug: boolean, policy: BuildPolicy, request: RequestId, onEvent: Channel<BuildEvent>) => typedError<JavaLaunchInfo, IdeError>(__TAURI_INVOKE("java_resolve_launch", { module, test, debug, policy, request, onEvent })),
 	/**
 	 *  Downloads the latest `vendor` JDK of Java `version` into `location` (default:
 	 *  [`jdk_download_location`]), streaming progress through `on_event`; cancellable
@@ -1878,6 +1882,8 @@ export const commands = {
 	/**  Ids of the configurations with an open connection. */
 	sshConnected: () => __TAURI_INVOKE<string[]>("ssh_connected"),
 	sshDisconnect: (id: string) => __TAURI_INVOKE<void>("ssh_disconnect", { id }),
+	/**  `Some` means legacy credentials remain in plaintext on this host. */
+	sshLegacyPasswords: (action: LegacyPasswordAction) => typedError<string | null, IdeError>(__TAURI_INVOKE("ssh_legacy_passwords", { action })),
 	/**  Whether connecting with configuration `id` needs a password first. */
 	sshNeedsSecret: (id: string) => typedError<boolean, IdeError>(__TAURI_INVOKE("ssh_needs_secret", { id })),
 	/**
@@ -2279,6 +2285,11 @@ export const commands = {
 	 *  HTML (Settings › File Types can make it so) is served as a page, whatever its extension.
 	 */
 	webUrl: (path: IpcPath) => typedError<string, IdeError>(__TAURI_INVOKE("web_url", { path })),
+	/**
+	 *  Acquires the interactive prompt turn for a batch close and brings this window forward.
+	 *  Returns `false` if the batch was cancelled while waiting.
+	 */
+	windowBeginPrompt: () => __TAURI_INVOKE<boolean>("window_begin_prompt"),
 	windowCloseContext: () => __TAURI_INVOKE<CloseContext>("window_close_context"),
 	/**  Release the opening window's reservation after navigation or cancellation. */
 	windowCompleteLaunch: () => typedError<null, IdeError>(__TAURI_INVOKE("window_complete_launch")),
@@ -2290,6 +2301,8 @@ export const commands = {
 	 *  with whether a target took the files.
 	 */
 	windowDragFiles: (paths: string[]) => typedError<boolean, IdeError>(__TAURI_INVOKE("window_drag_files", { paths })),
+	/**  Releases the interactive prompt turn held by this window. */
+	windowEndPrompt: () => __TAURI_INVOKE<void>("window_end_prompt"),
 	/**
 	 *  Flash (`true`) or stop flashing (`false`) this window's taskbar button, like IDEA when a
 	 *  breakpoint is hit while the window is in the background (macOS bounces the dock icon,
@@ -2369,6 +2382,11 @@ export const commands = {
 	 *  `background` (`#rrggbb`) paints a new window until its page has loaded.
 	 */
 	windowOpenSettings: (page: string | null, newProjects: boolean, background: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("window_open_settings", { page, newProjects, background })),
+	/**
+	 *  Signals that this window passed its close checks and waits for peers closing in the same
+	 *  batch/tab group so they hide together in one frame. Returns `false` if the batch was cancelled.
+	 */
+	windowReadyToClose: () => __TAURI_INVOKE<boolean>("window_ready_to_close"),
 	/**  Appearance › Smooth scrolling for this window's web view (Linux only) */
 	windowSetSmoothScrolling: (enabled: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("window_set_smooth_scrolling", { enabled })),
 	/**  Height of the web title bar in native logical pixels (CSS height × IDE zoom). */
@@ -3020,8 +3038,6 @@ export type AgentSettings_Deserialize = {
 	showUsageLimits?: boolean,
 	/**  What the session has cost so far, as the agent reports it. */
 	showCost?: boolean,
-	/**  A finished turn's work folds into one line under its message, leaving the reply. */
-	foldTurns?: boolean,
 	/**  Streaming text is revealed at a steady pace rather than chunk by chunk. */
 	smoothText?: boolean,
 	/**  Conversations and the composer expand to the full width of the pane instead of staying in a centred column. */
@@ -3065,8 +3081,6 @@ export type AgentSettings_Serialize = {
 	showUsageLimits: boolean,
 	/**  What the session has cost so far, as the agent reports it. */
 	showCost: boolean,
-	/**  A finished turn's work folds into one line under its message, leaving the reply. */
-	foldTurns: boolean,
 	/**  Streaming text is revealed at a steady pace rather than chunk by chunk. */
 	smoothText: boolean,
 	/**  Conversations and the composer expand to the full width of the pane instead of staying in a centred column. */
@@ -3493,6 +3507,8 @@ export type AppearanceSettings_Deserialize = {
 	contrastScrollbars?: boolean,
 	/**  Adjust colours for red-green vision deficiency. */
 	redGreenVision?: boolean,
+	/**  Turn off animations and transitions (also on when the OS asks for reduced motion). */
+	reduceMotion?: boolean,
 	differentToolWindowBackground?: boolean,
 	compactMode?: boolean,
 	/**  IDEA "Use smaller indents in trees": tool window trees indent less per level. */
@@ -3568,6 +3584,8 @@ export type AppearanceSettings_Serialize = {
 	contrastScrollbars: boolean,
 	/**  Adjust colours for red-green vision deficiency. */
 	redGreenVision: boolean,
+	/**  Turn off animations and transitions (also on when the OS asks for reduced motion). */
+	reduceMotion: boolean,
 	differentToolWindowBackground: boolean,
 	compactMode: boolean,
 	/**  IDEA "Use smaller indents in trees": tool window trees indent less per level. */
@@ -3762,6 +3780,8 @@ export type BlameLine_Serialize = {
 export type BlockHistory = {
 	/**  The selected lines in HEAD (0-based, inclusive); None when none of them is committed. */
 	headLines: [number, number] | null,
+	/**  Those lines as HEAD has them, each ending with `\n`; None from servers that predate it. */
+	head?: string | null,
 	revisions: BlockRevision[],
 };
 
@@ -4243,6 +4263,10 @@ export type CloseContext = {
 	quitting: boolean,
 	/**  Number of open project windows (settings windows excluded), including the caller. */
 	windows: number,
+	/**  Whether this window currently has auxiliary document windows that must settle first. */
+	hasDocumentWindows: boolean,
+	/**  Whether this close runs alongside other windows or on a background tab (prompts serialize and raise). */
+	batch: boolean,
 };
 
 export type CodeAction = {
@@ -5569,6 +5593,17 @@ export type DbTableDetails = {
 	triggers: DbTriggerInfo[],
 };
 
+/**
+ *  One object privilege on a table: `grantee` may run `privilege` (`SELECT`, …), granted
+ *  by `grantor` (unknown on MySQL), and may grant it on when `grantable`.
+ */
+export type DbTableGrant = {
+	grantee: string,
+	grantor: string | null,
+	privilege: string,
+	grantable: boolean,
+};
+
 export type DbTableInfo = {
 	name: string,
 	kind: DbTableKind,
@@ -5763,6 +5798,14 @@ export type Decoration = {
 	 *  plain-text fallback shown when this is absent.
 	 */
 	markdownHover: string | null,
+	/**  The item's own colors (API 1.17 `set-styled`), validated `#rrggbb` / `#rrggbbaa`. */
+	colors?: DecorationColors | null,
+};
+
+/**  Colors of a styled editor decoration (API 1.17). */
+export type DecorationColors = {
+	foreground: string | null,
+	background: string | null,
 };
 
 /**  A plugin-owned editor or project-tree decoration set for one file. */
@@ -9282,6 +9325,8 @@ export type Launch_Serialize = {
 	/**  Editor windows: the file to show (Open in New Window → lightweight aux editor). */
 	editor: EditorLaunch_Serialize | null,
 };
+
+export type LegacyPasswordAction = "check" | "retry" | "removePlaintext";
 
 /**  One SDK or library with its source folders (`< Python 3.12 (.venv) >`). */
 export type LibraryGroup = {
@@ -13915,10 +13960,10 @@ export type ToolCallDisplay =
 "each";
 
 /**
- *  Tools › Download sources: a mirror the installer tries when `github.com` is slow or
- *  unreachable.
+ *  Tools › Download sources: mirrors the installer tries, in order, when `github.com` is slow
+ *  or unreachable.
  * 
- *  The mirror is a proxy prefix: the official URL is appended to it unchanged
+ *  A mirror is a proxy prefix: the official URL is appended to it unchanged
  *  (`https://mirror.example/https://github.com/o/r/releases/download/…`), which is what the
  *  public GitHub proxies speak. Only `github.com` downloads are affected — those proxies
  *  hard-code that host, so Eclipse JDT LS and Open VSX keep their official addresses. Empty by
@@ -13926,8 +13971,9 @@ export type ToolCallDisplay =
  */
 export type ToolDownloadSettings = {
 	/**
-	 *  Proxy prefix prepended to `https://github.com/…` archive addresses only; empty keeps
-	 *  every download on its official host.
+	 *  Proxy prefixes prepended to `https://github.com/…` archive addresses only, separated by
+	 *  commas or whitespace and tried in order before the official host; empty keeps every
+	 *  download on its official host.
 	 */
 	githubMirror?: string,
 };

@@ -19,8 +19,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-/// Output is flushed to the UI at most this long after the first unsent byte.
+/// Output is flushed to the UI at most this long after the first unsent byte (Max FPS
+/// Unlimited; a lower setting batches longer, see `ide_core::output_rate`).
 const BATCH_INTERVAL: Duration = Duration::from_millis(4);
+
+fn batch_interval() -> Duration {
+    ide_core::output_rate::batch_interval(BATCH_INTERVAL)
+}
 /// …or as soon as this much text is pending.
 const BATCH_BYTES: usize = 64 * 1024;
 /// After the shell exits, how long to keep draining output still in flight.
@@ -510,13 +515,17 @@ impl TerminalManager {
         }
     }
 
+    /// Detaches every terminal opened by `key` so it can be terminated on a background thread
+    /// without blocking the caller or racing a new project opened in the same window.
+    pub fn detach_key(&self, key: &str) -> DetachedTerminals {
+        let mut sessions = self.sessions.lock();
+        let ids: Vec<TerminalId> = sessions.iter().filter(|(_, s)| s.key == key).map(|(id, _)| *id).collect();
+        DetachedTerminals(ids.into_iter().filter_map(|id| sessions.remove(&id)).collect())
+    }
+
     /// Closes the terminals `key` opened: the project of that window is closing.
     pub fn kill_key(&self, key: &str) {
-        let ids: Vec<TerminalId> =
-            self.sessions.lock().iter().filter(|(_, s)| s.key == key).map(|(id, _)| *id).collect();
-        for id in ids {
-            let _ = self.kill(id);
-        }
+        self.detach_key(key).terminate();
     }
 
     pub fn kill(&self, id: TerminalId) -> IdeResult<()> {
@@ -733,6 +742,17 @@ mod win {
     }
 }
 
+/// Terminal sessions detached from [`TerminalManager`] to be terminated off the caller's thread.
+pub struct DetachedTerminals(Vec<Arc<Session>>);
+
+impl DetachedTerminals {
+    pub fn terminate(self) {
+        for session in self.0 {
+            terminate(&session);
+        }
+    }
+}
+
 /// Hangs up the shell (and its process group), escalating to SIGKILL if it lingers.
 fn terminate(session: &Session) {
     let (writer, killer) = match &session.io {
@@ -892,7 +912,7 @@ fn spawn_pump(
 
         loop {
             let now = Instant::now();
-            let batch_wait = batch_started.map(|t| (t + BATCH_INTERVAL).saturating_duration_since(now));
+            let batch_wait = batch_started.map(|t| (t + batch_interval()).saturating_duration_since(now));
             let drain_wait = drain_deadline.map(|t| t.saturating_duration_since(now));
             let wait = match (batch_wait, drain_wait) {
                 (Some(a), Some(b)) => a.min(b),
@@ -919,7 +939,7 @@ fn spawn_pump(
                     if drain_deadline.is_some_and(|d| Instant::now() >= d) {
                         break;
                     }
-                    if batch_started.is_some_and(|t| t.elapsed() >= BATCH_INTERVAL) {
+                    if batch_started.is_some_and(|t| t.elapsed() >= batch_interval()) {
                         flush(&mut pending, &mut batch_started);
                     }
                 }

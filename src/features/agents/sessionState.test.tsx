@@ -299,9 +299,6 @@ beforeEach(() => {
 
 describe("conversation rows", () => {
   it("keeps authors above messages and their folded work with matching icon-only actions", async () => {
-    useProject.setState({
-      settings: { agents: { foldTurns: false } } as never,
-    });
     const user = (text: string): AgentEntry => ({
       type: "user",
       text,
@@ -396,9 +393,6 @@ describe("conversation rows", () => {
   );
 
   it("puts the time and hover actions under a turn's final reply only", async () => {
-    useProject.setState({
-      settings: { agents: { foldTurns: false } } as never,
-    });
     backend.entries.set("A", [
       {
         type: "user",
@@ -468,13 +462,8 @@ describe("process folding", () => {
 });
 
 describe("tool result images", () => {
-  it.each([
-    ["grouped", true],
-    ["grouped", false],
-    ["each", true],
-    ["each", false],
-  ] as const)("keeps tool images visible with %s tools and folded turns=%s", async (toolCalls, foldTurns) => {
-    useProject.setState({ settings: { agents: { toolCalls, foldTurns } } as never });
+  it.each(["grouped", "each"] as const)("keeps tool images visible with %s tools", async (toolCalls) => {
+    useProject.setState({ settings: { agents: { toolCalls } } as never });
     const image = { mimeType: "image/png", data: "aW1hZ2U=", name: null };
     backend.entries.set("A", [
       { type: "user", text: "Render a preview", attachments: [], steered: false, sentMs: 1000, doneMs: 2000 },
@@ -488,7 +477,7 @@ describe("tool result images", () => {
     useAgents.setState({ entries: new Map(backend.entries) });
     render(<SessionEditor input={input("A")} />);
     await screen.findByText("Here is the result.");
-    expect(!!stream().querySelector(`.${styles.turnFold}`)).toBe(foldTurns);
+    expect(!!stream().querySelector(`.${styles.processRun}`)).toBe(toolCalls === "grouped");
     const preview = screen.getByRole("img", { name: "Image" });
     expect(preview).toHaveAttribute("src", "data:image/png;base64,aW1hZ2U=");
     expect(preview.closest("details")).toBeNull();
@@ -501,8 +490,8 @@ describe("tool result images", () => {
   });
 });
 
-describe("turn folding", () => {
-  it("keeps a finished turn's interim text and tools visible by default", async () => {
+describe("turn layout", () => {
+  it("keeps interim text visible while folding tool runs between messages", async () => {
     backend.entries.set("A", [
       {
         type: "user",
@@ -516,61 +505,18 @@ describe("turn folding", () => {
       tool("one"),
       { type: "agent", text: "Interim note" },
       tool("two", { kind: "execute" }),
+      tool("three", { kind: "execute" }),
       { type: "agent", text: "Final reply" },
     ]);
     useAgents.setState({ entries: new Map(backend.entries) });
     render(<SessionEditor input={input("A")} />);
     expect(await screen.findByText("Interim note")).toBeInTheDocument();
-    expect(screen.getByText("two")).toBeInTheDocument();
+    expect(screen.getByText("Read 1 file")).toBeInTheDocument();
+    expect(screen.getByText("Ran 2 commands")).toBeInTheDocument();
     expect(screen.getByText("Final reply")).toBeInTheDocument();
-    expect(stream().querySelector(`.${styles.turnFold}`)).toBeNull();
   });
 
-  it("folds earlier turns when foldTurns is enabled, keeping the latest turn open and flattening runs inside", async () => {
-    useProject.setState({ settings: { agents: { foldTurns: true } } as never });
-    backend.entries.set("A", [
-      {
-        type: "user",
-        text: "Question",
-        attachments: [],
-        steered: false,
-        sentMs: 1000,
-        doneMs: 13000,
-      },
-      { type: "thought", text: "think" },
-      tool("one"),
-      { type: "agent", text: "Interim note" },
-      tool("two", { kind: "execute" }),
-      { type: "agent", text: "Final reply" },
-      {
-        type: "user",
-        text: "Follow up",
-        attachments: [],
-        steered: false,
-        sentMs: 14000,
-        doneMs: 15000,
-      },
-      tool("latest", { kind: "execute" }),
-      { type: "agent", text: "Latest reply" },
-    ]);
-    useAgents.setState({ entries: new Map(backend.entries) });
-    render(<SessionEditor input={input("A")} />);
-    await screen.findByText("Latest reply");
-    expect(screen.getByText("latest")).toBeInTheDocument();
-    const summary = screen.getByText("Ran 1 command · Read 1 file · 1 message");
-    const fold = summary.closest("details")!;
-    expect(fold).toHaveClass(styles.turnFold!);
-    expect(fold).toHaveTextContent("12s");
-    expect(screen.queryByText("Interim note")).toBeNull();
-    fold.open = true;
-    fireEvent(fold, new Event("toggle"));
-    expect(await screen.findByText("Interim note")).toBeInTheDocument();
-    expect(screen.getByText("one")).toBeInTheDocument();
-    expect(fold.querySelector(`.${styles.processRun}`)).toBeNull();
-  });
-
-  it("leaves the turn the agent works on open", async () => {
-    useProject.setState({ settings: { agents: { foldTurns: true } } as never });
+  it("shows the working indicator after the latest output while a turn runs", async () => {
     backend.entries.set("A", [
       {
         type: "user",
@@ -592,7 +538,6 @@ describe("turn folding", () => {
     });
     render(<SessionEditor input={input("A")} />);
     expect(await screen.findByText("Interim note")).toBeInTheDocument();
-    expect(stream().querySelector(`.${styles.turnFold}`)).toBeNull();
     // The turn isn't over: its latest message is no final reply yet.
     expect(stream().querySelector(`.${styles.agentMessage} > .${styles.messageFooter}`)).toBeNull();
     // What the agent is doing ends the conversation, below its latest output.
@@ -1295,7 +1240,7 @@ describe("tool calls", () => {
     expect(screen.queryByText("Reading files…")).toBeNull();
   });
 
-  it("folds consecutive exploration calls into one collapsed row while keeping edits visible", async () => {
+  it("folds consecutive exploration, edits and commands into one collapsed row", async () => {
     const edit = (id: string) =>
       tool(id, {
         kind: "edit",
@@ -1306,16 +1251,18 @@ describe("tool calls", () => {
       tool("s1", { kind: "search" }),
       edit("one"),
       edit("two"),
+      tool("cmd", { kind: "execute", title: "pnpm test" }),
       { type: "agent", text: "Answer A" },
     ]);
     useAgents.setState({ entries: new Map(backend.entries) });
     render(<SessionEditor input={input("A")} />);
-    const summary = await screen.findByText("Read 1 file · Searched once");
-    expect(summary.closest("details")!.open).toBe(false);
-    expect(screen.getByText("one")).toBeInTheDocument();
-    expect(screen.getByText("two")).toBeInTheDocument();
-    expect(screen.getAllByText("+2")).toHaveLength(2);
-    expect(screen.getAllByText("−1")).toHaveLength(2);
+    const summary = await screen.findByText("Edited 1 file · Ran 1 command · Read 1 file · Searched once");
+    const fold = summary.closest("details")!;
+    expect(fold).toHaveClass(styles.processRun!);
+    expect(fold.open).toBe(false);
+    expect(fold).toHaveTextContent("+4");
+    expect(fold).toHaveTextContent("−2");
+    expect(screen.queryByText("pnpm test")).toBeNull();
   });
 });
 
@@ -3011,6 +2958,7 @@ describe("changes refresh", () => {
     for (let i = 0; i < 6; i++) {
       revision++;
       scheduleChanges("A");
+      // oxlint-disable-next-line no-await-in-loop -- fake timers advance in fixed steps so each burst is observed in order
       await vi.advanceTimersByTimeAsync(500);
     }
     await vi.runAllTimersAsync();

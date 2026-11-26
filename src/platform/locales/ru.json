@@ -507,6 +507,8 @@
   "menu.code.moveElementLeft": "Переместить элемент влево",
   "menu.code.moveElementRight": "Переместить элемент вправо",
   "menu.code.collapseBlock": "Свернуть блок кода",
+  "menu.code.expandDocComments": "Развернуть комментарии документации",
+  "menu.code.collapseDocComments": "Свернуть комментарии документации",
   "menu.analyze.inspectFile": "Инспектировать текущий файл",
   "menu.project.copyElement": "Копировать…",
   "menu.run.chooseDebugConfig": "Отладка…",

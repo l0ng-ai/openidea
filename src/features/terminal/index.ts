@@ -30,6 +30,7 @@ import {
   cliEditorPayload,
   moveEditorToTerminal,
   moveTerminalToEditor,
+  openNewTerminalInEditor,
   splitCliTab,
 } from "./cli";
 import { installTerminalKeys } from "./keys";
@@ -90,6 +91,7 @@ async function streamSampleTui(frames: number, fps: number) {
   const deadline = performance.now() + 5_000;
   let term = rt.activeSession()?.term;
   while (!term?.element && performance.now() < deadline) {
+    // oxlint-disable-next-line no-await-in-loop -- polls one animation frame at a time until the terminal element exists
     await new Promise((r) => requestAnimationFrame(r));
     term = rt.activeSession()?.term;
   }
@@ -98,7 +100,9 @@ async function streamSampleTui(frames: number, fps: number) {
   await write(SAMPLE_TUI_START);
   for (let n = 0; n < frames; n++) {
     const next = performance.now() + 1000 / fps;
+    // oxlint-disable-next-line no-await-in-loop -- frames are written in order to the same terminal
     await write(sampleTuiFrame(n, term.cols, term.rows));
+    // oxlint-disable-next-line no-await-in-loop -- each frame is paced to its deadline before the next write
     await new Promise((r) => setTimeout(r, Math.max(0, next - performance.now())));
   }
   await write(SAMPLE_TUI_END);
@@ -213,6 +217,18 @@ export function activate(): () => void {
         // ⌘T is VCS Update elsewhere; in the terminal it opens a tab, as in IDEA.
         keyWhen: "terminalFocus",
         run: () => openNewTab(),
+      },
+      {
+        id: "terminal.newInEditor",
+        title: "New Terminal Tab in Editor",
+        description: "Opens a new terminal session as a tab in the editor area.",
+        category: "Terminal",
+        icon: "plus",
+        when: "projectOpen",
+        keywords: ["shell", "console", "editor", "cli"],
+        // Shortcuts run anywhere outside the Terminal tool window (and popups), so a key like ⌘T can be shared with New Terminal Tab.
+        keyWhen: "!terminalFocus && activeToolWindow != 'terminal' && !popupOpen",
+        run: ({ arg }) => openNewTerminalInEditor(typeof arg === "string" && arg ? arg : undefined),
       },
       {
         id: "terminal.newPredefinedSession",

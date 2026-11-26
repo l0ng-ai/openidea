@@ -125,8 +125,8 @@ impl Host {
         // A window takes the root over from the MCP server's background project, whose
         // shutdown the wait below sits out; none opens until this open is over.
         let _claim = (!crate::mcp::BackgroundProjects::is_key(window)).then(|| self.mcp_background.claim(self, &root));
-        self.close_project(window);
-        self.wait_detached_closes();
+        self.close_project_detached(window);
+        self.wait_detached_closes_for(&root);
         let sink: SharedSink = (self.sink_for)(window);
         // Before anything the project starts: its children get the project's environment.
         let trusted = Arc::new(AtomicBool::new(self.trust.window_trusted(&root)?));
@@ -867,8 +867,10 @@ impl Host {
             }
             return Ok(current);
         }
-        self.close_project(window);
-        self.wait_detached_closes();
+        self.close_project_detached(window);
+        if let Some(dir) = watch_dir {
+            self.wait_detached_closes_for(dir);
+        }
         let sink: SharedSink = (self.sink_for)(window);
         let settings = Arc::new(SettingsStore::load(&self.config_dir, None));
         let effective = settings.effective();
@@ -2004,7 +2006,7 @@ fn with_gradle_roots(
     use ide_build::gradle::ReportedRoot;
     use ide_workspace::roots::RootKind;
     let mut out: Vec<SourceFolder> = Vec::new();
-    for (dir, kind) in ide_build::gradle_source_roots(root, build_cache, settings) {
+    for (dir, kind, project) in ide_build::gradle_source_roots(root, build_cache, settings) {
         if !dir.is_dir() {
             continue;
         }
@@ -2017,7 +2019,16 @@ fn with_gradle_roots(
             ReportedRoot::Excluded => RootKind::Excluded,
         };
         if !out.iter().any(|f| f.path == path) {
-            out.push(SourceFolder { path, kind, detected_from: Some("Gradle".into()) });
+            // `<module>/Gradle`, like the `<module>/build.gradle` static detection reports, so the
+            // UI still finds the module after a sync. Projects outside the root stay `Gradle`:
+            // the UI reads the folder as project-relative.
+            let detected_from = match project.strip_prefix(root) {
+                Ok(rel) if !rel.as_os_str().is_empty() => {
+                    format!("{}/Gradle", ide_workspace::roots::normalize(&rel.to_string_lossy()))
+                }
+                _ => "Gradle".into(),
+            };
+            out.push(SourceFolder { path, kind, detected_from: Some(detected_from) });
         }
     }
     out.extend(detected.iter().filter(|d| !out.iter().any(|o| o.path == d.path)).cloned().collect::<Vec<_>>());
@@ -2398,6 +2409,48 @@ mod gradle_roots_tests {
     use ide_workspace::RootKind;
 
     #[test]
+    fn gradle_sync_roots_keep_the_module_they_belong_to() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        let cache = root.join(".cache");
+        for d in [root.join("src/main/java"), root.join("lib/src/main/java"), root.join("lib/build"), cache.clone()] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(root.join("build.gradle"), "").unwrap();
+        let s = |p: PathBuf| p.to_string_lossy().into_owned();
+        let json = serde_json::json!({ "hash": "", "at_ms": 1.0, "error": null, "tasks": [], "projects": [
+            { "path": ":", "dir": s(root.clone()), "sourceSets": [
+                { "name": "main", "test": false, "src": [s(root.join("src/main/java"))], "res": [] } ] },
+            { "path": ":lib", "dir": s(root.join("lib")), "buildDir": s(root.join("lib/build")), "sourceSets": [
+                { "name": "main", "test": false, "src": [s(root.join("lib/src/main/java"))], "res": [] } ] },
+        ]});
+        std::fs::write(cache.join("gradle.json"), json.to_string()).unwrap();
+        // What static detection reports for this layout before the first sync.
+        let detected = [
+            SourceFolder {
+                path: "src/main/java".into(),
+                kind: RootKind::Source,
+                detected_from: Some("build.gradle".into()),
+            },
+            SourceFolder {
+                path: "lib/src/main/java".into(),
+                kind: RootKind::Source,
+                detected_from: Some("lib/build.gradle".into()),
+            },
+        ];
+        let out = with_gradle_roots(&root, &cache, &Default::default(), &detected);
+        let got: Vec<_> = out.iter().map(|f| (f.path.as_str(), f.detected_from.as_deref())).collect();
+        assert_eq!(
+            got,
+            [
+                ("src/main/java", Some("Gradle")),
+                ("lib/src/main/java", Some("lib/Gradle")),
+                ("lib/build", Some("lib/Gradle")),
+            ]
+        );
+    }
+
+    #[test]
     fn gradle_sync_roots_win_and_reach_outside_the_project() {
         let tmp = tempfile::tempdir().unwrap();
         let ws = dunce::canonicalize(tmp.path()).unwrap();
@@ -2420,14 +2473,15 @@ mod gradle_roots_tests {
         std::fs::write(root.join("build.gradle"), "").unwrap();
         let out = with_gradle_roots(&root, &cache, &Default::default(), &[guessed, other.clone()]);
         let abs = |p: PathBuf| ide_workspace::roots::normalize(&s(p));
-        let got: Vec<(String, RootKind)> = out.iter().map(|f| (f.path.clone(), f.kind)).collect();
+        let got: Vec<_> = out.iter().map(|f| (f.path.clone(), f.kind, f.detected_from.as_deref())).collect();
+        // A project outside the root is not a module the UI could address.
         assert_eq!(
             got,
             [
-                ("src/it/java".into(), RootKind::Test),
-                (abs(svc.join("src/main/java")), RootKind::Source),
-                (abs(svc.join("build")), RootKind::Excluded),
-                ("web".into(), RootKind::Source),
+                ("src/it/java".into(), RootKind::Test, Some("Gradle")),
+                (abs(svc.join("src/main/java")), RootKind::Source, Some("Gradle")),
+                (abs(svc.join("build")), RootKind::Excluded, Some("Gradle")),
+                ("web".into(), RootKind::Source, None),
             ]
         );
     }

@@ -108,8 +108,11 @@ function importExport(items: MenuItem[]): MenuItem[] {
   return items.length ? [{ label: "Import/Export", submenu: items }] : [];
 }
 
-/** Diagrams ▸ Show Diagram, of the tree's selection when it holds `n`. */
-const diagrams = (n: DbNode): MenuItem => ({ label: "Diagrams", submenu: [act("db.showDiagram", n)] });
+/** Diagrams ▸ Show Diagram / Show Diagram Popup, of the tree's selection when it holds `n`. */
+const diagrams = (n: DbNode): MenuItem => ({
+  label: "Diagrams",
+  submenu: [act("db.showDiagram", n), act("db.showDiagramPopup", n)],
+});
 
 /** Context menu of a tree node (`null`: the empty area). */
 export function nodeMenu(n: DbNode | null): MenuItem[] {

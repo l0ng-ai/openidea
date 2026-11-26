@@ -28,6 +28,7 @@ import {
   type DbTableInfo,
   type DbTableKind,
   type DbVisibilityChange,
+  type DbTableGrant,
   type RequestId,
   type SqlStatement,
 } from "@/platform/ipc";
@@ -58,6 +59,7 @@ import {
 import { tableFolder, type DbNode } from "./nodes";
 import { SQL_LANGUAGE } from "./sqlLanguage";
 import { TABLE_KIND, type TableRef } from "./tableInput";
+import type { DiagramData } from "./erDiagram";
 import type { ExportData, ExportFormat } from "./export";
 import type { DbObjectRef } from "./objects";
 import { formatted } from "./sql/format";
@@ -174,7 +176,9 @@ export type DialogState =
   /** Export with 'mysqldump' of a data source, database or table. */
   | { kind: "mysqlDump"; target: string; database: string; tables?: string }
   /** Restore with 'mysql' into a database. */
-  | { kind: "mysqlRestore"; target: string; database: string };
+  | { kind: "mysqlRestore"; target: string; database: string }
+  /** Diagrams › Show Diagram Popup. */
+  | { kind: "diagram"; data: DiagramData };
 
 /** The schemas and tables of a data source's databases, as far as introspection has read them. */
 export interface SourceCatalog {
@@ -925,6 +929,11 @@ export async function loadDetails(id: string, schema: string, table: string): Pr
     if (!current()) return;
     useDatabase.setState((s) => ({ details: { ...s.details, [key]: { status: "error", message: message(e) } } }));
   }
+}
+
+/** The privileges granted on a table (PostgreSQL and MySQL; see `grantsSupported`). */
+export function loadGrants(id: string, schema: string, table: string): Promise<DbTableGrant[]> {
+  return withConnection(id, () => call(commands.dbTableGrants(id, schema, table)));
 }
 
 /**

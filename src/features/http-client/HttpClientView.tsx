@@ -20,7 +20,7 @@ import {
 } from "@/ui";
 import { ConsoleFindBar } from "@/ui/ConsoleFindBar";
 import { DEFAULT_FIND_OPTIONS, findInLines, type ConsoleMatch, type FindOptions } from "@/ui/consoleFind";
-import { formatBinding, hasPrimaryModifier, hostBinding } from "@/platform/keymap";
+import { formatBinding, hasPrimaryModifier, hostBinding, registerKeyClaim } from "@/platform/keymap";
 import { bodyKind, formatMs, formatSize, prettyBody } from "./format";
 import { cancelRunning, clearHistory, refreshHistory, selectEntry, useHttpClient } from "./store";
 import styles from "./HttpClient.module.css";
@@ -78,6 +78,11 @@ function ExchangeView({ ex }: { ex: HttpExchange }) {
   useEffect(() => {
     pane.current?.querySelector("[data-find-current]")?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [activeIndex, found]);
+  // The bar owns Escape / Enter / F3 / ⌘G while it is focused; keep the IDE keymap out.
+  useEffect(() => {
+    if (!searchable) return;
+    return registerKeyClaim((e) => !!(e.target as Element | null)?.closest?.("[data-console-find]"));
+  }, [searchable]);
   const openFind = () => {
     setFindOpen(true);
     // The bar mounts with this render; focus it (and select the query) once it has.
@@ -87,11 +92,20 @@ function ExchangeView({ ex }: { ex: HttpExchange }) {
     setFindOpen(false);
     pane.current?.focus();
   };
+  // WebKit does not focus a clicked button, so the toggle's click leaves the focus on an outer
+  // container (the tool window) where ⌘F misses this view: give it to the body.
+  const root = useRef<HTMLDivElement>(null);
+  const refocus = useRef(false);
+  useEffect(() => {
+    if (!refocus.current) return;
+    refocus.current = false;
+    if (!root.current?.contains(document.activeElement)) pane.current?.focus();
+  }, [raw]);
   const goToMatch = (step: number) => {
     const n = found.matches.length;
     if (n) setActive((activeIndex + step + n) % n);
   };
-  // ⌘F in the response, as in IDEA's response viewer: the find bar of the Run console.
+  // ⌘F in the response (its toolbar included), as in IDEA's response viewer: the find bar of the Run console.
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (
       tab === "body" &&
@@ -107,7 +121,7 @@ function ExchangeView({ ex }: { ex: HttpExchange }) {
     }
   };
   return (
-    <div className={styles.exchange}>
+    <div ref={root} className={styles.exchange} onKeyDown={onKeyDown}>
       <div className={styles.statusLine}>
         {r ? (
           <>
@@ -166,7 +180,10 @@ function ExchangeView({ ex }: { ex: HttpExchange }) {
                   icon="soft-wrap"
                   title={raw ? "Show Formatted" : "Show Raw"}
                   pressed={raw}
-                  onClick={() => setRaw((v) => !v)}
+                  onClick={() => {
+                    refocus.current = true;
+                    setRaw((v) => !v);
+                  }}
                 />
               )}
             </>
@@ -197,7 +214,7 @@ function ExchangeView({ ex }: { ex: HttpExchange }) {
         />
       )}
       {/* Focusable, so Select All and Copy work on the response like in a read-only editor. */}
-      <div ref={pane} className={styles.tabBody} tabIndex={0} onKeyDown={onKeyDown}>
+      <div ref={pane} className={styles.tabBody} tabIndex={0}>
         {tab === "body" &&
           (r == null ? (
             <pre className={styles.pre}>{ex.entry.error}</pre>

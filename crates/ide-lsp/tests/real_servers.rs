@@ -1188,3 +1188,107 @@ async fn phoxite_pulls_a_member_up_end_to_end() {
     assert!(!refused.message.is_empty() && !refused.message.starts_with("phoxite:"), "{refused:?}");
     mgr.shutdown_all().await;
 }
+
+/// jdtls keeps building incrementally even though the IDE's Java build compiles what runs:
+/// its build is what reports an API change in one Maven module in the files of the modules
+/// that use it, open or not. With `java.autobuild.enabled: false` (and
+/// `validateAllOpenBuffersOnChanges`), neither updates.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires jdtls on PATH (or OPENIDEA_TEST_JDTLS) and a compatible JDK"]
+async fn jdtls_build_reports_cross_module_errors_in_open_and_closed_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(dir.path()).unwrap().join("project");
+    let write = |rel: &str, text: &str| {
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, text).unwrap();
+        path
+    };
+    let parent = r#"<parent><groupId>t</groupId><artifactId>root</artifactId><version>1</version></parent>"#;
+    write(
+        "pom.xml",
+        r#"<project><modelVersion>4.0.0</modelVersion><groupId>t</groupId><artifactId>root</artifactId><version>1</version><packaging>pom</packaging><modules><module>lib</module><module>app</module></modules><properties><maven.compiler.release>11</maven.compiler.release></properties></project>"#,
+    );
+    write(
+        "lib/pom.xml",
+        &format!("<project><modelVersion>4.0.0</modelVersion>{parent}<artifactId>lib</artifactId></project>"),
+    );
+    write(
+        "app/pom.xml",
+        &format!(
+            "<project><modelVersion>4.0.0</modelVersion>{parent}<artifactId>app</artifactId><dependencies><dependency><groupId>t</groupId><artifactId>lib</artifactId><version>1</version></dependency></dependencies></project>"
+        ),
+    );
+    let lib_source = "package l;\npublic class L { public static String name() { return \"lib\"; } }\n";
+    let app_source = "package a;\npublic class A { String s = l.L.name(); }\n";
+    let lib = write("lib/src/main/java/l/L.java", lib_source);
+    let app = write("app/src/main/java/a/A.java", app_source);
+    let closed = write("app/src/main/java/a/B.java", "package a;\nclass B { String s = l.L.name(); }\n");
+    let mut java = LanguageRegistry::load(None).unwrap().get(&LanguageId::new("java")).unwrap();
+    java.language_servers.retain(|s| s.name == "jdtls");
+    let server = &mut java.language_servers[0];
+    if let Ok(bin) = std::env::var("OPENIDEA_TEST_JDTLS") {
+        server.command = bin;
+    }
+    server.args.extend(["-data".into(), dir.path().join("jdtls-data").to_string_lossy().into_owned()]);
+    let (mgr, events) = manager(&root, LanguageRegistry::from_configs(vec![java]));
+    let (lib_doc, app_doc) = (DocId::next(), DocId::next());
+    mgr.did_open(lib_doc, &lib, &LanguageId::new("java"), 1, lib_source);
+    mgr.did_open(app_doc, &app, &LanguageId::new("java"), 1, app_source);
+    let errors = |path: &Path| {
+        events.lock().iter().rev().find_map(|e| match e {
+            IdeEvent::Diagnostics { path: p, items, .. } if p.0 == path => Some(
+                items
+                    .iter()
+                    .filter(|d| d.severity == ide_core::Severity::Error)
+                    .map(|d| d.message.clone())
+                    .collect::<Vec<_>>(),
+            ),
+            _ => None,
+        })
+    };
+    // The import resolves `lib` from source: the open editor of `app` has no errors.
+    retry("app imported", Duration::from_secs(300), || {
+        let status = last_status(&events, "jdtls");
+        if let Some((ServerStatus::Crashed | ServerStatus::Missing | ServerStatus::Misconfigured, message)) = &status {
+            panic!("jdtls failed: {message:?}");
+        }
+        let clean = errors(&app).is_some_and(|e| e.is_empty());
+        let mgr = mgr.clone();
+        let app = app.clone();
+        async move {
+            let cp =
+                tokio::time::timeout(Duration::from_secs(10), mgr.java_classpath(&app, false, &Default::default()))
+                    .await
+                    .ok()?
+                    .ok()?;
+            (clean && cp.class_paths.iter().any(|p| p.contains("/lib/"))).then_some(())
+        }
+    })
+    .await;
+    // Rename the method in the editor of `lib`, and save.
+    let renamed = lib_source.replace("name()", "title()");
+    let line = lib_source.lines().nth(1).unwrap();
+    mgr.did_change(
+        lib_doc,
+        2,
+        &[AppliedChange {
+            range: Range::new(Pos::new(1, 0), Pos::new(1, line.len() as u32)),
+            text: renamed.lines().nth(1).unwrap().to_owned(),
+        }],
+        &|| renamed.clone(),
+    );
+    std::fs::write(&lib, &renamed).unwrap();
+    mgr.did_save(lib_doc, &renamed);
+    retry("the open editor of app reports the removed method", Duration::from_secs(120), || {
+        let found = errors(&app).is_some_and(|e| e.iter().any(|m| m.contains("name()")));
+        async move { found.then_some(()) }
+    })
+    .await;
+    retry("the closed file of app reports it too", Duration::from_secs(60), || {
+        let found = errors(&closed).is_some_and(|e| e.iter().any(|m| m.contains("name()")));
+        async move { found.then_some(()) }
+    })
+    .await;
+    tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
+}

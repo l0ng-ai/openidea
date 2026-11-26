@@ -39,7 +39,7 @@ import {
   uiModeForPath,
 } from "../cm/languages";
 import { foldEffect } from "@codemirror/language";
-import { backendFolds, compactFoldFits, setBackendFolds } from "../cm/folding";
+import { backendFolds, compactFoldFits, setBackendFolds, type BackendFold } from "../cm/folding";
 import { setSyntaxHighlights } from "../cm/syntaxHighlight";
 import {
   caretFor,
@@ -89,6 +89,29 @@ export function isFileHeaderFold(
   if (lineComment && text.startsWith(lineComment)) return true;
   if (blockComment && text.startsWith(blockComment[0])) return true;
   return false;
+}
+
+/** 1-based number of the first line that is neither blank nor a shebang; 0 when there is none. */
+function firstCodeLine(state: EditorState): number {
+  for (let n = 1; n <= state.doc.lines; n++) {
+    const t = state.doc.line(n).text.trim();
+    if (t && !t.startsWith("#!")) return n;
+  }
+  return 0;
+}
+
+/** Whether comment fold `r` is the file header (see `isFileHeaderFold`). */
+function isHeaderComment(state: EditorState, r: BackendFold, firstCode: number, info: LanguageInfo | undefined) {
+  const first = state.doc.lineAt(r.from);
+  return isFileHeaderFold(first.number, firstCode, first.text, info?.lineComment, info?.blockComment);
+}
+
+/** The documentation comment folds: every comment fold but the file header. */
+export function docCommentFolds(state: EditorState, info: LanguageInfo | undefined): BackendFold[] {
+  const firstCode = firstCodeLine(state);
+  return (state.field(backendFolds, false) ?? []).filter(
+    (r) => r.kind === "comment" && !isHeaderComment(state, r, firstCode, info),
+  );
 }
 
 export type Banner = "binary" | "tooLarge" | "readOnly" | "library" | null;
@@ -172,10 +195,32 @@ export class ModifiedRanges {
     }
   }
 
+  /**
+   * `changes` put back text from the VCS version (a rollback): what they inserted is not an edit
+   * of the user's, so save cleanup leaves it alone; ranges recorded there before are dropped.
+   */
+  restore(changes: ChangeSet) {
+    if (this.all) return;
+    this.map(changes);
+    const restored: Array<[number, number]> = [];
+    changes.iterChangedRanges((_fa, _ta, fromB, toB) => restored.push([fromB, toB]), true);
+    this.ranges = this.ranges.filter(([a, b]) => !restored.some(([from, to]) => from <= a && b <= to));
+  }
+
   clear() {
     this.ranges = [];
     this.all = false;
   }
+}
+
+/** User events of edits that put back text from the VCS version: a diff's revert arrow, a gutter rollback. */
+const RESTORE_EVENTS = ["revert", "input.rollback"];
+
+/** Whether `tr` (or an edit with user event `event`) puts back text from the VCS version. */
+export function restoresVcsText(tr: Transaction | string): boolean {
+  return typeof tr === "string"
+    ? RESTORE_EVENTS.some((e) => tr === e || tr.startsWith(`${e}.`))
+    : RESTORE_EVENTS.some((e) => tr.isUserEvent(e));
 }
 
 /** 0-based start lines of functions / methods in an outline (method separators). */
@@ -204,12 +249,14 @@ export function saveCleanupChanges(
     protectLines: Set<number>;
     allLines?: boolean;
     trailingBlankLines?: boolean;
+    /** The end of the text was restored from the VCS version: its blank lines and line break stay. */
+    keepEnd?: boolean;
   },
 ): Array<{ from: number; to: number; insert?: string }> {
   const changes: Array<{ from: number; to: number; insert?: string }> = [];
   const doc = state.doc;
   let blankFrom = doc.length;
-  if (opts.trailingBlankLines) {
+  if (opts.trailingBlankLines && !opts.keepEnd) {
     // Keep exactly one line break after the last non-blank line.
     const m = /\n[ \t\n]*$/.exec(doc.sliceString(Math.max(0, doc.length - 10_000)));
     if (m && m[0].indexOf("\n", 1) >= 0) blankFrom = doc.length - m[0].length + 1;
@@ -232,7 +279,7 @@ export function saveCleanupChanges(
     }
   }
   if (blankFrom < doc.length) changes.push({ from: blankFrom, to: doc.length });
-  else if (opts.finalNewline && doc.length > 0 && doc.sliceString(doc.length - 1) !== "\n")
+  else if (opts.finalNewline && !opts.keepEnd && doc.length > 0 && doc.sliceString(doc.length - 1) !== "\n")
     changes.push({ from: doc.length, to: doc.length, insert: "\n" });
   return changes;
 }
@@ -247,6 +294,8 @@ export class DocModel {
   /** Views outside the tab system sharing this document (e.g. the editable side of a diff). */
   readonly attachments = new Set<DocAttachmentTarget>();
   readonly modified = new ModifiedRanges();
+  /** The end of the text was last changed by a rollback to the VCS version (see [`restoresVcsText`]). */
+  private endRestored = false;
   info: LanguageInfo | undefined;
   /** Effective `.editorconfig` properties at open time. */
   editorconfig: EditorConfigProps | null = null;
@@ -425,9 +474,16 @@ export class DocModel {
     return this.slots.values().next().value ?? null;
   }
 
-  onLocal(changes: ChangeSet, origin: EditorSlot | DocAttachmentTarget) {
+  /** `restored`: the changes put back text from the VCS version ([`restoresVcsText`]). */
+  onLocal(changes: ChangeSet, origin: EditorSlot | DocAttachmentTarget, restored = false) {
     this.sync.local(changes);
-    this.modified.add(changes);
+    if (restored) this.modified.restore(changes);
+    else this.modified.add(changes);
+    let end = false;
+    changes.iterChangedRanges((_fromA, toA) => {
+      if (toA === changes.length) end = true;
+    });
+    if (end) this.endRestored = restored;
     this.changeCounter++;
     for (const s of this.slots)
       if (s !== origin) s.applyExternal(changes, [mirroredChange.of(true), Transaction.addToHistory.of(false)]);
@@ -678,13 +734,7 @@ export class DocModel {
       if (!folds.length) continue;
       const info = this.info;
       const head = state.selection.main.head;
-      const firstCodeLine = (() => {
-        for (let n = 1; n <= state.doc.lines; n++) {
-          const t = state.doc.line(n).text.trim();
-          if (t && !t.startsWith("#!")) return n;
-        }
-        return 0;
-      })();
+      const firstCode = firstCodeLine(state);
       const chosen = folds.filter((r) => {
         if (r.kind === "imports") return f.imports;
         if (r.kind === "compact")
@@ -698,9 +748,7 @@ export class DocModel {
         // Keeping the position check keeps ordinary doc comments further down
         // under "documentation comments"; the token check keeps a Python module
         // docstring (which opens with quotes) out of the file-header toggle.
-        const first = state.doc.lineAt(r.from);
-        const header = isFileHeaderFold(first.number, firstCodeLine, first.text, info?.lineComment, info?.blockComment);
-        return header ? f.fileHeader : f.docComments;
+        return isHeaderComment(state, r, firstCode, info) ? f.fileHeader : f.docComments;
       });
       const effects: StateEffect<unknown>[] = chosen.map((r) => foldEffect.of({ from: r.from, to: r.to }));
       // Folding the header / imports shifts everything below: keep a navigation
@@ -745,6 +793,7 @@ export class DocModel {
           protectLines: g.keepTrailingOnCaretLine ? protectLines : new Set(),
           allLines: g.stripTrailingScope === "all",
           trailingBlankLines: g.removeTrailingBlankLines,
+          keepEnd: this.endRestored,
         });
         if (changes.length) slot.dispatchLocal({ changes, userEvent: "input.save" });
       }

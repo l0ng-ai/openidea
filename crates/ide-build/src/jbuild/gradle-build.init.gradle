@@ -1,0 +1,145 @@
+// OpenIDEA's Java build of a Gradle build (ide_build::jbuild). With -Popenidea.build.output=<dir>,
+// every Java source set writes its classes and resources to <dir>/[<group>.]<project>/classes|test-classes,
+// so neither the language server nor a terminal `gradle` writes what the IDE runs. The task
+// `openideaBuildModel` (-Popenidea.build.model=<file>) runs what generates sources, processes the
+// resources and writes, as JSON, each source set's roots, classpaths and how JavaCompile compiles it:
+// the same model the Maven extension writes (java/java-build, BuildModel).
+import groovy.json.JsonOutput
+import org.gradle.api.tasks.compile.AbstractCompile
+import org.gradle.api.tasks.compile.JavaCompile
+import org.gradle.jvm.tasks.Jar
+
+def property = { String name -> gradle.startParameter.projectProperties[name] }
+def outRoot = property('openidea.build.output')
+if (outRoot == null || gradle.parent != null) return
+
+// The project's name in the build: unique, unlike `name`.
+def nameOf = { Project p -> p == p.rootProject ? p.name : p.path.substring(1).replace(':', '.') }
+def outputOf = { Project p, String set ->
+    def folder = p.group ? "${p.group}.${nameOf(p)}" : nameOf(p)
+    new File(outRoot, folder + '/' + (set == 'main' ? 'classes' : 'test-classes'))
+}
+def javaSets = { Project p ->
+    def sets = p.extensions.findByName('sourceSets')
+    sets == null ? [] : ['main', 'test'].collect { sets.findByName(it) }.findAll { it != null }
+}
+
+gradle.projectsEvaluated {
+    def root = gradle.rootProject
+    root.allprojects.each { p ->
+        javaSets(p).each { ss ->
+            def out = outputOf(p, ss.name)
+            ss.java.destinationDirectory.set(out)
+            ss.output.resourcesDir = out
+            p.tasks.named(ss.processResourcesTaskName).configure { destinationDir = out }
+        }
+    }
+    root.tasks.register('openideaBuildModel') {
+        // What compiling needs from the same project (generated sources), and the resources.
+        dependsOn {
+            root.allprojects.collectMany { p ->
+                javaSets(p).collectMany { ss ->
+                    def compile = p.tasks.getByName(ss.compileJavaTaskName)
+                    def generators = compile.taskDependencies.getDependencies(compile).findAll {
+                        it.project == p && !(it instanceof AbstractCompile) && !(it instanceof Jar)
+                    }
+                    generators + [p.tasks.getByName(ss.processResourcesTaskName)]
+                }
+            }
+        }
+        doLast {
+            // Project artifacts resolve to the projects' outputs.
+            def artifacts = [:]
+            root.allprojects.each { p ->
+                def main = javaSets(p).find { it.name == 'main' }
+                if (main == null) return
+                def jar = p.tasks.findByName('jar')
+                if (jar instanceof Jar) artifacts[jar.archiveFile.get().asFile.canonicalPath] = outputOf(p, 'main')
+            }
+            def files = { collection ->
+                def out = []
+                try {
+                    collection?.files?.each { f ->
+                        def mapped = artifacts[f.canonicalPath] ?: f
+                        if (!out.contains(mapped.canonicalPath)) out << mapped.canonicalPath
+                    }
+                } catch (e) {
+                    out << "!${e.message}".toString()
+                }
+                out
+            }
+            def included = gradle.includedBuilds.collect { it.name }
+            def projects = root.allprojects.findAll { !javaSets(it).isEmpty() }.collect { p ->
+                def problems = included.isEmpty() ? [] : ["it is a composite build (${included.join(', ')})".toString()]
+                def others = p.tasks.withType(AbstractCompile).findAll {
+                    !(it instanceof JavaCompile) && it.name ==~ /(?i)compile.*(Kotlin|Groovy|Scala|Aspectj).*/
+                }.collect { "${it.class.name.replace('_Decorated', '')}@${it.name}".toString() }
+                def setModel = { String name ->
+                    def ss = javaSets(p).find { it.name == name }
+                    if (ss == null) return [sourceRoots: [], output: outputOf(p, name).path, classpath: [], runtimeClasspath: []]
+                    JavaCompile compile = p.tasks.getByName(ss.compileJavaTaskName)
+                    def o = compile.options
+                    def classpath = files(compile.classpath)
+                    def runtime = files(ss.runtimeClasspath)
+                    (classpath + runtime).findAll { it.startsWith('!') }.each { problems << "Cannot resolve the dependencies: ${it.substring(1)}".toString() }
+                    def processorPath = files(o.annotationProcessorPath)
+                    def processorProblems = processorPath.findAll { it.startsWith('!') }
+                    def projectProcessors = processorPath.findAll { path -> artifacts.values().any { it.canonicalPath == path } }
+                    def home = null
+                    try { home = compile.javaCompiler.orNull?.metadata?.installationPath?.asFile?.canonicalPath } catch (ignored) {}
+                    [
+                        sourceRoots: ss.java.srcDirs.collect { it.canonicalPath },
+                        output: outputOf(p, name).canonicalPath,
+                        classpath: classpath.findAll { !it.startsWith('!') },
+                        runtimeClasspath: runtime.findAll { !it.startsWith('!') },
+                        resources: ss.resources.srcDirs.collect { [directory: it.canonicalPath, filtering: false] },
+                        compiler: [
+                            compilerId: 'javac',
+                            source: compile.sourceCompatibility,
+                            target: compile.targetCompatibility,
+                            release: o.release.orNull?.toString(),
+                            encoding: o.encoding,
+                            debug: o.debug,
+                            debuglevel: o.debugOptions.debugLevel,
+                            showWarnings: o.warnings,
+                            showDeprecation: o.deprecation,
+                            fork: home != null,
+                            executable: home == null ? null : new File(home, 'bin/javac').path,
+                            generatedSourcesDirectory: o.generatedSourceOutputDirectory.asFile.orNull?.canonicalPath,
+                            includes: ss.java.includes as List,
+                            excludes: ss.java.excludes as List,
+                            compilerArgs: o.allCompilerArgs.collect { it.toString() },
+                            processorPath: processorProblems.isEmpty() && projectProcessors.isEmpty() ? processorPath : null,
+                            processorPathError: !processorProblems.isEmpty()
+                                ? processorProblems[0].substring(1)
+                                : (projectProcessors.isEmpty() ? null : 'its annotation processors are built in the same build'),
+                        ],
+                    ]
+                }
+                def mainModel = setModel('main')
+                def testModel = setModel('test')
+                // Gradle compiles tests against the main classes: they're the main output here.
+                [
+                    dir: p.projectDir.canonicalPath,
+                    groupId: (p.group ?: '').toString(),
+                    artifactId: nameOf(p),
+                    version: p.version.toString(),
+                    packaging: 'jar',
+                    main: mainModel,
+                    test: testModel,
+                    otherCompilers: others,
+                    testGenerators: [],
+                    problems: problems,
+                    gradlePath: p.path,
+                ]
+            }
+            def modelFile = property('openidea.build.model')
+            if (modelFile != null) {
+                def file = new File(modelFile)
+                def temporary = new File(file.parentFile, file.name + '.tmp')
+                temporary.text = JsonOutput.toJson([version: 1, projects: projects])
+                temporary.renameTo(file) || { file.delete(); temporary.renameTo(file) }()
+            }
+        }
+    }
+}

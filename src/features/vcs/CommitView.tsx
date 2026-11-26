@@ -1130,6 +1130,7 @@ export function ChangesTree({ mode, amended }: { mode: "commit" | "local" | "dia
       >
         <Tree<ChangeNode>
           handleRef={treeRef}
+          horizontalScroll
           roots={roots}
           getKey={(n) => n.key}
           getLabel={nodeText}

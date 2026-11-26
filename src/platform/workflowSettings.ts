@@ -176,7 +176,7 @@ export interface ExternalDiffValid {
   parameters: string;
 }
 
-export type TerminalMaxFps = "unlimited" | "60" | "30" | "15" | "10";
+export type TerminalMaxFps = "unlimited" | "60" | "30" | "15" | "10" | "5";
 /** When a title the program sets (OSC 0/2) names the terminal tab, as IDEA's option. */
 export type TerminalAppTitle = "running" | "always" | "off";
 
@@ -186,6 +186,7 @@ export const TERMINAL_MAX_FPS_OPTIONS: readonly { value: TerminalMaxFps; label: 
   { value: "30", label: "30 FPS" },
   { value: "15", label: "15 FPS" },
   { value: "10", label: "10 FPS" },
+  { value: "5", label: "5 FPS" },
 ];
 
 export interface TerminalSettingsValid {
@@ -680,7 +681,7 @@ export function validateTerminal(raw: unknown): TerminalSettingsValid {
     escapeToEditor: bool(v.escapeToEditor, d.escapeToEditor),
     cursorShape: oneOf(v.cursorShape, ["block", "underline", "bar"] as const, d.cursorShape),
     cursorBlink: bool(v.cursorBlink, d.cursorBlink),
-    maxFps: oneOf(v.maxFps, ["unlimited", "60", "30", "15", "10"] as const, d.maxFps),
+    maxFps: oneOf(v.maxFps, ["unlimited", "60", "30", "15", "10", "5"] as const, d.maxFps),
     useEditorFont: bool(v.useEditorFont, d.useEditorFont),
     fontFamily: nonEmpty(v.fontFamily, d.fontFamily),
     fontSize: num(v.fontSize, d.fontSize, WORKFLOW_LIMITS.terminalFontSize),

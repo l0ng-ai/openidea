@@ -17,6 +17,11 @@ use std::sync::mpsc::{self, RecvTimeoutError, SyncSender};
 use std::time::{Duration, Instant};
 
 const BATCH_INTERVAL: Duration = Duration::from_millis(8);
+
+/// The batch interval at the current Max FPS setting (`ide_core::output_rate`).
+fn batch_interval() -> Duration {
+    ide_core::output_rate::batch_interval(BATCH_INTERVAL)
+}
 const BATCH_BYTES: usize = 64 * 1024;
 /// Size of one pipe read, so the most one queued [`Msg::Data`] holds.
 const READ_BUF: usize = 16 * 1024;
@@ -888,15 +893,25 @@ impl ProcessManager {
         }
     }
 
-    /// Kills every running process tree at once (shutting down).
-    pub fn kill_project(&self, root: &Path) {
+    /// Collects every running process tree for `root` and marks it stopping so the actual
+    /// termination can run on a background thread without blocking the UI thread or racing
+    /// processes started later.
+    pub fn detach_project_kills(&self, root: &Path) -> DetachedProcessKills {
+        let mut targets = Vec::new();
         for entry in self.runs.lock().values().filter(|e| e.project_root == root) {
             if !entry.exited.load(Ordering::Acquire)
                 && let Some(pid) = *entry.pid.lock()
             {
-                kill_tree(entry, pid, true);
+                entry.stopping.store(true, Ordering::Release);
+                targets.push((entry.clone(), pid));
             }
         }
+        DetachedProcessKills(targets)
+    }
+
+    /// Kills every running process tree at once (shutting down).
+    pub fn kill_project(&self, root: &Path) {
+        self.detach_project_kills(root).kill();
     }
 
     pub fn kill_all(&self) {
@@ -934,6 +949,19 @@ impl ProcessManager {
         while let Some(result) = stops.join_next().await {
             if let Err(e) = result {
                 tracing::warn!("could not stop a run during shutdown: {e}");
+            }
+        }
+    }
+}
+
+/// Running process trees snapshotted from [`ProcessManager`] to be killed off the caller's thread.
+pub struct DetachedProcessKills(Vec<(Arc<Entry>, u32)>);
+
+impl DetachedProcessKills {
+    pub fn kill(self) {
+        for (entry, pid) in self.0 {
+            if !entry.exited.load(Ordering::Acquire) {
+                kill_tree(&entry, pid, true);
             }
         }
     }
@@ -1343,8 +1371,8 @@ fn spawn_pump(
         loop {
             let now = Instant::now();
             let wait = [
-                batch_started.map(|t| (t + BATCH_INTERVAL).saturating_duration_since(now)),
-                held_since.map(|t| (t + BATCH_INTERVAL).saturating_duration_since(now)),
+                batch_started.map(|t| (t + batch_interval()).saturating_duration_since(now)),
+                held_since.map(|t| (t + batch_interval()).saturating_duration_since(now)),
                 drain_deadline.map(|t| t.saturating_duration_since(now)),
             ]
             .into_iter()
@@ -1379,7 +1407,7 @@ fn spawn_pump(
                         break;
                     }
                     // Nothing more came: show a held prompt.
-                    if held_since.is_some_and(|t| t.elapsed() >= BATCH_INTERVAL) {
+                    if held_since.is_some_and(|t| t.elapsed() >= batch_interval()) {
                         held_since = None;
                         for (stream, dec, notice) in [
                             (Stream::Stdout, &mut out_dec, &mut out_notice),
@@ -1397,7 +1425,7 @@ fn spawn_pump(
                             batch_started = Some(Instant::now());
                         }
                     }
-                    if batch_started.is_some_and(|t| t.elapsed() >= BATCH_INTERVAL) {
+                    if batch_started.is_some_and(|t| t.elapsed() >= batch_interval()) {
                         flush(&mut pending, pending_stream, &mut batch_started);
                     }
                 }

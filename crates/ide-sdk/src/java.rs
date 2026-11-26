@@ -1629,7 +1629,7 @@ pub fn usages_bundle(data_dir: &Path) -> Option<PathBuf> {
     install_bundle(
         data_dir,
         "java-usages",
-        "1.18.0",
+        "1.19.0",
         include_bytes!("../../../java/java-usages/openidea-java-usages.jar"),
     )
 }
@@ -1644,7 +1644,7 @@ pub fn jdbc_bridge_jar(data_dir: &Path) -> Option<PathBuf> {
     )
 }
 
-/// Extracts the JUnit Platform test runner (`java/junit-runner`) into the application's data directory.
+/// Extracts the JUnit test runner (`java/junit-runner`; JUnit Platform and JUnit 4) into the application's data directory.
 pub fn junit_runner_jar(data_dir: &Path) -> Option<PathBuf> {
     install_bundle(
         data_dir,
@@ -1652,6 +1652,23 @@ pub fn junit_runner_jar(data_dir: &Path) -> Option<PathBuf> {
         "1.0.0",
         include_bytes!("../../../java/junit-runner/openidea-junit-runner.jar"),
     )
+}
+
+/// The IDE's Java build (`java/java-build`): the resident javac server and the Maven
+/// extension that records the build model.
+const JAVA_BUILD: &[u8] = include_bytes!("../../../java/java-build/openidea-java-build.jar");
+
+/// Extracts the Java build jar into the application's data directory.
+pub fn java_build_jar(data_dir: &Path) -> Option<PathBuf> {
+    install_bundle(data_dir, "java-build", "1.0.0", JAVA_BUILD)
+}
+
+/// Changes whenever the embedded Java build jar does (FNV-1a of its bytes), so build models
+/// recorded by an older extension are prepared again.
+pub fn java_build_version() -> String {
+    let hash =
+        JAVA_BUILD.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x100_0000_01b3));
+    format!("{hash:016x}")
 }
 
 /// The JUnit Platform launcher a test classpath needs to start the runner.
@@ -1663,7 +1680,9 @@ pub enum JunitLauncher {
     Found(PathBuf),
     /// Not found locally: the engine's version, to download.
     Missing(String),
-    /// No `junit-platform-engine` on the classpath (JUnit 4 alone, TestNG).
+    /// No `junit-platform-engine`, but JUnit 4: the runner uses JUnit 4's own `JUnitCore`.
+    Junit4,
+    /// Neither the JUnit Platform nor JUnit 4 on the classpath (TestNG alone).
     NoPlatform,
 }
 
@@ -1680,7 +1699,11 @@ pub fn junit_launcher(class_paths: &[String]) -> JunitLauncher {
         let version = name(p).strip_prefix("junit-platform-engine-")?.strip_suffix(".jar")?.to_owned();
         Some((PathBuf::from(p), version))
     }) else {
-        return JunitLauncher::NoPlatform;
+        let junit4 = class_paths.iter().any(|p| {
+            let name = name(p);
+            (name.starts_with("junit-4.") || name.starts_with("junit-dep-4.")) && name.ends_with(".jar")
+        });
+        return if junit4 { JunitLauncher::Junit4 } else { JunitLauncher::NoPlatform };
     };
     let jar = format!("junit-platform-launcher-{version}.jar");
     let artifact = engine.ancestors().find(|a| a.file_name().is_some_and(|n| n == "junit-platform-engine"));
@@ -1724,7 +1747,8 @@ mod junit_launcher_tests {
             junit_launcher(&[s(&other), "/x/junit-platform-launcher-1.9.0.jar".into()]),
             JunitLauncher::OnClasspath
         );
-        assert_eq!(junit_launcher(&["/x/junit-4.13.2.jar".into()]), JunitLauncher::NoPlatform);
+        assert_eq!(junit_launcher(&["/x/junit-4.13.2.jar".into()]), JunitLauncher::Junit4);
+        assert_eq!(junit_launcher(&["/x/testng-7.10.2.jar".into()]), JunitLauncher::NoPlatform);
     }
 }
 

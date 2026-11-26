@@ -28,6 +28,7 @@ export const VIM_KEYS: readonly VimKey[] = [
   { stroke: "Ctrl+E", vim: "Scroll line down", handler: "vim" },
   { stroke: "Ctrl+F", vim: "Page down", handler: "vim" },
   { stroke: "Ctrl+I", vim: "Jump forward", handler: "vim" },
+  { stroke: "Ctrl+K", vim: "Enter a digraph in Insert mode", handler: "vim" },
   { stroke: "Ctrl+N", vim: "Next line", handler: "ide" },
   { stroke: "Ctrl+O", vim: "Jump back / one Normal command", handler: "vim" },
   { stroke: "Ctrl+P", vim: "Previous line", handler: "ide" },

@@ -177,6 +177,7 @@ const defaultDeps: CloseDeps = {
   runningProcesses: async () => (await liveProcesses()).map((p) => p.name),
   terminate: (kill) => stopRunningProcesses(kill),
   waitForProcesses: async () => {
+    // oxlint-disable-next-line no-await-in-loop -- polling must finish one interval before checking processes again
     while ((await liveProcesses()).length > 0) await new Promise((r) => setTimeout(r, 100));
   },
   onSaveFailed: (e) =>
@@ -248,8 +249,12 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
   closing = true;
   let forgot = false;
   let quitting = false;
+  let promptHeld = false;
+  let batchAborted = false;
   const cancel = async () => {
-    await (quitting ? commands.appCancelQuit() : commands.windowGroupCancelClose());
+    if (!batchAborted) {
+      await (quitting ? commands.appCancelQuit() : commands.windowGroupCancelClose());
+    }
     return false;
   };
   const undoForget = () => {
@@ -260,9 +265,27 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
   try {
     const ctx = await commands.windowCloseContext();
     quitting = ctx.quitting;
-    // Each window of a quit asks about its own processes and unsaved changes, if it has any.
-    if (quitting) deps = raisingBeforeAsk(deps);
-    if (!(await closeDocumentWindows())) return await cancel();
+    // In a quit or multi-tab close, windows check in parallel; only a window that needs to ask
+    // acquires the prompt turn and comes forward so prompts still run one at a time.
+    if (quitting || ctx.batch) {
+      const baseAsk = deps.ask;
+      deps = {
+        ...deps,
+        ask: async (request) => {
+          if (!promptHeld) {
+            const proceed = await commands.windowBeginPrompt();
+            if (!proceed) {
+              batchAborted = true;
+              return { button: "cancel", checked: false };
+            }
+            promptHeld = true;
+          }
+          await raiseWindowForPrompts();
+          return baseAsk(request);
+        },
+      };
+    }
+    if (ctx.hasDocumentWindows !== false && !(await closeDocumentWindows())) return await cancel();
     const s = useProject.getState();
     const welcome = returnsToWelcome(quitting, ctx.windows, !!(s.project || s.lightEdit), s.settings);
     const remote = useRemote.getState();
@@ -316,6 +339,12 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
       forgot = false;
       return await cancel();
     }
+    if (!(await commands.windowReadyToClose())) {
+      batchAborted = true;
+      undoForget();
+      maybeEditorService()?.cancelClose?.();
+      return false;
+    }
     return true;
   } catch (e) {
     undoForget();
@@ -324,6 +353,10 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
     deps.onSaveFailed(e);
     return false;
   } finally {
+    if (promptHeld) {
+      promptHeld = false;
+      void commands.windowEndPrompt().catch(() => {});
+    }
     closing = false;
   }
 }

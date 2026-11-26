@@ -1149,6 +1149,24 @@ fn a_compaction_replaces_the_context_usage() {
 }
 
 #[test]
+fn claude_codes_own_window_wins_over_the_results_context_window() {
+    let mut t = Translator::new("s", PathBuf::from("/w"), true);
+    let assistant = |model: &str| {
+        json!({"type": "assistant", "parent_tool_use_id": null,
+        "message": {"id": "m1", "model": model, "content": [], "usage": {"input_tokens": 900, "output_tokens": 100}}})
+    };
+    t.on_message(&assistant("x"));
+    let result = json!({"modelUsage": {"x": {"contextWindow": 1_000_000}, "y": {"contextWindow": 200_000}}});
+    assert_eq!(t.on_result(&result)[0].update["size"], 1_000_000);
+    // `get_context_usage` reports the window Claude Code compacts against.
+    assert_eq!(t.on_context_usage(1000, 400_000).update["size"], 400_000);
+    assert_eq!(t.on_result(&result)[0].update["size"], 400_000);
+    // Another model: its own window again until Claude Code reports one for it.
+    t.on_message(&assistant("y"));
+    assert_eq!(t.on_result(&result)[0].update["size"], 200_000);
+}
+
+#[test]
 fn rate_limits_and_cost() {
     let mut t = Translator::new("s", PathBuf::from("/w"), false);
     let info = json!({"status": "allowed", "rateLimitType": "five_hour", "unifiedWindows": {

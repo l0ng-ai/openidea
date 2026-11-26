@@ -95,8 +95,6 @@ pub struct AgentSettings {
     pub show_usage_limits: bool,
     /// What the session has cost so far, as the agent reports it.
     pub show_cost: bool,
-    /// A finished turn's work folds into one line under its message, leaving the reply.
-    pub fold_turns: bool,
     /// Streaming text is revealed at a steady pace rather than chunk by chunk.
     pub smooth_text: bool,
     /// Conversations and the composer expand to the full width of the pane instead of staying in a centred column.
@@ -145,7 +143,6 @@ impl Default for AgentSettings {
             show_work_time: true,
             show_usage_limits: true,
             show_cost: false,
-            fold_turns: false,
             smooth_text: true,
             fit_window_width: false,
             thinking: ThinkingDisplay::Auto,
@@ -420,10 +417,10 @@ impl Default for McpServerSettings {
     }
 }
 
-/// Tools › Download sources: a mirror the installer tries when `github.com` is slow or
-/// unreachable.
+/// Tools › Download sources: mirrors the installer tries, in order, when `github.com` is slow
+/// or unreachable.
 ///
-/// The mirror is a proxy prefix: the official URL is appended to it unchanged
+/// A mirror is a proxy prefix: the official URL is appended to it unchanged
 /// (`https://mirror.example/https://github.com/o/r/releases/download/…`), which is what the
 /// public GitHub proxies speak. Only `github.com` downloads are affected — those proxies
 /// hard-code that host, so Eclipse JDT LS and Open VSX keep their official addresses. Empty by
@@ -431,8 +428,9 @@ impl Default for McpServerSettings {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ToolDownloadSettings {
-    /// Proxy prefix prepended to `https://github.com/…` archive addresses only; empty keeps
-    /// every download on its official host.
+    /// Proxy prefixes prepended to `https://github.com/…` archive addresses only, separated by
+    /// commas or whitespace and tried in order before the official host; empty keeps every
+    /// download on its official host.
     pub github_mirror: String,
 }
 
@@ -826,6 +824,8 @@ pub struct AppearanceSettings {
     pub contrast_scrollbars: bool,
     /// Adjust colours for red-green vision deficiency.
     pub red_green_vision: bool,
+    /// Turn off animations and transitions (also on when the OS asks for reduced motion).
+    pub reduce_motion: bool,
     pub different_tool_window_background: bool,
     pub compact_mode: bool,
     /// IDEA "Use smaller indents in trees": tool window trees indent less per level.
@@ -966,6 +966,7 @@ impl Default for AppearanceSettings {
             ui_font_fallback: String::new(),
             contrast_scrollbars: false,
             red_green_vision: false,
+            reduce_motion: false,
             different_tool_window_background: false,
             compact_mode: false,
             small_tree_indents: false,
@@ -2120,14 +2121,12 @@ mod tests {
 
     #[test]
     fn agent_meters_default_and_round_trip() {
-        let old: Settings = serde_json::from_str(r#"{"agents":{"showCost":true}}"#).unwrap();
+        let old: Settings = serde_json::from_str(r#"{"agents":{"showCost":true,"foldTurns":true}}"#).unwrap();
         assert!(old.agents.show_cost);
         assert!(old.agents.show_context_usage && old.agents.show_work_time && old.agents.show_usage_limits);
         assert!(!old.agents.fit_window_width);
-        assert!(!old.agents.fold_turns);
         assert!(!Settings::default().agents.show_cost);
         assert!(!Settings::default().agents.fit_window_width);
-        assert!(!Settings::default().agents.fold_turns);
         let mut settings = Settings::default();
         settings.agents.show_usage_limits = false;
         settings.agents.fit_window_width = true;

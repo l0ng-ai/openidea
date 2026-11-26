@@ -375,8 +375,7 @@
   .shownElsewhere {
     display: none;
   }
-  .processBody,
-  .turnBody {
+  .processBody {
     padding-left: var(--space-2);
   }
   .processBody > .thoughtEntry ~ .toolEntry {
@@ -1154,7 +1153,7 @@
   flex-wrap: wrap;
   align-items: center;
   align-content: flex-start;
-  gap: 0 6px;
+  gap: 0 var(--space-1-5);
   color: var(--fg-subtle);
   font-size: var(--fs-small);
   font-variant-numeric: tabular-nums;
@@ -1166,7 +1165,7 @@
   align-items: center;
   min-width: 0;
   height: 22px;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .meterGroup {
   display: inline-flex;
@@ -1174,7 +1173,7 @@
   align-items: center;
   min-width: 0;
   height: 22px;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .meterDivider {
   flex: none;
@@ -1818,26 +1817,6 @@
   mask-image: linear-gradient(to bottom, transparent, black 40%);
 }
 
-/* A finished turn's work, folded under its message. */
-.turnFold > summary {
-  cursor: default;
-  list-style: none;
-}
-.turnFold > summary::-webkit-details-marker {
-  display: none;
-}
-.turnFold[open] .processChevron {
-  transform: rotate(90deg);
-}
-.turnBody {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  margin: 2px 0 0 10px;
-  padding-left: var(--space-3);
-  border-left: 1px solid var(--border);
-}
-
 /* Above the composer: what waits for the user, the plan and changes, what runs now. */
 .tray {
   display: flex;
@@ -1915,6 +1894,18 @@
 .toolKindIcon {
   flex: none;
   color: var(--fg-muted);
+}
+.toolDir {
+  flex: none;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 4px;
+  border-radius: var(--radius-small);
+  background: var(--bg-hover);
+  color: var(--fg-muted);
+  font-size: var(--agent-fs-small, var(--fs-small));
 }
 .toolPath {
   flex: none;

@@ -48,7 +48,7 @@ import {
   removeSource,
 } from "./store";
 import { tableInput } from "./tableInput";
-import { DIAGRAM_TABLE_LIMIT, MERMAID_MAX_TEXT, diagramInput, erDiagram, type DiagramTable } from "./erDiagram";
+import { DIAGRAM_TABLE_LIMIT, diagramInput, type DiagramData, type DiagramTable } from "./erDiagram";
 import { dumpScope, mysqlDumpScope } from "./dumpTools";
 import { tx } from "@/platform/i18n";
 import { chooseItem } from "@/workbench/inputDialogs";
@@ -114,10 +114,10 @@ function nodesFrom(arg: unknown): DbNode[] {
 }
 
 /**
- * Diagrams › Show Diagram: the selected tables and views, and the tables of
- * selected schemas and table folders, in an ER diagram tab.
+ * Diagrams › Show Diagram (in a tab) and Show Diagram Popup: the selected
+ * tables and views, and the tables of selected schemas and table folders.
  */
-async function showDiagram(nodes: DbNode[]): Promise<void> {
+async function showDiagram(nodes: DbNode[], popup: boolean): Promise<void> {
   const refs = new Map<string, { id: string; schema: string; name: string }>();
   const add = (id: string, schema: string, name: string) =>
     refs.set(detailsKey(id, schema, name), { id, schema, name });
@@ -144,12 +144,6 @@ async function showDiagram(nodes: DbNode[]): Promise<void> {
     return d?.status === "ok" ? [{ ...t, details: d.value }] : [];
   });
   if (!tables.length) return;
-  // Mermaid draws only an error for a source over its size limit: wide tables leave fewer in the diagram.
-  let source = erDiagram(tables);
-  while (source.length > MERMAID_MAX_TEXT && tables.length > 1) {
-    tables.pop();
-    source = erDiagram(tables);
-  }
   const [limit, total] = [tables.length, all.length];
   if (total > limit)
     notifications().notify({
@@ -159,7 +153,9 @@ async function showDiagram(nodes: DbNode[]): Promise<void> {
     });
   const one = nodes.length === 1 ? nodes[0]! : null;
   const title = one?.kind === "table" ? one.table.name : one && "schema" in one ? one.schema : tx("Diagram");
-  void editorService().openInput(diagramInput({ title, source }), { focus: true });
+  const data: DiagramData = { title, tables };
+  if (popup) openDialog({ kind: "diagram", data });
+  else void editorService().openInput(diagramInput(data), { focus: true });
 }
 
 /**
@@ -671,7 +667,15 @@ export function registerDatabaseTreeActions(): () => void {
       description: "Show the selected tables, or the tables of a schema, as an ER diagram linked by foreign keys",
       icon: "db-table",
       keywords: ["er diagram", "uml", "visualization", "foreign keys", "relationships"],
-      run: ({ arg }) => showDiagram(nodesFrom(arg)),
+      run: ({ arg }) => showDiagram(nodesFrom(arg), false),
+    }),
+    tree({
+      id: "db.showDiagramPopup",
+      title: "Show Diagram Popup",
+      description: "Show the ER diagram of the selected tables in a popup",
+      icon: "db-table",
+      keywords: ["er diagram", "uml", "visualization", "foreign keys", "relationships"],
+      run: ({ arg }) => showDiagram(nodesFrom(arg), true),
     }),
     tree({
       id: "db.new",

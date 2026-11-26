@@ -1,21 +1,8 @@
-/** Diagrams › Show Diagram: the selected tables as a Mermaid ER diagram, linked by their foreign keys. */
+/** Diagrams › Show Diagram: the selected tables, their keys and indexes, linked by their foreign keys. */
 import type { DbTableDetails } from "@/platform/ipc";
 import type { EditorInput } from "@/workbench/contributions";
 
 export const DIAGRAM_KIND = "db-diagram";
-
-export interface DiagramData {
-  title: string;
-  /** Mermaid `erDiagram` source. */
-  source: string;
-}
-
-export const diagramTitle = (input: EditorInput) => (input.data as DiagramData).title;
-
-/** The same diagram opens in the same tab. */
-export function diagramInput(data: DiagramData): EditorInput {
-  return { kind: DIAGRAM_KIND, key: `${DIAGRAM_KIND}:${data.source}`, data };
-}
 
 export interface DiagramTable {
   /** Connection target. */
@@ -25,52 +12,101 @@ export interface DiagramTable {
   details: DbTableDetails;
 }
 
-/** Tables of a schema shown at most: Mermaid lays out and sizes larger diagrams poorly. */
-export const DIAGRAM_TABLE_LIMIT = 50;
-
-/** Mermaid's default `maxTextSize`: a longer source renders as an error. */
-export const MERMAID_MAX_TEXT = 50_000;
-
-/**
- * Text Mermaid shows as written: anything but letters, digits and spaces
- * becomes an entity code (`#34;`), so quotes, backticks, `%`, `\`, `#` and
- * Markdown markers in a name can neither end its token nor format it.
- */
-function text(s: string): string {
-  return s.replace(/[^\p{L}\p{N} ]/gu, (c) => `#${c.codePointAt(0)};`);
+export interface DiagramData {
+  title: string;
+  tables: DiagramTable[];
 }
 
-const tableKey = (id: string, schema: string, name: string) => `${id}\u0000${schema}\u0000${name}`;
+export const diagramTitle = (input: EditorInput) => (input.data as DiagramData).title;
+
+export const tableKey = (t: Pick<DiagramTable, "id" | "schema" | "name">) => `${t.id}\u0000${t.schema}\u0000${t.name}`;
+
+/** The set of tables, whatever their order: the tab's identity and the key of its saved layout. */
+export const diagramKey = (tables: readonly DiagramTable[]) => JSON.stringify(tables.map(tableKey).sort());
+
+/** The same tables open in the same tab. */
+export function diagramInput(data: DiagramData): EditorInput {
+  return { kind: DIAGRAM_KIND, key: `${DIAGRAM_KIND}:${diagramKey(data.tables)}`, data };
+}
+
+/** Tables of a schema shown at most: the layout takes too long for a diagram nobody can read beyond that. */
+export const DIAGRAM_TABLE_LIMIT = 50;
+
+export interface DiagramColumn {
+  name: string;
+  type: string;
+  primaryKey: boolean;
+  foreignKey: boolean;
+  /** Member of a unique key other than the primary key. */
+  unique: boolean;
+  /** Member of an index that isn't unique. */
+  indexed: boolean;
+  /** The indexes and unique keys the column belongs to, for its tooltip. */
+  indexes: string[];
+}
+
+export interface DiagramNode {
+  key: string;
+  label: string;
+  columns: DiagramColumn[];
+  table: DiagramTable;
+}
+
+export interface DiagramEdge {
+  /** Index of the referencing table in `nodes`. */
+  from: number;
+  fromColumns: string[];
+  /** Index of the referenced table. */
+  to: number;
+  toColumns: string[];
+  /** A referencing column is nullable: a row may reference nothing. */
+  optional: boolean;
+}
+
+const sameColumns = (a: readonly string[], b: readonly string[]) =>
+  a.length === b.length && a.every((c) => b.includes(c));
 
 /**
- * The Mermaid `erDiagram` source of `tables`: their columns with PK / FK
- * markers, and a relationship per foreign key whose referenced table is one of
- * `tables`. Names are qualified by schema when the tables span several.
+ * The diagram of `tables`: their columns with key and index markers, and an
+ * edge per foreign key whose referenced table is one of `tables`. Labels are
+ * qualified by schema when the tables span several schemas or data sources.
  */
-export function erDiagram(tables: readonly DiagramTable[]): string {
-  const qualify = new Set(tables.map((t) => tableKey(t.id, t.schema, ""))).size > 1;
-  const ids = new Map(tables.map((t, i) => [tableKey(t.id, t.schema, t.name), `t${i}`]));
+export function diagramModel(tables: readonly DiagramTable[]): { nodes: DiagramNode[]; edges: DiagramEdge[] } {
+  const qualify = new Set(tables.map((t) => `${t.id}\u0000${t.schema}`)).size > 1;
+  const index = new Map(tables.map((t, i) => [tableKey(t), i]));
   // SQLite (and MySQL on case-insensitive file systems) keep the referenced name as the DDL spells it.
-  const folded = new Map(tables.map((t, i) => [tableKey(t.id, t.schema, t.name).toLowerCase(), `t${i}`]));
-  const lines = ["erDiagram"];
-  const relations: string[] = [];
-  tables.forEach((t, i) => {
-    const label = qualify ? `${t.schema}.${t.name}` : t.name;
-    const fkColumns = new Set(t.details.foreignKeys.flatMap((k) => k.columns));
-    lines.push(`  t${i}["${text(label)}"] {`);
-    for (const c of t.details.columns) {
-      const keys = [c.primaryKey && "PK", fkColumns.has(c.name) && "FK"].filter(Boolean).join(", ");
-      lines.push(`    \`${text(c.dataType || "?")}\` \`${text(c.name || "?")}\`${keys ? ` ${keys}` : ""}`);
+  const folded = new Map(tables.map((t, i) => [tableKey(t).toLowerCase(), i]));
+  const edges: DiagramEdge[] = [];
+  const nodes = tables.map((t, i): DiagramNode => {
+    const { columns, indexes, foreignKeys } = t.details;
+    const primary = columns.filter((c) => c.primaryKey).map((c) => c.name);
+    // The primary key's own index (`users_pkey`) adds nothing to its PK marker.
+    const shown = indexes.filter((x) => !(x.unique && sameColumns(x.columns, primary)));
+    const fk = new Set(foreignKeys.flatMap((k) => k.columns));
+    for (const k of foreignKeys) {
+      const ref = tableKey({ id: t.id, schema: k.refSchema, name: k.refTable });
+      const to = index.get(ref) ?? folded.get(ref.toLowerCase());
+      if (to === undefined) continue;
+      const optional = k.columns.some((name) => columns.find((c) => c.name === name)?.nullable ?? true);
+      edges.push({ from: i, fromColumns: k.columns, to, toColumns: k.refColumns, optional });
     }
-    lines.push("  }");
-    for (const k of t.details.foreignKeys) {
-      const ref = tableKey(t.id, k.refSchema, k.refTable);
-      const parent = ids.get(ref) ?? folded.get(ref.toLowerCase());
-      if (!parent) continue;
-      // A nullable referencing column lets a row reference nothing: zero or one parent.
-      const optional = k.columns.some((name) => t.details.columns.find((c) => c.name === name)?.nullable ?? true);
-      relations.push(`  ${parent} ${optional ? "|o" : "||"}--o{ t${i} : "${text(k.columns.join(", "))}"`);
-    }
+    return {
+      key: tableKey(t),
+      label: qualify ? `${t.schema}.${t.name}` : t.name,
+      table: t,
+      columns: columns.map((c) => {
+        const own = shown.filter((x) => x.columns.includes(c.name));
+        return {
+          name: c.name,
+          type: c.dataType,
+          primaryKey: c.primaryKey,
+          foreignKey: fk.has(c.name),
+          unique: own.some((x) => x.unique),
+          indexed: own.some((x) => !x.unique),
+          indexes: own.map((x) => x.name),
+        };
+      }),
+    };
   });
-  return [...lines, ...relations].join("\n");
+  return { nodes, edges };
 }

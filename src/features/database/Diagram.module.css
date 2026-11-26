@@ -1,45 +1,121 @@
-.diagram {
+.root {
   height: 100%;
-  overflow: auto;
-  padding: 16px 28px;
-  background: var(--bg-editor);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-editor, var(--bg-app));
   color: var(--fg);
+  outline: none;
 }
-/* The source stays until the diagram is drawn, and next to an error. */
-.diagram :global([data-mermaid]) {
+
+.toolbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-0-5);
+  min-height: calc(var(--h-control) + var(--space-2));
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--border-editor-tabs, var(--border));
+}
+
+.separator {
+  align-self: stretch;
+  width: 1px;
+  margin: var(--space-0-5) var(--space-1);
+  background: var(--border-strong);
+}
+
+.zoom {
+  margin-inline-start: auto;
+  font-size: var(--fs-ui);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-secondary);
+}
+
+.canvas {
+  flex: 1;
+  min-height: 0;
   position: relative;
-}
-.diagram :global([data-mermaid-state="ok"] > pre) {
-  display: none;
-}
-.diagram :global([data-mermaid] > pre) {
-  margin: 0;
-}
-.diagram :global(.mermaid-output) {
-  overflow-x: auto;
-  overflow-y: hidden;
-  text-align: center;
-}
-.diagram :global([data-mermaid-state="ok"] > .mermaid-output) {
-  user-select: none;
-}
-.diagram :global(.mermaid-output svg[data-natural-width]) {
-  display: block;
-  margin: 0 auto;
-  width: min(var(--diagram-width), 100%);
-  height: auto;
-}
-.diagram :global(.mermaid-output[data-zoomed="true"]) {
   overflow: hidden;
   cursor: grab;
   touch-action: none;
+  user-select: none;
 }
-.diagram :global(.mermaid-output[data-dragging="true"]) {
+.canvas > svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.panning {
   cursor: grabbing;
 }
-.diagram :global([data-mermaid-state="error"] > .mermaid-output) {
-  color: var(--danger);
-  font-family: var(--font-mono);
-  text-align: left;
-  white-space: pre-wrap;
+.message {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--fg-secondary);
+}
+
+.table {
+  cursor: default;
+}
+.body {
+  fill: var(--bg-elev, var(--bg-editor));
+  stroke: var(--border-strong);
+}
+.header {
+  fill: var(--bg-hover, var(--bg-elev));
+}
+.title {
+  font-family: var(--font-ui);
+  font-size: var(--fs-small);
+  font-weight: 600;
+  fill: var(--fg-strong, var(--fg));
+}
+.name {
+  font-family: var(--font-ui);
+  font-size: var(--fs-small);
+  fill: var(--fg);
+}
+.type {
+  font-family: var(--font-ui);
+  font-size: var(--fs-small);
+  fill: var(--fg-secondary);
+}
+.badge {
+  font-family: var(--font-ui);
+  font-size: var(--fs-tiny, 10px);
+  font-weight: 600;
+  fill: var(--accent);
+}
+.toggle {
+  cursor: pointer;
+}
+.toggle > rect {
+  fill: transparent;
+}
+.toggle:hover > rect {
+  fill: var(--bg-toolbar-hover, var(--bg-hover));
+}
+.selection {
+  fill: none;
+  stroke: var(--focus-ring, var(--accent));
+  stroke-width: 2;
+}
+
+.link {
+  fill: none;
+  stroke: var(--fg-secondary);
+  stroke-width: 1.2;
+}
+.optional {
+  stroke-dasharray: 5 3;
+}
+.arrow {
+  fill: var(--fg-secondary);
+}
+
+.popup {
+  height: min(600px, 100%);
 }

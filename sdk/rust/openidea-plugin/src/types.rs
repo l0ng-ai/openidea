@@ -850,6 +850,23 @@ pub struct MarkdownDecoration {
     pub after: Option<String>,
     pub markdown_hover: Option<String>,
 }
+/// An editor decoration's own colors (API 1.17): `#rrggbb` or `#rrggbbaa`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DecorationColors {
+    pub foreground: Option<String>,
+    pub background: Option<String>,
+}
+/// An editor annotation with its own colors (API 1.17). `style` may be empty when `colors` are set;
+/// otherwise it is a palette name and the colors paint over it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StyledDecoration {
+    pub range: Range,
+    pub style: String,
+    pub hover: Option<String>,
+    pub after: Option<String>,
+    pub markdown_hover: Option<String>,
+    pub colors: Option<DecorationColors>,
+}
 /// A project-tree annotation. Badge is at most two Unicode characters.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileDecoration {

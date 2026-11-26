@@ -124,6 +124,7 @@ it("re-reads the build model when an applied Groovy or Kotlin script changes", a
   try {
     for (const path of ["/p/gradle/dependencies.gradle", "/p/gradle/dependencies.gradle.kts"]) {
       const calls = mocks.model.mock.calls.length;
+      // oxlint-disable-next-line no-await-in-loop -- fake-timer steps and call-count assertions stay in path order
       await act(async () => {
         emitLocalIdeEvent({ type: "fsChanged", created: [], modified: [path], removed: [] });
         await vi.advanceTimersByTimeAsync(300);
@@ -321,6 +322,28 @@ it("attaches a module directory without a build file outside the project, after 
   expect(attached).toHaveBeenCalledWith("/code/B");
   expect(mocks.set).not.toHaveBeenCalled();
   expect(mocks.link).not.toHaveBeenCalled();
+});
+
+it("doesn't offer to attach a folder where another root can't be attached (a remote window)", async () => {
+  const attached = vi.fn();
+  const off = registerAction({
+    id: "project.attachFolder",
+    title: "Attach",
+    when: "projectLocal",
+    run: ({ arg }) => attached(arg),
+  });
+  setContext("projectLocal", false);
+  mocks.open.mockResolvedValue("/code/B");
+  mocks.readDir.mockResolvedValue([fileEntry("/code/B", "Main.java")]);
+  await act(async () => {
+    await executeAction("maven.importExternal");
+  });
+  off();
+  expect(mocks.confirm).not.toHaveBeenCalled();
+  expect(attached).not.toHaveBeenCalled();
+  expect(mocks.notify).toHaveBeenCalledWith(
+    expect.objectContaining({ level: "warning", title: "Module was not imported", key: "module-import-no-attach" }),
+  );
 });
 
 it("says a module directory without a build file inside the project is already part of it", async () => {

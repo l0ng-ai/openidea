@@ -81,4 +81,20 @@ describe("shared search pieces", () => {
       { path: "web", name: "web" },
     ]);
   });
+
+  it("keeps Gradle modules after a sync", () => {
+    // Root shapes ide-host `with_gradle_roots` writes for a synced multi-module build.
+    const synced = projectModules(
+      [
+        { path: "src/main/java", kind: "source", detectedFrom: "Gradle" },
+        { path: "lib/src/main/java", kind: "source", detectedFrom: "lib/Gradle" },
+        { path: "lib/build", kind: "excluded", detectedFrom: "lib/Gradle" },
+      ],
+      "app",
+    );
+    expect(synced).toEqual([
+      { path: "", name: "app" },
+      { path: "lib", name: "lib" },
+    ]);
+  });
 });

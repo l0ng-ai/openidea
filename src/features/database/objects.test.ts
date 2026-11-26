@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { DbColumnInfo } from "@/platform/ipc";
 import {
+  grantMatrix,
+  grantsSupported,
   alterTableSql,
   canDrop,
   canModifyTable,
@@ -402,5 +404,37 @@ describe("database and schema SQL", () => {
     expect(dropDatabaseSql("sqlServer", "shop", true)).toBe(
       "alter database shop set single_user with rollback immediate;\ndrop database shop;",
     );
+  });
+});
+
+describe("table grants", () => {
+  it("groups privileges per grantee and grantor in the standard order", () => {
+    const grant = (grantee: string, privilege: string, grantable = false, grantor: string | null = "admin") => ({
+      grantee,
+      grantor,
+      privilege,
+      grantable,
+    });
+    const { privileges, rows } = grantMatrix([
+      grant("writer", "UPDATE", true),
+      grant("reader", "SELECT"),
+      grant("writer", "INSERT"),
+      grant("writer", "SHOW VIEW"),
+      grant("writer", "MAINTAIN"),
+      grant("reader", "SELECT", false, "other"),
+    ]);
+    expect(privileges).toEqual(["SELECT", "INSERT", "UPDATE", "MAINTAIN", "SHOW VIEW"]);
+    expect(rows.map((r) => [r.grantee, r.grantor, Object.fromEntries(r.privileges)])).toEqual([
+      ["writer", "admin", { UPDATE: true, INSERT: false, "SHOW VIEW": false, MAINTAIN: false }],
+      ["reader", "admin", { SELECT: false }],
+      ["reader", "other", { SELECT: false }],
+    ]);
+  });
+
+  it("queries only the engines with per-table privileges", () => {
+    expect(grantsSupported("postgres")).toBe(true);
+    expect(grantsSupported("mysql")).toBe(true);
+    expect(grantsSupported("sqlite")).toBe(false);
+    expect(grantsSupported("clickhouse")).toBe(false);
   });
 });

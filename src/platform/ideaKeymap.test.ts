@@ -65,6 +65,15 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(k.unknownActions).toEqual([]);
   });
 
+  it("maps Expand Doc Comments and Collapse Doc Comments, which have no shortcut in the presets", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="M" parent="Mac OS X 10.5+"><action id="ExpandDocComments"><keyboard-shortcut first-keystroke="shift ctrl EQUALS"/></action><action id="CollapseDocComments"><keyboard-shortcut first-keystroke="shift ctrl MINUS"/></action></keymap>`,
+    );
+    expect(k.overrides["code.expandDocComments"]).toEqual([normalizeBinding("Shift+Ctrl+=")]);
+    expect(k.overrides["code.collapseDocComments"]).toEqual([normalizeBinding("Shift+Ctrl+-")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
   it("maps Remove All Breakpoints and Remove All Breakpoints In The Current File", () => {
     const k = parseIdeaKeymap(
       `<keymap name="M" parent="Mac OS X 10.5+"><action id="Debugger.RemoveAllBreakpoints"><keyboard-shortcut first-keystroke="shift meta F9"/></action><action id="Debugger.RemoveAllBreakpointsInFile"><keyboard-shortcut first-keystroke="alt meta F9"/></action></keymap>`,
@@ -80,6 +89,75 @@ describe("IntelliJ IDEA keymap import", () => {
     );
     expect(k.overrides["editor.scrollUp"]).toEqual([normalizeBinding("Meta+Up")]);
     expect(k.overrides["editor.scrollDown"]).toEqual([normalizeBinding("Meta+Down")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
+  it("maps Scroll to Top / Scroll to Bottom", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="X" parent="Mac OS X 10.5+"><action id="EditorScrollTop"><keyboard-shortcut first-keystroke="HOME"/></action><action id="EditorScrollBottom"><keyboard-shortcut first-keystroke="END"/></action></keymap>`,
+    );
+    expect(k.overrides["editor.scrollToTop"]).toEqual([normalizeBinding("Home")]);
+    expect(k.overrides["editor.scrollToBottom"]).toEqual([normalizeBinding("End")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
+  it("maps Copy as Plain Text / Copy as Rich Text", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="E" parent="Mac OS X 10.5+"><action id="CopyAsPlainText"><keyboard-shortcut first-keystroke="control alt C"/></action><action id="CopyAsRichText"><keyboard-shortcut first-keystroke="control alt shift C"/></action></keymap>`,
+    );
+    expect(k.overrides["code.copyAsPlainText"]).toEqual([normalizeBinding("Ctrl+Alt+C")]);
+    expect(k.overrides["code.copyAsRichText"]).toEqual([normalizeBinding("Ctrl+Alt+Shift+C")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
+  it("maps Delete to Line Start / End and Cut up to Line End", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="E" parent="Mac OS X 10.5+"><action id="EditorDeleteToLineStart"><keyboard-shortcut first-keystroke="meta BACK_SPACE"/></action><action id="EditorDeleteToLineEnd"><keyboard-shortcut first-keystroke="shift meta DELETE"/></action><action id="EditorCutLineEnd"><keyboard-shortcut first-keystroke="control alt K"/></action></keymap>`,
+    );
+    expect(k.overrides["code.deleteToLineStart"]).toEqual([normalizeBinding("Meta+Backspace")]);
+    expect(k.overrides["code.deleteToLineEnd"]).toEqual([normalizeBinding("Shift+Meta+Delete")]);
+    expect(k.overrides["code.cutLineEnd"]).toEqual([normalizeBinding("Ctrl+Alt+K")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
+  it("maps Recent Find Usages", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="R" parent="$default"><action id="ShowRecentFindUsagesGroup"><keyboard-shortcut first-keystroke="control alt shift F7"/></action></keymap>`,
+    );
+    expect(k.overrides["find.recentUsages"]).toEqual([normalizeBinding("Ctrl+Alt+Shift+F7")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
+  it("maps Hungry Backspace", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="H" parent="$default"><action id="EditorHungryBackSpace"><keyboard-shortcut first-keystroke="control alt BACK_SPACE"/></action></keymap>`,
+    );
+    expect(k.overrides["code.hungryBackspace"]).toEqual([normalizeBinding("Ctrl+Alt+Backspace")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
+  it("maps Move Caret Forward / Backward a Paragraph", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="P" parent="$default"><action id="EditorForwardParagraph"><keyboard-shortcut first-keystroke="alt shift CLOSE_BRACKET"/></action><action id="EditorBackwardParagraphWithSelection"><keyboard-shortcut first-keystroke="control alt shift OPEN_BRACKET"/></action></keymap>`,
+    );
+    expect(k.overrides["editor.paragraphForward"]).toEqual([normalizeBinding("Alt+Shift+]")]);
+    expect(k.overrides["editor.paragraphBackwardWithSelection"]).toEqual([normalizeBinding("Ctrl+Alt+Shift+[")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
+  it("maps Swap Selection Boundaries", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="S" parent="$default"><action id="EditorSwapSelectionBoundaries"><keyboard-shortcut first-keystroke="control X" second-keystroke="control X"/></action></keymap>`,
+    );
+    expect(k.overrides["editor.swapSelectionBoundaries"]).toEqual([normalizeBinding("Ctrl+X Ctrl+X")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
+  it("maps Select Line at Caret", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="S" parent="$default"><action id="EditorSelectLine"><keyboard-shortcut first-keystroke="control alt L"/></action></keymap>`,
+    );
+    expect(k.overrides["editor.selectLine"]).toEqual([normalizeBinding("Ctrl+Alt+L")]);
     expect(k.unknownActions).toEqual([]);
   });
 

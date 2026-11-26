@@ -290,10 +290,22 @@ export function collapseBlockEffects(state: EditorState): StateEffect<unknown>[]
 }
 
 export function collapseBlock(view: EditorView): boolean {
-  const effects = collapseBlockEffects(view.state);
+  return dispatchFolding(view, collapseBlockEffects(view.state));
+}
+
+/** IDEA "Collapse Doc Comments" / "Expand Doc Comments": folds (`collapse`) or unfolds `regions`. */
+export function foldRegions(
+  view: EditorView,
+  regions: ReadonlyArray<{ from: number; to: number }>,
+  collapse: boolean,
+): boolean {
+  return dispatchFolding(view, setFoldedEffects(view.state, regions, collapse));
+}
+
+function dispatchFolding(view: EditorView, effects: StateEffect<unknown>[]): boolean {
   if (!effects.length) return false;
   // A caret inside a fold would unfold it again: it moves to the fold, as in IDEA.
-  const folds = effects.map((e) => e.value as { from: number; to: number });
+  const folds = effects.filter((e) => e.is(foldEffect)).map((e) => e.value as { from: number; to: number });
   const sel = view.state.selection;
   const selection = EditorSelection.create(
     sel.ranges.map((r) => {
@@ -409,6 +421,17 @@ export function expandToLevelEffects(state: EditorState, level: number, all = fa
     else if (depth > level && !folded) effects.push(foldEffect.of(r));
   }
   return effects;
+}
+
+/** Folds (`collapse`) or unfolds each of `regions` that is not so already. */
+function setFoldedEffects(
+  state: EditorState,
+  regions: ReadonlyArray<{ from: number; to: number }>,
+  collapse: boolean,
+): StateEffect<unknown>[] {
+  return regions
+    .filter((r) => isFolded(state, r) !== collapse)
+    .map(({ from, to }) => (collapse ? foldEffect : unfoldEffect).of({ from, to }));
 }
 
 export function expandAllEffects(state: EditorState): StateEffect<unknown>[] {

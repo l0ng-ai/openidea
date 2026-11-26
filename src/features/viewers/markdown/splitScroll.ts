@@ -1,3 +1,4 @@
+import { reducedMotion } from "@/platform/motion";
 import { useLiveMarkdown } from "./live";
 
 /** Keep one follower per split. A new editor position retargets the frame already in flight. */
@@ -6,7 +7,6 @@ export function followMarkdownSource(path: string, root: HTMLElement, offsetForL
   let lastTime = 0;
   let position = root.scrollTop;
   let applied = position;
-  const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)");
   const target = () => {
     const state = useLiveMarkdown.getState()[path];
     const max = Math.max(0, root.scrollHeight - root.clientHeight);
@@ -27,7 +27,7 @@ export function followMarkdownSource(path: string, root: HTMLElement, offsetForL
     const elapsed = Math.max(0, Math.min(time - lastTime, 100));
     lastTime = time;
     position += (destination - position) * -Math.expm1(-elapsed / 40);
-    if (Math.abs(position - destination) < 0.5 || reducedMotion?.matches) {
+    if (Math.abs(position - destination) < 0.5 || reducedMotion()) {
       root.scrollTop = destination;
       return;
     }
@@ -39,7 +39,7 @@ export function followMarkdownSource(path: string, root: HTMLElement, offsetForL
     const a = next[path],
       b = prev[path];
     if (!a || (a.topLine === b?.topLine && a.scrollSeq === b?.scrollSeq && a.sourceAtEnd === b?.sourceAtEnd)) return;
-    if (reducedMotion?.matches) return align();
+    if (reducedMotion()) return align();
     if (frame) return;
     applied = position = root.scrollTop;
     lastTime = performance.now();
