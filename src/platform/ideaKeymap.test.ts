@@ -101,6 +101,17 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(k.unknownActions).toEqual([]);
   });
 
+  it("maps Move Up / Down and Scroll (with Selection)", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="E" parent="$default"><action id="EditorMoveUpAndScroll"><keyboard-shortcut first-keystroke="ctrl alt UP"/></action><action id="EditorMoveDownAndScroll"><keyboard-shortcut first-keystroke="ctrl alt DOWN"/></action><action id="EditorMoveUpAndScrollWithSelection"><keyboard-shortcut first-keystroke="ctrl alt shift UP"/></action><action id="EditorMoveDownAndScrollWithSelection"><keyboard-shortcut first-keystroke="ctrl alt shift DOWN"/></action></keymap>`,
+    );
+    expect(k.overrides["editor.moveUpAndScroll"]).toEqual([normalizeBinding("Ctrl+Alt+Up")]);
+    expect(k.overrides["editor.moveDownAndScroll"]).toEqual([normalizeBinding("Ctrl+Alt+Down")]);
+    expect(k.overrides["editor.moveUpAndScrollWithSelection"]).toEqual([normalizeBinding("Ctrl+Alt+Shift+Up")]);
+    expect(k.overrides["editor.moveDownAndScrollWithSelection"]).toEqual([normalizeBinding("Ctrl+Alt+Shift+Down")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
   it("maps Scroll to Top / Scroll to Bottom", () => {
     const k = parseIdeaKeymap(
       `<keymap name="X" parent="Mac OS X 10.5+"><action id="EditorScrollTop"><keyboard-shortcut first-keystroke="HOME"/></action><action id="EditorScrollBottom"><keyboard-shortcut first-keystroke="END"/></action></keymap>`,
