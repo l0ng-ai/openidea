@@ -4175,5 +4175,8 @@
   "Where Clause": "Where Clause",
   "SQL INSERT": "SQL INSERT",
   "SQL UPDATE": "SQL UPDATE",
-  "SQL DELETE": "SQL DELETE"
+  "SQL DELETE": "SQL DELETE",
+  "SVG editor layout": "SVG editor layout",
+  "Resize SVG preview": "Resize SVG preview",
+  "The SVG source is not valid.": "The SVG source is not valid."
 }
