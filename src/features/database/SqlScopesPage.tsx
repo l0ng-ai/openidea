@@ -39,7 +39,12 @@ export function SqlScopesPage() {
 
   const options: SelectOption[] = [
     { value: NONE, label: tx("<none>") },
-    ...(sources ?? []).map((s) => ({ value: s.id ?? "", label: s.name ?? s.id ?? "", icon: sourceIcon(s) })),
+    ...(sources ?? []).map((s) => ({
+      value: s.id ?? "",
+      label: s.name ?? s.id ?? "",
+      verbatim: true,
+      icon: sourceIcon(s),
+    })),
   ];
   const sourceOptions = (current: string) =>
     current && !options.some((o) => o.value === current)

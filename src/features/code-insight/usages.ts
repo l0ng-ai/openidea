@@ -6,6 +6,8 @@ import { editorsFor } from "@/editor/api";
 import { clearLineTokens } from "@/editor/lineTokens";
 import { showPendingHint } from "@/editor/lsp/hint";
 import { incompleteNote } from "@/editor/lsp/lsp";
+import { dedupeLocations } from "@/editor/lsp/navigation";
+import { overriddenMethods, overriddenReferences } from "@/editor/lsp/overriddenReferences";
 import { commands, IpcError, isCancelled, nextRequestId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { shortcutLabel } from "@/platform/keymap";
@@ -256,6 +258,8 @@ export async function fetchUsages(
       });
     });
   };
+  // Needs no request: looked up while the server searches.
+  const overridden = overriddenMethods(c.path, c.doc, { line: c.line, col: c.col });
   try {
     const refs = await lspRequest(() =>
       commands.lspReferences(request, c.doc, { line: c.line, col: c.col }, false, true, libraries, channel),
@@ -266,6 +270,14 @@ export async function fetchUsages(
     classified = refs.classified ?? [];
     librariesSkipped = refs.librariesSkipped ?? false;
     if (refs.incomplete) note = incompleteNote(refs.incomplete, c.word);
+    const inherited = await overriddenReferences(await overridden, (doc, at) =>
+      lspRequest(() => commands.lspReferences(request, doc, at, false, true, libraries, new Channel())),
+    );
+    for (const r of inherited) {
+      locs = locs.concat(r.locations);
+      if (r.incomplete) note ??= incompleteNote(r.incomplete, c.word);
+    }
+    if (inherited.length) locs = dedupeLocations(locs);
   } catch (e) {
     if (isCancelled(e)) throw e;
     let fb = null;

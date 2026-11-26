@@ -1590,8 +1590,14 @@ export function SourceDialog({
 
   const sshConfigOptions: SelectOption[] = [
     { value: "", label: "Custom (fields below)" },
-    ...sshConfigs.map((c) => ({ value: c.id, label: c.name.trim() || configLabel(c) || c.id, detail: configLabel(c) })),
-    ...(sshConfigId && !sshConfig ? [{ value: sshConfigId, label: tx`${sshConfigId} (missing)` }] : []),
+    ...sshConfigs.map((c) => ({
+      value: c.id,
+      verbatim: true,
+      verbatimDetail: true,
+      label: c.name.trim() || configLabel(c) || c.id,
+      detail: configLabel(c),
+    })),
+    ...(sshConfigId && !sshConfig ? [{ value: sshConfigId, verbatim: true, label: tx`${sshConfigId} (missing)` }] : []),
   ];
   const targetHost = s.host?.trim() ?? "";
   const targetPort = s.port ?? vendor.port ?? 5432;

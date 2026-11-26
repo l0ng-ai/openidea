@@ -106,7 +106,10 @@ function Toolbar({ path, view }: { path: string | null; view: EditorView }) {
   useEffect(() => {
     if (path) void loadEnvironments(path);
   }, [path]);
-  const options = [{ value: "", label: "No Environment" }, ...(envs ?? []).map((e) => ({ value: e, label: e }))];
+  const options = [
+    { value: "", label: "No Environment" },
+    ...(envs ?? []).map((e) => ({ value: e, label: e, verbatim: true })),
+  ];
   return (
     <div className={styles.toolbar}>
       <IconButton

@@ -1,0 +1,37 @@
+/*
+ * A plugin overlay floats over the workbench, clear of the title and status bars. It belongs to
+ * the main window like the notification balloons: under them, dialogs and popups.
+ */
+.overlay {
+  position: fixed;
+  z-index: calc(var(--z-dialog) - 2);
+  max-width: calc(100vw - 2 * var(--space-4));
+  max-height: calc(100vh - var(--h-titlebar) - var(--h-statusbar) - 2 * var(--space-3));
+  pointer-events: auto;
+}
+.overlay[data-interactive="false"] {
+  pointer-events: none;
+}
+.overlay[data-v="top"] {
+  top: calc(var(--h-titlebar) + var(--space-3));
+}
+.overlay[data-v="middle"] {
+  top: 50%;
+  translate: 0 -50%;
+}
+.overlay[data-v="bottom"] {
+  bottom: calc(var(--h-statusbar) + var(--space-3));
+}
+.overlay[data-h="left"] {
+  left: var(--space-4);
+}
+.overlay[data-h="center"] {
+  left: 50%;
+  translate: -50% 0;
+}
+.overlay[data-h="right"] {
+  right: var(--space-4);
+}
+.overlay[data-v="middle"][data-h="center"] {
+  translate: -50% -50%;
+}
