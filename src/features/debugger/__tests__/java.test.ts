@@ -3,6 +3,7 @@ import type { RunConfig } from "@/platform/ipc";
 
 const invoked: Array<[string, unknown[]]> = [];
 let shortenCommandLine: string | null = null;
+let launchProjectRoot: string | undefined = "/p";
 let kotlinFiles = false;
 let debugAdapter = "java-debug";
 const files: Record<string, string> = {};
@@ -45,7 +46,7 @@ vi.mock("@/platform/ipc", async (orig) => {
         invoked.push(["javaResolveLaunch", a]);
         return ok({
           build: "succeeded",
-          projectRoot: "/p",
+          projectRoot: launchProjectRoot,
           classPaths: ["/p/target/classes", "/m2/a.jar"],
           modulePaths: [],
           pathListSeparator: ":",
@@ -90,6 +91,7 @@ describe("Java debugging (java-debug through jdtls)", () => {
   beforeEach(() => {
     invoked.length = 0;
     shortenCommandLine = null;
+    launchProjectRoot = "/p";
     kotlinFiles = false;
     debugAdapter = "java-debug";
   });
@@ -274,13 +276,22 @@ describe("naming the Java project jdtls imported", () => {
   });
 
   it("lets java-debug resolve the main class instead of naming a POM-only project", async () => {
-    files["/p/pom.xml"] = "<project><artifactId>assembly</artifactId><packaging>pom</packaging></project>";
-    files["/p/.project"] = "<projectDescription><name>assembly</name></projectDescription>";
+    launchProjectRoot = undefined;
+    files["/p/assembly/pom.xml"] = "<project><artifactId>assembly</artifactId><packaging>pom</packaging></project>";
+    files["/p/assembly/.project"] = "<projectDescription><name>assembly</name></projectDescription>";
     kotlinFiles = false;
     debugAdapter = "java-debug";
     const launch = await javaLaunchConfig({ ...app, module: "assembly" }, "/p");
     expect(JSON.parse(launch.extraJson!)).not.toHaveProperty("projectName");
     expect(JSON.parse(launch.extraJson!).classPaths).toEqual(["/p/target/classes", "/m2/a.jar"]);
+  });
+
+  it("uses the configured Java module when the resolver does not report a project root", async () => {
+    launchProjectRoot = undefined;
+    files["/p/pom.xml"] = "<project><artifactId>root</artifactId><packaging>pom</packaging></project>";
+    files["/p/api/pom.xml"] = "<project><artifactId>api-module</artifactId></project>";
+    const launch = await javaLaunchConfig({ ...app, module: "api" }, "/p");
+    expect(JSON.parse(launch.extraJson!).projectName).toBe("api-module");
   });
 
   it("falls back to the folder name when the project says nothing, including unresolved properties", async () => {
