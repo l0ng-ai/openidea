@@ -1724,11 +1724,14 @@ pub struct TypeScriptSettings {
     /// plugin (hybrid mode; a Vue project's program alone needs ~3 GiB, and the
     /// vtsls default 3072 dies in a GC death spiral), else unset (vtsls default).
     pub tsserver_max_memory: u32,
+    /// Problems › TypeScript project errors: the project's own `tsc --watch` per root
+    /// `tsconfig.json` reports the errors of files that are not open.
+    pub watch_problems: bool,
 }
 
 impl Default for TypeScriptSettings {
     fn default() -> Self {
-        Self { version: "bundled".into(), tsserver_max_memory: 0 }
+        Self { version: "bundled".into(), tsserver_max_memory: 0, watch_problems: false }
     }
 }
 

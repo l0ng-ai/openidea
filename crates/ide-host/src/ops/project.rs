@@ -125,6 +125,11 @@ pub fn settings_set(
     if key == "terminal" || key.starts_with("terminal.") {
         super::term::apply_output_rate(host, window);
     }
+    if "languages.typescript.watchProblems".starts_with(&key)
+        && let Some(watch) = host.project(window).ok().and_then(|p| p.tsc_watch.clone())
+    {
+        watch.apply(&host.runtime);
+    }
     let sink = host.window_sink(window);
     sink.emit(IdeEvent::SettingsChanged { key });
     if let Some(root) = applied.roots_changed {

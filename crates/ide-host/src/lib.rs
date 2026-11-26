@@ -26,6 +26,7 @@ mod requests;
 pub mod rpc;
 pub mod shell_env;
 pub mod trust;
+mod tsc_watch;
 
 pub use project::{Project, history_retention};
 
@@ -420,6 +421,9 @@ impl Host {
         if let Some(phpstan) = &project.phpstan {
             phpstan.stop();
         }
+        if let Some(watch) = &project.tsc_watch {
+            watch.stop();
+        }
         project.documents.clear_workspace_edit_history();
         project.agents.detach_sinks();
         project.flutter.stop();
@@ -648,6 +652,9 @@ impl Host {
             }
             if let Some(phpstan) = &project.phpstan {
                 phpstan.stop();
+            }
+            if let Some(watch) = &project.tsc_watch {
+                watch.stop();
             }
             project.documents.clear_workspace_edit_history();
             project.notebooks.stop_admission();
