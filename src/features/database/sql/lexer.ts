@@ -2,7 +2,7 @@
  * SQL tokens for completion and resolution: words, quoted identifiers, string
  * literals, numbers and punctuation, with comments and whitespace dropped.
  * Dialect-aware (MySQL backticks / `#` comments / backslash escapes,
- * PostgreSQL dollar quoting, Snowflake `$$` strings / `//` comments / stages /
+ * PostgreSQL dollar quoting / nested comments, Snowflake `$$` strings / `//` comments / stages /
  * variant paths). Offsets are UTF-16, like the editor's.
  */
 import type { DbDriver } from "@/platform/ipc";
@@ -32,6 +32,25 @@ const STAGE_START = /[\p{L}_~%"]/u;
 const STAGE_END = /[\s(),;']/;
 const PATH_OWNER = /[\p{L}\p{N}_$)\]"']/u;
 const TWO_CHAR = new Set(["::", "<=", ">=", "<>", "!=", "||", "->", "=>", ":="]);
+
+function blockCommentEnd(text: string, from: number, nested: boolean): number {
+  const end = text.indexOf("*/", from);
+  if (!nested || end < 0) return end;
+  const inner = text.indexOf("/*", from);
+  if (inner < 0 || inner >= end) return end;
+
+  let depth = 2;
+  for (let i = inner + 2; i + 1 < text.length; i++) {
+    if (text.startsWith("/*", i)) {
+      depth++;
+      i++;
+    } else if (text.startsWith("*/", i)) {
+      if (--depth === 0) return i;
+      i++;
+    }
+  }
+  return -1;
+}
 
 export function lex(text: string, driver: DbDriver = "sqlite"): Lexed {
   const mysql = driver === "mysql";
@@ -78,7 +97,7 @@ export function lex(text: string, driver: DbDriver = "sqlite"): Lexed {
       comments.push({ from: i, to, open: true });
       i = to;
     } else if (c === "/" && next === "*") {
-      const end = text.indexOf("*/", i + 2);
+      const end = blockCommentEnd(text, i + 2, driver === "postgres");
       const to = end < 0 ? n : end + 2;
       comments.push({ from: i, to, open: end < 0 });
       i = to;

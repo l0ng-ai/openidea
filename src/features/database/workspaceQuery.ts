@@ -1,5 +1,7 @@
 import { tx } from "@/platform/i18n";
-import { identName, lex } from "./sql/lexer";
+import type { DbCompletion } from "@/platform/ipc";
+import { quoteIdent } from "./sql/complete";
+import { identName, inLiteral, lex, type Lexed, type Token } from "./sql/lexer";
 
 export interface WorkspaceRelation {
   source: "left" | "right";
@@ -12,6 +14,8 @@ export interface WorkspaceRelation {
 const sides = ["left", "right"] as const;
 type Side = (typeof sides)[number];
 type SourceNames = Record<Side, string>;
+const defaultNames: SourceNames = { left: "left", right: "right" };
+const SQL_LIMIT = 65_536;
 
 export function workspaceSourceNames(left: string, right: string): SourceNames {
   const unique = left.toLowerCase() !== right.toLowerCase();
@@ -50,16 +54,9 @@ export function workspaceSourceSide(
   );
 }
 
-/** Compile the workspace's direct table JOIN to structured host arguments. */
-export function workspaceJoinQuery(
-  sql: string,
-  names: SourceNames = { left: "left", right: "right" },
-  aliases: Partial<SourceNames> = {},
-): [WorkspaceRelation, WorkspaceRelation] {
-  if (sql.length > 65_536) throw new Error(tx("Workspace SQL exceeds 65,536 characters."));
+function parseWorkspaceJoin(tokens: readonly Token[], names: SourceNames, aliases: Partial<SourceNames>) {
   const aliasError = workspaceSourceAliasError(names, aliases);
   if (aliasError) throw new Error(aliasError);
-  const { tokens } = lex(sql, "postgres");
   let i = 0;
   const take = (expected: string) => {
     if (tokens[i]?.upper !== expected) return false;
@@ -72,7 +69,7 @@ export function workspaceJoinQuery(
   const identifier = () => {
     const token = tokens[i++];
     if (token?.kind === "word") return token.text.toLowerCase();
-    if (token?.kind === "quoted" && /^"(?:[^"]|"")*"$/.test(token.text)) return identName(token);
+    if (token?.kind === "quoted" && /^"(?:[^"]|"")+"$/.test(token.text)) return identName(token);
     throw new Error(tx("Expected an identifier in the workspace query."));
   };
   const relation = (): WorkspaceRelation => {
@@ -87,14 +84,6 @@ export function workspaceJoinQuery(
     const alias = take("AS") || !["INNER", "JOIN", "ON"].includes(tokens[i]?.upper ?? "") ? identifier() : name;
     return { source, schema, table, alias, key: "" };
   };
-  const column = (relations: WorkspaceRelation[]) => {
-    const alias = identifier();
-    need(".");
-    const key = identifier();
-    const target = relations.find((r) => r.alias === alias);
-    if (!target || target.key) throw new Error(tx("The join must compare one column from each table."));
-    target.key = key;
-  };
   need("SELECT");
   need("*");
   need("FROM");
@@ -106,10 +95,102 @@ export function workspaceJoinQuery(
     throw new Error(tx("Use two different sources and table aliases."));
   need("ON");
   const relations: [WorkspaceRelation, WorkspaceRelation] = [first, second];
-  column(relations);
-  need("=");
-  column(relations);
-  take(";");
-  if (i !== tokens.length) throw new Error(tx("The workspace supports one direct equality JOIN per run."));
-  return relations;
+  const columnOwner = () => {
+    const alias = identifier();
+    need(".");
+    const target = relations.find((r) => r.alias === alias);
+    if (!target || target.key) throw new Error(tx("The join must compare one column from each table."));
+    return target;
+  };
+  const column = () => {
+    columnOwner().key = identifier();
+  };
+  const at = (index: number) => i === index;
+  return { relations, identifier, columnOwner, column, take, need, at };
+}
+
+/** Compile the workspace's direct table JOIN to structured host arguments. */
+export function workspaceJoinQuery(
+  sql: string,
+  names: SourceNames = defaultNames,
+  aliases: Partial<SourceNames> = {},
+): [WorkspaceRelation, WorkspaceRelation] {
+  if (sql.length > SQL_LIMIT) throw new Error(tx("Workspace SQL exceeds 65,536 characters."));
+  const { tokens } = lex(sql, "postgres");
+  const query = parseWorkspaceJoin(tokens, names, aliases);
+  query.column();
+  query.need("=");
+  query.column();
+  query.take(";");
+  if (!query.at(tokens.length)) throw new Error(tx("The workspace supports one direct equality JOIN per run."));
+  return query.relations;
+}
+
+export interface WorkspaceJoinColumnTarget {
+  source: Side;
+  schema: string;
+  table: string;
+  from: number;
+  prefix: string;
+  quoted: boolean;
+}
+
+/** Find the table named by the qualifier at the end of the SQL prefix. */
+export function workspaceJoinColumnTarget(
+  sql: string,
+  names: SourceNames = defaultNames,
+  aliases: Partial<SourceNames> = {},
+  lexed?: Lexed,
+): WorkspaceJoinColumnTarget | null {
+  if (sql.length > SQL_LIMIT) return null;
+  const parsed = lexed ?? lex(sql, "postgres");
+  const { tokens } = parsed;
+  const last = tokens.at(-1);
+  const partial = last?.to === sql.length && (last.kind === "word" || last.kind === "quoted") ? last : undefined;
+  if (tokens.at(partial ? -2 : -1)?.text !== ".") return null;
+  const literal = inLiteral(parsed, sql.length);
+  if (literal === "string" || literal === "comment") return null;
+
+  const atCaret = tokens.length - Number(!!partial);
+  try {
+    const query = parseWorkspaceJoin(tokens, names, aliases);
+    let relation = query.columnOwner();
+    if (!query.at(atCaret)) {
+      relation.key = query.identifier();
+      query.need("=");
+      relation = query.columnOwner();
+    }
+    if (!query.at(atCaret)) return null;
+    const { source, schema, table } = relation;
+    return {
+      source,
+      schema,
+      table,
+      from: partial?.from ?? sql.length,
+      prefix: partial ? identName(partial) : "",
+      quoted: partial?.kind === "quoted",
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Use workspace quoting for columns regardless of the selected table's database dialect. */
+export function workspaceJoinColumnOptions(target: WorkspaceJoinColumnTarget, catalog: DbCompletion) {
+  const table = catalog.tables.find(
+    (table) => table.kind === "table" && table.schema === target.schema && table.name === target.table,
+  );
+  const prefix = target.quoted ? target.prefix : target.prefix.toLowerCase();
+  const options = [];
+  for (const column of table?.columns ?? []) {
+    if (!(target.quoted ? column.name : column.name.toLowerCase()).startsWith(prefix)) continue;
+    options.push({
+      label: column.name,
+      apply: quoteIdent(column.name, "postgres"),
+      detail: column.dataType,
+      type: "property",
+    });
+    if (options.length === 100) break;
+  }
+  return options;
 }
