@@ -331,6 +331,81 @@ fn save_to_a_path_replaced_by_a_directory_preserves_the_dirty_buffer() {
 }
 
 #[test]
+fn autosave_checks_the_disk_before_the_watcher_reports_a_change() {
+    let f = fixture();
+    let path = f.root.join("notes.txt");
+    fs::write(&path, "alpha\nbeta\n").unwrap();
+    let info = f.docs.open(&path).unwrap();
+    f.docs.edit(info.id, 0, change(0, 5, "edited")).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    // An external write (git checkout, another editor) whose watcher event has not arrived yet.
+    fs::write(&path, "alpha\nbeta external\n").unwrap();
+
+    assert!(!f.docs.autosave(info.id).unwrap());
+    assert_eq!(fs::read_to_string(&path).unwrap(), "alpha\nbeta external\n");
+    assert!(f.docs.snapshot(info.id).unwrap().dirty);
+    assert!(
+        f.events.lock().iter().any(|e| matches!(e, IdeEvent::DocDiskConflict { doc, .. } if *doc == info.id)),
+        "the refused autosave must surface the conflict"
+    );
+}
+
+/// Writes `bytes` with an mtime clearly after the current one, whatever the filesystem's granularity.
+fn rewrite_later(path: &Path, bytes: &[u8]) {
+    let mtime = fs::metadata(path).unwrap().modified().unwrap() + std::time::Duration::from_secs(2);
+    fs::write(path, bytes).unwrap();
+    fs::File::options().write(true).open(path).unwrap().set_modified(mtime).unwrap();
+}
+
+#[test]
+fn rewriting_the_same_bytes_is_no_disk_conflict() {
+    let f = fixture();
+    let path = f.root.join("notes.txt");
+    fs::write(&path, "alpha\nbeta\n").unwrap();
+    let info = f.docs.open(&path).unwrap();
+    f.docs.edit(info.id, 0, change(0, 5, "edited")).unwrap();
+    // A touch, or a tool rewriting the file unchanged: only the mtime moves.
+    rewrite_later(&path, b"alpha\nbeta\n");
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
+    assert!(f.docs.autosave(info.id).unwrap(), "autosave stopped on a file whose bytes did not change");
+    assert_eq!(fs::read_to_string(&path).unwrap(), "edited\nbeta\n");
+    assert!(!f.events.lock().iter().any(|e| matches!(e, IdeEvent::DocDiskConflict { .. })));
+}
+
+#[test]
+fn autosave_ignores_a_rewrite_of_the_same_bytes_before_the_watcher_reports_it() {
+    let f = fixture();
+    let path = f.root.join("notes.txt");
+    fs::write(&path, "alpha\nbeta\n").unwrap();
+    let info = f.docs.open(&path).unwrap();
+    f.docs.edit(info.id, 0, change(0, 5, "edited")).unwrap();
+    rewrite_later(&path, b"alpha\nbeta\n");
+    assert!(f.docs.autosave(info.id).unwrap(), "autosave stopped on a file whose bytes did not change");
+    assert_eq!(fs::read_to_string(&path).unwrap(), "edited\nbeta\n");
+}
+
+/// Opens `bytes`, edits the buffer, then rewrites the file as `external` (same text, other bytes).
+fn assert_other_bytes_conflict(name: &str, bytes: &[u8], external: &[u8]) {
+    let f = fixture();
+    let path = f.root.join(name);
+    fs::write(&path, bytes).unwrap();
+    let info = f.docs.open(&path).unwrap();
+    f.docs.edit(info.id, 0, change(0, 0, "x")).unwrap();
+    rewrite_later(&path, external);
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
+    assert!(!f.docs.autosave(info.id).unwrap(), "{name}: autosave overwrote other bytes of the same text");
+    assert_eq!(fs::read(&path).unwrap(), external);
+}
+
+#[test]
+fn the_same_text_in_other_bytes_is_still_a_disk_conflict() {
+    assert_other_bytes_conflict("crlf.txt", b"alpha\nbeta\n", b"alpha\r\nbeta\r\n");
+    assert_other_bytes_conflict("bom.txt", b"alpha\n", b"\xEF\xBB\xBFalpha\n");
+    // Same length: only the byte comparison tells them apart.
+    assert_other_bytes_conflict("utf16.txt", b"\xFF\xFEa\x00\n\x00", b"\xFE\xFF\x00a\x00\n");
+}
+
+#[test]
 fn autosave_leaves_a_file_changed_on_disk_after_an_edit() {
     let f = fixture();
     let path = f.root.join("notes.txt");
@@ -1197,7 +1272,7 @@ fn untitled_buffers_are_editable_and_saved_to_a_chosen_path() {
     assert_eq!(f.docs.by_path(&target), Some(info.id));
     assert_eq!(f.docs.by_path(Path::new("untitled:Untitled-1")), None);
     f.docs.edit(info.id, version, change(0, 0, "// hi\n")).unwrap();
-    f.docs.save(info.id).unwrap();
+    assert!(f.docs.autosave(info.id).unwrap(), "Save As records the disk state autosave checks");
     assert!(!f.docs.is_dirty(info.id).unwrap());
     assert_eq!(fs::read_to_string(&target).unwrap(), "// hi\nfn main() {}\n");
 

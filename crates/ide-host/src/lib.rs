@@ -15,6 +15,7 @@ mod formatter;
 mod java_runtime;
 mod kotlin_bridge;
 pub mod mcp;
+pub mod menu;
 pub mod notebook;
 pub mod ops;
 mod phpstan;
@@ -26,6 +27,9 @@ mod requests;
 pub mod rpc;
 pub mod shell_env;
 pub mod trust;
+mod ts_code_style;
+mod tsc_watch;
+pub mod web_server;
 
 pub use project::{Project, history_retention};
 
@@ -378,6 +382,7 @@ impl Host {
         self.mcp_reports.forget_window(window);
         self.mcp_requests.forget_window(window);
         self.mcp_agent_runs.forget_window(window);
+        self.debugger.forget_breakpoints(self.owner_window(window));
         self.external_logs.write().remove(self.owner_window(window));
         for request in self.project_requests.write().remove(self.owner_window(window)).unwrap_or_default() {
             self.cancel_request(request);
@@ -385,10 +390,12 @@ impl Host {
         // After the cancels: a capture or open still running then discards what it registers.
         ops::heap::close_window_snapshots(self, window);
         let project = self.projects.write().remove(window)?;
-        if self.windows_for_root(&project.root).is_empty()
-            && let Some(plugins) = self.plugin_host()
-        {
-            plugins.withdraw_project_run_targets(&project.root);
+        if let Some(plugins) = self.plugin_host() {
+            if self.windows_for_root(&project.root).is_empty() {
+                plugins.project_closed(&project.root, window);
+            } else {
+                plugins.forget_client(window);
+            }
         }
         project.files_events_active.store(false, std::sync::atomic::Ordering::Release);
         project.plugin_diagnostics.close();
@@ -419,6 +426,9 @@ impl Host {
         }
         if let Some(phpstan) = &project.phpstan {
             phpstan.stop();
+        }
+        if let Some(watch) = &project.tsc_watch {
+            watch.stop();
         }
         project.documents.clear_workspace_edit_history();
         project.agents.detach_sinks();
@@ -649,6 +659,9 @@ impl Host {
             if let Some(phpstan) = &project.phpstan {
                 phpstan.stop();
             }
+            if let Some(watch) = &project.tsc_watch {
+                watch.stop();
+            }
             project.documents.clear_workspace_edit_history();
             project.notebooks.stop_admission();
             project.agents.shutdown();
@@ -686,6 +699,12 @@ impl Host {
 
     pub fn begin_request(&self, id: RequestId) -> CancellationToken {
         self.requests.begin(id)
+    }
+
+    /// Settings › Tools › Download Mirrors › Use only the configured package registries: nothing
+    /// is fetched from public package registries the user's tools weren't pointed at.
+    pub fn configured_registries_only(&self) -> bool {
+        self.global_settings.effective().tool_downloads.configured_registries_only
     }
 
     pub fn begin_project_request(&self, window: &str, id: RequestId) -> CancellationToken {

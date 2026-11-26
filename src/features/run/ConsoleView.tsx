@@ -19,10 +19,10 @@ import { Icon, showContextMenu } from "@/ui";
 import { spanStyle } from "@/ui/ansi";
 import { logLineColor } from "@/ui/logColors";
 import { compileConsoleRules, matchConsoleRules, styleSpans, type ConsoleRuleMatch } from "@/ui/consoleRules";
-import { useConsoleRules } from "@/workbench/contributions";
+import { useConsoleRules, useOccurrenceNavigator } from "@/workbench/contributions";
 import type { ConsoleLine, ConsoleModel } from "./console";
 import { findOutputLinks, type OutputLink } from "./links";
-import { consoleLinkMenu, debugConsoleUrl, openTarget, openUrl } from "./navigate";
+import { debugConsoleUrl, openTarget, openUrl } from "./navigate";
 import { segmentLine, type SegmentMark } from "./segments";
 import styles from "./Run.module.css";
 import { useConsoleSelection } from "./useConsoleSelection";
@@ -44,12 +44,15 @@ const Line = memo(
     marks,
     rules,
     cwd,
+    currentLink,
   }: {
     line: ConsoleLine;
     marks?: readonly SegmentMark[];
     rules?: ConsoleRuleMatch;
     length: number;
     cwd: string;
+    /** Start of the link Previous / Next Occurrence stepped to on this line. */
+    currentLink?: number;
   }) {
     // Not memoised: the open (last) line mutates in place; `memo` below re-renders on length changes only.
     const spans = rules ? styleSpans(line.spans, rules) : line.spans;
@@ -79,7 +82,7 @@ const Line = memo(
               // oxlint-disable-next-line react/no-array-index-key -- segments repeat; position in an immutable line is stable
               key={i}
               href={seg.link.kind === "url" ? seg.link.url : undefined}
-              className={styles.link}
+              className={clsx(styles.link, seg.link.start === currentLink && styles.currentLink)}
               style={style}
               onClick={(e) => activate(e, seg.link!)}
               role="link"
@@ -103,8 +106,59 @@ const Line = memo(
       </>
     );
   },
-  (a, b) => a.line === b.line && a.length === b.length && a.cwd === b.cwd && a.marks === b.marks && a.rules === b.rules,
+  (a, b) =>
+    a.line === b.line &&
+    a.length === b.length &&
+    a.cwd === b.cwd &&
+    a.marks === b.marks &&
+    a.rules === b.rules &&
+    a.currentLink === b.currentLink,
 );
+
+/** A file link in the output, by its line's id (stable across trimming). */
+export interface LinkPosition {
+  lineId: number;
+  start: number;
+}
+
+export interface FileLink extends LinkPosition {
+  /** Index in the console's lines. */
+  line: number;
+  link: OutputLink & { kind: "file" };
+}
+
+/** The file links on the `shown` lines (a collapsed fold hides its links), in output order. */
+/** A copy of a line the model may still append to (the open last line). */
+function copyLine(line: ConsoleLine): ConsoleLine {
+  return { ...line, spans: line.spans.map((span) => ({ ...span })) };
+}
+
+export function fileLinks(lines: readonly ConsoleLine[], shown: (index: number) => boolean): FileLink[] {
+  const links: FileLink[] = [];
+  lines.forEach((line, i) => {
+    if (line.kind === "system" || !shown(i)) return;
+    for (const link of findOutputLinks(line.text))
+      if (link.kind === "file") links.push({ line: i, lineId: line.id, start: link.start, link });
+  });
+  return links;
+}
+
+/**
+ * IDEA's Up / Down the Stack Trace: the 0-based index of the link after (1) / before (-1)
+ * `from` among `links`, or `null` past either end. `from` need not be among them (its line
+ * was trimmed or folded): line ids only grow, so its place is still known. Without `from`
+ * it starts at the first / last link.
+ */
+export function stepFileLink(links: readonly FileLink[], from: LinkPosition | null, dir: 1 | -1): number | null {
+  let index = dir === 1 ? 0 : links.length - 1;
+  if (from) {
+    const after = links.findIndex((l) => l.lineId > from.lineId || (l.lineId === from.lineId && l.start >= from.start));
+    const at = after < 0 ? links.length : after;
+    const on = links[at]?.lineId === from.lineId && links[at]?.start === from.start;
+    index = dir === 1 ? at + Number(on) : at - 1;
+  }
+  return index >= 0 && index < links.length ? index : null;
+}
 
 /** A run of folded lines (Settings › Console › Fold lines that contain). */
 export interface Fold {
@@ -187,6 +241,8 @@ export interface ConsoleViewProps {
   /** Controlled find bar (the Run toolbar button); without it ⌘F opens it locally. */
   findOpen?: boolean;
   onFindOpenChange?: (open: boolean) => void;
+  /** Tool window whose Previous / Next Occurrence step through the file links in the output. */
+  occurrences?: string;
   "aria-label"?: string;
 }
 
@@ -201,11 +257,17 @@ export function ConsoleView({
   input,
   findOpen: controlledFindOpen,
   onFindOpenChange,
+  occurrences,
   ...aria
 }: ConsoleViewProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLDivElement>(null);
-  const lines = model.lines;
+  // Pause Output: the output so far stays on screen while the process keeps
+  // writing; resuming shows everything that arrived meanwhile.
+  const [paused, setPaused] = useState<readonly ConsoleLine[] | null>(null);
+  const lines = paused ?? model.lines;
+  const togglePaused = () =>
+    setPaused((p) => (p ? null : model.lines.map((l, i, all) => (i === all.length - 1 ? copyLine(l) : l))));
   const patterns = useWorkflowSettings((s) => s.console.foldPatterns);
   const logColors = useWorkflowSettings((s) => s.console.logColors);
   const consoleRules = compileConsoleRules(useConsoleRules((s) => s.providers));
@@ -410,6 +472,27 @@ export function ConsoleView({
     scrolledMatch.current = key;
   }, [findOpen, activeMatch, rowOfLine, rows, virtualizer]);
 
+  const [currentLink, setCurrentLink] = useState<LinkPosition | null>(null);
+  // Read by key repeat before the next render; the links are found on demand, once per output change.
+  const stepFrom = useRef<LinkPosition | null>(null);
+  const linksCache = useRef<{ rows: Map<number, number>; links: FileLink[] } | null>(null);
+  useOccurrenceNavigator(occurrences ?? null, (dir, focus) => {
+    if (linksCache.current?.rows !== rowOfLine)
+      linksCache.current = { rows: rowOfLine, links: fileLinks(lines, (i) => rowOfLine.has(i)) };
+    const { links } = linksCache.current;
+    const index = stepFileLink(links, stepFrom.current, dir);
+    if (index === null) return null;
+    const hit = links[index]!;
+    stepFrom.current = { lineId: hit.lineId, start: hit.start };
+    setCurrentLink(stepFrom.current);
+    onFollowChange(false);
+    programmatic.current = true;
+    virtualizer.scrollToIndex(rowOfLine.get(hit.line)!, { align: "center" });
+    requestAnimationFrame(() => (programmatic.current = false));
+    void openTarget(hit.link.target, cwd, focus);
+    return { index: index + 1, total: links.length };
+  });
+
   /** Rows are virtualized, so "everything" is a selection of the container, not of the mounted rows. */
   const selectAll = () => {
     const inner = innerRef.current;
@@ -444,7 +527,6 @@ export function ConsoleView({
     const selection = selectedOutput();
     const foldText = foldLineText(selection, lineAt(e.target));
     showContextMenu(e, [
-      ...consoleLinkMenu(e.target),
       {
         label: "Copy",
         icon: "copy",
@@ -467,7 +549,16 @@ export function ConsoleView({
         // Opens Settings › Console with the text added to the fold patterns, for OK / Cancel there.
         run: () => void executeAction("file.settings", `build.console#${foldText}`),
       },
-      { label: "Clear All", icon: "trash", disabled: !onClear, run: () => onClear?.() },
+      { label: "Pause Output", icon: "pause", checked: !!paused, run: togglePaused },
+      {
+        label: "Clear All",
+        icon: "trash",
+        disabled: !onClear,
+        run: () => {
+          setPaused(null);
+          onClear?.();
+        },
+      },
       ...(input
         ? [{ kind: "separator" } as const, { label: "Send EOF", shortcut: "⌃D", run: () => input.onEof() }]
         : []),
@@ -664,6 +755,7 @@ export function ConsoleView({
                   rules={ruled}
                   length={line.text.length}
                   cwd={cwd}
+                  currentLink={currentLink?.lineId === line.id ? currentLink.start : undefined}
                 />
                 {row.fold && !row.fold.expanded && foldButton(row.fold, true)}
                 {inputInline && item.index === rows.length - 1 && pendingInput}

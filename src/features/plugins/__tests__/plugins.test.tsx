@@ -80,6 +80,7 @@ function plugin(partial: Partial<PluginInfo> & Pick<PluginInfo, "id">): PluginIn
     hasCode: true,
     capabilities: [],
     netHosts: [],
+    netSettings: [],
     contributions: [],
     activation: [],
     warnings: [],
@@ -1629,6 +1630,75 @@ describe("marketplace", () => {
       stop();
     });
 
+    it("lets the install consent dialog select and clear all optional permissions at once", async () => {
+      const consents = updatesBackend({
+        b: preview("b", "2.0.0", {
+          needsConsent: true,
+          capabilities: [
+            { id: "editor.read", description: "Read", risk: "low", optional: false, granted: false },
+            { id: "storage", description: "Store data", risk: "low", optional: true, granted: false },
+            { id: "net:api.example", description: "Net", risk: "medium", optional: true, granted: false },
+            { id: "process:git", description: "Run git", risk: "high", optional: true, granted: false },
+          ],
+        }),
+      });
+      const stop = provideConsentDialog();
+      const user = userEvent.setup();
+      render(<ConsentDialogHost />);
+      const done = installFromDisk("b");
+
+      const selectAll = (await screen.findByRole("checkbox", {
+        name: "Allow all optional permissions",
+      })) as HTMLInputElement;
+      // Low-risk optional permission starts checked while medium/high stay unchecked -> indeterminate.
+      expect(selectAll.checked).toBe(false);
+      expect(selectAll.indeterminate).toBe(true);
+      expect(screen.getByText("1/3")).toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+      // Clicking from indeterminate checks every optional permission and surfaces the high-risk warning.
+      await user.click(selectAll);
+      expect(selectAll.checked).toBe(true);
+      expect(selectAll.indeterminate).toBe(false);
+      expect(screen.getByText("3/3")).toBeInTheDocument();
+      expect(screen.getByRole("alert")).toHaveTextContent("running arbitrary code");
+
+      // Clicking again clears all optional permissions.
+      await user.click(selectAll);
+      expect(selectAll.checked).toBe(false);
+      expect(selectAll.indeterminate).toBe(false);
+      expect(screen.getByText("0/3")).toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+      // Selecting all again and installing passes every optional capability to the backend.
+      await user.click(selectAll);
+      await user.click(screen.getByRole("button", { name: "Install" }));
+      await done;
+      expect(consents[0]![1].optional.sort()).toEqual(["net:api.example", "process:git", "storage"]);
+      stop();
+    });
+
+    it("hides the select-all checkbox when there is at most one optional permission", async () => {
+      updatesBackend({
+        b: preview("b", "2.0.0", {
+          needsConsent: true,
+          capabilities: [
+            { id: "editor.read", description: "Read", risk: "low", optional: false, granted: false },
+            { id: "net:api.example", description: "Net", risk: "medium", optional: true, granted: false },
+          ],
+        }),
+      });
+      const stop = provideConsentDialog();
+      const user = userEvent.setup();
+      render(<ConsentDialogHost />);
+      const done = installFromDisk("b");
+      await screen.findByRole("checkbox", { name: "Allow net:api.example" });
+      expect(screen.queryByRole("checkbox", { name: "Allow all optional permissions" })).not.toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Cancel" }));
+      await done;
+      stop();
+    });
+
     it("offers Update All in the gear menu while there are updates", async () => {
       setConsentPrompt(async () => ({ optional: [] }));
       const consents = updatesBackend({ a: preview("a", "1.1.0"), b: preview("b", "2.0.0") });
@@ -1714,6 +1784,42 @@ describe("marketplace", () => {
       expect(screen.getByText("net:relay.example.org")).toBeInTheDocument();
     },
   );
+
+  it("lists the host of a net:setting grant with revoke and a pending one with approve", async () => {
+    const user = userEvent.setup();
+    const base = createMemoryPluginsBackend([
+      plugin({
+        id: "p",
+        name: "GitLab bridge",
+        netSettings: [
+          { setting: "server", http: false, host: "jira.corp.example", pending: null },
+          { setting: "server", http: true, host: null, pending: "intra.example" },
+        ],
+        capabilities: [
+          { id: "net:setting:server", risk: "medium", description: "Connect", optional: true, granted: true },
+          { id: "net.http:setting:server", risk: "medium", description: "Connect", optional: true, granted: true },
+        ],
+      }),
+    ]);
+    const approveNetSetting = vi.fn((id: string, setting: string, http: boolean, host: string) =>
+      base.approveNetSetting(id, setting, http, host),
+    );
+    const forgetNetSetting = vi.fn((id: string, setting: string, http: boolean) =>
+      base.forgetNetSetting(id, setting, http),
+    );
+    setPluginsBackend({ ...base, approveNetSetting, forgetNetSetting });
+    render(<PluginsPage initialTab="installed" />);
+
+    await screen.findAllByText("net:setting:server");
+    expect(screen.getByText(/The host set in the “server” setting, on any port\./)).toBeInTheDocument();
+    expect(screen.getByText(/The “server” setting now holds intra\.example\./)).toBeInTheDocument();
+    expect(screen.getByText(/Approving connects over unencrypted HTTP\./)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(approveNetSetting).toHaveBeenCalledWith("p", "server", true, "intra.example"));
+    // Both transports are approved now; the HTTPS row comes first.
+    await user.click((await screen.findAllByRole("button", { name: "Remove" }))[0]!);
+    await waitFor(() => expect(forgetNetSetting).toHaveBeenCalledWith("p", "server", false));
+  });
 
   it("shows the Java agent next to the java.agent permission", async () => {
     setPluginsBackend(

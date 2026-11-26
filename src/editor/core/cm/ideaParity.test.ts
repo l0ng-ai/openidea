@@ -8,11 +8,13 @@ import {
   deleteWordBackward,
   duplicateEntireLines,
   duplicateLineOrSelection,
+  inDifferentHumpsMode,
   moveStatementDown,
   moveStatementUp,
   nextOccurrence,
   occurrenceSearch,
   selectAllOccurrences,
+  selectLineAtCaret,
   unselectOccurrence,
 } from "./editing";
 import { caretExtension, pasteReindentFilter } from "./prefs";
@@ -203,6 +205,12 @@ describe("folded lines", () => {
     expect(back.state.selection.main).toMatchObject({ anchor: 17, head: 15 });
   });
 
+  it("Select Line at Caret on a folded region's line selects the whole folded block", () => {
+    const v = folded();
+    selectLineAtCaret(v);
+    expect(v.state.selection.main).toMatchObject({ anchor: 2, head: 15 });
+  });
+
   it("⌘⌫ on a folded region's line deletes the whole folded block", () => {
     const v = folded();
     deleteLine(v);
@@ -218,6 +226,57 @@ describe("Delete to Word Start", () => {
     const w = make("a.b(|");
     deleteWordBackward(w);
     expect(show(w)).toBe("a.b|");
+  });
+});
+
+describe('in Different "CamelHumps" Mode', () => {
+  function run(text: string, op: Parameters<typeof inDifferentHumpsMode>[0], camelHumps: boolean, times = 1) {
+    const v = make(text);
+    for (let i = 0; i < times; i++) inDifferentHumpsMode(op, camelHumps)(v);
+    return show(v);
+  }
+
+  it("moves by humps while the setting is off", () => {
+    expect(run("|parseHTMLDocument x", "right", false)).toBe("parse|HTMLDocument x");
+    expect(run("|parseHTMLDocument x", "right", false, 2)).toBe("parseHTML|Document x");
+    expect(run("x parseHTMLDocument|", "left", false)).toBe("x parseHTML|Document");
+    expect(run("|snake_case_name", "right", false)).toBe("snake_|case_name");
+  });
+
+  it("moves by whole words while the setting is on", () => {
+    expect(run("|parseHTMLDocument x", "right", true)).toBe("parseHTMLDocument| x");
+    expect(run("x parseHTMLDocument|", "left", true)).toBe("x |parseHTMLDocument");
+  });
+
+  it("extends the selection from its anchor in the with Selection variants", () => {
+    expect(run("|fooBarBaz", "selectRight", false, 2)).toBe("[fooBar]Baz");
+    expect(run("fooBarBaz|", "selectLeft", false)).toBe("fooBar[Baz]");
+    expect(run("|fooBar baz", "selectRight", true)).toBe("[fooBar] baz");
+  });
+
+  it("moves every caret, and leaves a selection at its edge without extending", () => {
+    expect(run("|fooBar\n|bazQux", "right", false)).toBe("foo|Bar\nbaz|Qux");
+    expect(run("[fooBar]Baz", "right", false)).toBe("fooBar|Baz");
+    expect(run("foo[BarBaz]", "left", false)).toBe("foo|BarBaz");
+  });
+
+  it("deletes to the word start or end of the other mode", () => {
+    expect(run("a.fooBar|", "deleteToStart", false)).toBe("a.foo|");
+    expect(run("a.fooBar|", "deleteToStart", true)).toBe("a.|");
+    expect(run("|fooBar.b", "deleteToEnd", false)).toBe("|Bar.b");
+    expect(run("|fooBar.b", "deleteToEnd", true)).toBe("|.b");
+    expect(run("foo [BarBaz] qux", "deleteToEnd", false)).toBe("foo | qux");
+    expect(run("foo [BarBaz] qux", "deleteToEnd", true)).toBe("foo | qux");
+    expect(run("aBc|\nxYz|", "deleteToStart", false)).toBe("a|\nx|");
+  });
+
+  it("does not delete in a read-only editor", () => {
+    for (const camelHumps of [false, true]) {
+      const v = make("foo|Bar", EditorState.readOnly.of(true));
+      expect(inDifferentHumpsMode("deleteToStart", camelHumps)(v)).toBe(false);
+      expect(inDifferentHumpsMode("deleteToEnd", camelHumps)(v)).toBe(false);
+      expect(show(v)).toBe("foo|Bar");
+    }
   });
 });
 

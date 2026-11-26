@@ -98,6 +98,32 @@ impl server::Handler for Sshd {
         });
         Ok(())
     }
+
+    /// `RemoteForward`: listens on 127.0.0.1:`port` and forwards each connection back to the client.
+    async fn tcpip_forward(
+        &mut self,
+        address: &str,
+        port: &mut u32,
+        session: &mut ServerSession,
+    ) -> Result<bool, Self::Error> {
+        let Ok(listener) = TcpListener::bind(("127.0.0.1", *port as u16)).await else { return Ok(false) };
+        let (handle, address, port) = (session.handle(), address.to_owned(), *port);
+        tokio::spawn(async move {
+            while let Ok((mut socket, peer)) = listener.accept().await {
+                let Ok(channel) = handle
+                    .channel_open_forwarded_tcpip(address.clone(), port, "127.0.0.1", u32::from(peer.port()))
+                    .await
+                else {
+                    continue;
+                };
+                tokio::spawn(async move {
+                    let mut stream = channel.into_stream();
+                    let _ = tokio::io::copy_bidirectional(&mut stream, &mut socket).await;
+                });
+            }
+        });
+        Ok(true)
+    }
 }
 
 /// Echo server standing in for a remote service.
@@ -442,4 +468,51 @@ async fn accept_new_records_an_unknown_key_and_still_refuses_a_changed_one() {
     std::fs::write(&env.files.known_hosts, format!("[127.0.0.1]:{} {other}\n", env.ssh_port)).unwrap();
     let msg = denied(env.connect(&target, None).await);
     assert!(msg.contains("has changed"), "{msg}");
+}
+
+/// A free local port (bound and released).
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+}
+
+async fn echoes(port: u16) {
+    let mut s = TcpStream::connect(("127.0.0.1", port)).await.expect("forwarded port listens");
+    s.write_all(b"ping").await.unwrap();
+    let mut buf = [0u8; 4];
+    s.read_exact(&mut buf).await.unwrap();
+    assert_eq!(&buf, b"ping");
+}
+
+/// `RemoteForward` and `LocalForward` of `~/.ssh/config` are forwarded while the session lives (#6031).
+#[tokio::test]
+async fn config_port_forwards_follow_the_session() {
+    let mut env = env().await;
+    let (remote, local) = (free_port(), free_port());
+    let config = env._tmp.path().join("ssh_config");
+    std::fs::write(
+        &config,
+        format!(
+            "Host box\n\tHostName 127.0.0.1\n\tStrictHostKeyChecking=no\n\tUserKnownHostsFile=/dev/null\n\
+             \tRemoteForward {remote} 127.0.0.1:{echo}\n\tLocalForward 127.0.0.1:{local} localhost:{echo}\n\
+             \tRemoteForward /tmp/remote.sock /tmp/local.sock\n",
+            echo = env.echo_port
+        ),
+    )
+    .unwrap();
+    env.files.config = Some(config);
+    let target = SshTarget {
+        host: "box".into(),
+        port: Some(env.ssh_port),
+        user: "coder".into(),
+        auth: SshAuth::OpenSsh,
+        ..Default::default()
+    };
+    let session = Arc::new(env.connect(&target, None).await.expect("connects"));
+    session.start_forwards().await;
+    // The SSH host's port reaches the echo server here; the local port reaches it from the SSH host.
+    echoes(remote).await;
+    echoes(local).await;
+    drop(session);
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(TcpStream::connect(("127.0.0.1", local)).await.is_err(), "a closed session stops its LocalForward");
 }

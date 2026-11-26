@@ -21,7 +21,12 @@ describe("appearance & behavior settings", () => {
   });
 
   it("resolves Sync with OS to the preferred themes", () => {
-    const a = { theme: "light", syncWithOs: true, preferredLightTheme: "light", preferredDarkTheme: "dark-hc" };
+    const a = {
+      theme: "light",
+      syncWithOs: true,
+      preferredLightTheme: "light",
+      preferredDarkTheme: "dark-hc",
+    };
     expect(resolveThemeId(a, true)).toBe("light");
     expect(resolveThemeId(a, false)).toBe("dark-hc");
     expect(resolveThemeId({ theme: "system" }, false)).toBe("dark");
@@ -74,11 +79,15 @@ describe("appearance & behavior settings", () => {
     const fresh = validateSettings({});
     expect(fresh.general.closeWithoutWelcome).toBe(false);
     expect(fresh.general.closeTabsWithWindow).toBe(false);
-    const on = validateSettings({ general: { closeWithoutWelcome: true, closeTabsWithWindow: true } });
+    const on = validateSettings({
+      general: { closeWithoutWelcome: true, closeTabsWithWindow: true },
+    });
     expect(on.general.closeWithoutWelcome).toBe(true);
     expect(on.general.closeTabsWithWindow).toBe(true);
     expect(
-      validateSettings({ general: { closeWithoutWelcome: "yes", closeTabsWithWindow: 1 } } as never).general,
+      validateSettings({
+        general: { closeWithoutWelcome: "yes", closeTabsWithWindow: 1 },
+      } as never).general,
     ).toMatchObject({
       closeWithoutWelcome: false,
       closeTabsWithWindow: false,
@@ -99,10 +108,18 @@ describe("appearance & behavior settings", () => {
     // (`true` meant shown, which was the status bar).
     expect(validateAppearanceExtras({ showNavigationBar: true }).navigationBar).toBe("statusBar");
     expect(validateAppearanceExtras({ showNavigationBar: false }).navigationBar).toBe("hidden");
-    expect(validateAppearanceExtras({ showNavigationBar: true, navigationBar: "top" }).navigationBar).toBe("top");
-    expect(validateAppearanceExtras({ showNavigationBar: false, navigationBar: "statusBar" }).navigationBar).toBe(
-      "statusBar",
-    );
+    expect(
+      validateAppearanceExtras({
+        showNavigationBar: true,
+        navigationBar: "top",
+      }).navigationBar,
+    ).toBe("top");
+    expect(
+      validateAppearanceExtras({
+        showNavigationBar: false,
+        navigationBar: "statusBar",
+      }).navigationBar,
+    ).toBe("statusBar");
     // Anything that is neither a position nor a boolean falls back to the default.
     expect(validateAppearanceExtras({ navigationBar: "everywhere" }).navigationBar).toBe("statusBar");
   });
@@ -152,15 +169,21 @@ describe("appearance & behavior settings", () => {
   it("applies and clears the UI fallback, and removes custom fonts when disabled", () => {
     const root = document.createElement("div");
     const settings = validateSettings({
-      appearance: { useCustomFont: true, uiFontFamily: "Menlo", uiFontFallback: "Songti SC" },
+      appearance: {
+        useCustomFont: true,
+        uiFontFamily: "Menlo",
+        uiFontFallback: "Songti SC",
+      },
     });
     applyAppearanceOptions(settings, root);
     expect(root.style.getPropertyValue("--font-ui")).toBe(
-      '"Menlo", "Songti SC", system-ui, sans-serif, var(--font-icons)',
+      '"Menlo", "Songti SC", var(--ui-platform-fonts, var(--ui-system-fonts)), var(--font-icons)',
     );
     settings.appearance.uiFontFallback = "";
     applyAppearanceOptions(settings, root);
-    expect(root.style.getPropertyValue("--font-ui")).toBe('"Menlo", system-ui, sans-serif, var(--font-icons)');
+    expect(root.style.getPropertyValue("--font-ui")).toBe(
+      '"Menlo", var(--ui-platform-fonts, var(--ui-system-fonts)), var(--font-icons)',
+    );
     settings.appearance.useCustomFont = false;
     applyAppearanceOptions(settings, root);
     expect(root.style.getPropertyValue("--font-ui")).toBe("");
@@ -170,13 +193,28 @@ describe("appearance & behavior settings", () => {
     const d = new Date(2026, 0, 5, 14, 7);
     expect(formatPattern(d, "dd.MM.yyyy")).toBe("05.01.2026");
     expect(formatPattern(d, "d MMM yy")).toBe("5 Jan 26");
-    const o = { overrideSystem: true, pattern: "yyyy-MM-dd", use24Hour: false, pretty: false };
+    const o = {
+      overrideSystem: true,
+      pattern: "yyyy-MM-dd",
+      use24Hour: false,
+      pretty: false,
+    };
     expect(formatTimestamp(d.getTime(), d.getTime() + 1000, o)).toBe("2026-01-05 2:07 PM");
-    expect(formatTimestamp(d.getTime(), d.getTime() + 5 * 60_000, { ...o, pretty: true })).toBe("5 min ago");
+    expect(
+      formatTimestamp(d.getTime(), d.getTime() + 5 * 60_000, {
+        ...o,
+        pretty: true,
+      }),
+    ).toBe("5 min ago");
   });
 
   it("normalises notification groups", () => {
-    expect(validateNotifications({ groups: { vcs: { display: "weird", log: false } }, sound: 1 })).toEqual({
+    expect(
+      validateNotifications({
+        groups: { vcs: { display: "weird", log: false } },
+        sound: 1,
+      }),
+    ).toEqual({
       balloons: true,
       sound: false,
       systemNotifications: true,
@@ -185,13 +223,23 @@ describe("appearance & behavior settings", () => {
       groups: { vcs: { display: "balloon", log: false } },
     });
     expect(validateNotifications({ systemNotifications: false }).systemNotifications).toBe(false);
-    expect(validateNotifications({ terminalCompletion: "sometimes", terminalThresholdSeconds: "10" })).toMatchObject({
+    expect(
+      validateNotifications({
+        terminalCompletion: "sometimes",
+        terminalThresholdSeconds: "10",
+      }),
+    ).toMatchObject({
       terminalCompletion: "longRunning",
       terminalThresholdSeconds: 10,
     });
     // Out-of-range numbers clamp, as every numeric setting does.
     expect(validateNotifications({ terminalThresholdSeconds: 0 }).terminalThresholdSeconds).toBe(1);
-    expect(validateNotifications({ terminalCompletion: "all", terminalThresholdSeconds: 5 })).toMatchObject({
+    expect(
+      validateNotifications({
+        terminalCompletion: "all",
+        terminalThresholdSeconds: 5,
+      }),
+    ).toMatchObject({
       terminalCompletion: "all",
       terminalThresholdSeconds: 5,
     });

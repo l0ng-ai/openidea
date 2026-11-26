@@ -969,3 +969,150 @@ it.each(["Escape", "Enter"])("%s closes the inline text editor without a second 
   if (key === "Escape") expect(onEdit).not.toHaveBeenCalled();
   else expect(onEdit).toHaveBeenCalledExactlyOnceWith(0, 0, "changed");
 });
+
+describe("local filter (#6022)", () => {
+  const columns = [
+    { name: "city", type: "text" },
+    { name: "type", type: "int" },
+  ];
+  const data = [
+    ["Shanghai", "1"],
+    ["Beijing", "2"],
+    ["Shenzhen", "2"],
+    ["Hangzhou", "3"],
+  ];
+  const value = (r: number, c: number) => data[r]?.[c] ?? null;
+  const cities = () =>
+    screen
+      .getAllByRole("gridcell")
+      .map((c) => c.textContent)
+      .filter((t) => /^[A-Z]/.test(t ?? ""));
+
+  it("starts with no value checked and keeps only the rows of the checked values (DataGrip)", () => {
+    render(<DataView columns={columns} rowCount={4} value={value} panel={null} onPanelChange={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Filter type" }));
+    const popup = screen.getByRole("dialog", { name: "Local filter of type" });
+    const box = (name: string) => within(popup).getByRole("checkbox", { name });
+    expect(
+      within(popup)
+        .getAllByRole("checkbox")
+        .every((b) => !(b as HTMLInputElement).checked),
+    ).toBe(true);
+
+    fireEvent.change(within(popup).getByRole("textbox", { name: "Search values" }), { target: { value: "2" } });
+    fireEvent.click(box("2"));
+    expect(cities()).toEqual(["Beijing", "Shenzhen"]);
+
+    fireEvent.change(within(popup).getByRole("textbox", { name: "Search values" }), { target: { value: "" } });
+    fireEvent.click(box("3"));
+    expect(cities()).toEqual(["Beijing", "Shenzhen", "Hangzhou"]);
+
+    // Unchecking every value removes the filter.
+    fireEvent.click(box("2"));
+    fireEvent.click(box("3"));
+    expect(cities()).toEqual(["Shanghai", "Beijing", "Shenzhen", "Hangzhou"]);
+  });
+});
+
+describe("the data view's context menu (DataGrip)", () => {
+  const columns = [
+    { name: "id", type: "int" },
+    { name: "city", type: "text" },
+  ];
+  const data = [
+    ["1", "Shanghai"],
+    ["2", "Beijing"],
+  ];
+  const value = (r: number, c: number) => data[r]?.[c] ?? null;
+
+  it("toggles the side panels, switches the extractor and exports the whole table to the clipboard", async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const onPanelChange = vi.fn();
+    const onExtractor = vi.fn();
+    const table = () => ({ columns, rows: data, table: "cities", driver: "postgres" as const });
+    const { rerender } = render(
+      <>
+        <DataView
+          columns={columns}
+          rowCount={2}
+          value={value}
+          panel="value"
+          onPanelChange={onPanelChange}
+          extractor={{ value: "csv", onChange: onExtractor, table }}
+        />
+        <ContextMenuHost />
+      </>,
+    );
+    const open = () => {
+      fireEvent.mouseDown(screen.getAllByRole("gridcell")[0]!, { button: 0 });
+      fireEvent.contextMenu(screen.getByRole("grid"), { clientX: 5, clientY: 5 });
+    };
+    open();
+    expect(screen.getByRole("menuitemcheckbox", { name: /Open in Value Editor/ })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Show Record View/ }));
+    expect(onPanelChange).toHaveBeenLastCalledWith("record");
+    open();
+    // The shown panel's entry hides it.
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Open in Value Editor/ }));
+    expect(onPanelChange).toHaveBeenLastCalledWith(null);
+
+    open();
+    await act(async () => void fireEvent.click(screen.getByRole("menuitem", { name: /Export Table to Clipboard/ })));
+    expect(writeText).toHaveBeenCalledWith(exportData("csv", table()));
+
+    open();
+    fireEvent.click(screen.getByRole("menuitem", { name: /Data Extractor/ }));
+    expect(screen.getByRole("menuitemcheckbox", { name: /^CSV/ })).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /SQL Inserts/ }));
+    expect(onExtractor).toHaveBeenCalledWith("sql");
+
+    // Without an extractor (a view with no toolbar one) only the panels are offered.
+    rerender(
+      <>
+        <DataView columns={columns} rowCount={2} value={value} panel={null} onPanelChange={onPanelChange} />
+        <ContextMenuHost />
+      </>,
+    );
+    open();
+    expect(screen.queryByRole("menuitem", { name: /Export Table to Clipboard/ })).toBeNull();
+    expect(screen.getByRole("menuitemcheckbox", { name: /Show Aggregate View/ })).toHaveAttribute(
+      "aria-checked",
+      "false",
+    );
+  });
+
+  it("copies the selected whole rows as SQL INSERT / UPDATE / DELETE (#6143)", async () => {
+    const writeText = vi.fn((_text: string) => Promise.resolve());
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    const keyed = [{ ...columns[0]!, primaryKey: true }, columns[1]!];
+    const table = () => ({ columns: keyed, rows: data, table: "cities", driver: "postgres" as const });
+    render(
+      <>
+        <DataView
+          columns={keyed}
+          rowCount={2}
+          value={value}
+          panel={null}
+          onPanelChange={() => {}}
+          extractor={{ value: "csv", onChange: () => {}, table }}
+        />
+        <ContextMenuHost />
+      </>,
+    );
+    // Only the second row's city cell: the statements still cover its whole row.
+    fireEvent.mouseDown(screen.getAllByRole("gridcell")[3]!, { button: 0 });
+    const copyAs = async (entry: string) => {
+      fireEvent.contextMenu(screen.getByRole("grid"), { clientX: 5, clientY: 5 });
+      fireEvent.click(screen.getByRole("menuitem", { name: /^Copy as/ }));
+      await act(async () => void fireEvent.click(screen.getByRole("menuitem", { name: new RegExp(`^${entry}`) })));
+      return writeText.mock.lastCall?.[0];
+    };
+    expect(await copyAs("SQL INSERT")).toBe("INSERT INTO cities (id, city) VALUES (2, 'Beijing');");
+    expect(await copyAs("SQL UPDATE")).toBe("UPDATE cities SET city = 'Beijing' WHERE id = 2;");
+    expect(await copyAs("SQL DELETE")).toBe("DELETE FROM cities WHERE id = 2;");
+  });
+});

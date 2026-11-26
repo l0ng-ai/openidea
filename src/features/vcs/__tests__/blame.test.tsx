@@ -182,6 +182,7 @@ describe("git blame gutter and commit popup", () => {
       "Copy Revision Number",
       undefined,
       "Annotate at Revision…",
+      "Annotate Revision",
       "Annotate Previous Revision",
       "Show Commit in Git Log",
       "Ignore This Commit",
@@ -197,6 +198,35 @@ describe("git blame gutter and commit popup", () => {
         left: expect.objectContaining({ label: "(does not exist)" }),
         right: expect.objectContaining({ type: "rev", rev: sha }),
       }),
+      { preview: false },
+    );
+  });
+
+  it.each([
+    [undefined, "/repo/src/main.py"],
+    ["/repo/src/original.py", "/repo/src/original.py"],
+  ])("annotates the file as of the line's commit (origin %s)", async (originPath, revisionPath) => {
+    mocks.blame.mockResolvedValue({ status: "ok", data: lines.map((line) => ({ ...line, originPath })) });
+    view = new EditorView({
+      parent: document.body,
+      state: EditorState.create({ doc: "first\nsecond\nthird", extensions: [blameSlot()] }),
+    });
+    await toggleAnnotations(view, "/repo/src/main.py");
+    const firstLine = [...view.dom.querySelectorAll<HTMLElement>(".cm-vcs-blame .cm-gutterElement")].find((el) =>
+      el.querySelector(`[data-commit="${sha}"]`),
+    )!;
+    fireEvent.contextMenu(firstLine);
+    const items = mocks.menu.mock.calls[0]![1] as { label?: string; run?: () => void }[];
+    items.find((i) => i.label === "Annotate Revision")!.run!();
+    await vi.waitFor(() => expect(mocks.openDiff).toHaveBeenCalled());
+    expect(mocks.log).not.toHaveBeenCalled();
+    expect(mocks.openDiff).toHaveBeenCalledWith(
+      {
+        path: "/repo/src/main.py",
+        left: { type: "rev", rev: sha, label: sha.slice(0, 8), path: revisionPath },
+        right: { type: "worktree" },
+        annotateLeft: true,
+      },
       { preview: false },
     );
   });
@@ -245,6 +275,27 @@ describe("annotate Options", () => {
 
   const hidden = (v: EditorView) =>
     ["date", "author", "revision"].filter((c) => v.dom.classList.contains(`cm-vcs-blame-hide-${c}`));
+
+  it("prints Today/Yesterday in the date cell when pretty formatting is on", async () => {
+    const today = Date.now();
+    const yesterday = today - 86_400_000;
+    const recentLines: BlameLine[] = [
+      { commit: sha, author: "Aleks Zlateski", timeMs: today, summary: "today" },
+      { commit: otherSha, author: "Dan Crankshaw", timeMs: yesterday, summary: "yesterday" },
+    ];
+    mocks.blame.mockResolvedValue({ status: "ok", data: recentLines });
+    useProject.setState({ settings: { general: { dateFormat: { pretty: true } } } });
+    const created = new EditorView({
+      parent: document.body,
+      state: EditorState.create({ doc: "first\nsecond\nthird", extensions: [blameSlot()] }),
+    });
+    view = created;
+    await toggleAnnotations(created, "/repo/src/main.py");
+    const cell = (commit: string) =>
+      created.dom.querySelector<HTMLElement>(`.cm-vcs-blame [data-commit="${commit}"] .cm-vcs-blame-date`)?.textContent;
+    expect(cell(sha)).toBe("Today");
+    expect(cell(otherSha)).toBe("Yesterday");
+  });
 
   it("shows date and author by default and adds the revision from Options", async () => {
     view = await annotated();

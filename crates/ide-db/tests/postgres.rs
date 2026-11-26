@@ -338,6 +338,8 @@ async fn table_details_routines_and_completion_on_older_catalogs() -> IdeResult<
         "CREATE TABLE oi_meta.lines (n INT PRIMARY KEY, o_region INT, o_id INT, \
          FOREIGN KEY (o_region, o_id) REFERENCES oi_meta.orders (region, id))",
         "CREATE INDEX lines_order ON oi_meta.lines (o_id, o_region)",
+        "COMMENT ON TABLE oi_meta.orders IS 'Customer''s orders'",
+        "COMMENT ON COLUMN oi_meta.orders.note IS 'Free text'",
         "CREATE FUNCTION oi_meta.twice(v INT) RETURNS INT AS 'SELECT v * 2' LANGUAGE sql",
     ] {
         db.execute("p", stmt, 10, &c).await?;
@@ -350,6 +352,10 @@ async fn table_details_routines_and_completion_on_older_catalogs() -> IdeResult<
     assert_eq!(details.foreign_keys[0].columns, ["o_region", "o_id"]);
     assert_eq!(details.foreign_keys[0].ref_columns, ["region", "id"]);
     let orders = db.table_details("p", "oi_meta", "orders").await?;
+    assert_eq!(orders.comment.as_deref(), Some("Customer's orders"));
+    let comments: Vec<_> = orders.columns.iter().map(|c| c.comment.as_deref()).collect();
+    assert_eq!(comments, [None, None, Some("Free text")]);
+    assert_eq!(details.comment, None);
     let key = orders.indexes.iter().find(|i| i.unique).expect("primary key index");
     assert_eq!(key.columns, ["region", "id"]);
 
@@ -778,4 +784,41 @@ async fn table_grants_expand_the_acl_per_grantee() -> IdeResult<()> {
         db.execute("p", stmt, 10, &c).await?;
     }
     Ok(())
+}
+
+/// Completion reads the default schema in full: 52,000 columns there passed the cap shared with
+/// the other schemas, and the tables sorting last lost theirs (#6118).
+#[tokio::test]
+async fn completion_reads_every_column_of_a_wide_default_schema() -> IdeResult<()> {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(db) = manager(&tmp).await else { return Ok(()) };
+    let c = CancellationToken::new();
+    let schema = format!("oi_wide_{}", uuid::Uuid::new_v4().simple());
+    let mut sources = db.sources()?;
+    let mut source = sources[0].clone();
+    source.id = "wide".into();
+    source.options.startup_script = format!("SET search_path = {schema}");
+    sources.push(source);
+    let password = server().map(|(.., password)| password);
+    db.save_sources(sources).await?;
+    db.set_password("wide", password, false).await?;
+    db.execute("p", &format!("CREATE SCHEMA {schema}"), 1, &c).await?;
+    let fill = format!(
+        "DO $$ DECLARE cols text; BEGIN \
+         SELECT string_agg('c' || g || ' int', ', ') INTO cols FROM generate_series(1, 200) g; \
+         FOR i IN 1..260 LOOP EXECUTE format('CREATE TABLE {schema}.t%s (%s)', lpad(i::text, 3, '0'), cols); \
+         END LOOP; END $$"
+    );
+    let result = async {
+        db.execute("p", &fill, 1, &c).await?;
+        let completion = db.completion("wide").await?;
+        assert_eq!(completion.default_schema, schema);
+        let wide: Vec<_> = completion.tables.iter().filter(|t| t.schema == schema).collect();
+        assert_eq!(wide.len(), 260);
+        assert!(wide.iter().all(|t| t.columns.len() == 200), "a table lost columns");
+        Ok(())
+    }
+    .await;
+    db.execute("p", &format!("DROP SCHEMA {schema} CASCADE"), 1, &c).await?;
+    result
 }

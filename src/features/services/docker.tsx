@@ -583,6 +583,18 @@ export const dockerProvider: ServiceProviderContribution = {
   watch,
   actions,
   menu,
+  context: (item) => {
+    const t = resolveTarget(item.key);
+    if (t?.node.kind !== "container") return null;
+    const c = t.node.container;
+    return {
+      provider: DOCKER_PROVIDER,
+      id: c.id,
+      kind: "docker-container",
+      name: c.name,
+      running: c.state === "running",
+    };
+  },
   activate: (item) => {
     const t = resolveTarget(item.key);
     if (t?.node.kind === "container") useServices.setState({ detailTab: "log" });

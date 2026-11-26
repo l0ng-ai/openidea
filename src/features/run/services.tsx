@@ -18,6 +18,7 @@ import type { MenuItem } from "@/ui";
 import {
   toolWindowService,
   notifications,
+  runExecutors,
   useRunConfigTypes,
   useDebugRunSessions,
   useServicesRunningCount,
@@ -27,6 +28,7 @@ import {
   type ServiceTreeItem,
 } from "@/workbench/contributions";
 import { pickServices } from "./serviceImport";
+import { runWithExecutor } from "./executors";
 import { CATEGORY_ORDER, categoryOf, commandLine, configIcon, KIND_OPTIONS, kindLabel } from "./configs";
 import { openUrl } from "./navigate";
 import { showApplicationUpdate } from "./applicationUpdate";
@@ -742,6 +744,18 @@ function menu(item: ServiceTreeItem): MenuItem[] {
     const config = r.config;
     const session = r.session?.run;
     const debuggerSession = serviceDebugger(r.session) ?? r.session?.debug.at(-1);
+    // IDEA: the configuration's other executors (Run with Coverage, Profile, plugins' executors).
+    const executors = runExecutors().filter((e) => e.supports(config));
+    if (executors.length)
+      items.push(
+        { kind: "separator" },
+        ...executors.map((e): MenuItem => ({
+          id: `executor:${e.id}`,
+          label: e.label(config.name),
+          icon: e.icon,
+          run: () => void runWithExecutor(config, e.id),
+        })),
+      );
     items.push(
       { kind: "separator" },
       {
@@ -925,6 +939,18 @@ export const runServiceProvider: ServiceProviderContribution = {
   useRoots,
   actions,
   menu,
+  context: (item) => {
+    const { config, session } = resolve(item);
+    if (!config) return null;
+    return {
+      provider: RUN_PROVIDER,
+      id: config.id,
+      kind: config.kind,
+      name: config.name,
+      running: !!session && liveServiceSession(session),
+      runConfigurationId: config.id,
+    };
+  },
   activate: (item) => {
     const r = resolve(item);
     if (r.config && !(r.session && liveServiceSession(r.session)) && !isDebugOnly(r.config)) run(r);

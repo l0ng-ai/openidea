@@ -57,8 +57,11 @@ import {
 } from "./configs";
 import { gradleContainsModule } from "./gradleRun";
 import { EnvDialog } from "./EnvDialog";
+import { PluginArgsInput } from "./PluginArgsInput";
+import { pluginOwnedConfig } from "./pluginArgsCompletion";
 import { useBuildModel } from "@/platform/buildModel";
 import { COMPOUND, formParams, terminalApplies, withParams } from "./types";
+import { frameworkFor } from "./testing";
 import { TomcatSettings } from "./TomcatSettings";
 import { toolWindowTitle } from "@/workbench/toolwindows/title";
 import styles from "./Run.module.css";
@@ -107,6 +110,7 @@ export type OptionId =
   | "openToolWindow"
   | "focusToolWindow"
   | "isTest"
+  | "watch"
   | "emulateTerminal";
 
 const VALUE_OPTIONS: ReadonlySet<OptionId> = new Set([
@@ -129,13 +133,14 @@ const OPTION_LABELS: Record<OptionId, string> = {
   openToolWindow: "Open run/debug tool window when started",
   focusToolWindow: "Focus run/debug tool window when started",
   isTest: "Show results in the test runner",
+  watch: "Watch for changes",
   emulateTerminal: "Emulate terminal in output console",
 };
 
 const OPTION_GROUPS: ReadonlyArray<{ label: string; options: OptionId[]; process: boolean }> = [
   { label: "Operating System", options: ["allowParallel", "stdinFile", "envFiles", "emulateTerminal"], process: true },
   { label: "Logs", options: ["outputFile", "showOnStdout", "showOnStderr"], process: true },
-  { label: "Test", options: ["isTest"], process: true },
+  { label: "Test", options: ["isTest", "watch"], process: true },
   {
     label: "Before Launch",
     options: ["buildPolicy", "beforeLaunch", "openToolWindow", "focusToolWindow"],
@@ -168,6 +173,8 @@ export function optionSet(config: RunConfig, id: OptionId, openByDefault: boolea
       return !!config.focusToolWindow;
     case "isTest":
       return config.isTest;
+    case "watch":
+      return !!config.watch;
     case "emulateTerminal":
       return !!config.emulateTerminal;
   }
@@ -198,6 +205,8 @@ export function optionPatch(id: OptionId, on: boolean): Partial<RunConfig> {
       return { focusToolWindow: on };
     case "isTest":
       return on ? { isTest: true, emulateTerminal: false } : { isTest: false };
+    case "watch":
+      return { watch: on };
     case "emulateTerminal":
       return { emulateTerminal: on };
   }
@@ -346,6 +355,12 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
   });
   const [shown, setShown] = useState<ReadonlySet<OptionId>>(() => new Set());
   const [argsText, setArgsText] = useState<string | null>(null);
+  const setArgs = (text: string) => {
+    setArgsText(text);
+    const args = parseArgs(text);
+    const module = parseJavaArgs(args).mainClass === parseJavaArgs(config.args).mainClass ? config.module : undefined;
+    update({ args, params: {}, module });
+  };
   const [envText, setEnvText] = useState<string | null>(null);
   const [envFilesText, setEnvFilesText] = useState<string | null>(null);
   const [envOpen, setEnvOpen] = useState(false);
@@ -390,6 +405,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
   };
 
   const terminal = terminalApplies(config, type);
+  const watchApplies = config.isTest && frameworkFor(config) === "js";
   // A terminal has no separate input file: the two options exclude each other.
   const blocked = (id: OptionId) =>
     (id === "emulateTerminal" && isShown("stdinFile")) || (id === "stdinFile" && !!config.emulateTerminal);
@@ -400,7 +416,8 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
         (id) =>
           (!compound || id === "beforeLaunch") &&
           (id !== "emulateTerminal" || terminal || !!config.emulateTerminal) &&
-          (id !== "buildPolicy" || buildPolicyApplies(config)),
+          (id !== "buildPolicy" || buildPolicyApplies(config)) &&
+          (id !== "watch" || watchApplies),
       )
       .map((id): MenuItem => ({
         label: OPTION_LABELS[id],
@@ -476,7 +493,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
   const targetOptions: SelectOption[] = [
     { value: "__default", label: "Default run target" },
     { value: "", label: "Local machine" },
-    ...runTargets.map((t) => ({ value: t.id, label: t.name.trim() || t.id })),
+    ...runTargets.map((t) => ({ value: t.id, verbatim: true, label: t.name.trim() || t.id })),
   ];
   if (config.target && !runTargets.some((t) => t.id === config.target))
     targetOptions.push({ value: config.target, label: txTemplate(`${config.target} (missing)`) });
@@ -490,6 +507,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
       "openToolWindow",
       "focusToolWindow",
       "isTest",
+      "watch",
     ] as const
   ).filter(
     (id) => (!noProcess || id === "openToolWindow" || id === "focusToolWindow") && optionSet(config, id, openByDefault),
@@ -622,21 +640,22 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
                 />
               </Field>
               <Field label="Arguments">
-                <Input
-                  mono
-                  aria-label="Arguments"
-                  value={argsText ?? formatArgs(config.args)}
-                  placeholder="Space separated; quote with ' or &quot;"
-                  onChange={(e) => {
-                    setArgsText(e.target.value);
-                    const args = parseArgs(e.target.value);
-                    const module =
-                      parseJavaArgs(args).mainClass === parseJavaArgs(config.args).mainClass
-                        ? config.module
-                        : undefined;
-                    update({ args, params: {}, module });
-                  }}
-                />
+                {pluginOwnedConfig(config) ? (
+                  <PluginArgsInput
+                    configId={config.id}
+                    value={argsText ?? formatArgs(config.args)}
+                    placeholder="Space separated; quote with ' or &quot;"
+                    onChange={setArgs}
+                  />
+                ) : (
+                  <Input
+                    mono
+                    aria-label="Arguments"
+                    value={argsText ?? formatArgs(config.args)}
+                    placeholder="Space separated; quote with ' or &quot;"
+                    onChange={(e) => setArgs(e.target.value)}
+                  />
+                )}
               </Field>
             </>
           )}
@@ -899,6 +918,12 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
                   />
                 </span>
               ))}
+            </div>
+          )}
+
+          {config.watch && watchApplies && !noProcess && (
+            <div className={styles.notice}>
+              <T>Debug runs the tests once, without watching.</T>
             </div>
           )}
 

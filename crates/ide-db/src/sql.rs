@@ -145,7 +145,8 @@ const SNOWFLAKE_TYPE: &str = "CASE WHEN data_type = 'NUMBER' THEN 'NUMBER(' || n
      WHEN data_type = 'TEXT' THEN 'VARCHAR(' || character_maximum_length || ')' \
      WHEN data_type LIKE 'TIME%' THEN data_type || '(' || datetime_precision || ')' ELSE data_type END";
 
-/// Rows: `name, type, nullable (YES/NO or 0/1), default, is_pk (0/1)`.
+/// Rows: `name, type, nullable (YES/NO or 0/1), default, is_pk (0/1)`, and the column's
+/// comment on the engines that keep one (PostgreSQL, MySQL, Oracle, ClickHouse).
 pub fn columns(driver: DbDriver, schema: &str, table: &str) -> String {
     let (s, t) = (quote_literal(driver, schema), quote_literal(driver, table));
     match driver {
@@ -153,7 +154,7 @@ pub fn columns(driver: DbDriver, schema: &str, table: &str) -> String {
         DbDriver::Clickhouse => format!(
             "SELECT name, type, CASE WHEN startsWith(type, 'Nullable(') \
              OR startsWith(type, 'LowCardinality(Nullable(') THEN 'YES' ELSE 'NO' END, \
-             if(default_kind = '', NULL, default_expression), is_in_primary_key \
+             if(default_kind = '', NULL, default_expression), is_in_primary_key, comment \
              FROM system.columns WHERE database = {s} AND table = {t} ORDER BY position"
         ),
         DbDriver::Sqlite => format!(
@@ -166,13 +167,14 @@ pub fn columns(driver: DbDriver, schema: &str, table: &str) -> String {
                JOIN information_schema.key_column_usage k ON k.constraint_name = tc.constraint_name \
                AND k.table_schema = tc.table_schema AND k.table_name = tc.table_name \
                WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = c.table_schema \
-               AND tc.table_name = c.table_name AND k.column_name = c.column_name) THEN 1 ELSE 0 END \
+               AND tc.table_name = c.table_name AND k.column_name = c.column_name) THEN 1 ELSE 0 END, \
+             col_description(format('%I.%I', c.table_schema, c.table_name)::regclass, c.ordinal_position::int) \
              FROM information_schema.columns c WHERE c.table_schema = {s} AND c.table_name = {t} \
              ORDER BY c.ordinal_position"
         ),
         DbDriver::Mysql => format!(
             "SELECT column_name, column_type, is_nullable, column_default, \
-             CASE WHEN column_key = 'PRI' THEN 1 ELSE 0 END \
+             CASE WHEN column_key = 'PRI' THEN 1 ELSE 0 END, column_comment \
              FROM information_schema.columns WHERE table_schema = {s} AND table_name = {t} \
              ORDER BY ordinal_position"
         ),
@@ -192,8 +194,10 @@ pub fn columns(driver: DbDriver, schema: &str, table: &str) -> String {
         ),
         DbDriver::Oracle => format!(
             "SELECT c.column_name, c.data_type, DECODE(c.nullable, 'Y', 'YES', 'NO'), c.data_default, \
-             CASE WHEN k.column_name IS NOT NULL THEN 1 ELSE 0 END \
+             CASE WHEN k.column_name IS NOT NULL THEN 1 ELSE 0 END, cc.comments \
              FROM all_tab_columns c \
+             LEFT JOIN all_col_comments cc ON cc.owner = c.owner AND cc.table_name = c.table_name \
+             AND cc.column_name = c.column_name \
              LEFT JOIN (SELECT kc.column_name FROM all_constraints con \
                JOIN all_cons_columns kc ON kc.owner = con.owner AND kc.table_name = con.table_name \
                AND kc.constraint_name = con.constraint_name \
@@ -201,6 +205,28 @@ pub fn columns(driver: DbDriver, schema: &str, table: &str) -> String {
              ON k.column_name = c.column_name \
              WHERE c.owner = {s} AND c.table_name = {t} ORDER BY c.column_id"
         ),
+    }
+}
+
+/// One row, one column: the table's comment (`NULL` or empty for none). `None` for the
+/// engines whose comments the IDE doesn't read here (Snowflake reads it with `SHOW`).
+pub fn table_comment(driver: DbDriver, schema: &str, table: &str) -> Option<String> {
+    let (s, t) = (quote_literal(driver, schema), quote_literal(driver, table));
+    match driver {
+        DbDriver::Postgres => Some(format!(
+            "SELECT obj_description(c.oid, 'pg_class') FROM pg_class c \
+             JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = {s} AND c.relname = {t}"
+        )),
+        // A view's `table_comment` is the word `VIEW`.
+        DbDriver::Mysql => Some(format!(
+            "SELECT CASE WHEN table_type = 'VIEW' THEN NULL ELSE table_comment END \
+             FROM information_schema.tables WHERE table_schema = {s} AND table_name = {t}"
+        )),
+        DbDriver::Oracle => {
+            Some(format!("SELECT comments FROM all_tab_comments WHERE owner = {s} AND table_name = {t}"))
+        }
+        DbDriver::Clickhouse => Some(format!("SELECT comment FROM system.tables WHERE database = {s} AND name = {t}")),
+        _ => None,
     }
 }
 
@@ -252,31 +278,47 @@ pub fn indexes(driver: DbDriver, schema: &str, table: &str) -> String {
     }
 }
 
+/// Which schemas a [`completion_columns`] query reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompletionScope<'a> {
+    /// Every non-system schema, capped at [`COMPLETION_ROW_CAP`] rows.
+    All,
+    /// One schema, in full.
+    Only(&'a str),
+    /// Every non-system schema but this one, capped at [`COMPLETION_ROW_CAP`] rows.
+    Except(&'a str),
+}
+
+/// Rows a [`CompletionScope::All`] or [`CompletionScope::Except`] query returns at most.
+pub const COMPLETION_ROW_CAP: usize = 50_000;
+
 /// Rows: `schema, table, kind (table/view), column, type, nullable (YES/NO), is_pk (0/1), has_default (0/1)`
 /// for SQL completion, grouped by table in column order.
-pub fn completion_columns(driver: DbDriver) -> &'static str {
-    match driver {
+pub fn completion_columns(driver: DbDriver, scope: CompletionScope) -> String {
+    let (query, schema, order) = match driver {
         DbDriver::Jdbc => unreachable!("JDBC introspection uses DatabaseMetaData"),
-        DbDriver::Clickhouse => {
+        DbDriver::Clickhouse => (
             "SELECT c.database, c.table, CASE t.engine WHEN 'View' THEN 'view' \
              WHEN 'MaterializedView' THEN 'materialized view' WHEN 'WindowView' THEN 'view' ELSE 'table' END, \
              c.name, c.type, CASE WHEN startsWith(c.type, 'Nullable(') \
              OR startsWith(c.type, 'LowCardinality(Nullable(') THEN 'YES' ELSE 'NO' END, c.is_in_primary_key, 1 \
              FROM system.columns c JOIN system.tables t ON t.database = c.database AND t.name = c.table \
-             WHERE lower(c.database) NOT IN ('system', 'information_schema') AND t.is_temporary = 0 \
-             ORDER BY c.database, c.table, c.position LIMIT 50000"
-        }
-        DbDriver::Sqlite => {
+             WHERE lower(c.database) NOT IN ('system', 'information_schema') AND t.is_temporary = 0",
+            "c.database",
+            "c.database, c.table, c.position",
+        ),
+        DbDriver::Sqlite => (
             "SELECT 'main', m.name, m.type, p.name, p.type, CASE WHEN p.\"notnull\" = 0 THEN 'YES' ELSE 'NO' END, \
              CASE WHEN p.pk > 0 THEN 1 ELSE 0 END, \
              CASE WHEN p.dflt_value IS NOT NULL THEN 1 \
              WHEN p.pk = 1 AND upper(p.type) = 'INTEGER' \
              AND (SELECT count(*) FROM pragma_table_info(m.name) k WHERE k.pk > 0) = 1 THEN 1 ELSE 0 END \
              FROM sqlite_master m JOIN pragma_table_info(m.name) p \
-             WHERE m.type IN ('table', 'view') AND m.name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY m.name, p.cid"
-        }
-        // Identity columns own their sequence through an internal dependency (`attidentity` is PostgreSQL 10+).
-        DbDriver::Postgres => {
+             WHERE m.type IN ('table', 'view') AND m.name NOT LIKE 'sqlite\\_%' ESCAPE '\\'",
+            "'main'",
+            "m.name, p.cid",
+        ),
+        DbDriver::Postgres => (
             "SELECT n.nspname, c.relname, CASE c.relkind WHEN 'v' THEN 'view' WHEN 'm' THEN 'materialized view' ELSE 'table' END, a.attname, \
              format_type(a.atttypid, a.atttypmod), CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END, \
              CASE WHEN EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary \
@@ -287,19 +329,21 @@ pub fn completion_columns(driver: DbDriver) -> &'static str {
              FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace JOIN pg_attribute a ON a.attrelid = c.oid \
              WHERE c.relkind IN ('r', 'v', 'm', 'p', 'f') AND a.attnum > 0 AND NOT a.attisdropped \
              AND n.nspname NOT IN ('pg_catalog', 'information_schema') \
-             AND n.nspname NOT LIKE 'pg\\_toast%' AND n.nspname NOT LIKE 'pg\\_temp%' \
-             ORDER BY n.nspname, c.relname, a.attnum LIMIT 50000"
-        }
-        DbDriver::Mysql => {
+             AND n.nspname NOT LIKE 'pg\\_toast%' AND n.nspname NOT LIKE 'pg\\_temp%'",
+            "n.nspname",
+            "n.nspname, c.relname, a.attnum",
+        ),
+        DbDriver::Mysql => (
             "SELECT c.table_schema, c.table_name, CASE WHEN t.table_type LIKE '%VIEW%' THEN 'view' ELSE 'table' END, \
              c.column_name, c.column_type, c.is_nullable, CASE WHEN c.column_key = 'PRI' THEN 1 ELSE 0 END, \
              CASE WHEN c.column_default IS NOT NULL OR c.extra LIKE '%auto_increment%' THEN 1 ELSE 0 END \
              FROM information_schema.columns c JOIN information_schema.tables t \
              ON t.table_schema = c.table_schema AND t.table_name = c.table_name \
-             WHERE c.table_schema NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys') \
-             ORDER BY c.table_schema, c.table_name, c.ordinal_position LIMIT 50000"
-        }
-        DbDriver::SqlServer => {
+             WHERE c.table_schema NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')",
+            "c.table_schema",
+            "c.table_schema, c.table_name, c.ordinal_position",
+        ),
+        DbDriver::SqlServer => (
             "SELECT c.TABLE_SCHEMA, c.TABLE_NAME, CASE WHEN t.TABLE_TYPE LIKE '%VIEW%' THEN 'view' ELSE 'table' END, \
              c.COLUMN_NAME, c.DATA_TYPE, c.IS_NULLABLE, \
              CASE WHEN EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc \
@@ -310,19 +354,21 @@ pub fn completion_columns(driver: DbDriver) -> &'static str {
              CASE WHEN c.COLUMN_DEFAULT IS NOT NULL THEN 1 ELSE 0 END \
              FROM INFORMATION_SCHEMA.COLUMNS c JOIN INFORMATION_SCHEMA.TABLES t \
              ON t.TABLE_SCHEMA = c.TABLE_SCHEMA AND t.TABLE_NAME = c.TABLE_NAME \
-             WHERE c.TABLE_SCHEMA NOT IN ('sys', 'INFORMATION_SCHEMA') \
-             ORDER BY c.TABLE_SCHEMA, c.TABLE_NAME, c.ORDINAL_POSITION"
-        }
-        DbDriver::Snowflake => {
+             WHERE c.TABLE_SCHEMA NOT IN ('sys', 'INFORMATION_SCHEMA')",
+            "c.TABLE_SCHEMA",
+            "c.TABLE_SCHEMA, c.TABLE_NAME, c.ORDINAL_POSITION",
+        ),
+        DbDriver::Snowflake => (
             "SELECT c.table_schema, c.table_name, CASE t.table_type WHEN 'VIEW' THEN 'view' \
              WHEN 'MATERIALIZED VIEW' THEN 'materialized view' ELSE 'table' END, c.column_name, c.data_type, \
              c.is_nullable, 0, CASE WHEN c.column_default IS NOT NULL THEN 1 ELSE 0 END \
              FROM information_schema.columns c JOIN information_schema.tables t \
              ON t.table_schema = c.table_schema AND t.table_name = c.table_name \
-             WHERE c.table_schema <> 'INFORMATION_SCHEMA' \
-             ORDER BY c.table_schema, c.table_name, c.ordinal_position LIMIT 50000"
-        }
-        DbDriver::Oracle => {
+             WHERE c.table_schema <> 'INFORMATION_SCHEMA'",
+            "c.table_schema",
+            "c.table_schema, c.table_name, c.ordinal_position",
+        ),
+        DbDriver::Oracle => (
             "SELECT c.owner, c.table_name, CASE WHEN v.view_name IS NOT NULL THEN 'view' ELSE 'table' END, \
              c.column_name, c.data_type, DECODE(c.nullable, 'Y', 'YES', 'NO'), \
              CASE WHEN k.column_name IS NOT NULL THEN 1 ELSE 0 END, \
@@ -334,10 +380,22 @@ pub fn completion_columns(driver: DbDriver) -> &'static str {
                AND kc.constraint_name = con.constraint_name WHERE con.constraint_type = 'P') k \
              ON k.owner = c.owner AND k.table_name = c.table_name AND k.column_name = c.column_name \
              WHERE c.owner NOT IN ('CTXSYS', 'DBSFWUSER', 'DVSYS', 'GSMADMIN_INTERNAL', 'LBACSYS', 'MDDATA', \
-             'MDSYS', 'OLAPSYS', 'OUTLN', 'SYS', 'SYSTEM', 'XDB', 'XS$NULL') \
-             ORDER BY c.owner, c.table_name, c.column_id FETCH FIRST 50000 ROWS ONLY"
-        }
-    }
+             'MDSYS', 'OLAPSYS', 'OUTLN', 'SYS', 'SYSTEM', 'XDB', 'XS$NULL')",
+            "c.owner",
+            "c.owner, c.table_name, c.column_id",
+        ),
+    };
+    let filter = match scope {
+        CompletionScope::All => String::new(),
+        CompletionScope::Only(s) => format!(" AND {schema} = {}", quote_literal(driver, s)),
+        CompletionScope::Except(s) => format!(" AND {schema} <> {}", quote_literal(driver, s)),
+    };
+    let cap = match (scope, driver) {
+        (CompletionScope::Only(_), _) | (_, DbDriver::Sqlite | DbDriver::SqlServer) => String::new(),
+        (_, DbDriver::Oracle) => format!(" FETCH FIRST {COMPLETION_ROW_CAP} ROWS ONLY"),
+        _ => format!(" LIMIT {COMPLETION_ROW_CAP}"),
+    };
+    format!("{query}{filter} ORDER BY {order}{cap}")
 }
 
 /// Rows: `schema, table, constraint, column, ref schema, ref table, ref column`
@@ -925,6 +983,22 @@ mod tests {
     }
 
     #[test]
+    fn comments_are_read_where_the_engine_keeps_them() {
+        assert!(columns(DbDriver::Postgres, "public", "t").contains("col_description("));
+        assert!(columns(DbDriver::Mysql, "db", "t").contains("column_comment"));
+        assert!(columns(DbDriver::Oracle, "S", "T").contains("all_col_comments"));
+        assert!(columns(DbDriver::Clickhouse, "db", "t").contains("is_in_primary_key, comment"));
+        let pg = table_comment(DbDriver::Postgres, "public", "o'rders").unwrap();
+        assert!(pg.contains("obj_description(c.oid, 'pg_class')") && pg.contains("'o''rders'"), "{pg}");
+        assert!(table_comment(DbDriver::Mysql, "db", "t").unwrap().contains("table_comment"));
+        assert!(table_comment(DbDriver::Oracle, "S", "T").unwrap().contains("all_tab_comments"));
+        assert!(table_comment(DbDriver::Clickhouse, "db", "t").unwrap().contains("system.tables"));
+        for driver in [DbDriver::Sqlite, DbDriver::SqlServer, DbDriver::Snowflake] {
+            assert_eq!(table_comment(driver, "s", "t"), None);
+        }
+    }
+
+    #[test]
     fn clickhouse_escapes_backslashes_and_delimiters() {
         let driver = DbDriver::Clickhouse;
         assert_eq!(quote_literal(driver, r"path\O'Brien"), r"'path\\O''Brien'");
@@ -950,7 +1024,7 @@ mod tests {
         let keys = indexes(driver, "default", "events");
         assert!(keys.contains("'PRIMARY KEY' AS index_name, 0 AS is_unique, primary_key AS expression"));
         assert!(keys.contains("SELECT name, 0, expr FROM system.data_skipping_indices"));
-        let completion = completion_columns(driver);
+        let completion = completion_columns(driver, CompletionScope::All);
         assert!(completion.contains("c.is_in_primary_key, 1"));
         assert!(completion.contains("ORDER BY c.database, c.table, c.position LIMIT 50000"));
     }
@@ -1060,7 +1134,7 @@ mod tests {
         assert!(indexes(DbDriver::SqlServer, "dbo", "t").contains("sys.indexes"));
         assert!(foreign_keys(DbDriver::SqlServer).contains("sys.foreign_key_columns"));
         assert!(table_foreign_keys(DbDriver::SqlServer, "dbo", "t").contains("OBJECT_ID(N'[dbo].[t]')"));
-        assert!(completion_columns(DbDriver::SqlServer).contains("INFORMATION_SCHEMA.COLUMNS"));
+        assert!(completion_columns(DbDriver::SqlServer, CompletionScope::All).contains("INFORMATION_SCHEMA.COLUMNS"));
     }
 
     /// Under a case-sensitive or binary collation, catalog names only resolve as declared:
@@ -1074,7 +1148,7 @@ mod tests {
             tables(d, "dbo"),
             columns(d, "dbo", "t"),
             indexes(d, "dbo", "t"),
-            completion_columns(d).to_owned(),
+            completion_columns(d, CompletionScope::All),
             foreign_keys(d).to_owned(),
             table_foreign_keys(d, "dbo", "t"),
             routines(d, "dbo").unwrap(),
@@ -1141,7 +1215,7 @@ mod tests {
         assert!(indexes(DbDriver::Oracle, "hr", "t").contains("all_indexes"));
         assert!(foreign_keys(DbDriver::Oracle).contains("constraint_type = 'R'"));
         assert!(table_foreign_keys(DbDriver::Oracle, "hr", "t").contains("all_cons_columns"));
-        assert!(completion_columns(DbDriver::Oracle).contains("all_tab_columns"));
+        assert!(completion_columns(DbDriver::Oracle, CompletionScope::All).contains("all_tab_columns"));
         assert!(triggers(DbDriver::Oracle, "hr", "t").contains("all_triggers"));
         assert!(routines(DbDriver::Oracle, "hr").unwrap().contains("all_objects"));
         assert!(packages(DbDriver::Oracle, "hr").unwrap().contains("object_type = 'PACKAGE'"));
@@ -1256,7 +1330,7 @@ mod tests {
         let columns = columns(driver, "PUBLIC", "ORDERS");
         assert!(columns.contains("'NUMBER(' || numeric_precision"), "{columns}");
         assert!(columns.contains("table_name = 'ORDERS' ORDER BY ordinal_position"), "{columns}");
-        assert!(completion_columns(driver).contains("LIMIT 50000"));
+        assert!(completion_columns(driver, CompletionScope::All).contains("LIMIT 50000"));
         assert!(routines(driver, "PUBLIC").unwrap().contains("information_schema.procedures"));
         assert!(sequences(driver, "PUBLIC").unwrap().contains("information_schema.sequences"));
         assert_eq!(
@@ -1266,6 +1340,35 @@ mod tests {
         assert!(edit_statement(driver, "PUBLIC", "T", &DbRowEdit::Insert { values: vec![] }).is_err());
         assert_eq!(crate::conn::begin_statement(driver), "BEGIN");
         assert_eq!(crate::plan::explain_statement(driver, "select 1;"), "EXPLAIN USING TABULAR select 1");
+    }
+
+    #[test]
+    fn completion_reads_the_default_schema_without_the_shared_cap() {
+        // #6118: 5,000+ tables in one Oracle schema overflowed the shared cap, so tables
+        // sorting last had no columns.
+        let only = completion_columns(DbDriver::Oracle, CompletionScope::Only("APP's"));
+        assert!(only.ends_with("AND c.owner = 'APP''s' ORDER BY c.owner, c.table_name, c.column_id"), "{only}");
+        let rest = completion_columns(DbDriver::Oracle, CompletionScope::Except("APP"));
+        assert!(rest.contains("AND c.owner <> 'APP' ORDER BY"), "{rest}");
+        assert!(rest.ends_with(" FETCH FIRST 50000 ROWS ONLY"), "{rest}");
+        let all = completion_columns(DbDriver::Oracle, CompletionScope::All);
+        assert!(all.ends_with("'XS$NULL') ORDER BY c.owner, c.table_name, c.column_id FETCH FIRST 50000 ROWS ONLY"));
+        for (driver, column) in [
+            (DbDriver::Postgres, "n.nspname"),
+            (DbDriver::Mysql, "c.table_schema"),
+            (DbDriver::Clickhouse, "c.database"),
+            (DbDriver::Snowflake, "c.table_schema"),
+            (DbDriver::SqlServer, "c.TABLE_SCHEMA"),
+            (DbDriver::Sqlite, "'main'"),
+        ] {
+            let only = completion_columns(driver, CompletionScope::Only("app"));
+            assert!(only.contains(&format!(" AND {column} = 'app' ORDER BY ")), "{only}");
+            assert!(!only.contains("LIMIT") && !only.contains("FETCH FIRST"), "{only}");
+            let rest = completion_columns(driver, CompletionScope::Except("app"));
+            assert!(rest.contains(&format!(" AND {column} <> 'app' ORDER BY ")), "{rest}");
+            let capped = !matches!(driver, DbDriver::Sqlite | DbDriver::SqlServer);
+            assert_eq!(rest.ends_with(" LIMIT 50000"), capped, "{rest}");
+        }
     }
 
     #[test]
@@ -1279,7 +1382,7 @@ mod tests {
             tables(pg, "s"),
             columns(pg, "s", "t"),
             indexes(pg, "s", "t"),
-            completion_columns(pg).to_owned(),
+            completion_columns(pg, CompletionScope::All),
             foreign_keys(pg).to_owned(),
             table_foreign_keys(pg, "s", "t"),
             triggers(pg, "s", "t"),
@@ -1290,7 +1393,7 @@ mod tests {
             let upper = q.to_uppercase();
             assert!(!["LATERAL", "ORDINALITY", "ATTIDENTITY"].iter().any(|w| upper.contains(w)), "{q}");
         }
-        assert_eq!(postgres_legacy(completion_columns(pg)), None);
+        assert_eq!(postgres_legacy(&completion_columns(pg, CompletionScope::All)), None);
         let routines = postgres_legacy(&routines(pg, "s").unwrap()).unwrap();
         assert!(!routines.contains("prokind") && routines.contains("NOT p.proisagg"));
         assert_eq!(postgres_legacy(&indexes(pg, "s", "t")), None);

@@ -1,0 +1,14 @@
+package openidea:plugin@1.18.0;
+
+/// Forking recorded native agent sessions into new tasks (API 1.18). Requires
+/// the `agents` capability. The session must belong to the invoking window's
+/// project and have been recorded in `cwd`; the host builds the fork invocation
+/// and names the fork's id for claude (codex assigns its own).
+interface agents {
+    use types.{error};
+    /// Fork the recorded session `session-id` of `agent` (a native provider,
+    /// `claude` or `codex`) into a new task in the open project, returning the
+    /// new task id. `cwd` must be where the session was recorded. The first
+    /// turn continues the recording as the agent's own fork.
+    fork-session: func(agent: string, session-id: string, cwd: string) -> result<string, error>;
+}

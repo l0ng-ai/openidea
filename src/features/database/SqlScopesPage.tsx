@@ -9,6 +9,7 @@ import { tx } from "@/platform/i18n";
 import { IconButton, Input, Select, T, type SelectOption } from "@/ui";
 import { useSettingsForm } from "@/workbench/contributions";
 import { scopePath, validateResolutionScopes, type SqlResolutionScope } from "./resolutionScopes";
+import { sourceIcon } from "./model";
 import styles from "./SqlScopesPage.module.css";
 
 const KEY = "database.resolutionScopes";
@@ -38,7 +39,12 @@ export function SqlScopesPage() {
 
   const options: SelectOption[] = [
     { value: NONE, label: tx("<none>") },
-    ...(sources ?? []).map((s) => ({ value: s.id ?? "", label: s.name ?? s.id ?? "", icon: "database" })),
+    ...(sources ?? []).map((s) => ({
+      value: s.id ?? "",
+      label: s.name ?? s.id ?? "",
+      verbatim: true,
+      icon: sourceIcon(s),
+    })),
   ];
   const sourceOptions = (current: string) =>
     current && !options.some((o) => o.value === current)

@@ -269,6 +269,11 @@ shows `gutter-actions`. Rules that apply to all of them:
   dropped. Format edits must be valid and must not overlap.
 - Disabling the selected formatter reports it as unavailable rather than silently using
   another one.
+- `gutter-actions` and `hover-actions` are asked for one editor's window:
+  `host::invoking_project()` (API 1.18) returns that window's project during the call, also
+  when a project opened inside it holds the file too. After an edit the buttons keep their
+  place but are inert (dimmed) until the plugin answers for the new text, so a click never
+  runs an action placed for older text.
 
 ## Embedded languages (injections)
 

@@ -1,7 +1,8 @@
-import { useLayoutEffect, useMemo, useRef } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Anser from "anser";
 import { tx } from "@/platform/i18n";
 import { openExternalUrl } from "@/platform/openUrl";
+import { subscribeTheme } from "@/platform/themeWatch";
 import { editorService, notifications } from "@/workbench/contributions";
 import { resolveLink } from "@/features/viewers/markdown/render";
 import {
@@ -10,6 +11,7 @@ import {
   markdownRoot,
   resolveMarkdownAttachments,
   staticOutputDocument,
+  type OutputPalette,
 } from "./security";
 import { mimeText, object, own } from "./outputs";
 import styles from "./Notebook.module.css";
@@ -43,8 +45,34 @@ function AnsiText({ text, error = false }: { text: string; error?: boolean }) {
   );
 }
 
+/** The output frame's colours: the notebook's own background and the theme's text and table colours. */
+function readPalette(): OutputPalette {
+  const root = document.documentElement;
+  const css = getComputedStyle(root);
+  const token = (name: string) => css.getPropertyValue(name).trim();
+  return {
+    fg: token("--fg"),
+    bg: token("--bg-editor") || token("--bg-app"),
+    border: token("--border-strong"),
+    headerBg: token("--bg-elev"),
+    scheme: root.dataset.theme === "light" ? "light" : "dark",
+  };
+}
+
+/** Tracks the active theme so output frames follow it. */
+function useOutputPalette(): OutputPalette {
+  const [palette, setPalette] = useState(readPalette);
+  useEffect(() => {
+    const update = () => setPalette(readPalette());
+    update();
+    return subscribeTheme(update);
+  }, []);
+  return palette;
+}
+
 function StaticHtml({ html, title }: { html: string; title: string }) {
-  const srcDoc = useMemo(() => staticOutputDocument(html), [html]);
+  const palette = useOutputPalette();
+  const srcDoc = useMemo(() => staticOutputDocument(html, palette), [html, palette]);
   return (
     <iframe className={styles.outputFrame} sandbox="" referrerPolicy="no-referrer" srcDoc={srcDoc} title={title} />
   );

@@ -20,6 +20,7 @@ import {
 import { executeAction, registerAction } from "./actions";
 import { clearContext, setContext } from "./context";
 import { usePlatform } from "./platformInfo";
+import { TEXT_WHEN } from "@/editor/core/actions";
 
 describe("keymap", () => {
   it("normalizes modifier order and case", () => {
@@ -442,6 +443,82 @@ describe("keymap", () => {
       } finally {
         wrapper.remove();
         dispose();
+      }
+    });
+
+    it("leaves Ctrl+Enter in a dialog or text field to that control, and still splits a line in the editor", async () => {
+      const split = vi.fn();
+      const save = vi.fn();
+      const hidden = vi.fn();
+      const dispose = registerAction({
+        id: "t.splitBehindDialog",
+        title: "Split Line",
+        when: `${TEXT_WHEN} || diffEditorFocus`,
+        run: split,
+      });
+      const disposeSave = registerAction({ id: "t.saveFromField", title: "Save", run: save });
+      const disposeHidden = registerAction({
+        id: "t.hiddenInPopup",
+        title: "Hidden",
+        keyWhen: "!popupOpen",
+        run: hidden,
+      });
+      useKeymap.setState({
+        overrides: {
+          "t.splitBehindDialog": ["Ctrl+Enter"],
+          "t.saveFromField": ["Ctrl+S"],
+          "t.hiddenInPopup": ["Ctrl+S"],
+        },
+      });
+      setContext("textEditorActive", true);
+      setContext("popupOpen", true);
+      setContext("editorTextFocus", true);
+      setContext("diffEditorFocus", true);
+      uninstall = installKeyboardDispatcher(window);
+      const message = document.body.appendChild(document.createElement("textarea"));
+      const list = document.body.appendChild(document.createElement("div"));
+      list.tabIndex = 0;
+      const seen = vi.fn();
+      message.addEventListener("keydown", seen);
+      try {
+        const press = (target: HTMLElement, init: KeyboardEventInit) => {
+          const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init });
+          target.dispatchEvent(event);
+          return event;
+        };
+        message.focus();
+        const commit = press(message, { key: "Enter", code: "Enter", ctrlKey: true });
+        list.focus();
+        const push = press(list, { key: "Enter", code: "Enter", ctrlKey: true });
+        const saved = press(message, { key: "s", code: "KeyS", ctrlKey: true });
+        await Promise.resolve();
+        expect(split).not.toHaveBeenCalled();
+        expect(hidden).not.toHaveBeenCalled();
+        expect(commit.defaultPrevented).toBe(false);
+        expect(push.defaultPrevented).toBe(false);
+        expect(seen).toHaveBeenCalledOnce();
+        expect(saved.defaultPrevented).toBe(true);
+        expect(save).toHaveBeenCalledOnce();
+
+        const editor = document.body.appendChild(document.createElement("div"));
+        editor.className = "cm-editor";
+        const content = editor.appendChild(document.createElement("div"));
+        content.tabIndex = 0;
+        content.focus();
+        press(content, { key: "Enter", code: "Enter", ctrlKey: true });
+        await Promise.resolve();
+        expect(split).toHaveBeenCalledOnce();
+        editor.remove();
+      } finally {
+        message.remove();
+        list.remove();
+        dispose();
+        disposeSave();
+        disposeHidden();
+        clearContext("textEditorActive");
+        clearContext("popupOpen");
+        clearContext("editorTextFocus");
+        clearContext("diffEditorFocus");
       }
     });
 

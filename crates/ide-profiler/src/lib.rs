@@ -109,6 +109,8 @@ pub enum ProfileSpec {
     /// ran no code of `root` (the package manager of an npm script) are left
     /// out when another one did.
     CpuProfiles { dir: IpcPath, root: IpcPath },
+    /// One `.cpuprofile` the user opened (saved by `node --cpu-prof`, Chrome DevTools, CI).
+    CpuProfileFile { path: IpcPath },
     /// Collapsed-stack files with extension `ext` in `dir`; relative frame files resolve
     /// against `base`. `jvm_root`: map JVM class frames to sources below it. For the
     /// allocation modes the last frame of a JVM stack is the allocated type.
@@ -171,6 +173,26 @@ pub fn collect(spec: &ProfileSpec) -> IdeResult<Profile> {
                 return Err(nothing_recorded("no .cpuprofile was written"));
             }
             Ok(b.finish("node --cpu-prof", "ms", ProfileMode::Cpu))
+        }
+        ProfileSpec::CpuProfileFile { path } => {
+            let path: &Path = path.as_ref();
+            let name =
+                path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+            let text =
+                std::fs::read_to_string(path).map_err(|e| IdeError::invalid(format!("Cannot read {name}: {e}")))?;
+            formats::add_cpuprofile(&mut b, &text)
+                .map_err(|e| IdeError::invalid(format!("{name} is not a V8 CPU profile ({e}).")))?;
+            if b.is_empty() {
+                return Err(IdeError::invalid(format!("{name} has no samples.")));
+            }
+            let mut profile = b.finish("V8 CPU profile", "ms", ProfileMode::Cpu);
+            // A profile recorded on another machine (CI) names files that aren't here.
+            for f in &mut profile.frames {
+                if f.file.as_ref().is_some_and(|p| !p.is_file()) {
+                    (f.file, f.line) = (None, None);
+                }
+            }
+            Ok(profile)
         }
         ProfileSpec::Folded { profiler, dir, ext, base, jvm_root, mode } => {
             for f in files_with_ext(dir, ext) {
@@ -249,6 +271,48 @@ mod tests {
         assert_eq!(p.mode, ProfileMode::Allocations);
         assert_eq!(p.total, 1024.0);
         assert!(p.frames.iter().any(|f| f.name == "byte[]" && f.kind == ProfileFrameKind::AllocatedType));
+    }
+
+    #[test]
+    fn an_opened_cpuprofile_keeps_only_local_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("index.js");
+        std::fs::write(&src, "").unwrap();
+        let url = |p: &Path| format!("file://{}", p.display()).replace('\\', "/");
+        let json = format!(
+            r#"{{"nodes":[
+            {{"id":1,"callFrame":{{"functionName":"(root)","url":"","lineNumber":-1}},"children":[2,3]}},
+            {{"id":2,"callFrame":{{"functionName":"here","url":"{}","lineNumber":3}}}},
+            {{"id":3,"callFrame":{{"functionName":"onCi","url":"file:///home/runner/work/app/x.js","lineNumber":1}}}}],
+            "samples":[2,3,2],"timeDeltas":[0,1000,1000]}}"#,
+            url(&src)
+        );
+        let path = dir.path().join("CPU.cpuprofile");
+        std::fs::write(&path, json).unwrap();
+        let p = collect(&ProfileSpec::CpuProfileFile { path: path.into() }).unwrap();
+        assert_eq!((p.unit.as_str(), p.mode), ("ms", ProfileMode::Cpu));
+        let frame = |name: &str| p.frames.iter().find(|f| f.name == name).unwrap();
+        assert_eq!(frame("here").file.as_deref(), Some(src.as_path()));
+        assert_eq!(frame("here").line, Some(3));
+        assert_eq!((frame("onCi").file.as_ref(), frame("onCi").line), (None, None));
+    }
+
+    #[test]
+    fn an_opened_file_that_is_no_cpuprofile_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        for (file, text, says) in [
+            ("notes.cpuprofile", "hello", "is not a V8 CPU profile"),
+            ("other.cpuprofile", r#"{"a":1}"#, "is not a V8 CPU profile (no nodes)"),
+            ("empty.cpuprofile", r#"{"nodes":[],"samples":[],"timeDeltas":[]}"#, "has no samples"),
+        ] {
+            let path = dir.path().join(file);
+            std::fs::write(&path, text).unwrap();
+            let err = collect(&ProfileSpec::CpuProfileFile { path: path.into() }).unwrap_err();
+            assert_eq!(err.message.split_once(' ').unwrap().0, file);
+            assert!(err.message.contains(says), "{}", err.message);
+        }
+        let missing = collect(&ProfileSpec::CpuProfileFile { path: dir.path().join("gone.cpuprofile").into() });
+        assert!(missing.unwrap_err().message.starts_with("Cannot read gone.cpuprofile"));
     }
 
     #[test]

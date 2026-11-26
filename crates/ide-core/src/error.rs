@@ -46,6 +46,8 @@ pub enum ErrorData {
     JavaBuildProblems {
         problems: Vec<String>,
     },
+    /// A remote backend of another OpenIDEA build still serves the project and refused to retire.
+    RemoteBackendBusy,
 }
 
 /// Git's reported result for each destination ref. A remote with several push URLs can

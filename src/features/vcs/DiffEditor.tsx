@@ -1,6 +1,8 @@
 /** Diff viewer editor tab (side-by-side / unified) built on @codemirror/merge. */
 import { focusedDiffNavigator, setFocusedDiffNavigator, type DiffNavigator } from "./diffNavigator";
 import { StagingDiff } from "./StagingDiff";
+import { ImageDiffHost } from "./ImageDiffHost";
+import { imageDiffKind } from "./imageDiffInput";
 import {
   useCallback,
   useEffect,
@@ -404,18 +406,65 @@ export function DiffEditor(props: DiffEditorProps) {
 }
 
 export function ResolvedDiffEditor({
-  diff: { data, entries, loading },
+  diff: { data, entries, loading, versions },
   ...props
 }: DiffEditorProps & { diff: ReturnType<typeof useGitDiffEntries> }) {
   const input = data === props.input.data ? props.input : { ...props.input, data };
-  if (data.middle) return <StagingDiff key={input.key} {...props} input={input} metadataLoading={loading} />;
-  return (
+  const [source, setSource] = useState<{ key: string; visible: boolean }>();
+  const imageData = useMemo(() => (versions ? { ...data, ...versions } : data), [data, versions]);
+  const regularFiles = !entries?.some((entry) => entry && !entry.mode.startsWith("100"));
+  const kind = regularFiles && !hasGitlink(data) ? imageDiffKind(imageData) : null;
+  const openedSource = kind === "svg" && source?.key === input.key;
+  const showSource = openedSource && source.visible;
+  if (kind && loading && !openedSource) return <Spinner size={14} />;
+  const image = kind && !showSource && (
+    <ImageDiffHost
+      key={input.key}
+      {...props}
+      data={imageData}
+      onSource={kind === "svg" ? () => setSource({ key: input.key, visible: true }) : undefined}
+    />
+  );
+  if (image && !openedSource) return image;
+
+  const preview = openedSource && (
+    <Button size="small" onClick={() => setSource({ key: input.key, visible: false })}>
+      <T>Image preview</T>
+    </Button>
+  );
+  const toolbarActions = openedSource ? (
+    <>
+      {preview}
+      {props.toolbarActions}
+    </>
+  ) : (
+    props.toolbarActions
+  );
+  const text = data.middle ? (
+    <StagingDiff key={input.key} {...props} input={input} toolbarActions={toolbarActions} metadataLoading={loading} />
+  ) : (
     <TwoPaneDiff
       {...props}
       input={input}
+      toolbarActions={toolbarActions}
       metadataLoading={loading}
       gitModes={entries ? [entries[0]?.mode ?? null, entries[2]?.mode ?? null] : undefined}
     />
+  );
+  if (!openedSource) return text;
+  // Unmounting an editable staged diff can save its draft. Switching views must preserve it.
+  return (
+    <>
+      {image}
+      <div
+        hidden={!showSource}
+        inert={!showSource}
+        className={showSource ? clsx(styles.root, props.fit && styles.fit) : undefined}
+      >
+        {props.fit && !data.middle && preview}
+        {text}
+      </div>
+    </>
   );
 }
 
@@ -438,9 +487,12 @@ function TwoPaneDiff({
   inputKey.current = input.key;
   // Swap Sides shows the request's sides the other way round; another request starts unswapped.
   const [swappedFor, setSwappedFor] = useState<DiffData | null>(null);
-  // The one-side viewer puts its only editable document into the unified editor.
-  const indexOnlyLeft = isIndex(input_.left) && input_.right.type === "text" && input_.right.absent;
-  const swapped = !!indexOnlyLeft || swappedFor === input_;
+  // The one-side viewer puts its only editable document into the unified editor. A deleted
+  // file's diff shows the original text as the document itself: the absent side stays on the
+  // left as the diff's original, as for a staged deletion.
+  const deletedOneSided =
+    !(input_.left.type === "text" && input_.left.absent) && input_.right.type === "text" && !!input_.right.absent;
+  const swapped = deletedOneSided || swappedFor === input_;
   const data = useMemo(
     () => (swapped ? { ...input_, left: input_.right, right: input_.left } : input_),
     [input_, swapped],
@@ -1788,7 +1840,7 @@ function TwoPaneDiff({
   return (
     <div
       ref={rootRef}
-      className={clsx(styles.root, fit && styles.fit, indexOnlyLeft && styles.indexDeletion)}
+      className={clsx(styles.root, fit && styles.fit, deletedOneSided && styles.indexDeletion)}
       onKeyDown={onKeyDown}
       onFocusCapture={() => {
         setFocusedDiffNavigator(nav.current);
@@ -1994,7 +2046,7 @@ function TwoPaneDiff({
               size="small"
               onClick={() => {
                 void Promise.resolve(indexDoc?.save())
-                  .then(() => executeAction("vcs.showDiffInNewWindow", indexOnlyLeft ? input_ : data))
+                  .then(() => executeAction("vcs.showDiffInNewWindow", deletedOneSided ? input_ : data))
                   .catch(() => {});
               }}
             />
@@ -2049,15 +2101,25 @@ function TwoPaneDiff({
           </span>
         </div>
       ) : (
+        // A deleted file's swapped viewer still reads in the request's order: revision → (deleted).
         <div className={labels}>
-          <span className={styles.label} title={sourceLabels ? `${captionA} → ${captionB}` : undefined}>
-            <span className={styles.labelText}>{sideLabel(left)}</span>
-            {sourceLabels && <PaneTitleDetail {...titleA} />}
+          <span
+            className={styles.label}
+            title={
+              sourceLabels ? (deletedOneSided ? `${captionB} → ${captionA}` : `${captionA} → ${captionB}`) : undefined
+            }
+          >
+            <span className={styles.labelText}>{sideLabel(deletedOneSided ? right : left)}</span>
+            {sourceLabels && <PaneTitleDetail {...(deletedOneSided ? titleB : titleA)} />}
             {unifiedOnLeft && <span className={styles.badge}>{tx("editable")}</span>}
-            {eolDiffers && eolA && <span className={styles.badge}>{badgeA}</span>} →
-            <span className={styles.labelText}>{sideLabel(right)}</span>
-            {sourceLabels && <PaneTitleDetail {...titleB} />}
-            {eolDiffers && eolB && <span className={styles.badge}>{badgeB}</span>}
+            {eolDiffers && (deletedOneSided ? eolB : eolA) && (
+              <span className={styles.badge}>{deletedOneSided ? badgeB : badgeA}</span>
+            )}{" "}
+            →<span className={styles.labelText}>{sideLabel(deletedOneSided ? left : right)}</span>
+            {sourceLabels && <PaneTitleDetail {...(deletedOneSided ? titleA : titleB)} />}
+            {eolDiffers && (deletedOneSided ? eolA : eolB) && (
+              <span className={styles.badge}>{deletedOneSided ? badgeA : badgeB}</span>
+            )}
           </span>
         </div>
       )}

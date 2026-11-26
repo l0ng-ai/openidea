@@ -1,0 +1,14 @@
+/* The page fills the dialog under its title bar; the user resizes the dialog by its grip. */
+.dialog {
+  max-width: calc(100vw - 2 * var(--space-4));
+  max-height: calc(100vh - 2 * var(--space-4));
+}
+.page {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+}
+.page > * {
+  flex: 1;
+  min-width: 0;
+}

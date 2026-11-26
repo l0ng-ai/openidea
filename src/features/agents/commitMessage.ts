@@ -1,7 +1,8 @@
 /**
  * Generate Commit Message with Agent: the coding agent the user works with reads the
  * changes about to be committed and writes their message. It runs as a short task that
- * is deleted once the message is in the commit field.
+ * is deleted once the message is in the commit field, and asks the agent not to keep the
+ * session in its own history.
  */
 import type {
   AgentConfigChoice,
@@ -327,6 +328,7 @@ async function generate(): Promise<void> {
         config: agent.config,
         isolation: "local",
         base: null,
+        ephemeral: true,
       }),
     );
     task = created;

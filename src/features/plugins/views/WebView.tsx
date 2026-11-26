@@ -23,6 +23,7 @@ import { useProject } from "@/platform/project";
 import { subscribeTheme, themeKey } from "@/platform/themeWatch";
 import { EmptyState, Spinner } from "@/ui";
 import { editorService, registerFontZoomSurface } from "@/workbench/contributions";
+import { notifyFocusElement } from "@/workbench/focus";
 import { ToolWindowCornerActions, useOwnToolWindowHeader } from "@/workbench/toolwindows/ToolWindows";
 import { pluginsBackend, type FileFilter } from "../backend";
 import { errorText, usePlugins } from "../store";
@@ -168,6 +169,29 @@ export const MAX_HIGHLIGHT_LINES = 2000;
 
 /** The query that gives an editor panel's page `openidea.editor` (frame-bridge.js). */
 export const EDITOR_PANEL_QUERY = "openidea=editor-panel";
+/** The query that gives an overlay's page `openidea.overlay` (frame-bridge.js). */
+export const OVERLAY_QUERY = "openidea=overlay";
+/** The query that gives a plugin dialog's page `openidea.dialog` (frame-bridge.js). */
+export const DIALOG_QUERY = "openidea=dialog";
+
+/** A plugin dialog's frame: its page can close the dialog (`openidea.dialog.close()`). */
+export interface FrameDialog {
+  close(): void;
+}
+
+/** Where an overlay floats: one of nine anchors of the window, and its size in pixels. */
+export interface OverlayPlacement {
+  anchor: string;
+  width: number;
+  height: number;
+}
+
+/** An overlay frame's placement, which its page reads and changes (`openidea.overlay`). */
+export interface FrameOverlay {
+  get(): OverlayPlacement;
+  /** Applies what `args` names (anchor, width, height) and returns the placement; throws on invalid values. */
+  place(args: Record<string, unknown>): OverlayPlacement;
+}
 
 const finite = (v: unknown, what: string) => {
   if (typeof v !== "number" || !Number.isFinite(v)) throw new Error(`${what} must be a number`);
@@ -263,6 +287,10 @@ export interface WebViewProps {
   binaryPath?: string;
   /** The text editor an editor panel follows; none elsewhere. */
   editor?: FrameEditor | null;
+  /** An overlay's placement: the frame shows nothing until its page loads and never takes the focus. */
+  overlay?: FrameOverlay | null;
+  /** A plugin dialog's page: it can close the dialog, and Escape there closes it. */
+  pluginDialog?: FrameDialog | null;
 }
 
 export function WebView({
@@ -274,6 +302,8 @@ export function WebView({
   doc = null,
   binaryPath,
   editor = null,
+  overlay = null,
+  pluginDialog = null,
 }: WebViewProps) {
   const plugin = usePlugins((s) => s.plugins.find((p) => p.id === pluginId));
   const page = usePageUrl(pluginId, view, plugin);
@@ -478,6 +508,16 @@ export function WebView({
           if (to - from > MAX_HIGHLIGHT_LINES) throw new Error(`at most ${MAX_HIGHLIGHT_LINES} lines at a time`);
           return [op === "editor.wrapped" ? editor.wrapped(from, to) : editor.highlights(from, to)];
         }
+        case "dialog.close": {
+          if (!pluginDialog) throw new Error("this view is not a dialog");
+          pluginDialog.close();
+          return [null];
+        }
+        case "overlay.get":
+        case "overlay.place": {
+          if (!overlay) throw new Error("this view is not an overlay");
+          return [op === "overlay.get" ? overlay.get() : overlay.place(args)];
+        }
         case "saveFile":
         case "openFile": {
           // One dialog at a time per frame.
@@ -509,9 +549,13 @@ export function WebView({
         op?: unknown;
         args?: unknown;
         key?: unknown;
+        focus?: unknown;
       } | null;
       if (m?.tag !== FRAME_TAG) return;
-      if (m.key && typeof m.key === "object") {
+      if (m.focus === true) {
+        const host = frame.current.ownerDocument;
+        if (host.activeElement === frame.current && host.hasFocus()) notifyFocusElement(frame.current);
+      } else if (m.key && typeof m.key === "object") {
         // A shortcut the page didn't handle: as if pressed on the frame, for the IDE's keymap. The
         // page can post one at any time and can take the focus, but it cannot fake the user's own
         // input, so it counts only right after the user pressed a key or clicked in the frame.
@@ -553,8 +597,10 @@ export function WebView({
       window.removeEventListener("pagehide", onUnload);
       currentFrame?.removeEventListener("load", onLoad);
     };
-  }, [pluginId, view, document, doc, eventEditor, editor, hasCode, post, page]);
+  }, [pluginId, view, document, doc, eventEditor, editor, overlay, pluginDialog, hasCode, post, page]);
 
+  // An overlay floats over the workbench: no spinner or error card in its place.
+  if (overlay && (!page || "error" in page)) return null;
   if (!page)
     return (
       <div className={styles.empty}>
@@ -567,6 +613,7 @@ export function WebView({
         {page.error}
       </EmptyState>
     );
+  const frameQuery = editor ? EDITOR_PANEL_QUERY : overlay ? OVERLAY_QUERY : pluginDialog ? DIALOG_QUERY : null;
   // No `allow-same-origin`: an opaque origin without access to the IDE. `onLoad` sends the theme.
   const iframe = (
     <iframe
@@ -576,7 +623,8 @@ export function WebView({
       title={label}
       sandbox="allow-scripts"
       allow={clipboard ? "clipboard-read; clipboard-write" : undefined}
-      src={editor ? `${page.url}${page.url.includes("?") ? "&" : "?"}${EDITOR_PANEL_QUERY}` : page.url}
+      tabIndex={overlay ? -1 : undefined}
+      src={frameQuery ? `${page.url}${page.url.includes("?") ? "&" : "?"}${frameQuery}` : page.url}
       onLoad={() => {
         postTheme();
         setLoadedPage(page);

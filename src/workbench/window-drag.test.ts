@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { installWindowDrag } from "./window-drag";
+import { installFullscreenDragGuard, installWindowDrag } from "./window-drag";
 
 describe("installWindowDrag", () => {
   let uninstall: () => void;
@@ -64,5 +64,32 @@ describe("installWindowDrag", () => {
     uninstall = installWindowDrag({ enabled: false, start, toggleMaximize });
     mouse(region, "mousedown", { buttons: 1 });
     expect(start).not.toHaveBeenCalled();
+  });
+});
+
+describe("installFullscreenDragGuard", () => {
+  it("keeps title bar presses from Tauri's drag script only while in full screen", () => {
+    let fullscreen = true;
+    const uninstall = installFullscreenDragGuard(() => fullscreen);
+    const bar = document.body.appendChild(document.createElement("header"));
+    bar.setAttribute("data-tauri-drag-region", "");
+    const button = bar.appendChild(document.createElement("button"));
+    const seen = vi.fn();
+    document.addEventListener("mousedown", seen);
+    const press = (el: Element) =>
+      el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, composed: true, button: 0, detail: 2 }));
+    try {
+      press(bar);
+      expect(seen).not.toHaveBeenCalled();
+      press(button);
+      expect(seen).toHaveBeenCalledOnce();
+      fullscreen = false;
+      press(bar);
+      expect(seen).toHaveBeenCalledTimes(2);
+    } finally {
+      document.removeEventListener("mousedown", seen);
+      uninstall();
+      bar.remove();
+    }
   });
 });

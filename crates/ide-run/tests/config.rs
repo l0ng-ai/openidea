@@ -134,6 +134,7 @@ fn extras_round_trip_and_local_file() {
     shared.extras.open_tool_window = Some(false);
     shared.extras.focus_tool_window = true;
     shared.extras.emulate_terminal = true;
+    shared.extras.watch = true;
     shared.extras.stop_command = Some("docker stop server".into());
     let mut local = sample().remove(1);
     local.extras.local = true;

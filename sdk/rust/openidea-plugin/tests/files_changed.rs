@@ -3,6 +3,8 @@ use openidea_plugin::{Event, EventKind, FilesChanged};
 #[test]
 fn additive_files_changed_payload_is_typed_and_lossless() {
     let batch = FilesChanged {
+        project: Some("/project".into()),
+        generation: Some(1),
         created: vec!["/project/新建😀.rs".into()],
         modified: vec![r"C:\project\a.rs".into()],
         removed: vec!["/project/gone.rs".into()],

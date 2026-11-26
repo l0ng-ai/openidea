@@ -20,6 +20,7 @@ description: "创建、编辑和启动运行配置，从装订区运行代码，
 | `package.json`                                                                                  | 每个 `scripts` 条目一个，使用锁文件对应的包管理器（npm、pnpm、yarn 或 bun）。`test`、`test:*`、`jest`、`vitest` 脚本会标记为测试。 |
 | `deno.json` / `deno.jsonc`                                                                      | Deno task                                                                                                                          |
 | `playwright.config.*`                                                                           | 运行 `playwright test` 的脚本是测试配置；没有这样的脚本时为 `npx playwright test`                                                  |
+| `cypress.config.*` / `cypress` 依赖                                                             | 运行 `cypress run` 的脚本是测试配置；没有这样的脚本时为 `npx cypress run`（Cypress 配置）                                          |
 | `Cargo.toml`                                                                                    | 每个二进制一个 `cargo run`，以及 `cargo test`、`cargo build`；包含 workspace 成员                                                  |
 | `build.gradle(.kts)` / `pom.xml`                                                                | Gradle、Maven 运行配置                                                                                                             |
 | `go.mod` / `go.work`                                                                            | Go 程序和测试                                                                                                                      |
@@ -156,7 +157,7 @@ Maven 模块在 **自动** 和 **构建（Make）** 时由 jdtls（ECJ）构建�
 
 每次启动都会在底部的 **运行** 工具窗口里开一个标签页。工具栏有 **重新运行**、**调试**、**重新运行失败的测试**（测试运行时）、**更新应用**、**查找…**、**滚动到末尾**、**软换行**、**全部清除** 和 **编辑配置…**。
 
-- 输出里的文件路径和堆栈帧都可以点击跳转。
+- 输出里的文件路径和堆栈帧都可以点击跳转。工具栏的 **沿堆栈跟踪向上** / **沿堆栈跟踪向下**（或 **上一个 / 下一个匹配项**，`⌥⌘↑` / `⌥⌘↓`，Windows 和 Linux 上为 `Ctrl+Alt+↑` / `Ctrl+Alt+↓`）选中上一个 / 下一个链接并打开它；折叠起来的行里的链接会跳过。测试运行时这两个快捷键改为在失败的测试之间跳转。
 - 重复的行可以折叠。折叠规则、缓冲区大小和控制台编码在 **设置 › 构建、执行、部署 › 控制台** 中配置。控制台右键菜单中的 **折叠与此类似的行** 会打开该页面，并把选中的文本（或右键所在的行）添加为折叠规则。
 - 日志行可按级别着色（`ERROR`、`WARN`、`INFO`、`DEBUG`、`TRACE`）；程序自行输出的颜色保持不变。默认关闭，可在 **设置 › 构建、执行、部署 › 控制台** 开启并修改颜色。
 - 测试运行时，标签页会在输出旁显示测试树，参见[测试](/zh/guide/testing)。

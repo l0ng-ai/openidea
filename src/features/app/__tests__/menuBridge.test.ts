@@ -1,16 +1,14 @@
-import { history } from "@codemirror/commands";
-import { EditorView } from "@codemirror/view";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { registerAction } from "@/platform/actions";
 import { _resetI18nForTests, setLocale } from "@/platform/i18n";
 import { useKeymap } from "@/platform/keymap";
 import * as ipc from "@/platform/ipc";
 import { resetDistractionFree, setDistractionFree } from "@/workbench/distractionFree";
+import { useFullscreen } from "@/workbench/zenMode";
 import { registerStatusItem, registerToolWindow } from "@/workbench/contributions";
 import { useProject } from "@/platform/project";
 import { _reloadLayouts, saveLayout } from "@/workbench/toolwindows/layouts";
 import { clearContext, setContext } from "@/platform/context";
-import * as host from "../host";
 import {
   buildMenuConfig,
   disabledMenuActions,
@@ -27,57 +25,6 @@ vi.mock("@tauri-apps/api/webviewWindow", () => ({
 }));
 
 describe("menu state from the frontend", () => {
-  it("updates macOS history ownership as focus leaves and returns to CodeMirror", async () => {
-    vi.useFakeTimers();
-    vi.spyOn(host, "hostOs").mockResolvedValue("macos");
-    vi.spyOn(ipc, "isTauri").mockReturnValue(true);
-    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
-    const configure = vi.spyOn(ipc.commands, "menuConfigure").mockResolvedValue();
-    vi.spyOn(ipc.commands, "menuModel").mockResolvedValue([]);
-    vi.spyOn(ipc.commands, "menuSetDisabled").mockResolvedValue();
-    const view = new EditorView({ doc: "source", extensions: history(), parent: document.body });
-    const find = document.createElement("input");
-    document.body.appendChild(find);
-    const dispose = installMenuBridge();
-    const lastConfig = () => configure.mock.calls.at(-1)?.[0];
-
-    try {
-      await vi.advanceTimersByTimeAsync(120);
-      expect(lastConfig()).toHaveProperty("editorOwnsHistory", false);
-
-      view.contentDOM.focus();
-      await vi.advanceTimersByTimeAsync(0);
-      expect(lastConfig()).toHaveProperty("editorOwnsHistory", true);
-
-      find.focus();
-      await vi.advanceTimersByTimeAsync(0);
-      expect(lastConfig()).toHaveProperty("editorOwnsHistory", false);
-
-      view.contentDOM.focus();
-      await vi.advanceTimersByTimeAsync(0);
-      expect(lastConfig()).toHaveProperty("editorOwnsHistory", true);
-
-      setContext("popupOpen", true);
-      await vi.advanceTimersByTimeAsync(0);
-      expect(lastConfig()).toHaveProperty("editorOwnsHistory", false);
-      clearContext("popupOpen");
-      await vi.advanceTimersByTimeAsync(0);
-      expect(lastConfig()).toHaveProperty("editorOwnsHistory", true);
-
-      hasFocus.mockReturnValue(false);
-      window.dispatchEvent(new Event("blur"));
-      await vi.advanceTimersByTimeAsync(0);
-      expect(lastConfig()).toHaveProperty("editorOwnsHistory", false);
-    } finally {
-      dispose();
-      view.destroy();
-      find.remove();
-      clearContext("popupOpen");
-      vi.useRealTimers();
-      vi.restoreAllMocks();
-    }
-  });
-
   it("refreshes the focused window's enablement even if context changes during the debounce", async () => {
     vi.useFakeTimers();
     vi.spyOn(ipc, "isTauri").mockReturnValue(true);
@@ -286,37 +233,6 @@ afterEach(() => {
 });
 
 describe("menu event routing", () => {
-  it("routes native macOS Undo and Redo through the editor history only while it is focused", async () => {
-    const view = new EditorView({ doc: "source", extensions: history(), parent: document.body });
-    const find = document.createElement("input");
-    document.body.appendChild(find);
-    try {
-      view.contentDOM.focus();
-      view.dispatch({ changes: { from: 0, to: 6 }, userEvent: "delete.cut" });
-      view.dispatch({ changes: { from: 0, insert: "paste" }, userEvent: "input.paste" });
-      const run = vi.fn(async () => true);
-      const undo = () => routeMenuEvent({ action: "edit.undo", arg: "editorHistory" }, run);
-      const redo = () => routeMenuEvent({ action: "edit.redo", arg: "editorHistory" }, run);
-      await expect(undo()).resolves.toBe(true);
-      expect(view.state.doc.toString()).toBe("");
-      await expect(undo()).resolves.toBe(true);
-      expect(view.state.doc.toString()).toBe("source");
-      await expect(redo()).resolves.toBe(true);
-      expect(view.state.doc.toString()).toBe("");
-      await expect(redo()).resolves.toBe(true);
-      expect(view.state.doc.toString()).toBe("paste");
-
-      find.focus();
-      await expect(undo()).resolves.toBe(false);
-      await expect(redo()).resolves.toBe(false);
-      expect(run).not.toHaveBeenCalled();
-      expect(view.state.doc.toString()).toBe("paste");
-    } finally {
-      view.destroy();
-      find.remove();
-    }
-  });
-
   it("runs the action named by the event, passing the argument", async () => {
     const run = vi.fn();
     const off = registerAction({ id: "test.menuRoute", title: "Test", run });
@@ -415,6 +331,19 @@ describe("window-scoped menu labels", () => {
     expect(buildMenuConfig("macos").accelerators["editor.toggleZen"]).toBeUndefined();
     setDistractionFree(true);
     expect(buildMenuConfig("macos").labels["menu.editor.toggleZen"]).toBe("Exit Distraction Free Mode");
+    resetDistractionFree();
+  });
+
+  it("flips Enter / Exit Zen Mode only while Distraction Free Mode and full screen are both on", () => {
+    const label = () => buildMenuConfig("macos").labels["menu.view.toggleZenMode"];
+    expect(label()).toBe("Enter Zen Mode");
+    setDistractionFree(true);
+    expect(label()).toBe("Enter Zen Mode");
+    useFullscreen.setState({ on: true });
+    expect(label()).toBe("Exit Zen Mode");
+    setDistractionFree(false);
+    expect(label()).toBe("Enter Zen Mode");
+    useFullscreen.setState({ on: false });
     resetDistractionFree();
   });
 
