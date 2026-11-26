@@ -110,6 +110,7 @@ async fn real_editor_attach_breakpoint_step_variables_and_detach() {
     let line = SCRIPT.lines().position(|l| l.contains("int answer =")).unwrap() as u32;
     manager
         .set_breakpoints(
+            "smoke",
             source.clone(),
             vec![Breakpoint { line, condition: None, hit_condition: None, log_message: None, enabled: true }],
         )
