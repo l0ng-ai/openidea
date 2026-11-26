@@ -6,8 +6,9 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import type { Profile } from "@/platform/ipc";
-import { EmptyState, Icon, IconButton, Input, Tabs, Tree, T } from "@/ui";
+import { Button, EmptyState, Icon, IconButton, Input, Tabs, Tree, T } from "@/ui";
 import { editorService } from "@/workbench/contributions";
+import { executeAction } from "@/platform/actions";
 import { colorSlot, flameLayout, flameStep, formatWeight, frameLocation, matchingFrames, share } from "./model";
 import { activeSnapshot, closeSnapshot, useProfiler, type ProfilerTab } from "./store";
 import styles from "./Profiler.module.css";
@@ -54,6 +55,10 @@ function openFrame(profile: Profile, frame: number) {
     f.file,
     f.line !== null ? { selection: { line: f.line, col: 0 }, focus: true } : { focus: true },
   );
+}
+
+export function ProfilerHeaderActions() {
+  return <IconButton icon="open" action="profiler.openSnapshot" size="small" />;
 }
 
 export function ProfilerTabs() {
@@ -293,7 +298,14 @@ export function ProfilerView() {
   const query = useProfiler((s) => s.query);
   if (!snapshot) {
     return (
-      <EmptyState title="No profiler snapshots">
+      <EmptyState
+        title="No profiler snapshots"
+        actions={
+          <Button size="small" onClick={() => void executeAction("profiler.openSnapshot")}>
+            <T>Open Snapshot…</T>
+          </Button>
+        }
+      >
         <span>
           <T>Profile a run configuration to see where it spends its time.</T>
         </span>

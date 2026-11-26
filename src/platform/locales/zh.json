@@ -319,6 +319,7 @@
   "menu.run.debug": "调试",
   "menu.run.debugContext": "调试上下文配置",
   "menu.run.coverage": "使用覆盖率运行",
+  "menu.profiler.openSnapshot": "打开性能分析快照…",
   "menu.run.profile": "性能分析",
   "menu.coverage.hide": "隐藏覆盖率",
   "menu.debuggingActions": "调试操作",
