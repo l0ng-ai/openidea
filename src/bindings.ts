@@ -1162,6 +1162,8 @@ export const commands = {
 	 *  disabled in place (no rebuild).
 	 */
 	menuSetDisabled: (ids: string[]) => __TAURI_INVOKE<void>("menu_set_disabled", { ids }),
+	/**  The Remote Development projects of the frontend's recent list, for Open Recent. */
+	menuSetRemoteRecent: (projects: RemoteRecent[]) => __TAURI_INVOKE<void>("menu_set_remote_recent", { projects }),
 	/**
 	 *  Index definitions named `name` within the roots `from` may navigate into (its own root
 	 *  plus its configured dependencies).
@@ -12164,6 +12166,19 @@ export type RemoteProject_Serialize = {
 	/**  Commands routed to the server (the rest run locally). */
 	commands: string[],
 	project: ProjectInfo_Serialize,
+};
+
+/**
+ *  A recent Remote Development project (SSH, WSL, Dev Container), kept by the frontend: Open
+ *  Recent lists it among the local projects, as Manage Projects does.
+ */
+export type RemoteRecent = {
+	/**  `ssh://host/path`, `wsl://Ubuntu/path`…: what `file.openRecentProject` gets back. */
+	location: string,
+	name: string,
+	/**  Where it lives, as shown after the name (`me@host:/srv/app`). */
+	detail: string,
+	openedAtMs: number | null,
 };
 
 export type RemoteSession = RemoteSession_Serialize | RemoteSession_Deserialize;

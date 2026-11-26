@@ -429,6 +429,7 @@ menu_configure                               always             desktop      bin
 menu_model                                   always             desktop      bindings sync
 menu_refresh                                 always             desktop      bindings sync
 menu_set_disabled                            always             desktop      bindings sync
+menu_set_remote_recent                       always             desktop      bindings sync
 nav_index_definitions                        always             project_host bindings async
 nav_inheritance                              always             project_host bindings async
 nav_python_stubs                             always             project_host bindings async
