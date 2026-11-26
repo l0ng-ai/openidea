@@ -196,6 +196,13 @@ describe("fileIconName", () => {
     ["schema.graphql", "file-graphql"],
     ["api.proto", "file-proto"],
     ["main.go", "file-go"],
+    ["cart_test.go", "file-go-test"],
+    // Only what `go test` builds as a test file: case-sensitive, not a file it ignores (`_…`, `.…`).
+    ["Cart_TEST.go", "file-go"],
+    ["_test.go", "file-go"],
+    [".cart_test.go", "file-go"],
+    ["test.go", "file-go"],
+    ["cart_test.go.tmpl", "file-go"],
     ["page.gotmpl", "file-go"],
     ["message.tmpl", "file-go"],
     ["docker-stack.yaml.go.tmpl", "file-go"],
