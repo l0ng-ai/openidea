@@ -235,7 +235,7 @@ function defaultType(value: string): string | undefined {
 const STRINGS_AND_COMMENTS = /\/\/[^\n]*|\/\*[\s\S]*?\*\/|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|`(?:\\.|[^`\\])*`/g;
 /** What ends right before the `{` of a nested function body: `=>`, `function f(…)` or a method `f(…)`. */
 const NESTED_BODY =
-  /(?:=>|\bfunction\b[^{};]*|(?:^|[^\w$.])(?!(?:if|for|while|switch|catch|with)\b)[\w$]+\s*\([^(){};]*\))\s*$/;
+  /(?:=>|\bfunction\b[^{};]*|(?:^|[^\w$.])(?!(?:if|for|await|while|switch|catch|with)\b)[\w$]+\s*\([^(){};]*\))\s*$/;
 
 /**
  * Whether the block at the start of `code` returns a value (`return x`), not counting the
@@ -257,6 +257,31 @@ function returnsValue(code: string): boolean {
     } else if (m[1] && depth > 0 && nested === Infinity) return true;
   }
   return false;
+}
+
+/**
+ * The declared result type in `after` (the code after a parameter list) and the body that follows
+ * it: a block for a method or function declaration, `=>` for an arrow. Null when neither follows.
+ */
+function signature(after: string): { declared?: string; arrow: boolean; body: string } | null {
+  let s = after.trimStart();
+  let declared: string | undefined;
+  if (s.startsWith(":")) {
+    let depth = 0;
+    let i = 1;
+    for (; i < s.length; i++) {
+      const arrow = s.startsWith("=>", i);
+      // A `{` ends the type once some type is there (`{ x: number } {`, not `A | {`).
+      if (depth === 0 && (arrow || (s[i] === "{" && /[^\s|&:,]\s*$/.test(s.slice(1, i))))) break;
+      if (arrow) i++;
+      else if ("{(<[".includes(s[i]!)) depth++;
+      else if ("})>]".includes(s[i]!) && --depth < 0) return null;
+    }
+    declared = s.slice(1, i).trim();
+    s = s.slice(i);
+  }
+  if (s.startsWith("=>")) return { declared, arrow: true, body: s.slice(2).trimStart() };
+  return s.startsWith("{") ? { declared, arrow: false, body: s } : null;
 }
 
 /**
@@ -282,8 +307,8 @@ export function jsDocTags(text: string, withTypes = false): string[] {
     ? { params: bare[1]!, after: head.slice(decl[0].length + bare[1]!.length) }
     : paramList(head, decl[0].length);
   if (!list) return [];
-  // A method or function declaration has its body next; an arrow has `=>`.
-  if (!/^\s*(:[^{=]*)?(\{|=>)/.test(list.after)) return [];
+  const sig = signature(list.after);
+  if (!sig) return [];
   let destructured = 0;
   const tags = splitParams(list.params).flatMap((param) => {
     const p = param.replace(/^(?:(?:public|private|protected|readonly|override)\s+)*/, "");
@@ -311,13 +336,11 @@ export function jsDocTags(text: string, withTypes = false): string[] {
     return [type ? `@param {${type}} ${rest}${name}` : `@param ${rest}${name}`];
   });
   if (decl[1] === "constructor") return tags;
-  const sig = /^\s*(?::\s*([^{=]+?)\s*)?(\{|=>)/.exec(list.after)!;
-  const declared = sig[1]?.replace(/\s+/g, "");
-  const body = list.after.slice(sig[0].length - (sig[2] === "{" ? 1 : 0)).trimStart();
+  const declared = sig.declared?.replace(/\s+/g, "");
   // An arrow's expression body is its result.
   const returns = declared
     ? !/^(void|undefined|never|Promise<void>)$/.test(declared)
-    : (sig[2] === "=>" && !body.startsWith("{")) || returnsValue(body);
+    : (sig.arrow && !sig.body.startsWith("{")) || returnsValue(sig.body);
   if (returns) tags.push("@returns");
   return tags;
 }

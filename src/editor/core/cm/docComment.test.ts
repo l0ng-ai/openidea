@@ -83,6 +83,9 @@ describe("Enter after /**", () => {
     expect(enter('/**|\nfunction f(a = "x", ...b) { return a; }', "javascript").text).toBe(
       '/**\n * |\n * @param {string} a\n * @param ...b\n * @returns\n */\nfunction f(a = "x", ...b) { return a; }',
     );
+    expect(enter("/**|\nfunction f(a):{x:number}{ return a; }", "typescript").text).toBe(
+      "/**\n * |\n * @param a\n * @returns\n */\nfunction f(a):{x:number}{ return a; }",
+    );
     expect(enter('/**|\nfunction f(a = "x") { return a; }', "typescriptreact").text).toBe(
       '/**\n * |\n * @param a\n * @returns\n */\nfunction f(a = "x") { return a; }',
     );
@@ -232,6 +235,22 @@ describe("JavaScript / TypeScript documentation stub tags", () => {
     ).toEqual(["@param a"]);
     expect(jsDocTags("constructor(a, b = 1) { this.a = a; return; }", true)).toEqual(["@param a", "@param {number} b"]);
     expect(jsDocTags("  set value(v: number) { this.v = v; }")).toEqual(["@param v"]);
+  });
+
+  it("reads object literal return types", () => {
+    expect(jsDocTags("m(a):{ok:boolean}{ return a; }")).toEqual(["@param a", "@returns"]);
+    expect(jsDocTags("function f(a):{x:number}{")).toEqual(["@param a", "@returns"]);
+    expect(jsDocTags("function f(a): { x: number } {")).toEqual(["@param a", "@returns"]);
+    expect(jsDocTags("const f = (a): {x: 1} => a;")).toEqual(["@param a", "@returns"]);
+    expect(jsDocTags("function f(a): A | { x: () => void } {")).toEqual(["@param a", "@returns"]);
+    expect(jsDocTags("function f(a): Promise<void> { return g(a); }")).toEqual(["@param a"]);
+  });
+
+  it("counts a return inside for await", () => {
+    expect(jsDocTags("async function f(xs) { for await (const x of xs) { return x; } }")).toEqual([
+      "@param xs",
+      "@returns",
+    ]);
   });
 
   it("finds nothing for calls and statements", () => {
