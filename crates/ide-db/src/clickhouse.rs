@@ -3,7 +3,6 @@ use crate::source::{DataSource, DbSslMode, DbTxMode};
 use ide_core::{CancellationToken, IdeError, IdeResult, error::ErrorKind};
 use parking_lot::RwLock;
 use reqwest::{Client, RequestBuilder, StatusCode, Url};
-use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
@@ -64,7 +63,7 @@ impl ClickhousePool {
                 if read_timeout.is_some() {
                     return Err(IdeError::invalid("ClickHouse http_read_timeout must be specified only once"));
                 }
-                let seconds = value.parse::<NonZeroU32>().map_err(|_| {
+                let seconds = value.parse::<std::num::NonZeroU32>().map_err(|_| {
                     IdeError::invalid("ClickHouse http_read_timeout must be a positive whole number of seconds")
                 })?;
                 read_timeout = Some(Duration::from_secs(u64::from(seconds.get())));
