@@ -209,6 +209,10 @@ pub struct CompletionColumn {
     pub primary_key: bool,
     /// Has a default (or is generated): optional in INSERT.
     pub has_default: bool,
+    /// The column's comment; `None` when it has none, or the engine keeps no comments.
+    #[serde(default)]
+    #[specta(optional)]
+    pub comment: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -1520,6 +1524,7 @@ impl DbManager {
                 nullable: flag(&Some(next())),
                 primary_key: flag(&Some(next())),
                 has_default: flag(&Some(next())),
+                comment: Some(next()).filter(|c| !c.trim().is_empty()),
             };
             if name.is_empty() || column.name.is_empty() {
                 continue;

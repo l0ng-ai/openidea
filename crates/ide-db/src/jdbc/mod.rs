@@ -735,7 +735,7 @@ impl DbManager {
     }
 }
 
-/// The bridge's `schemaColumns` rows (table, name, type, nullable, default) by table.
+/// The bridge's `schemaColumns` rows (table, name, type, nullable, default, comment) by table.
 fn schema_columns(rows: Vec<Vec<Option<String>>>) -> HashMap<String, Vec<crate::CompletionColumn>> {
     let mut by_table: HashMap<String, Vec<crate::CompletionColumn>> = HashMap::new();
     for row in rows {
@@ -744,12 +744,15 @@ fn schema_columns(rows: Vec<Vec<Option<String>>>) -> HashMap<String, Vec<crate::
         let data_type = it.next().flatten().unwrap_or_default();
         let nullable = it.next().flatten().as_deref() != Some("0");
         let has_default = it.next().flatten().is_some();
+        // Bridges built before the comment column send five fields.
+        let comment = it.next().flatten().filter(|c| !c.trim().is_empty());
         by_table.entry(table).or_default().push(crate::CompletionColumn {
             name,
             data_type,
             nullable,
             primary_key: false,
             has_default,
+            comment,
         });
     }
     by_table
@@ -764,16 +767,18 @@ mod tests {
         let row = |t: &str, n: &str, null: &str, def: Option<&str>| {
             vec![Some(t.into()), Some(n.into()), Some("INT".into()), Some(null.into()), def.map(Into::into)]
         };
-        let by_table = schema_columns(vec![
-            row("orders", "id", "0", None),
-            row("orders", "note", "1", Some("'none'")),
-            row("items", "sku", "1", None),
-            vec![None, Some("orphan".into())],
-        ]);
+        let mut commented = row("orders", "note", "1", Some("'none'"));
+        commented.push(Some("free text".into()));
+        let mut blank = row("items", "sku", "1", None);
+        blank.push(Some(" ".into()));
+        let by_table =
+            schema_columns(vec![row("orders", "id", "0", None), commented, blank, vec![None, Some("orphan".into())]]);
         let orders = &by_table["orders"];
         assert_eq!(orders.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["id", "note"]);
         assert_eq!((orders[0].nullable, orders[0].has_default), (false, false));
         assert_eq!((orders[1].nullable, orders[1].has_default), (true, true));
+        assert_eq!((orders[0].comment.as_deref(), orders[1].comment.as_deref()), (None, Some("free text")));
+        assert_eq!(by_table["items"][0].comment, None);
         assert_eq!(by_table["items"].len(), 1);
         assert_eq!(by_table.len(), 2);
     }

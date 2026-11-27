@@ -655,6 +655,7 @@ for a in "$@"; do case "$a" in
   typescript-language-server@latest) n=typescript-language-server;;
   @vue/language-server@latest) n=vue-language-server; d=@vue/language-server;;
   @astrojs/language-server@latest) n=astro-ls; d=@astrojs/language-server;;
+  @mdx-js/language-server@latest) n=mdx-language-server; d=@mdx-js/language-server;;
   *) continue;;
 esac
 d="${{d:-$n}}"; /bin/mkdir -p "$prefix/node_modules/$d"
@@ -665,7 +666,7 @@ done"#,
         ),
     );
     let tools = env.tools();
-    for name in ["vue-language-server", "typescript-language-server", "astro-ls"] {
+    for name in ["vue-language-server", "typescript-language-server", "astro-ls", "mdx-language-server"] {
         assert_eq!(
             tools.install(name, &langs(), &CancellationToken::new(), &|_| {}).unwrap().status,
             ToolStatus::Installed
@@ -677,6 +678,7 @@ done"#,
     }
     assert!(installs.contains("@vue/language-server@latest"), "{installs}");
     assert!(installs.contains("@astrojs/language-server@latest"), "{installs}");
+    assert!(installs.contains("@mdx-js/language-server@latest"), "{installs}");
 
     fs::write(&log, "").unwrap();
     tools.uninstall("vue-language-server", &langs()).unwrap();

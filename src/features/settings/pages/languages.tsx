@@ -26,6 +26,9 @@ const PrettierPage = lazyPage("languages.prettier", () =>
 const OxfmtPage = lazyPage("languages.oxfmt", () => import("../languages/FormatterPage").then((m) => m.OxfmtPage));
 const BiomePage = lazyPage("languages.biome", () => import("../languages/FormatterPage").then((m) => m.BiomePage));
 const DprintPage = lazyPage("languages.dprint", () => import("../languages/FormatterPage").then((m) => m.DprintPage));
+const PythonTestingPage = lazyPage("python.testing", () =>
+  import("../languages/PythonTestingPage").then((m) => m.PythonTestingPage),
+);
 const DocstringsPage = lazyPage("python.docstrings", () =>
   import("../languages/DocstringsPage").then((m) => m.DocstringsPage),
 );
@@ -253,6 +256,16 @@ export const LANGUAGE_PAGES: PageSpec[] = [
       "plain",
     ],
     component: DocstringsPage,
+  },
+  {
+    id: "python.testing",
+    projectScope: true,
+    defaultScope: "project",
+    title: "Testing",
+    group: LANGUAGES_GROUP,
+    order: 403.25,
+    keywords: ["default test runner", "test runner", "pytest", "unittest", "testing", "integrated tools"],
+    component: PythonTestingPage,
   },
   {
     id: "python.ruff",
