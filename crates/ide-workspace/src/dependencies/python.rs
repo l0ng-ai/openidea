@@ -116,28 +116,106 @@ fn strip_comment(line: &str) -> &str {
     line[..cut].trim_end()
 }
 
-/// The value of option `short`/`long`: `-c x`, `-cx`, `--constraint x`, `--constraint=x`.
-fn option_value<'a>(line: &'a str, short: &str, long: &str) -> Option<&'a str> {
-    let mut tokens = line.split_whitespace();
+/// A line split the way pip splits option lines (POSIX `shlex.split`); `None` on an unclosed quote.
+fn shlex_split(line: &str) -> Option<Vec<String>> {
+    let mut out = Vec::new();
+    let mut token = String::new();
+    let mut open = false;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => {
+                open = true;
+                loop {
+                    match chars.next()? {
+                        '\'' => break,
+                        c => token.push(c),
+                    }
+                }
+            }
+            '"' => {
+                open = true;
+                loop {
+                    match chars.next()? {
+                        '"' => break,
+                        '\\' => {
+                            let next = chars.next()?;
+                            if !matches!(next, '\\' | '"' | '$' | '`') {
+                                token.push('\\');
+                            }
+                            token.push(next);
+                        }
+                        c => token.push(c),
+                    }
+                }
+            }
+            '\\' => {
+                open = true;
+                token.extend(chars.next());
+            }
+            c if c.is_whitespace() => {
+                if open {
+                    out.push(std::mem::take(&mut token));
+                    open = false;
+                }
+            }
+            c => {
+                open = true;
+                token.push(c);
+            }
+        }
+    }
+    if open {
+        out.push(token);
+    }
+    Some(out)
+}
+
+/// `shlex.quote`: `value` as one token of an option line.
+fn shlex_quote(value: &str) -> String {
+    if !value.is_empty() && value.chars().all(|c| c.is_ascii_alphanumeric() || "@%+=:,./_-".contains(c)) {
+        return value.to_owned();
+    }
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+/// The value of option `short`/`long`: `-c x`, `-cx`, `--constraint x`, `--constraint=x`, quotes removed.
+fn option_value(line: &str, short: &str, long: &str) -> Option<String> {
+    let mut tokens = shlex_split(line)?.into_iter();
     let first = tokens.next()?;
     if first == short || first == long {
         return tokens.next();
     }
-    first.strip_prefix(&format!("{long}=")).or_else(|| first.strip_prefix(short).filter(|v| !v.is_empty()))
+    first
+        .strip_prefix(&format!("{long}="))
+        .or_else(|| first.strip_prefix(short).filter(|v| !v.is_empty()))
+        .map(str::to_owned)
 }
 
 fn is_local(value: &str) -> bool {
     !value.contains("://")
 }
 
-/// An option line made independent of the file's folder: local paths of `-c` / `-f` absolute.
+/// An option line made independent of the file's folder: local paths of `-c` / `-f` absolute,
+/// quoted for pip and with forward slashes (pip's splitting eats Windows backslashes).
 fn absolute_option(line: &str, dir: &Path) -> String {
     for (short, long) in [("-c", "--constraint"), ("-f", "--find-links")] {
         if let Some(value) = option_value(line, short, long).filter(|v| is_local(v) && Path::new(v).is_relative()) {
-            return format!("{long} {}", dir.join(value).display());
+            let path = dir.join(value).to_string_lossy().into_owned();
+            let path = if cfg!(windows) { path.replace('\\', "/") } else { path };
+            return format!("{long} {}", shlex_quote(&path));
         }
     }
     line.to_owned()
+}
+
+/// A direct reference to a relative `file:` URL resolves against pip's working folder, which
+/// isn't the project's when the IDE installs.
+fn relative_file_url(requirement: &str) -> bool {
+    requirement.split_once('@').is_some_and(|(_, url)| {
+        let url = url.trim_start();
+        url.starts_with("file:") && !url.starts_with("file:/")
+    })
 }
 
 fn requirements_txt(
@@ -157,9 +235,9 @@ fn requirements_txt(
         if content.starts_with('-') {
             if let Some(value) = option_value(content, "-r", "--requirement") {
                 // An included file's options apply to the whole install; its requirements belong to it.
-                let file = dir.join(value);
+                let file = dir.join(&value);
                 if depth < 8
-                    && is_local(value)
+                    && is_local(&value)
                     && let Some(included) = read(&file)
                 {
                     let mut nested = PythonManifest::default();
@@ -189,7 +267,7 @@ fn requirements_txt(
                 from: utf16(text, origin[lead]),
                 to: utf16(text, origin[end - 1] + 1),
             },
-            install: Some(content.to_owned()),
+            install: (!relative_file_url(requirement)).then(|| content.to_owned()),
         });
     }
 }
@@ -240,7 +318,8 @@ fn pyproject(text: &str) -> PythonManifest {
                 from: utf16(text, span.start + delimiter),
                 to: utf16(text, span.end - delimiter),
             },
-            install: (!own_index && source.is_none()).then(|| requirement.to_owned()),
+            install: (!own_index && source.is_none() && !relative_file_url(requirement))
+                .then(|| requirement.to_owned()),
         });
     }
     out
@@ -249,7 +328,6 @@ fn pyproject(text: &str) -> PythonManifest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     fn no_files(_: &Path) -> Option<String> {
         None
@@ -347,21 +425,50 @@ mod tests {
                 .then(|| "--trusted-host private.example\n-c pins.txt\ncommon-only==1\n".to_owned())
         };
         let m = manifest(Path::new("/p/requirements.txt"), text, &read);
-        let abs = |p: &str| PathBuf::from(p).display().to_string();
         assert_eq!(
             m.options,
             [
-                "--index-url https://private.example/simple".to_owned(),
-                "--extra-index-url=https://mirror.example/simple".to_owned(),
-                format!("--constraint {}", abs("/p/constraints.txt")),
-                format!("--find-links {}", abs("/p/wheels")),
-                "-f https://example.com/links".to_owned(),
-                "--require-hashes".to_owned(),
-                "--trusted-host private.example".to_owned(),
-                format!("--constraint {}", abs("/p/base/pins.txt")),
+                "--index-url https://private.example/simple",
+                "--extra-index-url=https://mirror.example/simple",
+                "--constraint /p/constraints.txt",
+                "--find-links /p/wheels",
+                "-f https://example.com/links",
+                "--require-hashes",
+                "--trusted-host private.example",
+                "--constraint /p/base/pins.txt",
             ]
         );
         assert_eq!(rows(&m, text).len(), 1, "requirements of an included file stay its own");
+    }
+
+    #[test]
+    fn rewritten_paths_are_quoted_the_way_pip_splits_option_lines() {
+        let text = "-c \"my pins.txt\"\n--find-links='wheels dir'\n-r 'base reqs.txt'\n";
+        let read =
+            |path: &Path| (path == Path::new("/My Project/base reqs.txt")).then(|| "-c \"it's.txt\"\n".to_owned());
+        let m = manifest(Path::new("/My Project/requirements.txt"), text, &read);
+        assert_eq!(
+            m.options,
+            [
+                "--constraint '/My Project/my pins.txt'",
+                "--find-links '/My Project/wheels dir'",
+                "--constraint '/My Project/it'\"'\"'s.txt'",
+            ]
+        );
+        for option in &m.options {
+            let path = shlex_split(option).unwrap().pop().unwrap();
+            assert!(path.starts_with("/My Project/"), "{option} splits back into one path: {path}");
+        }
+        assert_eq!(shlex_split("-c 'unclosed"), None);
+        assert_eq!(shlex_split(r#"a\ b "c\"d" 'e\f'"#).unwrap(), ["a b", "c\"d", "e\\f"]);
+    }
+
+    #[test]
+    fn relative_file_urls_are_marked_but_not_installed() {
+        let text = "pkg @ file:./vendor/pkg.whl\nabs @ file:///opt/abs.whl\n";
+        let m = manifest(Path::new("/p/requirements.txt"), text, &no_files);
+        let installs: Vec<_> = m.requirements.iter().map(|r| r.install.as_deref()).collect();
+        assert_eq!(installs, [None, Some("abs @ file:///opt/abs.whl")]);
     }
 
     #[test]

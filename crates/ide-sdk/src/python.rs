@@ -645,9 +645,10 @@ def fmt(v):
     return s if v.releaselevel == "final" else s + v.releaselevel[0] + str(v.serial)
 installed = {}
 for d in metadata.distributions():
-    name = d.metadata["Name"]
-    if name:
-        installed.setdefault(re.sub(r"[-_.]+", "-", name).lower(), d.version)
+    # A broken install can lack its name or version.
+    name, version = d.metadata["Name"], d.version
+    if name and version:
+        installed.setdefault(re.sub(r"[-_.]+", "-", name).lower(), version)
 env = {
     "implementation_name": sys.implementation.name,
     "implementation_version": fmt(sys.implementation.version),
@@ -657,7 +658,8 @@ env = {
     "platform_release": platform.release(),
     "platform_system": platform.system(),
     "platform_version": platform.version(),
-    "python_full_version": platform.python_version(),
+    # A development build says "3.14.0a1+", which isn't a PEP 440 version.
+    "python_full_version": platform.python_version().rstrip("+"),
     "python_version": ".".join(platform.python_version_tuple()[:2]),
     "sys_platform": sys.platform,
 }

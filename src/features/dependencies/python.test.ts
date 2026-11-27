@@ -85,8 +85,15 @@ function editor(path = "/p/requirements.txt", anchor = span("requests").from) {
   return view;
 }
 const settle = () => vi.advanceTimersByTimeAsync(550);
-const banner = (path: string) =>
-  renderHook(() => useEditorBanners.getState().banners.get("python.requirements")!.useBanner(path)).result.current;
+/** The banner for `path` now; unmounted at once so no later store update re-renders it after the test. */
+function banner(path: string) {
+  const { result, unmount } = renderHook(() =>
+    useEditorBanners.getState().banners.get("python.requirements")!.useBanner(path),
+  );
+  const current = result.current;
+  unmount();
+  return current;
+}
 
 describe("Python requirements", () => {
   it.each(["/p/requirements.txt", "/p/requirements-dev.txt", "/p/pyproject.toml"])("checks %s", async (path) => {

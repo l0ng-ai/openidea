@@ -3598,7 +3598,17 @@ fn unsatisfied_requirements_are_judged_without_pip_or_packaging() {
     let info = site.join("Fake.Dist_Pkg-1.0.dist-info");
     std::fs::create_dir_all(&info).unwrap();
     std::fs::write(info.join("METADATA"), "Metadata-Version: 2.1\nName: Fake.Dist_Pkg\nVersion: 1.0\n").unwrap();
-    let this_platform = if cfg!(target_os = "macos") { "darwin" } else { std::env::consts::OS };
+    let this_platform = if cfg!(windows) {
+        "win32"
+    } else if cfg!(target_os = "macos") {
+        "darwin"
+    } else {
+        std::env::consts::OS
+    };
+    // A broken install without a version neither fails the check nor counts as installed.
+    let broken = site.join("Broken_Pkg-0.dist-info");
+    std::fs::create_dir_all(&broken).unwrap();
+    std::fs::write(broken.join("METADATA"), "Metadata-Version: 2.1\nName: Broken_Pkg\n").unwrap();
     let found = crate::python::unsatisfied_requirements(
         &python,
         &[
@@ -3608,13 +3618,14 @@ fn unsatisfied_requirements_are_judged_without_pip_or_packaging() {
             "openidea-not-installed-xyz[extra]==1",
             "openidea-not-installed-xyz; sys_platform == 'nowhere'",
             &format!("openidea-not-installed-xyz; sys_platform == '{this_platform}'"),
+            "broken-pkg",
         ],
         &CancellationToken::new(),
     )
     .unwrap();
     let missing = || Some(crate::python::Unsatisfied { installed: None });
     let old = Some(crate::python::Unsatisfied { installed: Some("1.0".into()) });
-    assert_eq!(found, [None, None, old, missing(), None, missing()]);
+    assert_eq!(found, [None, None, old, missing(), None, missing(), missing()]);
 }
 
 #[test]
