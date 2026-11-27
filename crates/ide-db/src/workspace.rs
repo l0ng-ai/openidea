@@ -1,13 +1,89 @@
-//! A read-only equality join of two explicitly selected source tables on the project host.
+//! A read-only equality join of explicitly selected source tables on the project host.
 use crate::jdbc::JdbcPool;
-use crate::workspace_input::{self, WorkspaceInput, WorkspaceInputColumn, WorkspaceInputRequest, WorkspaceInputType};
+use crate::workspace_input::{
+    self, WorkspaceInput, WorkspaceInputColumn, WorkspaceInputLimits, WorkspaceInputRequest, WorkspaceInputType,
+};
 use crate::{DbDriver, DbManager, QueryResult, sql};
 use ide_core::{CancellationToken, IdeError, IdeResult};
+use serde::{Deserialize, Serialize};
+use specta::Type;
 use std::io::{BufWriter, Write};
 use std::time::{Duration, Instant};
 use tempfile::{NamedTempFile, TempPath};
 
+const MAX_TABLES: usize = 8;
 const MAX_RESULT_ROWS: usize = 100_000;
+const MAX_RESULT_COLUMNS: usize = 256;
+pub const WORKSPACE_INPUT_LIMITS: WorkspaceInputLimits =
+    WorkspaceInputLimits { max_rows: 100_000, max_cell_bytes: 1_048_576, max_bytes: 16_777_216 };
+
+#[derive(Debug, Deserialize, Serialize, Type)]
+#[serde(rename_all = "camelCase", rename = "DbWorkspaceJoinRelation")]
+pub struct WorkspaceJoinRelation {
+    pub source_id: String,
+    pub database: String,
+    pub schema: String,
+    pub table: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Type)]
+#[serde(rename_all = "camelCase", rename = "DbWorkspaceJoinColumn")]
+pub struct WorkspaceJoinColumn {
+    pub relation: u32,
+    pub column: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Type)]
+#[serde(rename_all = "camelCase", rename = "DbWorkspaceJoinCondition")]
+pub struct WorkspaceJoinCondition {
+    /// The right relation is the next table in the chain.
+    pub left: WorkspaceJoinColumn,
+    pub right_column: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Type)]
+#[serde(rename_all = "camelCase", rename = "DbWorkspaceJoinProjection")]
+pub struct WorkspaceJoinProjection {
+    pub relation: u32,
+    /// None expands this relation's columns in source order.
+    pub column: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Type)]
+#[serde(rename_all = "camelCase", rename = "DbWorkspaceJoinPlan")]
+pub struct WorkspaceJoinPlan {
+    pub tables: Vec<WorkspaceJoinRelation>,
+    pub joins: Vec<WorkspaceJoinCondition>,
+    /// None expands all relations in FROM/JOIN order.
+    pub projection: Option<Vec<WorkspaceJoinProjection>>,
+}
+
+fn validate_plan(
+    table_count: usize,
+    joins: &[WorkspaceJoinCondition],
+    projection: Option<&[WorkspaceJoinProjection]>,
+) -> IdeResult<()> {
+    if !(2..=MAX_TABLES).contains(&table_count) || joins.len() + 1 != table_count {
+        return Err(IdeError::invalid("A workspace JOIN needs 2 to 8 tables and one equality per JOIN"));
+    }
+    let valid_column = |name: &str| !name.is_empty() && name.len() <= 255 && !name.contains('\0');
+    for (index, link) in joins.iter().enumerate() {
+        if link.left.relation as usize > index || !valid_column(&link.left.column) || !valid_column(&link.right_column)
+        {
+            return Err(IdeError::invalid("Each JOIN must compare a column of its new table with an earlier table"));
+        }
+    }
+    if let Some(projection) = projection
+        && (projection.is_empty()
+            || projection.len() > MAX_RESULT_COLUMNS
+            || projection.iter().any(|item| {
+                item.relation as usize >= table_count || item.column.as_deref().is_some_and(|name| !valid_column(name))
+            }))
+    {
+        return Err(IdeError::invalid("Invalid workspace SELECT columns"));
+    }
+    Ok(())
+}
 
 struct StagedTable {
     path: TempPath,
@@ -113,62 +189,108 @@ impl StagedTable {
         )
     }
 
-    fn key(&self, name: &str) -> IdeResult<usize> {
+    fn column(&self, name: &str) -> IdeResult<usize> {
         self.columns
             .iter()
             .position(|c| c.name == name)
-            .ok_or_else(|| IdeError::invalid(format!("Unknown workspace join column: {name}")))
+            .ok_or_else(|| IdeError::invalid(format!("Unknown workspace column: {name}")))
     }
+}
+
+fn result_projection(
+    tables: &[StagedTable],
+    selection: Option<&[WorkspaceJoinProjection]>,
+) -> IdeResult<Vec<(usize, usize)>> {
+    let mut fields = Vec::new();
+    match selection {
+        Some(selection) => {
+            for item in selection {
+                let relation = item.relation as usize;
+                let table = &tables[relation];
+                match &item.column {
+                    Some(name) => fields.push((relation, table.column(name)?)),
+                    None => fields.extend((0..table.columns.len()).map(|column| (relation, column))),
+                }
+            }
+        }
+        None => {
+            for (relation, table) in tables.iter().enumerate() {
+                fields.extend((0..table.columns.len()).map(|column| (relation, column)));
+            }
+        }
+    }
+    if fields.len() > MAX_RESULT_COLUMNS {
+        return Err(IdeError::invalid("Workspace result exceeds 256 columns"));
+    }
+    Ok(fields)
 }
 
 async fn join(
     engine: &JdbcPool,
-    tables: &[StagedTable; 2],
-    keys: [&str; 2],
+    tables: &[StagedTable],
+    joins: &[WorkspaceJoinCondition],
+    selection: Option<&[WorkspaceJoinProjection]>,
     cancel: &CancellationToken,
 ) -> IdeResult<QueryResult> {
-    let [left, right] = tables;
-    let li = left.key(keys[0])?;
-    let ri = right.key(keys[1])?;
-    let (a, b) = (left.columns[li].data_type, right.columns[ri].data_type);
-    // DuckDB compares mixed integer widths and signs exactly, up to BIGINT against UBIGINT.
-    if a != b && !(a.is_integer() && b.is_integer()) {
-        return Err(IdeError::invalid("Choose integer join columns or columns of the same type and precision"));
+    use std::fmt::Write as _;
+    let fields = result_projection(tables, selection)?;
+    let names = fields.iter().map(|(relation, column)| format!("r{relation}.c{column}")).collect::<Vec<_>>().join(", ");
+    let paths = tables.iter().map(StagedTable::quoted_path).collect::<IdeResult<Vec<_>>>()?;
+    let mut query = format!("SELECT {names} FROM {} r0", tables[0].scan(&paths[0]));
+    for (index, condition) in joins.iter().enumerate() {
+        let left_relation = condition.left.relation as usize;
+        let right_relation = index + 1;
+        let left = &tables[left_relation];
+        let right = &tables[right_relation];
+        let li = left.column(&condition.left.column)?;
+        let ri = right.column(&condition.right_column)?;
+        let (a, b) = (left.columns[li].data_type, right.columns[ri].data_type);
+        // DuckDB compares mixed integer widths and signs exactly, up to BIGINT against UBIGINT.
+        if a != b && !(a.is_integer() && b.is_integer()) {
+            return Err(IdeError::invalid("Choose integer join columns or columns of the same type and precision"));
+        }
+        write!(
+            query,
+            " INNER JOIN {} r{right_relation} ON r{left_relation}.c{li}=r{right_relation}.c{ri}",
+            right.scan(&paths[right_relation]),
+        )
+        .unwrap();
     }
-    let paths = [left.quoted_path()?, right.quoted_path()?];
+    write!(query, " LIMIT {}", MAX_RESULT_ROWS + 1).unwrap();
     for setting in [
         "SET threads=1",
         "SET memory_limit='96MiB'",
         "SET temp_directory=''",
         "SET max_temp_directory_size='0B'",
-        &format!("SET allowed_paths=[{},{}]", paths[0], paths[1]),
+        &format!("SET allowed_paths=[{}]", paths.join(",")),
         "SET enable_external_access=false",
         "SET lock_configuration=true",
     ] {
         engine.query(setting, 0, 0, cancel).await?;
     }
-    let query = format!(
-        "SELECT a.*, b.* FROM {} a INNER JOIN {} b ON a.c{li}=b.c{ri} LIMIT {}",
-        left.scan(&paths[0]),
-        right.scan(&paths[1]),
-        MAX_RESULT_ROWS + 1
-    );
     let mut result = engine.query(&query, 0, MAX_RESULT_ROWS, cancel).await?;
     if result.has_more {
         return Err(IdeError::invalid("Workspace result exceeds 100,000 rows"));
     }
-    if result.columns.len() != left.columns.len() + right.columns.len() {
+    if result.columns.len() != fields.len() {
         return Err(IdeError::invalid("Unexpected workspace result columns"));
     }
-    for (display, source) in result.columns.iter_mut().zip(left.columns.iter().chain(&right.columns)) {
-        display.name.clone_from(&source.name);
+    for (display, (relation, column)) in result.columns.iter_mut().zip(fields) {
+        display.name.clone_from(&tables[relation].columns[column].name);
     }
     result.statement.clear();
     Ok(result)
 }
 
+fn two_table_join(keys: [&str; 2]) -> WorkspaceJoinCondition {
+    WorkspaceJoinCondition {
+        left: WorkspaceJoinColumn { relation: 0, column: keys[0].into() },
+        right_column: keys[1].into(),
+    }
+}
+
 impl DbManager {
-    /// The caller retains the bounded result for paging. Reading another page never reruns the sources.
+    /// Compatibility path for older clients with a two-source JOIN.
     pub async fn workspace_join(
         &self,
         driver: &str,
@@ -176,11 +298,45 @@ impl DbManager {
         keys: [&str; 2],
         cancel: &CancellationToken,
     ) -> IdeResult<QueryResult> {
-        let _run =
-            self.workspace_run.try_lock().map_err(|_| IdeError::invalid("A workspace query is already running"))?;
         if tables[0].source_id == tables[1].source_id {
             return Err(IdeError::invalid("Select two distinct workspace sources"));
         }
+        self.execute_workspace_join(driver, &tables, &[two_table_join(keys)], None, cancel).await
+    }
+
+    /// The caller retains the bounded result for paging. Reading another page never reruns the sources.
+    pub async fn workspace_join_chain(
+        &self,
+        driver: &str,
+        plan: WorkspaceJoinPlan,
+        cancel: &CancellationToken,
+    ) -> IdeResult<QueryResult> {
+        let tables: Vec<_> = plan
+            .tables
+            .into_iter()
+            .map(|table| WorkspaceInputRequest {
+                source_id: table.source_id,
+                database: table.database,
+                schema: table.schema,
+                table: table.table,
+                limits: WORKSPACE_INPUT_LIMITS,
+            })
+            .collect();
+        let tables: Vec<_> = tables.iter().collect();
+        self.execute_workspace_join(driver, &tables, &plan.joins, plan.projection.as_deref(), cancel).await
+    }
+
+    async fn execute_workspace_join(
+        &self,
+        driver: &str,
+        tables: &[&WorkspaceInputRequest],
+        joins: &[WorkspaceJoinCondition],
+        projection: Option<&[WorkspaceJoinProjection]>,
+        cancel: &CancellationToken,
+    ) -> IdeResult<QueryResult> {
+        validate_plan(tables.len(), joins, projection)?;
+        let _run =
+            self.workspace_run.try_lock().map_err(|_| IdeError::invalid("A workspace query is already running"))?;
         let start = Instant::now();
         let child = cancel.child_token();
         let run = async {
@@ -191,18 +347,23 @@ impl DbManager {
                 () = cancel.cancelled() => return Err(IdeError::cancelled()),
                 engine = self.workspace_engine(driver) => engine?,
             };
-            let stage_table = async |request: &WorkspaceInputRequest| {
-                let input = workspace_input::read_table(self, request, cancel).await?;
-                let cancellation = cancel.clone();
-                tokio::task::spawn_blocking(move || stage(input, &cancellation))
-                    .await
-                    .map_err(|e| IdeError::internal(e.to_string()))?
-            };
             let result = async {
+                let mut remaining_rows = 200_000;
+                let mut remaining_bytes = 32 * 1024 * 1024;
                 for table in tables {
-                    staged.push(stage_table(table).await?);
+                    let mut request = (*table).clone();
+                    request.limits.max_rows = request.limits.max_rows.min(remaining_rows);
+                    request.limits.max_bytes = request.limits.max_bytes.min(remaining_bytes);
+                    let input = workspace_input::read_table(self, &request, cancel).await?;
+                    remaining_rows -= input.rows.len();
+                    remaining_bytes -= input.bytes;
+                    let cancellation = cancel.clone();
+                    let table = tokio::task::spawn_blocking(move || stage(input, &cancellation))
+                        .await
+                        .map_err(|e| IdeError::internal(e.to_string()))??;
+                    staged.push(table);
                 }
-                join(&engine, staged.as_slice().try_into().expect("two inputs"), keys, cancel).await
+                join(&engine, &staged, joins, projection, cancel).await
             }
             .await;
             // Windows cannot remove a staged file while the JDBC process still has it open.
@@ -241,7 +402,27 @@ mod tests {
                 WorkspaceInputColumn { name: "text".into(), data_type: WorkspaceInputType::Text },
             ],
             rows: values.iter().map(|(k, v)| vec![Some(k.to_string()), v.map(str::to_owned)]).collect(),
+            bytes: 0,
         }
+    }
+
+    #[test]
+    fn workspace_join_chain_links_must_target_an_earlier_table() -> IdeResult<()> {
+        let first = two_table_join(["key", "key"]);
+        let second = two_table_join(["key", "id"]);
+        let links = [first, second];
+        validate_plan(3, &links, None)?;
+        let over_limit: Vec<_> = (0..8).map(|_| two_table_join(["key", "key"])).collect();
+        assert!(validate_plan(9, &over_limit, None).is_err());
+        validate_plan(8, &over_limit[..7], None)?;
+        assert!(validate_plan(4, &links, None).is_err());
+        assert!(validate_plan(3, &links, Some(&[])).is_err());
+        let invalid = WorkspaceJoinProjection { relation: 3, column: None };
+        assert!(validate_plan(3, &links, Some(&[invalid])).is_err());
+        let mut links = links;
+        links[0].left.relation = 1;
+        assert!(validate_plan(3, &links, None).is_err());
+        Ok(())
     }
 
     #[test]
@@ -289,7 +470,7 @@ mod tests {
         unsigned.columns[0].data_type = WorkspaceInputType::UInt64;
         let tables = [stage(signed, &cancel)?, stage(unsigned, &cancel)?];
         let engine = db.workspace_engine("duck").await?;
-        let output = join(&engine, &tables, ["key", "key"], &cancel).await?;
+        let output = join(&engine, &tables, &[two_table_join(["key", "key"])], None, &cancel).await?;
         let mut matches: Vec<_> = output.rows.iter().map(|row| (row[0].as_deref(), row[2].as_deref())).collect();
         matches.sort_unstable();
         assert_eq!(
@@ -304,7 +485,7 @@ mod tests {
         let left = stage(input(&[("0", None), ("1", Some(&wide)), ("2", Some("short"))]), &cancel)?;
         let right = stage(input(&[("1", Some(&wide))]), &cancel)?;
         let engine = db.workspace_engine("duck").await?;
-        let output = join(&engine, &[left, right], ["key", "key"], &cancel).await?;
+        let output = join(&engine, &[left, right], &[two_table_join(["key", "key"])], None, &cancel).await?;
         assert_eq!(output.rows.len(), 1);
         assert_eq!(output.rows[0][1].as_deref(), Some(wide.as_str()));
         assert_eq!(output.rows[0][3].as_deref(), Some(wide.as_str()));
@@ -319,7 +500,7 @@ mod tests {
             }
             let engine = db.workspace_engine("duck").await?;
             let right = stage(right, &cancel)?;
-            let output = join(&engine, &[left, right], ["key", "key"], &cancel).await?;
+            let output = join(&engine, &[left, right], &[two_table_join(["key", "key"])], None, &cancel).await?;
             assert_eq!(
                 output.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
                 ["key", "text", "key", "text"]

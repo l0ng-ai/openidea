@@ -7,6 +7,7 @@ use crate::Host;
 use ide_command::command;
 use ide_core::{IdeError, IdeResult, IpcPath, RequestId};
 use ide_db::split::SqlStatement;
+use ide_db::workspace::{WORKSPACE_INPUT_LIMITS, WorkspaceJoinPlan};
 use ide_db::{
     CompletionModel, DataSource, Databases, DbObjectKind, DbRowEdit, DbVisibilityChange, HistoryEntry, PlanNode,
     QueryResult, SchemaObjects, SortKey, TableDetails, TableGrant, TableInfo, TablePage,
@@ -28,13 +29,13 @@ pub struct WorkspaceJoinTable {
 
 impl WorkspaceJoinTable {
     fn input(self) -> (ide_db::workspace_input::WorkspaceInputRequest, String) {
-        use ide_db::workspace_input::{WorkspaceInputLimits, WorkspaceInputRequest};
+        use ide_db::workspace_input::WorkspaceInputRequest;
         let input = WorkspaceInputRequest {
             source_id: self.source_id,
             database: self.database,
             schema: self.schema,
             table: self.table,
-            limits: WorkspaceInputLimits { max_rows: 100_000, max_cell_bytes: 1_048_576, max_bytes: 16_777_216 },
+            limits: WORKSPACE_INPUT_LIMITS,
         };
         (input, self.key)
     }
@@ -58,6 +59,27 @@ pub async fn db_workspace_join(
         let (left, left_key) = left.input();
         let (right, right_key) = right.input();
         db.workspace_join(&driver, [&left, &right], [&left_key, &right_key], &cancel).await
+    }
+    .await;
+    host.end_request(request);
+    result
+}
+
+#[command(trust = trusted)]
+pub async fn db_workspace_join_chain(
+    host: &Host,
+    window: &str,
+    request: RequestId,
+    driver: String,
+    plan: WorkspaceJoinPlan,
+) -> IdeResult<QueryResult> {
+    let cancel = host.begin_project_request(window, request);
+    let result = async {
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        let db = host.project(window)?.db.clone();
+        db.workspace_join_chain(&driver, plan, &cancel).await
     }
     .await;
     host.end_request(request);
@@ -716,6 +738,7 @@ ide_command::domain!(
     db:
     db_apply_edits,
     db_workspace_join,
+    db_workspace_join_chain,
     db_completion,
     db_connect,
     db_connected,
@@ -848,6 +871,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore = "requires DUCKDB_JDBC_JAR and Java 17+"]
     async fn workspace_join_stops_when_its_project_closes() {
+        use ide_db::workspace::{WorkspaceJoinColumn, WorkspaceJoinCondition, WorkspaceJoinRelation};
         use std::time::Duration;
 
         let temp = tempfile::tempdir().unwrap();
@@ -881,15 +905,20 @@ mod tests {
             })
             .unwrap();
 
+        let relation = |id: &str| {
+            let WorkspaceJoinTable { source_id, database, schema, table, .. } = workspace_test_table(id);
+            WorkspaceJoinRelation { source_id, database, schema, table }
+        };
         for (request, close_project) in [(RequestId(2), false), (RequestId(3), true)] {
-            let join = db_workspace_join(
-                &host,
-                window,
-                request,
-                "duck".into(),
-                workspace_test_table("left"),
-                workspace_test_table("right"),
-            );
+            let plan = WorkspaceJoinPlan {
+                tables: vec![relation("left"), relation("right")],
+                joins: vec![WorkspaceJoinCondition {
+                    left: WorkspaceJoinColumn { relation: 0, column: "id".into() },
+                    right_column: "id".into(),
+                }],
+                projection: None,
+            };
+            let join = db_workspace_join_chain(&host, window, request, "duck".into(), plan);
             tokio::pin!(join);
             // Accept the source connection and leave it open without replying.
             let (socket, _) = tokio::select! {

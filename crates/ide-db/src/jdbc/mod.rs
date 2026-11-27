@@ -183,6 +183,52 @@ impl DbManager {
         JdbcPool::connect(&source, None, driver, self.jdbc_registry()?.with_file_name("jdbc")).await
     }
 
+    pub(crate) async fn workspace_duckdb_source(
+        &self,
+        source: &DataSource,
+        password: Option<&str>,
+    ) -> IdeResult<JdbcPool> {
+        let driver = self.approved_jdbc_driver(source, false)?;
+        if driver.vendor.as_deref() != Some("duckdb") || driver.class_name != "org.duckdb.DuckDBDriver" {
+            return Err(IdeError::invalid("Choose a saved DuckDB source with an installed DuckDB driver"));
+        }
+        let target = source.url.strip_prefix("jdbc:duckdb:").unwrap_or_default();
+        let mut parts = target.split(';');
+        let filename = parts.next().unwrap_or_default();
+        let cache = self.jdbc_registry()?.with_file_name("jdbc");
+        let path = cache.join("files").join(filename);
+        if filename.is_empty()
+            || filename.starts_with([':', ' '])
+            || filename.starts_with("memory:")
+            || filename.starts_with("md:")
+            || filename.contains("://")
+            || !tokio::fs::metadata(path).await.is_ok_and(|m| m.is_file())
+        {
+            return Err(IdeError::invalid("Choose an existing local DuckDB database file as the workspace source"));
+        }
+        let limits = [
+            ("enable_external_access", "false"),
+            ("allow_unsigned_extensions", "false"),
+            ("autoinstall_known_extensions", "false"),
+            ("autoload_known_extensions", "false"),
+            ("memory_limit", "96MiB"),
+            ("threads", "1"),
+            ("temp_directory", ""),
+            ("max_temp_directory_size", "0B"),
+        ];
+        let protected = |name: &str| limits.iter().any(|(key, _)| name.trim().eq_ignore_ascii_case(key));
+        if parts.any(|option| protected(option.split('=').next().unwrap_or_default())) {
+            return Err(IdeError::invalid("DuckDB Workspace source URL changes a workspace read limit"));
+        }
+        let mut target = source.clone();
+        target.read_only = true;
+        target.properties.retain(|property| !protected(&property.name));
+        target
+            .properties
+            .extend(limits.map(|(name, value)| crate::DbProperty { name: name.into(), value: value.into() }));
+        JdbcPool::connect(&target, password, driver, cache).await
+    }
+
     pub(crate) async fn open_pool(
         &self,
         source: &DataSource,
@@ -192,6 +238,14 @@ impl DbManager {
         if source.driver != crate::DbDriver::Jdbc {
             return crate::Pool::connect(source, password, Some(&self.root)).await;
         }
+        let driver = self.approved_jdbc_driver(source, testing)?;
+        JdbcPool::connect(source, password, driver, self.jdbc_registry()?.with_file_name("jdbc"))
+            .await
+            .map(Box::new)
+            .map(crate::Pool::Jdbc)
+    }
+
+    fn approved_jdbc_driver(&self, source: &DataSource, testing: bool) -> IdeResult<DbJdbcDriver> {
         if source.plugin_owner.is_some() {
             return Err(IdeError::invalid("Plugins cannot start custom JDBC drivers"));
         }
@@ -211,10 +265,7 @@ impl DbManager {
         if !source.vendor.is_empty() && driver.vendor.as_deref() != Some(source.vendor.as_str()) {
             return Err(IdeError::invalid("The JDBC driver profile is not associated with this data source type"));
         }
-        JdbcPool::connect(source, password, driver, self.jdbc_registry()?.with_file_name("jdbc"))
-            .await
-            .map(Box::new)
-            .map(crate::Pool::Jdbc)
+        Ok(driver)
     }
 }
 
