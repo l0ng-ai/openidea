@@ -31,7 +31,7 @@ pub use history::HistoryEntry;
 pub use plan::{PlanNode, PlanProperty};
 pub use source::{
     DataSource, DbColor, DbDriver, DbExternalTunnel, DbIntrospection, DbOptions, DbProperty, DbSchemaSelection,
-    DbSnowflake, DbSnowflakeAuth, DbSsh, DbSshAuth, DbSslMode, DbTxMode, DbVisibilityChange,
+    DbSnowflake, DbSnowflakeAuth, DbSourceFolder, DbSsh, DbSshAuth, DbSslMode, DbTxMode, DbVisibilityChange,
 };
 pub use sql::{CellValue, DbRowEdit, SortKey};
 
@@ -146,6 +146,10 @@ pub struct SchemaObject {
 pub struct TableInfo {
     pub name: String,
     pub kind: DbTableKind,
+    /// The table's or view's comment; `None` when it has none, or the engine keeps no comments.
+    #[serde(default)]
+    #[specta(optional)]
+    pub comment: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -572,6 +576,18 @@ impl DbManager {
                 None => {}
             }
             source::save(&self.root, &project)?;
+            if let Ok(mut folders) = source::load_folders(&self.root) {
+                let known: std::collections::HashSet<&str> = sources.iter().map(|source| source.id.as_str()).collect();
+                let mut changed = false;
+                for folder in &mut folders {
+                    let before = folder.sources.len();
+                    folder.sources.retain(|id| known.contains(id.as_str()));
+                    changed |= folder.sources.len() != before;
+                }
+                if changed {
+                    source::save_folders(&self.root, &folders)?;
+                }
+            }
             old
         };
         for o in old {
@@ -1107,7 +1123,11 @@ impl DbManager {
             .filter_map(|r| {
                 let mut it = r.into_iter();
                 let name = it.next().flatten()?;
-                Some(TableInfo { name, kind: DbTableKind::from_catalog(it.next().flatten().as_deref()) })
+                Some(TableInfo {
+                    name,
+                    kind: DbTableKind::from_catalog(it.next().flatten().as_deref()),
+                    comment: it.next().flatten().filter(|comment| !comment.is_empty()),
+                })
             })
             .collect())
     }

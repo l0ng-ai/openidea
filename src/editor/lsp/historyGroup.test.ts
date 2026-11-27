@@ -1,9 +1,15 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { EditorState } from "@codemirror/state";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { EditorState, Transaction } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { history, redo, undo, undoDepth } from "@codemirror/commands";
+import { history, redo, redoDepth, undo, undoDepth } from "@codemirror/commands";
+import { remoteChange, workspaceEditHistory } from "@/editor/api";
+import { WorkspaceHistory } from "@/editor/core/model/workspaceHistory";
+import { emitLocalIdeEvent } from "@/platform/ipc";
 import { beginHistoryGroup, endHistoryGroup, historyGroupExtension } from "./historyGroup";
-import { endInplaceRename, inplaceRenameExtension, startInplaceRename } from "./inplaceRename";
+import { endInplaceRename, inplaceRenameActive, inplaceRenameExtension, startInplaceRename } from "./inplaceRename";
+
+const commands = vi.hoisted(() => ({ undoWorkspaceEdit: vi.fn(), redoWorkspaceEdit: vi.fn() }));
+vi.mock("@/bindings", () => ({ commands }));
 
 const views: EditorView[] = [];
 afterEach(() => views.splice(0).forEach((v) => v.destroy()));
@@ -79,6 +85,141 @@ describe("history group", () => {
     endHistoryGroup(view, "refactor.introduce");
     expect(undoDepth(view.state)).toBe(0);
     view.dispatch({ changes: { from: 1, insert: "b" }, userEvent: "input.type" });
+    expect(undoDepth(view.state)).toBe(1);
+  });
+});
+
+describe("history group around a workspace refactoring", () => {
+  const BEFORE = "f(1 + 2);";
+  // The server's edit (the refactoring), then the in-place rename of `v` to `sum`.
+  const SERVER = "int v = 1 + 2;\nf(v);";
+  const RENAMED = "int sum = 1 + 2;\nf(sum);";
+  const cleanups: Array<() => void> = [];
+  afterEach(() => cleanups.splice(0).forEach((c) => c()));
+
+  function setup() {
+    const notify = vi.fn();
+    const workspace = new WorkspaceHistory(async () => {}, notify);
+    cleanups.push(workspace.start());
+    let view: EditorView | null = null;
+    const target = { path: "/p/A.java", state: () => view!.state, dispatch: (tr: Transaction) => view!.dispatch(tr) };
+    view = new EditorView({
+      state: EditorState.create({
+        doc: BEFORE,
+        extensions: [history(), historyGroupExtension, inplaceRenameExtension(), workspace.extension(target)],
+      }),
+    });
+    views.push(view);
+    cleanups.push(workspace.attach(target));
+    const remote = (text: string) =>
+      view!.dispatch({
+        changes: { from: 0, to: view!.state.doc.length, insert: text },
+        annotations: [remoteChange.of(true), Transaction.addToHistory.of(false)],
+      });
+    const seen: string[] = [];
+    commands.undoWorkspaceEdit.mockReset().mockImplementation(async () => {
+      seen.push(view!.state.doc.toString());
+      remote(BEFORE);
+      return { status: "ok", data: null };
+    });
+    commands.redoWorkspaceEdit.mockReset().mockImplementation(async () => {
+      seen.push(view!.state.doc.toString());
+      remote(SERVER);
+      return { status: "ok", data: null };
+    });
+    const refactor = () => {
+      beginHistoryGroup(view!);
+      remote(SERVER);
+      emitLocalIdeEvent({ type: "workspaceEditApplied", id: 9, paths: ["/p/A.java"], moves: [], byAgent: false });
+    };
+    // "int v = 1 + 2;\nf(v);": v at 4 and 17.
+    const rename = () =>
+      startInplaceRename(view!, {
+        primary: { from: 17, to: 18 },
+        others: [{ from: 4, to: 5 }],
+        hint: "",
+        commit: (name) =>
+          view!.dispatch({
+            changes: [
+              { from: 4, to: 5, insert: name },
+              { from: 17, to: 18, insert: name },
+            ],
+          }),
+        dialog: () => {},
+        onEnd: () => endHistoryGroup(view!, "refactor.introduce"),
+      });
+    return { view, notify, seen, refactor, rename };
+  }
+
+  it("undoes the refactoring with the rename that finished it in one step, and redoes both", async () => {
+    const { view, notify, seen, refactor, rename } = setup();
+    refactor();
+    rename();
+    view.dispatch({ changes: { from: 17, to: 18, insert: "sum" } });
+    endInplaceRename(view, "commit");
+    expect(view.state.doc.toString()).toBe(RENAMED);
+    expect(undoDepth(view.state)).toBe(1);
+
+    expect(undo(view)).toBe(true);
+    await vi.waitFor(() => expect(view.state.doc.toString()).toBe(BEFORE));
+    // The backend restores the files while they still hold the refactoring's own text.
+    expect(seen).toEqual([SERVER]);
+    expect(redoDepth(view.state)).toBe(1);
+
+    expect(redo(view)).toBe(true);
+    await vi.waitFor(() => expect(view.state.doc.toString()).toBe(RENAMED));
+    expect(undoDepth(view.state)).toBe(1);
+
+    await workspaceEditHistory(9);
+    expect(view.state.doc.toString()).toBe(BEFORE);
+    expect(seen).toEqual([SERVER, BEFORE, SERVER]);
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("undoes a quick fix with its reformatting in one step; a nested group leaves it to the outer one", async () => {
+    const { view, seen, refactor } = setup();
+    refactor();
+    expect(beginHistoryGroup(view)).toBe(false);
+    view.dispatch({ changes: { from: 0, insert: "  " }, userEvent: "format" });
+    endHistoryGroup(view, "quickfix");
+    expect(undoDepth(view.state)).toBe(1);
+    expect(undo(view)).toBe(true);
+    await vi.waitFor(() => expect(view.state.doc.toString()).toBe(BEFORE));
+    expect(seen).toEqual([SERVER]);
+  });
+
+  it("finishes an open in-place rename before the notification's Undo", async () => {
+    const { view, seen, refactor, rename } = setup();
+    refactor();
+    rename();
+    view.dispatch({ changes: { from: 17, to: 18, insert: "sum" } });
+    await workspaceEditHistory(9);
+    expect(inplaceRenameActive(view.state)).toBe(false);
+    expect(view.state.doc.toString()).toBe(BEFORE);
+    expect(seen).toEqual([SERVER]);
+  });
+
+  it("refuses the notification's Undo after newer typing, keeping the rename", async () => {
+    const { view, refactor, rename } = setup();
+    refactor();
+    rename();
+    view.dispatch({ changes: { from: 17, to: 18, insert: "sum" } });
+    endInplaceRename(view, "commit");
+    view.dispatch({ changes: { from: 0, insert: "// x\n" }, userEvent: "input.type" });
+    await expect(workspaceEditHistory(9)).rejects.toThrow("Undo newer editor changes");
+    expect(commands.undoWorkspaceEdit).not.toHaveBeenCalled();
+    expect(view.state.doc.toString()).toBe(`// x\n${RENAMED}`);
+  });
+
+  it("puts the rename back when the backend refuses the restore", async () => {
+    const { view, refactor, rename } = setup();
+    refactor();
+    rename();
+    view.dispatch({ changes: { from: 17, to: 18, insert: "sum" } });
+    endInplaceRename(view, "commit");
+    commands.undoWorkspaceEdit.mockResolvedValue({ status: "error", error: { kind: "outOfSync", message: "changed" } });
+    await expect(workspaceEditHistory(9)).rejects.toThrow();
+    expect(view.state.doc.toString()).toBe(RENAMED);
     expect(undoDepth(view.state)).toBe(1);
   });
 });

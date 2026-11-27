@@ -4254,6 +4254,13 @@
   "GitHub account: @{activeLogin}": "GitHub account: @{activeLogin}",
   "Uses GitHub CLI's active account without setting GH_TOKEN in the project environment.": "Uses GitHub CLI's active account without setting GH_TOKEN in the project environment.",
   "Passes this account's GH_TOKEN to processes started in this project (terminals, agents, Git, and run configurations).": "Passes this account's GH_TOKEN to processes started in this project (terminals, agents, Git, and run configurations).",
+  "Enable CSS Modules Kit": "Enable CSS Modules Kit",
+  "Add {OPTION} to {rel}? CSS Modules Kit is installed if needed.": "Add {OPTION} to {rel}? CSS Modules Kit is installed if needed.",
+  "Could not enable CSS Modules Kit": "Could not enable CSS Modules Kit",
+  "Add {OPTION} to {rel} yourself.": "Add {OPTION} to {rel} yourself.",
+  "CSS Modules navigation is off": "CSS Modules navigation is off",
+  "Go to Declaration, completion, Find Usages and Rename for CSS Module class names need {OPTION} in {rel}.": "Go to Declaration, completion, Find Usages and Rename for CSS Module class names need {OPTION} in {rel}.",
+  "Enable…": "Enable…",
   "Export to Text File…": "Export to Text File…",
   "Export to Text File": "Export to Text File",
   "Save the Find Usages results as a text file": "Save the Find Usages results as a text file",
@@ -4288,6 +4295,8 @@
   "unittest": "unittest",
   "1 file of the report is not in this project.": "1 file of the report is not in this project.",
   "{count} files of the report are not in this project.": "{count} files of the report are not in this project.",
+  "Waiting for process connection on {address}…": "Waiting for process connection on {address}…",
+  "Add to the program: {line}": "Add to the program: {line}",
   "1 file of the data has no source in this project. Map it with [paths] in the coverage.py configuration.": "1 file of the data has no source in this project. Map it with [paths] in the coverage.py configuration.",
   "{count} files of the data have no source in this project. Map them with [paths] in the coverage.py configuration.": "{count} files of the data have no source in this project. Map them with [paths] in the coverage.py configuration."
 }

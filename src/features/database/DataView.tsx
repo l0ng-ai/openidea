@@ -12,11 +12,12 @@ import { EXPORT_FORMATS, exportData, type ExportData, type ExportFormat } from "
 import { Grid, type CopyFormat, type GridColumn, type GridProps, type GridRange } from "./Grid";
 import type { Cell } from "./model";
 import {
+  AGGREGATE_ROWS,
+  aggregateText,
   aggregates,
   cellMatcher,
   distinctValues,
   findCells,
-  formatNumber,
   rowMatches,
   toggleFilterValue,
   visibleRows,
@@ -538,17 +539,6 @@ function FilterPopup(props: {
   );
 }
 
-const AGGREGATE_ROWS: ReadonlyArray<[label: string, key: keyof ReturnType<typeof aggregates>]> = [
-  ["Count", "count"],
-  ["Distinct", "distinct"],
-  ["Nulls", "nulls"],
-  ["Sum", "sum"],
-  ["Avg", "avg"],
-  ["Median", "median"],
-  ["Min", "min"],
-  ["Max", "max"],
-];
-
 function SidePanel(props: {
   panel: DataPanel;
   onPanelChange: (p: DataPanel | null) => void;
@@ -815,14 +805,13 @@ function AggregatesView({ range, value }: { range: GridRange; value: (row: numbe
   for (let r = range.top; r <= range.bottom; r++) rows.add(r);
   for (const r of rows) for (let c = range.left; c <= range.right; c++) cells.push(value(r, c));
   const a = aggregates(cells);
-  const show = (v: number | string | null) => (v === null ? "—" : typeof v === "number" ? formatNumber(v) : v);
   return (
     <table className={styles.aggregates}>
       <tbody>
         {AGGREGATE_ROWS.map(([label, key]) => (
           <tr key={key}>
             <th scope="row">{label}</th>
-            <td>{show(a[key])}</td>
+            <td>{aggregateText(a, key) ?? "—"}</td>
           </tr>
         ))}
       </tbody>

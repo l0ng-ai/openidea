@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { LaunchConfig, RunConfig } from "@/platform/ipc";
+import { registerAction } from "@/platform/actions";
 import { useProject } from "@/platform/project";
-import { handleDebugEvent, resetSessions, startSession, useDebug } from "../state";
+import { handleDebugEvent, resetSessions, startSession, stopSession, useDebug } from "../state";
 
 const ipc = vi.hoisted(() => {
   let next = 0;
@@ -114,5 +115,94 @@ describe("Attach to Node.js with Reconnect automatically", () => {
     ended(2);
     child(3, 1, "Remote Process [0]");
     expect(Object.keys(useDebug.getState().sessions).map(Number)).toEqual([1, 2, 3]);
+  });
+});
+
+describe("Python Debug Server", () => {
+  const rc = { name: "Server", kind: "python-debug-server", params: { port: "5678" } } as unknown as RunConfig;
+  const listen = { ...launch, name: "Server", adapter: "debugpy", request: "attach", extraJson: "{}" };
+  /** `debugStart` answers once a program connects; until then the backend only announces the session. */
+  function waitForProgram() {
+    let connect!: (id: number) => void;
+    ipc.debugStart.mockImplementationOnce(async () => {
+      const id = await new Promise<number>((resolve) => (connect = resolve));
+      return { status: "ok", data: id };
+    });
+    return (id: number) => connect(id);
+  }
+  const announce = (id: number) =>
+    handleDebugEvent(id, { kind: "started", name: "Server", adapter: "debugpy", parent: null });
+
+  beforeEach(() => ipc.debugStart.mockClear());
+
+  it("waits for the program, then listens again in the same tab when it ends, keeping the output", async () => {
+    const rerun = vi.fn(() => {
+      waitForProgram();
+      void startSession(listen, { runConfig: rc });
+    });
+    const dispose = registerAction({ id: "run.debugConfig", title: "Debug", run: rerun });
+    try {
+      const connect = waitForProgram();
+      const started = startSession(listen, { runConfig: rc });
+      await vi.waitFor(() => expect(ipc.debugStart).toHaveBeenCalled());
+      announce(1);
+      expect(useDebug.getState().sessions[1]).toMatchObject({ status: "starting", runConfig: rc });
+      expect(
+        useDebug
+          .getState()
+          .console[1]?.map((l) => l.text)
+          .join(""),
+      ).toMatch(/^Waiting for process connection on localhost:5678…\nAdd to the program: import debugpy;/);
+      connect(1);
+      expect(await started).toBe(1);
+      expect(useDebug.getState().sessions[1]?.status).toBe("running");
+      handleDebugEvent(1, { kind: "output", category: "stdout", output: "first\n" });
+
+      handleDebugEvent(1, { kind: "terminated" });
+      await vi.waitFor(() => expect(ipc.debugStart).toHaveBeenCalledTimes(2));
+      expect(rerun).toHaveBeenCalledOnce();
+      announce(2);
+      const { sessions, console } = useDebug.getState();
+      expect(Object.keys(sessions).map(Number)).toEqual([2]);
+      expect(sessions[2]).toMatchObject({ status: "starting", runConfig: rc });
+      const lines = console[2]?.map((l) => l.text) ?? [];
+      expect(lines).toContain("first\n");
+      // The previous output comes first, then what the new wait is for.
+      expect(lines.at(-1)).toContain('debugpy.connect(("localhost", 5678))');
+    } finally {
+      dispose();
+    }
+  });
+
+  it("does not listen again when a wait is cancelled", async () => {
+    const rerun = vi.fn();
+    const dispose = registerAction({ id: "run.debugConfig", title: "Debug", run: rerun });
+    try {
+      ipc.debugStart.mockImplementationOnce(
+        async () => ({ status: "error", error: { kind: "cancelled", message: "cancelled" } }) as never,
+      );
+      const started = startSession(listen, { runConfig: rc });
+      await vi.waitFor(() => expect(ipc.debugStart).toHaveBeenCalled());
+      announce(1);
+      expect(await started).toBeNull();
+      handleDebugEvent(1, { kind: "terminated" });
+      expect(rerun).not.toHaveBeenCalled();
+    } finally {
+      dispose();
+    }
+  });
+
+  it("stops listening when the user stops it", async () => {
+    const rerun = vi.fn();
+    const dispose = registerAction({ id: "run.debugConfig", title: "Debug", run: rerun });
+    try {
+      expect(await startSession(listen, { runConfig: rc })).toBe(1);
+      await stopSession(1);
+      handleDebugEvent(1, { kind: "terminated" });
+      expect(useDebug.getState().sessions[1]?.status).toBe("terminated");
+      expect(rerun).not.toHaveBeenCalled();
+    } finally {
+      dispose();
+    }
   });
 });

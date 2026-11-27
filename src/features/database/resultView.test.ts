@@ -7,7 +7,10 @@ import {
   parseDelimited,
   parseOrderBy,
   passesObjectFilter,
+  revertRows,
+  rowsHaveEdits,
   type Cell,
+  type PendingEdits,
 } from "./model";
 import { dropSql } from "./objects";
 import {
@@ -466,5 +469,33 @@ describe("result pages", () => {
   it("slices the rows of a page from a fetch of every row up to it", () => {
     expect(pageFetch(0, 500)).toEqual({ maxRows: 500, skip: 0 });
     expect(pageFetch(2, 100)).toEqual({ maxRows: 100, skip: 200 });
+  });
+});
+
+describe("Revert Selected", () => {
+  // Rows 0–2 are loaded; rows 3 and 4 are the two added ones.
+  const edits = (): PendingEdits => ({
+    updates: new Map([
+      [0, new Map([["name", "a"]])],
+      [2, new Map([["name", "c"]])],
+    ]),
+    deletes: new Set([1, 2]),
+    inserts: [new Map([["name", "new 1"]]), new Map([["name", "new 2"]])],
+  });
+
+  it("drops exactly the selected rows' edits, deletes and added rows", () => {
+    const left = revertRows(edits(), [2, 3], 3);
+    expect([...left.updates.keys()]).toEqual([0]);
+    expect([...left.deletes]).toEqual([1]);
+    expect(left.inserts.map((i) => i.get("name"))).toEqual(["new 2"]);
+  });
+
+  it("is enabled only for rows with a pending change", () => {
+    expect(rowsHaveEdits(edits(), [0], 3)).toBe(true);
+    expect(rowsHaveEdits(edits(), [1], 3)).toBe(true);
+    expect(rowsHaveEdits(edits(), [4], 3)).toBe(true);
+    const none: PendingEdits = { updates: new Map([[0, new Map()]]), deletes: new Set(), inserts: [] };
+    expect(rowsHaveEdits(none, [0, 1], 3)).toBe(false);
+    expect(rowsHaveEdits(none, [3], 3)).toBe(false);
   });
 });
