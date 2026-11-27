@@ -30,7 +30,7 @@ jobs:
     name: Changes
     # Self-hosted runners (scripts/selfhost-runner) only for trusted events, and only while the
     # SELFHOSTED_RUNNERS repository variable is 'true': runs-on cannot fall back when none is online.
-    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || 'ubuntu-latest' }}
+    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted-light"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions:
       pull-requests: read
@@ -111,9 +111,10 @@ jobs:
       fail-fast: false
       matrix:
         os: [macos-latest, ubuntu-latest, windows-latest]
-    # Self-hosted runners (scripts/selfhost-runner) only for trusted events, and only while the
-    # SELFHOSTED_RUNNERS repository variable is 'true': runs-on cannot fall back when none is online.
-    runs-on: ${{ matrix.os == 'ubuntu-latest' && vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || matrix.os }}
+    # Self-hosted runners (scripts/selfhost-runner for Linux, a Mac with the macOS/ARM64 labels) only
+    # for trusted events, and only while the SELFHOSTED_RUNNERS repository variable is 'true':
+    # runs-on cannot fall back when none is online. Windows always runs GitHub-hosted.
+    runs-on: ${{ matrix.os != 'windows-latest' && vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && (matrix.os == 'macos-latest' && fromJSON('["self-hosted", "macOS", "ARM64"]') || fromJSON('["self-hosted", "openidea-selfhosted"]')) || matrix.os }}
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v5
@@ -137,6 +138,12 @@ jobs:
         shell: bash
         run: |
           echo "CARGO_INCREMENTAL=1" >> "$GITHUB_ENV"
+          # The Linux runner containers set CARGO_TARGET_DIR; elsewhere keep it next to the checkout,
+          # which actions/checkout cleans on every run.
+          if [ -z "${CARGO_TARGET_DIR:-}" ]; then
+            CARGO_TARGET_DIR="$(dirname "$RUNNER_WORKSPACE")/cargo-target"
+            echo "CARGO_TARGET_DIR=$CARGO_TARGET_DIR" >> "$GITHUB_ENV"
+          fi
           size=$(du -sm "$CARGO_TARGET_DIR" 2>/dev/null | cut -f1 || true)
           if [ "${size:-0}" -gt 40000 ]; then
             echo "$CARGO_TARGET_DIR is ${size} MB; clearing it"
@@ -216,7 +223,7 @@ jobs:
     name: Rust checks
     needs: [changes, rust]
     if: always()
-    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || 'ubuntu-latest' }}
+    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted-light"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - env:
@@ -327,7 +334,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.deny == 'true'
     timeout-minutes: 15
-    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || 'ubuntu-latest' }}
+    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted-light"]') || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -339,7 +346,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.frontend == 'true'
     timeout-minutes: 30
-    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || 'ubuntu-latest' }}
+    # Chromium and vitest need more CPU than the light runners have; GitHub-hosted runners are faster here.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       # scripts/smoke-paths.test.ts runs `cargo metadata`, which is not preinstalled in the runner container.
@@ -366,7 +374,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.catalog == 'true'
     timeout-minutes: 15
-    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || 'ubuntu-latest' }}
+    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted-light"]') || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v5
@@ -384,7 +392,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.e2e == 'true'
     timeout-minutes: 45
-    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || 'ubuntu-latest' }}
+    # Chromium and vitest need more CPU than the light runners have; GitHub-hosted runners are faster here.
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
