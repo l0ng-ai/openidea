@@ -4993,7 +4993,7 @@
   "Add New Interpreter…": "새 인터프리터 추가…",
   "Interpreter Settings…": "인터프리터 설정…",
   "Connection settings for SQL Server.": "SQL Server 연결 설정입니다.",
-  "ClickHouse settings sent with each HTTP request. connect_timeout is in seconds.": "각 HTTP 요청과 함께 전송되는 ClickHouse 설정입니다. connect_timeout의 단위는 초입니다.",
+  "Query settings are sent with each request. connect_timeout and http_read_timeout are in seconds. The default wait for response data is 600 seconds.": "쿼리 설정은 요청할 때마다 전송됩니다. connect_timeout과 http_read_timeout의 단위는 초입니다. 응답 데이터의 기본 대기 시간은 600초입니다.",
   "Add to .gitignore": ".gitignore에 추가",
   "Add to .git/info/exclude": ".git/info/exclude에 추가",
   "Delete Agent Tasks": "에이전트 작업 삭제",

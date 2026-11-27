@@ -5975,7 +5975,7 @@
   "Add New Interpreter…": "新增的直譯器…",
   "Interpreter Settings…": "直譯器設定…",
   "Connection settings for SQL Server.": "SQL Server 的連線設定。",
-  "ClickHouse settings sent with each HTTP request. connect_timeout is in seconds.": "每個 HTTP 請求附帶的 ClickHouse 設定。connect_timeout 的單位為秒。",
+  "Query settings are sent with each request. connect_timeout and http_read_timeout are in seconds. The default wait for response data is 600 seconds.": "每次請求都會傳送查詢設定。connect_timeout 和 http_read_timeout 的單位為秒。等候回應資料的預設時限為 600 秒。",
   "Microsoft SQL Server": "微軟 SQL Server",
   "Add to .gitignore": "新增到 .gitignore",
   "Add to .git/info/exclude": "新增到 .git/info/exclude",
