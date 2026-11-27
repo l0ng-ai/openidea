@@ -28,6 +28,7 @@ import { goBuildType, goTestType } from "./goTypes";
 
 import { dotnetProjectType, dotnetTestType } from "./dotnetTypes";
 import { rakeType, rspecType, rubyScriptType } from "./rubyTypes";
+import { celeryType } from "./celeryTypes";
 import { djangoTestType } from "./djangoTypes";
 import { doctestType, pythonType, unittestType } from "./pythonTypes";
 import { phpunitType } from "./phpunitTypes";
@@ -626,6 +627,7 @@ export const BUILTIN_TYPES: readonly RunConfigTypeContribution[] = [
   rakeType,
   rspecType,
   djangoTestType,
+  celeryType,
   phpunitType,
   dotnetProjectType,
   dotnetTestType,

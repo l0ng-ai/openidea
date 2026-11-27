@@ -4438,5 +4438,21 @@
   "Keep Index": "Keep Index",
   "SQLite cannot drop the index of a primary key or unique constraint.": "SQLite cannot drop the index of a primary key or unique constraint.",
   "Cannot list the manage.py commands": "Cannot list the manage.py commands",
-  "Install django-types into this project's virtual environment to complete Django model fields and managers": "Install django-types into this project's virtual environment to complete Django model fields and managers"
+  "Install django-types into this project's virtual environment to complete Django model fields and managers": "Install django-types into this project's virtual environment to complete Django model fields and managers",
+  "Celery": "Celery",
+  "Run a Celery worker or send a task to it": "Run a Celery worker or send a task to it",
+  "Worker": "Worker",
+  "Enqueue task": "Enqueue task",
+  "Celery app": "Celery app",
+  "proj": "proj",
+  "Module of the Celery app (proj, proj.celery:app), passed as -A; to send a task, empty uses the task's module": "Module of the Celery app (proj, proj.celery:app), passed as -A; to send a task, empty uses the task's module",
+  "Run Beat scheduler": "Run Beat scheduler",
+  "proj.tasks": "proj.tasks",
+  "add": "add",
+  "Function name in the module, or the task's full registered name": "Function name in the module, or the task's full registered name",
+  "Task args": "Task args",
+  "Task kwargs": "Task kwargs",
+  "e.g. --loglevel INFO": "e.g. --loglevel INFO",
+  "Enter a JSON list of arguments": "Enter a JSON list of arguments",
+  "Enter a JSON object of keyword arguments": "Enter a JSON object of keyword arguments"
 }

@@ -565,6 +565,7 @@ fn run_configs_use_selected_interpreter_and_package_manager() {
         run("django-test", ".venv/bin/python", &["manage.py", "test", "polls"]),
         run("python", "uv", &["run", "--with", "rich", "--no-sync", "main.py"]),
         run("unittest", "uv", &["run", "python", "-m", "unittest", "tests"]),
+        run("celery", "python3", &["-m", "celery", "-A", "proj", "worker"]),
     ];
     apply_to_run_configs(&mut configs, tmp.path(), &s);
     assert_eq!(configs[0].command, python);
@@ -584,6 +585,8 @@ fn run_configs_use_selected_interpreter_and_package_manager() {
     assert_eq!(configs[7].args, ["run", "--with", "rich", "--no-sync", "main.py"]);
     assert_eq!(configs[8].command, python);
     assert_eq!(configs[8].args, ["-m", "unittest", "tests"]);
+    assert_eq!(configs[9].command, python);
+    assert_eq!(configs[9].args, ["-m", "celery", "-A", "proj", "worker"]);
 }
 
 #[test]

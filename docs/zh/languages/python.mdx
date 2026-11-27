@@ -177,6 +177,10 @@ Django 项目（上层目录有 `manage.py`）中 `templates` 目录里的 HTML 
 
 其他位置含有 Django 标签的 HTML 文件会显示一个横幅，可以切换为 Django Template 或保留为 HTML；两种选择都会成为该文件的 **覆盖文件类型**。
 
+### Celery
+
+**Celery** 配置类型（**运行 › 编辑配置…**）用来运行 worker：`python -m celery -A <应用> worker`，勾选 **运行 Beat 调度器** 时同时运行 Celery Beat（`-B`）。切到 **发送任务到队列** 模式时，它用 `celery call` 向 broker 发送一个任务：填写任务所在的模块和任务名，位置参数写成 JSON 列表，关键字参数写成 JSON 对象。**参数** 加在命令末尾（`--loglevel INFO`、`-P solo`）。两种模式都用项目解释器运行，也都可以调试；开启 **调试时自动附加到子进程** 后，任务里的断点会在 worker 的子进程中命中。
+
 ## 限制
 
 - 同一时间只运行一个类型检查器。Ruff 只在有 Ruff 配置的项目中运行。

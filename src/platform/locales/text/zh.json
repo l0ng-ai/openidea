@@ -10971,5 +10971,21 @@
   "SQLite cannot drop the index of a primary key or unique constraint.": "SQLite 无法删除主键或唯一约束的索引。",
   "Cannot list the manage.py commands": "无法列出 manage.py 命令",
   "Install django-types into this project's virtual environment to complete Django model fields and managers": "将 django-types 安装到此项目的虚拟环境，以补全 Django 模型字段和管理器",
-  "No local changes in {path}": "{path} 中没有本地更改"
+  "No local changes in {path}": "{path} 中没有本地更改",
+  "Celery": "Celery",
+  "Run a Celery worker or send a task to it": "运行 Celery worker，或向它发送任务",
+  "Worker": "Worker",
+  "Enqueue task": "发送任务到队列",
+  "Celery app": "Celery 应用",
+  "proj": "proj",
+  "Module of the Celery app (proj, proj.celery:app), passed as -A; to send a task, empty uses the task's module": "Celery 应用所在的模块（proj、proj.celery:app），作为 -A 传入；发送任务时留空则使用任务所在的模块",
+  "Run Beat scheduler": "运行 Beat 调度器",
+  "proj.tasks": "proj.tasks",
+  "add": "add",
+  "Function name in the module, or the task's full registered name": "模块中的函数名，或任务注册的完整名称",
+  "Task args": "任务 args",
+  "Task kwargs": "任务 kwargs",
+  "e.g. --loglevel INFO": "例如 --loglevel INFO",
+  "Enter a JSON list of arguments": "请输入参数的 JSON 列表",
+  "Enter a JSON object of keyword arguments": "请输入关键字参数的 JSON 对象"
 }
