@@ -5426,6 +5426,8 @@
   "Import…": "İçe Aktar…",
   "Reload All from Disk": "Tümünü Diskten Yeniden Yükle",
   "Reset Font Size in All Editors": "Tüm Düzenleyicilerin Yazı Tipi Boyutunu Sıfırla",
+  "Increase Font Size in All Editors": "Tüm Düzenleyicilerde Yazı Tipi Boyutunu Artır",
+  "Decrease Font Size in All Editors": "Tüm Düzenleyicilerde Yazı Tipi Boyutunu Azalt",
   "Library source (read-only).": "Kütüphane kaynağı (salt okunur).",
   "Search In Selection": "Seçimde Ara",
   "Search Scope": "Arama Kapsamı",

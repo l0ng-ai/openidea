@@ -401,6 +401,8 @@ export const intellijWindows: Record<string, string[]> = {
   "view.resetZoom": ["Alt+Shift+0"],
   "editor.increaseFontSize": ["Alt+Shift+."],
   "editor.decreaseFontSize": ["Alt+Shift+,"],
+  "editor.increaseFontSizeAll": [],
+  "editor.decreaseFontSizeAll": [],
   // Diff viewer (after Debug: F7 / ⇧F7 / F4 there win while a diff is focused)
   "diff.nextDifference": ["F7"],
   "diff.prevDifference": ["Shift+F7"],

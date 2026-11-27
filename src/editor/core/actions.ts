@@ -117,6 +117,7 @@ import {
   resetAllEditorsFontZoom,
   resetConfiguredEditorsFontZoom,
   stepConfiguredEditorsFontZoom,
+  stepEveryEditorFontZoom,
 } from "./cm/prefs";
 import { useProject } from "@/platform/project";
 import { call, commands } from "@/platform/ipc";
@@ -1331,6 +1332,22 @@ export function registerEditorActions(): () => void {
       keywords: ["zoom", "font size", "mouse wheel"],
       when: "projectOpen",
       run: resetAllFontSize,
+    },
+    {
+      id: "editor.increaseFontSizeAll",
+      title: "Increase Font Size in All Editors",
+      category: "View",
+      keywords: ["zoom", "font size"],
+      when: "projectOpen",
+      run: () => stepEveryEditorFontZoom(focusedCellEditor() ?? activeSlot()?.view ?? null, 1),
+    },
+    {
+      id: "editor.decreaseFontSizeAll",
+      title: "Decrease Font Size in All Editors",
+      category: "View",
+      keywords: ["zoom", "font size"],
+      when: "projectOpen",
+      run: () => stepEveryEditorFontZoom(focusedCellEditor() ?? activeSlot()?.view ?? null, -1),
     },
     {
       id: "editor.increaseFontSize",

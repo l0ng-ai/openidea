@@ -15,6 +15,8 @@ describe("IDEA keymap parity", () => {
     ["view.resetZoom", ["Ctrl+Alt+0"], ["Alt+Shift+0"]],
     ["editor.increaseFontSize", ["Alt+Shift+."], ["Alt+Shift+."]],
     ["editor.decreaseFontSize", ["Alt+Shift+,"], ["Alt+Shift+,"]],
+    ["editor.increaseFontSizeAll", [], []],
+    ["editor.decreaseFontSizeAll", [], []],
     ["vcs.changelist.move", ["Meta+Shift+M"], ["Alt+Shift+M"]],
     ["vcs.changelist.edit", ["F2", "Shift+F6"], ["F2", "Shift+F6"]],
     ["code.quickDocumentation", ["F1", "Ctrl+J"], ["Ctrl+Q"]],

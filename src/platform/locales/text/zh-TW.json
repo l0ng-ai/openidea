@@ -3640,6 +3640,8 @@
   "Import…": "匯入…",
   "Reload All from Disk": "從磁碟全部重新載入",
   "Reset Font Size in All Editors": "重設所有編輯器中的字型大小",
+  "Increase Font Size in All Editors": "增大所有編輯器中的字型",
+  "Decrease Font Size in All Editors": "減小所有編輯器中的字型",
   "Library source (read-only).": "庫原始碼（唯讀）。",
   "Search In Selection": "在所選內容中搜尋",
   "Search Scope": "搜尋範圍",

@@ -92,6 +92,15 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(k.unknownActions).toEqual([]);
   });
 
+  it("maps Increase / Decrease Font Size in All Editors", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="F" parent="Mac OS X 10.5+"><action id="EditorIncreaseFontSizeGlobal"><keyboard-shortcut first-keystroke="shift meta EQUALS"/></action><action id="EditorDecreaseFontSizeGlobal"><keyboard-shortcut first-keystroke="shift meta MINUS"/></action></keymap>`,
+    );
+    expect(k.overrides["editor.increaseFontSizeAll"]).toEqual([normalizeBinding("Meta+Shift+=")]);
+    expect(k.overrides["editor.decreaseFontSizeAll"]).toEqual([normalizeBinding("Meta+Shift+-")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
   it("maps Scroll Up / Scroll Down and Move if Necessary", () => {
     const k = parseIdeaKeymap(
       `<keymap name="E" parent="$default"><action id="EditorScrollUpAndMove"><keyboard-shortcut first-keystroke="alt UP"/></action><action id="EditorScrollDownAndMove"><keyboard-shortcut first-keystroke="alt DOWN"/></action></keymap>`,

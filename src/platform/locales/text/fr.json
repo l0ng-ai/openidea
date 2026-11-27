@@ -2642,6 +2642,8 @@
   "Import…": "Importer…",
   "Reload All from Disk": "Tout recharger depuis le disque",
   "Reset Font Size in All Editors": "Réinitialiser la taille de police dans tous les éditeurs",
+  "Increase Font Size in All Editors": "Augmenter la taille de police dans tous les éditeurs",
+  "Decrease Font Size in All Editors": "Réduire la taille de police dans tous les éditeurs",
   "Library source (read-only).": "Source de bibliothèque (lecture seule).",
   "Search In Selection": "Rechercher dans la sélection",
   "Search Scope": "Portée de la recherche",
