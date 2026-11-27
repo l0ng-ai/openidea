@@ -1645,12 +1645,23 @@ pub fn configure_css_modules(cfg: &mut LanguageServerConfig, server_root: &Path,
     let Some(location) = location.filter(|_| crate::css_modules::enabled(server_root)) else {
         return false;
     };
-    push_global_plugin(cfg, crate::css_modules::tsserver_plugin(location));
+    // Both are Volar plugins sharing the tools' one `@volar/typescript`, which decorates a
+    // tsserver project once: only the first of them to load works. Outside a Vue project
+    // CSS Modules Kit goes first; a Vue project keeps Vue's (`<style module>` is Vue's own).
+    // ponytail: a monorepo whose root isn't the Vue package gives CSS Modules Kit the project.
+    let before = (!vue::vue_project(server_root)).then_some(vue::PLUGIN);
+    insert_global_plugin(cfg, crate::css_modules::tsserver_plugin(location), before);
     true
 }
 
 /// Adds `plugin` to vtsls' `globalPlugins`, replacing an entry of the same name.
 fn push_global_plugin(cfg: &mut LanguageServerConfig, plugin: Value) {
+    insert_global_plugin(cfg, plugin, None);
+}
+
+/// Adds `plugin` to vtsls' `globalPlugins` (replacing an entry of the same name), in front of
+/// the plugin named `before` when that one is there, else last.
+fn insert_global_plugin(cfg: &mut LanguageServerConfig, plugin: Value, before: Option<&str>) {
     let mut current =
         cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).unwrap_or_else(|| json!({}));
     let mut node = &mut current;
@@ -1664,7 +1675,10 @@ fn push_global_plugin(cfg: &mut LanguageServerConfig, plugin: Value) {
     }
     let plugins = plugins.as_array_mut().expect("made an array above");
     plugins.retain(|p| p.get("name") != plugin.get("name"));
-    plugins.push(plugin);
+    let at = before
+        .and_then(|name| plugins.iter().position(|p| p.get("name").and_then(Value::as_str) == Some(name)))
+        .unwrap_or(plugins.len());
+    plugins.insert(at, plugin);
     match toml::Value::try_from(current) {
         Ok(v) => cfg.initialization_options = Some(v),
         Err(e) => tracing::warn!("{}: cannot apply settings to initialization options: {e}", cfg.name),

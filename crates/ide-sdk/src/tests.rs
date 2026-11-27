@@ -3720,6 +3720,36 @@ fn vtsls_gets_css_modules_kit_where_a_tsconfig_enables_it() {
 }
 
 #[test]
+fn css_modules_kit_loads_before_the_vue_plugin_outside_a_vue_project() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (root, tools) = (tmp.path().join("app"), tmp.path().join("tools"));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("tsconfig.json"), r#"{ "cmkOptions": { "enabled": true } }"#).unwrap();
+    let names = |root: &Path| {
+        let mut cfg = server("vtsls");
+        cfg.tsserver_project = true;
+        let vue = serde_json::json!({ "vtsls": { "tsserver": { "globalPlugins": [
+            { "name": "@vue/typescript-plugin" }, { "name": "openidea-vue-module-resolution" },
+        ] } } });
+        cfg.initialization_options = Some(toml::Value::try_from(vue).unwrap());
+        assert!(crate::apply::configure_css_modules(&mut cfg, root, Some(&tools)));
+        let init = serde_json::to_value(cfg.initialization_options.as_ref().unwrap()).unwrap();
+        let plugins = init.pointer("/vtsls/tsserver/globalPlugins").unwrap().as_array().unwrap().clone();
+        plugins.iter().map(|p| p["name"].as_str().unwrap().to_string()).collect::<Vec<_>>()
+    };
+    // Volar decorates a project once: the first Volar plugin to load is the one that works.
+    assert_eq!(
+        names(&root),
+        ["@css-modules-kit/ts-plugin", "@vue/typescript-plugin", "openidea-vue-module-resolution"]
+    );
+    std::fs::write(root.join("package.json"), r#"{ "dependencies": { "vue": "^3.5.0" } }"#).unwrap();
+    assert_eq!(
+        names(&root),
+        ["@vue/typescript-plugin", "openidea-vue-module-resolution", "@css-modules-kit/ts-plugin"]
+    );
+}
+
+#[test]
 fn css_files_reach_vtsls_only_once_css_modules_kit_is_installed() {
     let reg = ide_language::LanguageRegistry::load(None).unwrap();
     let css = reg.get(&ide_core::LanguageId::new("css")).unwrap().language_servers;
