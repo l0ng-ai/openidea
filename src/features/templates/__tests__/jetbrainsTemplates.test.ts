@@ -91,12 +91,59 @@ describe("JetBrains live-template XML", () => {
     expect(parsed.templates.map((t) => t.contexts)).toEqual(cases.map(([, ids]) => ids));
   });
 
-  it("reports unknown, ambiguous, absent and disabled contexts instead of making them global", () => {
+  it("maps the context ids IDEA writes to their languages", () => {
+    const cases: [string, string[]][] = [
+      ["JAVA_CODE", ["java"]],
+      ["JAVA_STATEMENT", ["java"]],
+      ["Python_Class", ["python"]],
+      ["JAVA_SCRIPT", ["javascript", "javascriptreact"]],
+      ["JS_STATEMENT", ["javascript", "javascriptreact"]],
+      ["TS_EXPRESSION", ["typescript", "typescriptreact"]],
+      ["SHELL_SCRIPT", ["shellscript"]],
+      ["JSON_PROPERTY_KEYS", ["json", "jsonc"]],
+      ["OC_STATEMENT", ["c", "cpp"]],
+      ["OTHER", ["any"]],
+    ];
+    const xml =
+      '<templateSet name="Ids">' +
+      cases.map(([name], i) => template(`t${i}`, "$END$", context(name))).join("") +
+      "</templateSet>";
+    const parsed = parseJetBrainsTemplates({ "templates/Ids.xml": xml }, languages);
+    expect(parsed.skipped).toEqual([]);
+    expect(parsed.templates.map((t) => t.contexts)).toEqual(cases.map(([, ids]) => ids));
+  });
+
+  it("reads the group IDEA writes on templateSet", () => {
+    const parsed = parseJetBrainsTemplates(
+      {
+        "templates/My_Java.xml":
+          '<templateSet group="My Java">' + template("logd", "$END$", context("JAVA_STATEMENT")) + "</templateSet>",
+      },
+      languages,
+    );
+    expect(parsed.templates[0]).toMatchObject({ id: "jetbrains.My_Java.logd", group: "My Java" });
+  });
+
+  it("expands comment and string templates outside code and keeps deactivated ones disabled", () => {
+    const xml =
+      '<templateSet name="Java">' +
+      template("todo", "// TODO $END$", context("JAVA_COMMENT")) +
+      template("code", "$END$", context("JAVA_CODE")) +
+      template("off", "$END$", context("JAVA_CODE")).replace("<template ", '<template deactivated="true" ') +
+      "</templateSet>";
+    const [todo, code, off] = parseJetBrainsTemplates({ "templates/Java.xml": xml }, languages).templates;
+    expect(todo).toMatchObject({ contexts: ["java"], scope: "any" });
+    expect(code!.scope).toBeUndefined();
+    expect(code!.enabled).toBeUndefined();
+    expect(off).toMatchObject({ abbrev: "off", enabled: false });
+  });
+
+  it("reports unknown, absent and disabled contexts instead of making them global", () => {
     const xml =
       '<templateSet name="Mixed">' +
       template("unknown", "$END$", context("Brainfuck")) +
       template("mixed", "$END$", context("Python") + context("Brainfuck")) +
-      template("ambiguous", "$END$", context("Properties files")) +
+      template("maven", "$END$", context("MAVEN")) +
       '<template name="absent" value="$END$" />' +
       template("disabled", "$END$", context("Python", "false")) +
       "</templateSet>";
@@ -106,7 +153,7 @@ describe("JetBrains live-template XML", () => {
     expect(parsed.templates[0]!.contexts).not.toContain("any");
     expect(parsed.skipped).toHaveLength(5);
     expect(parsed.skipped.join("\n")).toContain("Brainfuck");
-    expect(parsed.skipped.join("\n")).toContain("Properties files");
+    expect(parsed.skipped.join("\n")).toContain("MAVEN");
     expect(parsed.skipped.join("\n")).toContain("absent");
     expect(parsed.skipped.join("\n")).toContain("disabled");
   });

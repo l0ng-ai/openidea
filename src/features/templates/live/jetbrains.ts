@@ -30,14 +30,38 @@ const CONTEXT_ALIASES: Record<string, readonly string[]> = {
   jsx: ["javascriptreact"],
   tsx: ["typescriptreact"],
   text: ["plaintext"],
+  // Context ids IDEA writes into `templates/*.xml` (`JS_STATEMENT`, `TS_EXPRESSION`, CLion's `OC_…`).
+  js: ["javascript", "javascriptreact"],
+  ts: ["typescript", "typescriptreact"],
+  oc: ["c", "cpp"],
 };
+
+/** IDEA's Everywhere context (`EverywhereContextType`). */
+const EVERYWHERE = "OTHER";
+/** Contexts inside comments and strings, where a `code`-scoped template would never expand. */
+const NON_CODE_CONTEXT = /(^|[_\s])(COMMENT|STRING)([_\s]|$)/i;
 
 interface ContextIndex {
   byId: Map<string, TemplateLanguage>;
   languages: TemplateLanguage[];
 }
 
+/**
+ * IDEA stores context ids such as `JAVA_STATEMENT`, `KOTLIN_TOPLEVEL`, `Python_Class` or
+ * `PHP Statement`: the full id is tried first (`JAVA_SCRIPT`, `SHELL_SCRIPT`), then shorter
+ * prefixes down to the language (`JAVA`, `KOTLIN`, `Python`, `PHP`).
+ */
 function contextLanguages(context: string, index: ContextIndex): string[] {
+  if (context === EVERYWHERE) return ["any"];
+  const parts = context.split(/[_\s]+/).filter(Boolean);
+  for (let n = parts.length; n > 0; n--) {
+    const ids = namedLanguages(parts.slice(0, n).join("_"), index);
+    if (ids.length) return ids;
+  }
+  return [];
+}
+
+function namedLanguages(context: string, index: ContextIndex): string[] {
   const key = normalize(context);
   if (!key) return [];
   const ids = new Set<string>();
@@ -92,7 +116,8 @@ export function parseJetBrainsTemplates(
       out.invalid.push(file);
       continue;
     }
-    const group = root.getAttribute("name")?.trim() || stem;
+    // IDEA writes the group as `group`; `name` is accepted for hand-written sets.
+    const group = (root.getAttribute("group") ?? root.getAttribute("name"))?.trim() || stem;
     for (const element of Array.from(root.children)) {
       if (element.tagName !== "template") continue;
       const name = element.getAttribute("name")?.trim();
@@ -113,12 +138,14 @@ export function parseJetBrainsTemplates(
 
       const contexts: string[] = [];
       const unmapped: string[] = [];
+      let nonCode = false;
       const context = Array.from(element.children).find((child) => child.tagName === "context");
       for (const option of Array.from(context?.children ?? [])) {
         if (option.tagName !== "option" || option.getAttribute("value")?.toLowerCase() !== "true") continue;
         const declared = option.getAttribute("name")?.trim();
         const mapped = declared ? contextLanguages(declared, index) : [];
         if (mapped.length) {
+          if (NON_CODE_CONTEXT.test(declared!)) nonCode = true;
           for (const id of mapped) if (!contexts.includes(id)) contexts.push(id);
         } else {
           addUnique(unmapped, declared || "(unnamed)");
@@ -141,6 +168,8 @@ export function parseJetBrainsTemplates(
         contexts,
       };
       if (variables.length) template.variables = variables;
+      if (nonCode) template.scope = "any";
+      if (element.getAttribute("deactivated") === "true") template.enabled = false;
       byId.set(template.id, template);
     }
   }
