@@ -874,6 +874,30 @@ impl DebugManager {
             .collect()
     }
 
+    /// Whether `s` is live and currently suspended (a breakpoint, step or manual pause).
+    /// `None` when the session has ended.
+    pub fn session_suspended(&self, s: DebugSessionId) -> Option<bool> {
+        self.sessions.lock().get(&s).map(|session| session.suspended.get())
+    }
+
+    /// The thread of `s`'s most recent stop, when the adapter named one.
+    pub fn stopped_thread(&self, s: DebugSessionId) -> Option<i64> {
+        self.sessions.lock().get(&s).and_then(|session| session.suspended.stopped_thread())
+    }
+
+    /// All stored breakpoints of `owner`, for tools that list or edit them. Line breakpoints
+    /// are keyed by file; function and data breakpoints have no file.
+    pub fn breakpoints(
+        &self,
+        owner: &str,
+    ) -> (BTreeMap<PathBuf, Vec<Breakpoint>>, Vec<FunctionBreakpoint>, Vec<DataBreakpoint>) {
+        let store = self.breakpoints.lock();
+        match store.get(owner) {
+            Some(owner) => (owner.lines.clone(), owner.functions.clone(), owner.data.clone()),
+            None => Default::default(),
+        }
+    }
+
     /// Starts a session: spawns the adapter, `initialize`, `launch`/`attach`,
     /// waits for `initialized`, sends breakpoints, then `configurationDone`.
     /// Events of the session (including cargo build output) go to `owner` only.

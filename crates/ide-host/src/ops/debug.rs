@@ -555,6 +555,26 @@ pub fn debug_breakpoint_states(host: &Host, path: PathBuf) -> IdeResult<Vec<Brea
     Ok(host.debugger.breakpoint_states(&path))
 }
 
+/// This window's stored breakpoints, with their full attributes (not just verification states).
+/// Kept as a plain function: the MCP tools list and edit them under the window's owner, so they
+/// are sent to this window's sessions just like breakpoints set in the editor.
+pub fn debug_breakpoints(
+    host: &Host,
+    window: &str,
+) -> (std::collections::BTreeMap<PathBuf, Vec<Breakpoint>>, Vec<FunctionBreakpoint>, Vec<DataBreakpoint>) {
+    host.debugger.breakpoints(host.owner_window(window))
+}
+
+/// Whether a live session is suspended; `None` once it has ended. Used by tools that wait for a pause.
+pub fn debug_session_suspended(host: &Host, session: DebugSessionId) -> Option<bool> {
+    host.debugger.session_suspended(session)
+}
+
+/// The thread the session last stopped in, when the adapter named one. Frame tools default to it.
+pub fn debug_stopped_thread(host: &Host, session: DebugSessionId) -> Option<i64> {
+    host.debugger.stopped_thread(session)
+}
+
 /// This window's live sessions, including adapter-started child sessions.
 #[command(trust = always)]
 pub fn debug_sessions(host: &Host, window: &str) -> IdeResult<Vec<SessionInfo>> {

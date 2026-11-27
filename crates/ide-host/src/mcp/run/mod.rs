@@ -8,6 +8,8 @@ mod output;
 mod process;
 mod targets;
 
+pub(crate) use process::split_words;
+
 use crate::mcp::tool::{Call, Tool};
 use ide_core::IdeResult;
 use std::time::Duration;

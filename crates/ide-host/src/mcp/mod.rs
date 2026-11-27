@@ -1,6 +1,7 @@
 //! Built-in IDE tools. Transport and discovery live in `ide-mcp`.
 mod background;
 mod check;
+mod debug;
 mod edit;
 mod editors;
 mod requests;
@@ -43,6 +44,7 @@ fn tools() -> Vec<tool::Tool> {
     tools.extend(search::tools());
     tools.extend(editors::tools());
     tools.push(check::check_files());
+    tools.extend(debug::tools());
     tools.push(symbols::get_symbol_info());
     tools.push(symbols::find_references());
     tools.push(symbols::get_call_hierarchy());

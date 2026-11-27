@@ -29,14 +29,14 @@ const MAX_PROCESS_OUTPUT_LENGTH: usize = 20_000;
 /// A before-launch build gets this long.
 const BEFORE_LAUNCH_BUILD_TIMEOUT: Duration = Duration::from_secs(3600);
 
-async fn load_configs(call: &Call) -> IdeResult<Vec<RunConfig>> {
+pub(crate) async fn load_configs(call: &Call) -> IdeResult<Vec<RunConfig>> {
     let host = call.host();
     let window = call.window().to_owned();
     let h = host.clone();
     host.blocking(move || crate::ops::run::configs(&h, &window)).await
 }
 
-fn supports_overrides(config: &RunConfig) -> bool {
+pub(crate) fn supports_overrides(config: &RunConfig) -> bool {
     config.extras.compound.is_empty() && !config.command.trim().is_empty()
 }
 
@@ -178,13 +178,17 @@ in the file instead of project-wide run configurations.",
     .param(Param::optional("offset", ParamType::Integer, OFFSET))
 }
 
-/// What `execute_run_configuration` runs.
-enum ExecutionTarget {
+/// What `execute_run_configuration` and `xdebug_start_debugger_session` run.
+pub(crate) enum ExecutionTarget {
     ByName(String),
     ByContext(String, i64),
 }
 
-fn execution_target(name: Option<String>, file: Option<String>, line: Option<i64>) -> IdeResult<ExecutionTarget> {
+pub(crate) fn execution_target(
+    name: Option<String>,
+    file: Option<String>,
+    line: Option<i64>,
+) -> IdeResult<ExecutionTarget> {
     let name = name.filter(|n| !n.trim().is_empty());
     let file = file.filter(|f| !f.trim().is_empty());
     match (name, file, line) {
@@ -203,7 +207,7 @@ fn execution_target(name: Option<String>, file: Option<String>, line: Option<i64
 /// The temporary configuration of the run point at `file:line` (1-based): the innermost target
 /// enclosing that line (as JetBrains walks up to the enclosing test), else the whole file's
 /// (its tests, its main function).
-async fn config_from_code_location(
+pub(crate) async fn config_from_code_location(
     call: &Call,
     configs: Vec<RunConfig>,
     file: &str,
@@ -234,7 +238,7 @@ filePath to find valid run locations."
 
 /// Applies the one-off overrides (JetBrains' `prepareRunConfigurationForExecution`): a missing or
 /// empty string keeps the value, a whitespace-only one clears it; `envs` merge over the configuration's.
-fn apply_overrides(
+pub(crate) fn apply_overrides(
     config: &mut RunConfig,
     root: &Path,
     args: Option<String>,
@@ -413,13 +417,13 @@ fn process_output(mut f: impl FnMut(&str) + Send + 'static) -> crate::ops::Chann
 /// What failed before launch (JetBrains' `RunConfigurationBuildErrors`): build errors as
 /// `path:line: message`, else the output of before-launch processes that failed.
 #[derive(Default)]
-struct BuildErrors {
-    errors: Vec<String>,
-    process_outputs: Vec<String>,
+pub(crate) struct BuildErrors {
+    pub(crate) errors: Vec<String>,
+    pub(crate) process_outputs: Vec<String>,
 }
 
 impl BuildErrors {
-    fn text(&self) -> Option<String> {
+    pub(crate) fn text(&self) -> Option<String> {
         let mut seen = std::collections::HashSet::new();
         let errors: Vec<&String> = self.errors.iter().filter(|e| seen.insert(*e)).collect();
         if !errors.is_empty() {
@@ -573,7 +577,7 @@ async fn find_java_module(call: &Call, main: &str) -> IdeResult<Option<String>> 
 /// built per its before-launch build policy, with `${classpath}` / `${testClasspath}`, the
 /// module path and the module's `java` resolved through jdtls. `Err` says why it cannot start
 /// (compile errors are added to `errors`). Other configurations are returned as they are.
-async fn resolve_jvm_application(
+pub(crate) async fn resolve_jvm_application(
     call: &Call,
     mut config: RunConfig,
     errors: &mut BuildErrors,
@@ -639,7 +643,7 @@ async fn resolve_jvm_application(
 
 /// The configuration's before-launch tasks, as the Run tool window runs them; returns why
 /// the launch is aborted, if it is. Tool windows are not activated.
-async fn before_launch(
+pub(crate) async fn before_launch(
     call: &Call,
     config: &RunConfig,
     configs: &[RunConfig],
@@ -754,7 +758,7 @@ fn describe_before_launch(
 /// or applies — before-launch tasks, the stored environment (for a configuration made from
 /// code, the one of the configuration it derives from), `.env` files, the `envs` overrides
 /// (`NODE_OPTIONS`, `PATH`, ...), the stop command and a remote run target.
-fn confirmation_detail(
+pub(crate) fn confirmation_detail(
     config: &RunConfig,
     cwd: &str,
     stored_env: &std::collections::BTreeMap<String, String>,
@@ -797,7 +801,7 @@ fn confirmation_detail(
     detail
 }
 
-fn execution_failed(details: &[Option<String>]) -> IdeError {
+pub(crate) fn execution_failed(details: &[Option<String>]) -> IdeError {
     let details: Vec<&str> = details.iter().flatten().map(String::as_str).collect();
     IdeError::invalid(format!("Execution failed: {}", details.join("\n")))
 }
