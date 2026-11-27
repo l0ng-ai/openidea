@@ -144,6 +144,7 @@
   "menu.code.overrideMethods": "Переопределить методы…",
   "menu.code.implementMethods": "Реализовать методы…",
   "menu.code.insertLiveTemplate": "Вставить динамический шаблон…",
+  "menu.code.saveAsLiveTemplate": "Сохранить как динамический шаблон…",
   "menu.code.moveLineDown": "Переместить строку вниз",
   "menu.code.moveLineUp": "Переместить строку вверх",
   "menu.code.optimizeImports": "Оптимизировать импорты",

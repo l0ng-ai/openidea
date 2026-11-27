@@ -41,7 +41,9 @@ const ICONS = {
   "project-dart": "brands/dart",
   "project-django": "brands/django",
   "project-dotnet": "brands/dotnet",
+  "project-electron": "brands/electron",
   "project-elixir": "brands/elixir",
+  "project-expo": "brands/expo",
   "project-express": "brands/express",
   "project-fastapi": "brands/fastapi",
   "project-flask": "brands/flask",
@@ -68,6 +70,7 @@ const ICONS = {
   "project-sveltekit": "brands/sveltekit",
   "project-swift": "brands/swift",
   "project-symfony": "brands/symfony",
+  "project-vue": "brands/vue",
   "project-zig": "brands/zig",
   // Files & folders
   folder: "nodes/folder",

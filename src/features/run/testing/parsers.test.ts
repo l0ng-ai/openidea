@@ -345,9 +345,80 @@ FAILED tests/test_math.py::test_sub - assert 0 == 1
   it("parses verbose node ids into a tree", () => {
     const r = results(pytestParser(), verbose);
     expect(leaf(r, "tests/test_math.py", "test_add")?.own).toBe("passed");
-    expect(leaf(r, "tests/test_math.py", "TestDiv", "test_zero[1]")?.own).toBe("skipped");
+    expect(leaf(r, "tests/test_math.py", "TestDiv", "test_zero", "[1]")?.own).toBe("skipped");
     expect(leaf(r, "tests/test_math.py", "TestDiv", "test_ok")?.own).toBe("passed");
     expect(nodeStatus(r.get("tests/test_math.py")!)).toBe("failed");
+  });
+
+  it("locates tests without a failure line at their def", () => {
+    const r = results(pytestParser(), verbose);
+    expect(leaf(r, "tests/test_math.py", "test_add")?.location).toEqual({
+      path: "tests/test_math.py",
+      resolve: "path",
+      test: ["test_add"],
+    });
+    expect(leaf(r, "tests/test_math.py", "TestDiv", "test_zero", "[1]")?.location?.test).toEqual([
+      "TestDiv",
+      "test_zero",
+    ]);
+    expect(leaf(r, "tests/test_math.py", "TestDiv", "test_zero")?.location?.test).toEqual(["TestDiv", "test_zero"]);
+  });
+
+  it("groups parametrized cases under their test", () => {
+    const r = results(
+      pytestParser(),
+      `tests/test_p.py::test_div[1.5] FAILED                                    [ 20%]
+tests/test_p.py::test_div[a::b] PASSED                                   [ 40%]
+tests/test_p.py::test_div[x[0]] PASSED                                   [ 60%]
+tests/test_p.py::test_div[two words] SKIPPED (later)                     [ 80%]
+tests/test_p.py::TestK::test_m[0-0] PASSED                               [100%]
+
+=================================== FAILURES ===================================
+________________________________ test_div[1.5] _________________________________
+
+    def test_div(x):
+>       assert x == 2
+E       assert 1.5 == 2
+
+tests/test_p.py:4: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_p.py::test_div[1.5] - assert 1.5 == 2
+=================== 1 failed, 3 passed, 1 skipped in 0.02s ====================
+`,
+    );
+    const div = leaf(r, "tests/test_p.py", "test_div")!;
+    expect(div.children.map((c) => c.name)).toEqual(["[1.5]", "[a::b]", "[x[0]]", "[two words]"]);
+    expect(nodeStatus(div)).toBe("failed");
+    expect(div.location?.test).toEqual(["test_div"]);
+    const failed = leaf(r, "tests/test_p.py", "test_div", "[1.5]")!;
+    expect(failed.location).toEqual({
+      path: "tests/test_p.py",
+      line: 4,
+      resolve: "path",
+    });
+    expect(failed.output.some((l) => l.includes("assert 1.5 == 2"))).toBe(true);
+    expect(leaf(r, "tests/test_p.py", "test_div", "[two words]")?.own).toBe("skipped");
+    expect(leaf(r, "tests/test_p.py", "TestK", "test_m", "[0-0]")?.own).toBe("passed");
+    expect(r.roots.map((n) => n.name)).toEqual(["tests/test_p.py"]);
+    expect(r.counts()).toMatchObject({ passed: 3, failed: 1, skipped: 1 });
+  });
+
+  it("attaches a case's failure printed before its node id (non-verbose)", () => {
+    const r = results(
+      pytestParser(),
+      `tests/test_p.py F.                                                       [100%]
+
+=================================== FAILURES ===================================
+_____________________________ TestK.test_m[1.5] ______________________________
+
+tests/test_p.py:9: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_p.py::TestK::test_m[1.5] - assert False
+========================= 1 failed, 1 passed in 0.02s =========================
+`,
+    );
+    expect(leaf(r, "tests/test_p.py", "TestK", "test_m", "[1.5]")?.location?.line).toBe(9);
+    expect(r.roots.map((n) => n.name)).toEqual(["tests/test_p.py"]);
   });
 
   it("attaches failure sections and locations", () => {

@@ -80,6 +80,19 @@ pub fn agent_refresh_models(
     host.project(window)?.agents.refresh_models(&provider, force, model.as_deref())
 }
 
+/// Probes Copilot's model catalog for a staged GitHub account without persisting until Apply.
+#[command(trust = trusted)]
+pub async fn agent_preview_copilot_models(
+    host: &Host,
+    window: &str,
+    account: String,
+    model: Option<String>,
+) -> IdeResult<AgentModelCatalog> {
+    host.require_trust(window)?;
+    let agents = host.project(window)?.agents.clone();
+    agents.preview_copilot_models(&account, model.as_deref()).await
+}
+
 /// Overrides built-in agent `id`'s command with `command` (its agent file keeps the
 /// built-in's driver and arguments), or returns it to auto-detection with `None`.
 #[command(trust = trusted)]
@@ -1584,6 +1597,7 @@ ide_command::domain!(
     agent_mcp_save_json,
     agent_mcp_set_enabled,
     agent_mcp_test,
+    agent_preview_copilot_models,
     agent_probe,
     agent_prompt,
     agent_providers,

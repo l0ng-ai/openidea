@@ -20,6 +20,7 @@ import { editorService } from "@/workbench/contributions";
 import { fileIconName } from "@/ui";
 import { registerRelatedProvider, relatedItems } from "@/editor/relatedProviders";
 import { gotoTestOrSubject, type TestNavDeps } from "./gotoTest";
+import { componentFileItems } from "./componentFiles";
 import { headerSourceItems } from "./headerSource";
 import { stubRelatedItems } from "./pythonStubs";
 import { projectPythonHierarchy, pythonSuperDeps } from "./pythonHierarchy";
@@ -244,6 +245,14 @@ async function gotoRelated(view: EditorView) {
 
 const findFilesNamed = async (name: string) => call(commands.findFilesNamed(name));
 
+const listFiles = async (dir: string) => {
+  try {
+    return (await call(commands.fsReadDir(dir))).filter((e) => e.kind !== "dir").map((e) => e.name);
+  } catch {
+    return null;
+  }
+};
+
 /** Navigate › Stub / Implementation: the `.pyi` declaration of a Python one, or the reverse. */
 async function gotoStub(view: EditorView) {
   const ctx = docOf(view);
@@ -259,6 +268,7 @@ async function gotoStub(view: EditorView) {
 
 export function registerNavigationActions(): () => void {
   const unregisterHeaders = registerRelatedProvider((ctx) => headerSourceItems(ctx.path, findFilesNamed));
+  const unregisterComponents = registerRelatedProvider((ctx) => componentFileItems(ctx.path, ctx.text, listFiles));
   const unregisterStubs = registerRelatedProvider(async (ctx) => {
     const ed = editorsFor(ctx.path)[0];
     if (!ed || ctx.language !== "python") return [];
@@ -272,7 +282,17 @@ export function registerNavigationActions(): () => void {
     editorAction("navigate.nextMethod", "Next Method", (v) => gotoMethod(v, 1)),
     editorAction("navigate.previousMethod", "Previous Method", (v) => gotoMethod(v, -1)),
     editorAction("navigate.relatedSymbol", "Related Symbol…", gotoRelated, {
-      keywords: ["go to related", "header", "source", "switch header source", "view", "controller"],
+      keywords: [
+        "go to related",
+        "header",
+        "source",
+        "switch header source",
+        "view",
+        "controller",
+        "template",
+        "styles",
+        "stories",
+      ],
     }),
     editorAction("navigate.pythonStub", "Stub / Implementation", gotoStub, {
       when: `${EDITOR_WHEN} && editorLangId == python`,
@@ -282,6 +302,7 @@ export function registerNavigationActions(): () => void {
   return () => {
     unregister();
     unregisterHeaders();
+    unregisterComponents();
     unregisterStubs();
   };
 }

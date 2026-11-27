@@ -7,6 +7,7 @@ import { canOpenWithSystemApp, canRevealInFileManager, fileManagerName } from "@
 import { formatBinding, hostBinding, isMacHost, shortcutLabel } from "@/platform/keymap";
 import { projectFolder, relativePath, useProject } from "@/platform/project";
 import { attachedProjectOf, currentDetectedRoots, currentRoots } from "@/platform/projectRoots";
+import { isVirtualUri } from "@/platform/virtualDocs";
 import type { MenuItem } from "@/ui";
 import { menuGroupItems, gitMenuItems, toolWindowService, type MenuGroupContext } from "@/workbench/contributions";
 import type { FolderRole } from "@/platform/languageSettings";
@@ -403,6 +404,17 @@ export function contextMenuItems(nodes: ProjectNode[], at: MenuPoint = "center")
         shortcut: keyLabel("project.compareWith"),
       }),
     );
+  const editorPath = getContext().editorPath;
+  if (
+    single &&
+    !single.dir &&
+    !single.placeholder &&
+    typeof editorPath === "string" &&
+    editorPath &&
+    !isVirtualUri(editorPath) &&
+    editorPath !== single.path
+  )
+    push(delegated("diff.compareFileWithEditor", single.path, "Compare File with Editor", { icon: "diff" }));
 
   push({ kind: "separator" });
 

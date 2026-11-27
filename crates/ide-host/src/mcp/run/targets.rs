@@ -493,7 +493,7 @@ fn test_kinds(rel: &str) -> &'static [&'static str] {
     if JS_FILE.is_match(rel) {
         &["npm", "deno", "bun"]
     } else if rel.ends_with(".py") {
-        &["pytest", "python"]
+        &["pytest", "unittest", "python"]
     } else if rel.ends_with(".go") {
         &["go"]
     } else if rel.ends_with(".rs") {
@@ -644,6 +644,11 @@ fn test_config_for(root: &Path, rel: &str, configs: &[RunConfig]) -> Option<RunC
         "npm" | "bun" if base.args.iter().any(|a| a == "--") => derived(&base, rel, with(&[file])),
         "npm" | "bun" => derived(&base, rel, with(&["--".into(), file])),
         "deno" | "pytest" | "python" => derived(&base, rel, with(&[file])),
+        // `python -m unittest <file>`; a `discover` selection gives way to the file.
+        "unittest" => {
+            let end = base.args.iter().position(|a| a == "discover").unwrap_or(base.args.len());
+            derived(&base, rel, [base.args[..end].to_vec(), vec![file]].concat())
+        }
         "go" => {
             let dir = dir_of(&file);
             let target = if dir.is_empty() { ".".to_owned() } else { format!("./{dir}") };
@@ -790,6 +795,11 @@ pub fn target_config(
         "pytest" | "python" => {
             Some(named(replace_last(file.args.clone(), |f| format!("{f}::{}", target.path.join("::")))))
         }
+        // unittest names tests by dotted module path: `tests.test_calc.TestCalc.test_add`.
+        "unittest" => Some(named(replace_last(file.args.clone(), |f| {
+            let module = f.strip_suffix(".py").unwrap_or(f).replace(['/', '\\'], ".");
+            format!("{module}.{}", target.path.join("."))
+        }))),
         "go" => {
             let pattern = format!("^{}$", target.path.iter().map(|p| escape_regexp(p)).collect::<Vec<_>>().join("$/^"));
             let benchmark = target.path.first().is_some_and(|p| p.starts_with("Benchmark"));
@@ -919,6 +929,30 @@ mod tests {
             pick(&detect(go, "calc_test.go")),
             [(2, Kind::Test, "TestAdd".into()), (3, Kind::Test, "TestAdd/zero_case".into())]
         );
+    }
+
+    #[test]
+    fn narrows_unittest_configs_to_files_and_dotted_tests() {
+        let root = Path::new("/p");
+        let mut unittest =
+            blank("unittest".into(), "unittest", "unittest", "python3".into(), vec!["-m".into(), "unittest".into()]);
+        unittest.is_test = true;
+        let mut discover = unittest.clone();
+        discover.args.extend(["discover".into(), "-s".into(), "tests".into()]);
+        let src = "import unittest\n\nclass TestCalc(unittest.TestCase):\n    def test_add(self):\n        pass\n";
+        let rel = "tests/test_calc.py";
+        for configs in [vec![unittest], vec![discover]] {
+            let c = context_config(root, rel, &configs, src).unwrap();
+            assert_eq!(
+                (c.kind.as_str(), c.args.as_slice()),
+                ("unittest", ["-m", "unittest", rel].map(String::from).as_slice())
+            );
+            let ts = detect(src, rel);
+            let c = target_config(root, &ts[1], rel, &configs, src).unwrap();
+            assert_eq!(c.args, ["-m", "unittest", "tests.test_calc.TestCalc.test_add"]);
+            let c = target_config(root, &ts[0], rel, &configs, src).unwrap();
+            assert_eq!(c.args, ["-m", "unittest", "tests.test_calc.TestCalc"]);
+        }
     }
 
     #[test]
