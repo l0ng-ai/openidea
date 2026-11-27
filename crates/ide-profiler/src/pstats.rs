@@ -35,7 +35,8 @@ impl Value {
     }
 }
 
-/// The subset of marshal (format 2–5) that pstats files use.
+/// The subset of marshal that Python 3 writes pstats files with (formats 2–5; Python 2's
+/// `R` and `I` are not read).
 struct Reader<'a> {
     data: &'a [u8],
     pos: usize,
@@ -205,6 +206,11 @@ fn parse(bytes: &[u8]) -> Result<Graph, String> {
         stats.resize_with(funcs.len(), Stat::default);
         stats[callee] = Stat { cc: n(0)?, nc: n(1)?, tt: n(2)?, ct: n(3)? };
         let Some(Value::Dict(callers)) = v.get(4) else { return Err("a function has no callers table".into()) };
+        // References can make one callers table count for many functions: a small file could
+        // otherwise unfold into more edges than memory holds. A real edge takes bytes of its own.
+        if edges.len() + callers.len() > bytes.len() {
+            return Err("more calls than the file can hold".into());
+        }
         for (caller, e) in callers {
             let caller = id(func(caller)?, &mut funcs);
             let edge = match e {
@@ -408,28 +414,43 @@ pub(crate) fn read(bytes: &[u8], bases: &[&Path], profiler: &str) -> Result<Prof
     }
 
     let mut profile = b.finish(profiler, "ms", ProfileMode::Cpu);
-    profile.methods = (0..funcs.len())
-        .filter(|f| stats[*f].nc > 0.0 || stats[*f].ct > 0.0)
-        .map(|f| MethodStat {
+    // Two recorded names of one file (`work.py`, `/p/work.py`) are one frame: add them up.
+    let mut methods: HashMap<u32, MethodStat> = HashMap::new();
+    for (f, s) in stats.iter().enumerate().filter(|(_, s)| s.nc > 0.0 || s.ct > 0.0) {
+        let m = methods.entry(frames[f]).or_insert(MethodStat {
             frame: frames[f],
-            self_weight: stats[f].tt * 1000.0,
-            total: stats[f].ct * 1000.0,
-            calls: Some(stats[f].nc),
-            primitive_calls: Some(stats[f].cc),
-        })
-        .collect();
-    profile.methods.sort_by(|a, b| b.self_weight.total_cmp(&a.self_weight).then(b.total.total_cmp(&a.total)));
-    profile.calls = edges
-        .iter()
-        .map(|e| CallEdge {
-            caller: frames[e.caller],
-            callee: frames[e.callee],
-            self_weight: e.tt * 1000.0,
-            total: e.ct * 1000.0,
-            calls: e.nc,
-            primitive_calls: e.cc,
-        })
-        .collect();
+            self_weight: 0.0,
+            total: 0.0,
+            calls: Some(0.0),
+            primitive_calls: Some(0.0),
+        });
+        m.self_weight += s.tt * 1000.0;
+        m.total += s.ct * 1000.0;
+        m.calls = m.calls.map(|c| c + s.nc);
+        m.primitive_calls = m.primitive_calls.map(|c| c + s.cc);
+    }
+    profile.methods = methods.into_values().collect();
+    profile.methods.sort_by(|a, b| {
+        b.self_weight.total_cmp(&a.self_weight).then(b.total.total_cmp(&a.total)).then(a.frame.cmp(&b.frame))
+    });
+    let mut calls: HashMap<(u32, u32), CallEdge> = HashMap::new();
+    for e in &edges {
+        let (caller, callee) = (frames[e.caller], frames[e.callee]);
+        let c = calls.entry((caller, callee)).or_insert(CallEdge {
+            caller,
+            callee,
+            self_weight: 0.0,
+            total: 0.0,
+            calls: 0.0,
+            primitive_calls: 0.0,
+        });
+        c.self_weight += e.tt * 1000.0;
+        c.total += e.ct * 1000.0;
+        c.calls += e.nc;
+        c.primitive_calls += e.cc;
+    }
+    profile.calls = calls.into_values().collect();
+    profile.calls.sort_by_key(|c| (c.caller, c.callee));
     Ok(profile)
 }
 
@@ -667,6 +688,51 @@ mod tests {
         let f = method(&p, "f");
         assert_eq!(f.calls, Some(2f64.powi(31)));
         assert_eq!(p.calls.iter().map(|e| e.calls).collect::<Vec<_>>(), [7.0]);
+    }
+
+    #[test]
+    fn a_callers_table_referenced_by_many_functions_is_refused() {
+        // 2,000 functions share one stats tuple (by reference) whose callers table has 200
+        // entries: a 60 KB file that would unfold into 400,000 edges.
+        let mut w = W::default();
+        w.0.push(b'{');
+        w.key(("m.py", 0, "f0"));
+        w.0.push(b')' | 0x80);
+        w.0.push(5);
+        w.i(1).i(1).g(0.0).g(0.0);
+        w.0.push(b'{');
+        for i in 0..200 {
+            w.key(("m.py", i, "c")).i(1);
+        }
+        w.0.push(b'0');
+        // The tuple is the first object marked for reference: number 0.
+        for i in 1..2_000 {
+            w.key(("m.py", i, "f"));
+            w.0.push(b'r');
+            w.0.extend(0i32.to_le_bytes());
+        }
+        w.0.push(b'0');
+        let err = read(&w.0, &[], "cProfile").unwrap_err();
+        assert!(err.contains("more calls than the file can hold"), "{err}");
+    }
+
+    #[test]
+    fn two_names_of_one_file_are_one_method() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("work.py");
+        std::fs::write(&file, "").unwrap();
+        let abs = file.to_string_lossy().into_owned();
+        let bytes = pstats(&[
+            (("work.py", 1, "f"), 1, 1, 0.001, 0.001, &[(EXEC, 1, 1, 0.001, 0.001)]),
+            ((abs.as_str(), 1, "f"), 2, 2, 0.002, 0.002, &[(EXEC, 2, 2, 0.002, 0.002)]),
+            (EXEC, 1, 1, 0.0, 0.003, &[]),
+        ]);
+        let p = read(&bytes, &[dir.path()], "cProfile").unwrap();
+        let f: Vec<_> = p.methods.iter().filter(|m| name(&p, m.frame) == "f").collect();
+        assert_eq!(f.len(), 1);
+        assert_eq!((f[0].calls, f[0].primitive_calls), (Some(3.0), Some(3.0)));
+        assert!((f[0].total - 3.0).abs() < 1e-9);
+        assert_eq!(p.calls.iter().filter(|e| name(&p, e.callee) == "f").map(|e| e.calls).collect::<Vec<_>>(), [3.0]);
     }
 
     #[test]
