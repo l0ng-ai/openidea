@@ -4887,7 +4887,7 @@
   "Add New Interpreter…": "Adicionar novo interpretador…",
   "Interpreter Settings…": "Configurações do interpretador…",
   "Connection settings for SQL Server.": "Configurações de conexão para o SQL Server.",
-  "ClickHouse settings sent with each HTTP request. connect_timeout is in seconds.": "Configurações do ClickHouse enviadas a cada solicitação HTTP. connect_timeout é em segundos.",
+  "Query settings are sent with each request. connect_timeout and http_read_timeout are in seconds. The default wait for response data is 600 seconds.": "As configurações de consulta são enviadas em cada solicitação. Os valores de connect_timeout e http_read_timeout são expressos em segundos. O tempo de espera padrão pelos dados da resposta é de 600 segundos.",
   "Microsoft SQL Server": "Microsoft SQL Server",
   "Add to .gitignore": "Adicionar ao .gitignore",
   "Add to .git/info/exclude": "Adicionar ao .git/info/exclude",

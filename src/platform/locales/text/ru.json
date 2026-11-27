@@ -6445,7 +6445,7 @@
   "Add New Interpreter…": "Добавить новый интерпретатор…",
   "Interpreter Settings…": "Настройки интерпретатора…",
   "Connection settings for SQL Server.": "Параметры подключения к SQL Server.",
-  "ClickHouse settings sent with each HTTP request. connect_timeout is in seconds.": "Параметры ClickHouse, отправляемые с каждым HTTP-запросом. Значение connect_timeout задаётся в секундах.",
+  "Query settings are sent with each request. connect_timeout and http_read_timeout are in seconds. The default wait for response data is 600 seconds.": "Настройки запроса передаются с каждым HTTP-запросом. Значения connect_timeout и http_read_timeout задаются в секундах. По умолчанию драйвер ждёт данные ответа 600 секунд.",
   "Microsoft SQL Server": "Microsoft SQL Server",
   "Add to .gitignore": "Добавить в .gitignore",
   "Add to .git/info/exclude": "Добавить в .git/info/exclude",

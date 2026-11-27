@@ -6624,7 +6624,7 @@
   "Add New Interpreter…": "添加新的解释器…",
   "Interpreter Settings…": "解释器设置…",
   "Connection settings for SQL Server.": "SQL Server 的连接设置。",
-  "ClickHouse settings sent with each HTTP request. connect_timeout is in seconds.": "每个 HTTP 请求附带的 ClickHouse 设置。connect_timeout 的单位为秒。",
+  "Query settings are sent with each request. connect_timeout and http_read_timeout are in seconds. The default wait for response data is 600 seconds.": "每次请求都会发送查询设置。connect_timeout 和 http_read_timeout 的单位为秒。等待响应数据的默认时限为 600 秒。",
   "Microsoft SQL Server": "微软 SQL Server",
   "Add to .gitignore": "添加到 .gitignore",
   "Add to .git/info/exclude": "添加到 .git/info/exclude",
