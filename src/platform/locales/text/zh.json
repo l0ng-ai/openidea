@@ -8782,6 +8782,7 @@
   "Create solution": "创建解决方案",
   "As in Visual Studio: the solution file at the top, the project in its own folder.": "与 Visual Studio 相同：解决方案文件在顶层，项目放在单独的文件夹中。",
   "Solution name:": "解决方案名称：",
+  "Solution '{name}'": "解决方案 '{name}'",
   "Creating the solution": "正在创建解决方案",
   "Adding the project to the solution": "正在将项目添加到解决方案",
   "An Elixir project from mix new.": "用 mix new 创建的 Elixir 项目。",
