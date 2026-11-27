@@ -666,21 +666,22 @@ pub fn sqlite_ddl(schema: &str, name: &str) -> String {
     )
 }
 
-/// Rows: `oid, relkind` of a PostgreSQL relation.
+/// Rows: `oid, relkind, owner, comment` of a PostgreSQL relation.
 pub fn postgres_relation(schema: &str, name: &str) -> String {
     format!(
-        "SELECT c.oid::text, c.relkind::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+        "SELECT c.oid::text, c.relkind::text, pg_get_userbyid(c.relowner), obj_description(c.oid, 'pg_class') \
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
          WHERE n.nspname = {} AND c.relname = {}",
         quote_literal(DbDriver::Postgres, schema),
         quote_literal(DbDriver::Postgres, name)
     )
 }
 
-/// Rows: `name, type, not null (0/1), default` of relation `oid`.
+/// Rows: `name, type, not null (0/1), default, comment` of relation `oid`.
 pub fn postgres_ddl_columns(oid: u32) -> String {
     format!(
         "SELECT a.attname, format_type(a.atttypid, a.atttypmod), CASE WHEN a.attnotnull THEN 1 ELSE 0 END, \
-         pg_get_expr(d.adbin, d.adrelid) FROM pg_attribute a \
+         pg_get_expr(d.adbin, d.adrelid), col_description(a.attrelid, a.attnum) FROM pg_attribute a \
          LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
          WHERE a.attrelid = {oid} AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum"
     )
@@ -700,6 +701,27 @@ pub fn postgres_ddl_indexes(oid: u32) -> String {
         "SELECT pg_get_indexdef(i.indexrelid) FROM pg_index i WHERE i.indrelid = {oid} \
          AND NOT EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conindid = i.indexrelid AND c.conrelid = i.indrelid) \
          ORDER BY 1"
+    )
+}
+
+/// Rows: `grantee` (`PUBLIC` for everyone), privileges (`insert, select`), grantable (0/1) of
+/// the privileges relation `oid` grants beyond its owner's. A relation whose ACL was never
+/// changed (`relacl` null) grants none.
+pub fn postgres_ddl_grants(oid: u32) -> String {
+    format!(
+        "SELECT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END, \
+         string_agg(lower(a.privilege_type), ', ' ORDER BY a.privilege_type), \
+         CASE WHEN a.is_grantable THEN 1 ELSE 0 END \
+         FROM pg_class c CROSS JOIN LATERAL aclexplode(c.relacl) a \
+         WHERE c.oid = {oid} AND a.grantee <> c.relowner GROUP BY 1, 3 ORDER BY 1, 3"
+    )
+}
+
+/// Rows: `CREATE TRIGGER …` of the user triggers of relation `oid`.
+pub fn postgres_ddl_triggers(oid: u32) -> String {
+    format!(
+        "SELECT pg_get_triggerdef(oid, true) FROM pg_trigger WHERE tgrelid = {oid} AND NOT tgisinternal \
+         ORDER BY tgname"
     )
 }
 
@@ -942,6 +964,18 @@ pub struct DdlColumn {
     pub data_type: String,
     pub not_null: bool,
     pub default: Option<String>,
+    pub comment: Option<String>,
+}
+
+/// What [`postgres_table_ddl`] adds after `create table` so the script rebuilds the table.
+#[derive(Default)]
+pub struct DdlExtras {
+    pub comment: Option<String>,
+    pub owner: Option<String>,
+    /// `grantee` (`PUBLIC` for everyone), privileges (`insert, select`), with grant option.
+    pub grants: Vec<(String, String, bool)>,
+    /// `CREATE TRIGGER …` statements.
+    pub triggers: Vec<String>,
 }
 
 /// `create table` of a PostgreSQL table from its catalog (the server has no `SHOW CREATE`).
@@ -951,6 +985,7 @@ pub fn postgres_table_ddl(
     columns: &[DdlColumn],
     constraints: &[(String, String)],
     indexes: &[String],
+    extras: &DdlExtras,
 ) -> String {
     let d = DbDriver::Postgres;
     let mut items: Vec<String> = columns
@@ -967,9 +1002,31 @@ pub fn postgres_table_ddl(
         })
         .collect();
     items.extend(constraints.iter().map(|(name, def)| format!("    constraint {} {def}", quote_ident(d, name))));
-    let mut out = format!("create table {}\n(\n{}\n);\n", qualified(d, schema, table), items.join(",\n"));
-    for i in indexes {
-        out.push_str(&format!("\n{i};\n"));
+    let target = qualified(d, schema, table);
+    let mut out = format!("create table {target}\n(\n{}\n);\n", items.join(",\n"));
+    // The order a script runs in: comments, owner and privileges, then indexes and triggers.
+    if let Some(comment) = &extras.comment {
+        out.push_str(&format!("\ncomment on table {target} is {};\n", quote_literal(d, comment)));
+    }
+    for c in columns {
+        if let Some(comment) = &c.comment {
+            let column = format!("{target}.{}", quote_ident(d, &c.name));
+            out.push_str(&format!("\ncomment on column {column} is {};\n", quote_literal(d, comment)));
+        }
+    }
+    if let Some(owner) = &extras.owner {
+        out.push_str(&format!("\nalter table {target}\n    owner to {};\n", quote_ident(d, owner)));
+    }
+    if !extras.grants.is_empty() {
+        out.push('\n');
+    }
+    for (grantee, privileges, grantable) in &extras.grants {
+        let to = if grantee == "PUBLIC" { "public".to_owned() } else { quote_ident(d, grantee) };
+        let option = if *grantable { " with grant option" } else { "" };
+        out.push_str(&format!("grant {privileges} on {target} to {to}{option};\n"));
+    }
+    for statement in indexes.iter().chain(&extras.triggers) {
+        out.push_str(&format!("\n{};\n", statement.trim_end().trim_end_matches(';')));
     }
     out
 }
@@ -1326,12 +1383,13 @@ mod tests {
     #[test]
     fn postgres_ddl() {
         let cols = [
-            DdlColumn { name: "id".into(), data_type: "integer".into(), not_null: true, default: None },
+            DdlColumn { name: "id".into(), data_type: "integer".into(), not_null: true, default: None, comment: None },
             DdlColumn {
                 name: "name".into(),
                 data_type: "character varying(40)".into(),
                 not_null: false,
                 default: Some("'x'::character varying".into()),
+                comment: None,
             },
         ];
         assert_eq!(
@@ -1340,9 +1398,50 @@ mod tests {
                 "t",
                 &cols,
                 &[("t_pkey".into(), "PRIMARY KEY (id)".into())],
-                &["CREATE INDEX t_name ON public.t USING btree (name)".into()]
+                &["CREATE INDEX t_name ON public.t USING btree (name)".into()],
+                &DdlExtras::default(),
             ),
             "create table \"public\".\"t\"\n(\n    \"id\" integer not null,\n    \"name\" character varying(40) default 'x'::character varying,\n    constraint \"t_pkey\" PRIMARY KEY (id)\n);\n\nCREATE INDEX t_name ON public.t USING btree (name);\n"
+        );
+    }
+
+    #[test]
+    fn postgres_ddl_rebuilds_comments_owner_grants_and_triggers() {
+        let cols = [
+            DdlColumn { name: "id".into(), data_type: "integer".into(), not_null: true, default: None, comment: None },
+            DdlColumn {
+                name: "note".into(),
+                data_type: "text".into(),
+                not_null: false,
+                default: None,
+                comment: Some("what's this".into()),
+            },
+        ];
+        let extras = DdlExtras {
+            comment: Some("Orders".into()),
+            owner: Some("app owner".into()),
+            grants: vec![("PUBLIC".into(), "select".into(), false), ("reader".into(), "insert, select".into(), true)],
+            triggers: vec![
+                "CREATE TRIGGER t_audit AFTER INSERT ON public.t FOR EACH ROW EXECUTE FUNCTION audit()".into(),
+            ],
+        };
+        assert_eq!(
+            postgres_table_ddl(
+                "public",
+                "t",
+                &cols,
+                &[],
+                &["CREATE INDEX t_note ON public.t USING btree (note)".into()],
+                &extras
+            ),
+            "create table \"public\".\"t\"\n(\n    \"id\" integer not null,\n    \"note\" text\n);\n\
+             \ncomment on table \"public\".\"t\" is 'Orders';\n\
+             \ncomment on column \"public\".\"t\".\"note\" is 'what''s this';\n\
+             \nalter table \"public\".\"t\"\n    owner to \"app owner\";\n\
+             \ngrant select on \"public\".\"t\" to public;\n\
+             grant insert, select on \"public\".\"t\" to \"reader\" with grant option;\n\
+             \nCREATE INDEX t_note ON public.t USING btree (note);\n\
+             \nCREATE TRIGGER t_audit AFTER INSERT ON public.t FOR EACH ROW EXECUTE FUNCTION audit();\n"
         );
     }
 

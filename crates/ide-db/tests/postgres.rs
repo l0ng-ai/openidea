@@ -423,7 +423,29 @@ async fn opening_a_table_reads_multi_column_keys_in_order() -> IdeResult<()> {
     db.execute("p", "CREATE SEQUENCE oi_keys.seq", 10, &c).await?;
     let objects = db.schema_objects("p", "oi_keys").await?;
     assert_eq!(objects.sequences.len(), 1);
-    assert!(db.ddl("p", "oi_keys", "refs").await?.contains("FOREIGN KEY"));
+    let plain = db.ddl("p", "oi_keys", "refs").await?;
+    assert!(plain.contains("FOREIGN KEY"), "{plain}");
+    assert!(plain.contains("\n    owner to "), "{plain}");
+    assert!(!plain.contains("comment on") && !plain.contains("grant ") && !plain.contains("TRIGGER"), "{plain}");
+    // Comments, privileges and triggers come back too, so the script rebuilds the table.
+    for statement in [
+        "COMMENT ON TABLE oi_keys.refs IS 'Refs'",
+        "COMMENT ON COLUMN oi_keys.refs.x IS 'it''s x'",
+        "GRANT SELECT, INSERT ON oi_keys.refs TO PUBLIC",
+        "CREATE FUNCTION oi_keys.touch() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RETURN NEW; END'",
+        "CREATE TRIGGER refs_touch BEFORE UPDATE ON oi_keys.refs FOR EACH ROW EXECUTE FUNCTION oi_keys.touch()",
+    ] {
+        db.execute("p", statement, 10, &c).await?;
+    }
+    let full = db.ddl("p", "oi_keys", "refs").await?;
+    for part in [
+        "comment on table \"oi_keys\".\"refs\" is 'Refs';",
+        "comment on column \"oi_keys\".\"refs\".\"x\" is 'it''s x';",
+        "grant insert, select on \"oi_keys\".\"refs\" to public;",
+        "CREATE TRIGGER refs_touch BEFORE UPDATE ON oi_keys.refs FOR EACH ROW EXECUTE FUNCTION oi_keys.touch();",
+    ] {
+        assert!(full.contains(part), "{part}\n{full}");
+    }
     db.execute("p", "DROP SCHEMA oi_keys CASCADE", 10, &c).await?;
     Ok(())
 }
