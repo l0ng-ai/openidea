@@ -2498,7 +2498,12 @@
   "Run on save": "儲存時執行",
   "Run Prettier on save for enabled languages when it is the selected formatting provider.": "對已啟用的語言，在選擇 Prettier 作為格式化工具時於儲存時執行。",
   "Run oxfmt on save for enabled languages when it is the selected formatting provider.": "對已啟用的語言，在選擇 oxfmt 作為格式化工具時於儲存時執行。",
-  "Run Ruff on save for enabled languages when it is the selected formatting provider.": "對已啟用的語言，在選擇 Ruff 作為格式化工具時於儲存時執行。",
+  "Run Ruff formatting on save for enabled languages when it is the selected formatting provider.": "在選擇 Ruff 作為格式化工具時，於儲存時格式化已啟用的語言。",
+  "Format on save": "儲存時格式化",
+  "Fix safe lint issues on save": "儲存時修復安全的 lint 問題",
+  "Runs ruff check --fix-only on Python files when saving. This is separate from formatting and from Format on save.": "儲存 Python 檔案時執行 ruff check --fix-only。此操作與格式化及「儲存時格式化」相互獨立。",
+  "Fix Ruff safe lint issues": "修復 Ruff 安全的 lint 問題",
+  "Runs ruff check --fix-only on Python files before composing the commit. This does not format code.": "提交前對 Python 檔案執行 ruff check --fix-only。此操作不會格式化程式碼。",
   "oxfmt formats an enabled language instead of Prettier below an oxfmt configuration file (.oxfmtrc.json, oxfmt.config.ts) or when it is the selected provider.": "在 oxfmt 設定檔（.oxfmtrc.json、oxfmt.config.ts）所在目錄及其子目錄中，或選擇 oxfmt 作為格式化工具時，oxfmt 將代替 Prettier 格式化已啟用的語言。",
   "Ruff reads the nearest pyproject.toml ([tool.ruff]), ruff.toml, or .ruff.toml. Use it before the language server when preferred.": "Ruff 會讀取最近的 pyproject.toml（[tool.ruff]）、ruff.toml 或 .ruff.toml。選擇優先使用 Ruff 時，將優先於語言伺服器。",
   "Enabled languages": "啟用的語言",
@@ -2510,6 +2515,8 @@
   "oxfmt formatting timed out": "oxfmt 格式化逾時",
   "Ruff formatting failed": "Ruff 格式化失敗",
   "Ruff formatting timed out": "Ruff 格式化逾時",
+  "Ruff safe fixes failed": "Ruff 安全修復失敗",
+  "Ruff safe fixes timed out": "Ruff 安全修復逾時",
   "Ruff configuration path does not exist: {path}": "Ruff 組態路徑不存在：{path}",
   "Ruff configuration directory has no ruff.toml, .ruff.toml, or pyproject.toml with [tool.ruff]: {path}": "Ruff 組態目錄中沒有 ruff.toml、.ruff.toml 或包含 [tool.ruff] 的 pyproject.toml：{path}",
   "{name} does not support selection formatting for this language; formatted the whole file": "{name} 不支援此語言的選取範圍格式化，已格式化整個檔案",
@@ -9410,5 +9417,6 @@
   "Pull request link {text}": "拉取請求連結 {text}",
   "Issue link {text}": "Issue 連結 {text}",
   "Commit link {text}": "提交連結 {text}",
-  "Link {text}": "連結 {text}"
+  "Link {text}": "連結 {text}",
+  "No safe lint fixes to apply": "沒有可套用的安全 lint 修正"
 }

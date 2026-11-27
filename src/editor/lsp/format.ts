@@ -100,6 +100,8 @@ interface FormatDocumentOptions {
   tool?: ExternalFormatter;
   /** Formats only these ranges, e.g. the text changed since the last commit; an empty list formats nothing. */
   ranges?: readonly OffsetRange[];
+  /** Runs Ruff's safe lint fixes on the whole document instead of any formatting provider. */
+  safeFix?: boolean;
 }
 
 interface OffsetRange {
@@ -125,6 +127,7 @@ function disjoint(changes: readonly Change[]): Change[] {
 
 /** The ranges to format: the given ones, else the selection (when asked for), else the whole file. */
 function targetRanges(state: EditorState, opts: FormatDocumentOptions): readonly (OffsetRange | null)[] {
+  if (opts.safeFix) return [null];
   if (opts.ranges) return opts.ranges;
   const sel = state.selection.main;
   return (opts.selectionOnly ?? true) && !sel.empty ? [{ from: sel.from, to: sel.to }] : [null];
@@ -139,17 +142,22 @@ export async function formatDocument(
   return result;
 }
 
+/** Ruff's safe lint fixes on save, before the file is written and independently of formatting. */
+export async function fixRuffDocument(view: EditorView): Promise<FormatResult> {
+  return format(view, { explicit: false, selectionOnly: false, onSave: true, safeFix: true });
+}
+
 async function format(view: EditorView, opts: FormatDocumentOptions): Promise<FormatResult> {
   const { project, settings } = useProject.getState();
   const guard = formatGuardOptions(settings);
   const path = docOf(view)?.path;
-  if (path && formatExcluded(path, project?.root ?? null, guard.doNotFormat)) {
+  if (!opts.safeFix && path && formatExcluded(path, project?.root ?? null, guard.doNotFormat)) {
     if (opts.explicit)
       showHint(view, "Formatting is turned off for this file (Code Style › Formatter › Do not format)");
     return NOTHING;
   }
   const own = contributedAt<ContributedFormatter>(view.state, CONTRIBUTED_FORMAT, 0);
-  if (own && !opts.tool) {
+  if (own && !opts.tool && !opts.safeFix) {
     if (opts.onSave && !settings?.editor?.formatOnSave) return NOTHING;
     return applyContributedFormat(view, own, opts, guard);
   }
@@ -168,7 +176,9 @@ async function format(view: EditorView, opts: FormatDocumentOptions): Promise<Fo
       targets.map((target) => {
         const range = target && { start: offsetToPos(state.doc, target.from), end: offsetToPos(state.doc, target.to) };
         return lspRequest(() =>
-          commands.lspFormat(doc.doc, range, { ...options, onSave: opts.onSave, tool: opts.tool }),
+          opts.safeFix
+            ? commands.ruffFix(doc.doc)
+            : commands.lspFormat(doc.doc, range, { ...options, onSave: opts.onSave, tool: opts.tool }),
         );
       }),
     );
@@ -182,14 +192,21 @@ async function format(view: EditorView, opts: FormatDocumentOptions): Promise<Fo
             oxfmt: { failed: "oxfmt formatting failed", timedOut: "oxfmt formatting timed out" },
             biome: { failed: "Biome formatting failed", timedOut: "Biome formatting timed out" },
             dprint: { failed: "dprint formatting failed", timedOut: "dprint formatting timed out" },
-            ruff: { failed: "Ruff formatting failed", timedOut: "Ruff formatting timed out" },
+            ruff: {
+              failed: opts.safeFix ? "Ruff safe fixes failed" : "Ruff formatting failed",
+              timedOut: opts.safeFix ? "Ruff safe fixes timed out" : "Ruff formatting timed out",
+            },
             black: { failed: "Black formatting failed", timedOut: "Black formatting timed out" },
           }[e.data.tool]
         : undefined;
     if (e instanceof IpcError && e.data?.type === "tool" && formatter) {
       const tool = e.data.tool;
       if (e.kind === "notFound" && e.data.missing) {
-        await executeAction("tools.promptInstall", { name: tool, sticky: !opts.onSave, formatter: true });
+        await executeAction("tools.promptInstall", {
+          name: tool,
+          sticky: !opts.onSave,
+          formatter: !opts.safeFix,
+        });
         // The formatter is not installed: a batch counts the file as having none.
         return { ...NOTHING, noFormatter: true };
       } else if (e.kind !== "cancelled") {
@@ -212,9 +229,15 @@ async function format(view: EditorView, opts: FormatDocumentOptions): Promise<Fo
     if (opts.explicit) showHint(view, "The file changed while formatting; try again");
     return NOTHING;
   }
-  const changes = guardFormatChanges(state.doc.toString(), disjoint(formatted), guard);
+  const changes = opts.safeFix
+    ? disjoint(formatted)
+    : guardFormatChanges(state.doc.toString(), disjoint(formatted), guard);
   if (!changes.length) {
-    if (opts.explicit) showHint(view, "No lines changed: content is already properly formatted");
+    if (opts.explicit)
+      showHint(
+        view,
+        opts.safeFix ? "No safe lint fixes to apply" : "No lines changed: content is already properly formatted",
+      );
     return NOTHING;
   }
   view.dispatch({

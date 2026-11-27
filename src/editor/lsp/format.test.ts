@@ -1,7 +1,7 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EditorState, Text } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { CONTRIBUTED_FORMAT } from "@/editor/api";
+import { _saveParticipants, CONTRIBUTED_FORMAT } from "@/editor/api";
 import { useProject } from "@/platform/project";
 import type { Settings } from "@/bindings";
 import {
@@ -12,11 +12,20 @@ import {
   type FormatGuardOptions,
 } from "@/platform/formatGuard";
 import { indentExtension } from "@/editor/core/cm/setup";
-import { IpcError } from "@/platform/ipc";
+import { commands, IpcError } from "@/platform/ipc";
 import type { TextEdit } from "@/bindings";
 import { dedentsToColumnZero, formatDocument, formatOptionsOf, formattedLines } from "./format";
-import { formatsOnSave } from "./actions";
+import { formatsOnSave, registerFormatOnSave, ruffFixesOnSave } from "./actions";
 import * as lsp from "./lsp";
+
+const ruffFix = vi.hoisted(() => vi.fn());
+vi.mock("@/platform/ipc", async (original) => {
+  const real = await original<typeof import("@/platform/ipc")>();
+  return {
+    ...real,
+    commands: { ...real.commands, ruffFix: (...args: unknown[]) => ruffFix(...args) },
+  };
+});
 
 describe("formatOptionsOf", () => {
   const stateWith = (...args: Parameters<typeof indentExtension>) =>
@@ -188,6 +197,11 @@ describe("format on save provider isolation", () => {
     expect(formatsOnSave(settings({ biome: { runOnSave: true } }), "markdown")).toBe(false);
     expect(formatsOnSave(settings({ ruff: { runOnSave: true } }), "python")).toBe(true);
     expect(formatsOnSave(settings({ ruff: { runOnSave: true } }), "typescript")).toBe(false);
+    const safeFixes = settings({ ruff: { runOnSave: false, fixOnSave: true } });
+    expect(ruffFixesOnSave(safeFixes, "python")).toBe(true);
+    expect(ruffFixesOnSave(safeFixes, "typescript")).toBe(false);
+    expect(formatsOnSave(safeFixes, "python")).toBe(false);
+    expect(ruffFixesOnSave(settings({ ruff: { runOnSave: true } }), "python")).toBe(false);
     expect(formatsOnSave(settings({}), "typescript")).toBe(false);
     // dprint's configuration decides which files it formats.
     expect(formatsOnSave(settings({ dprint: { runOnSave: true } }), "toml")).toBe(true);
@@ -207,6 +221,40 @@ const viewOf = () =>
 /** A server answering every request, range or not, with edits for the whole file. */
 const wholeFile = (): TextEdit[] =>
   lines.map((_, line) => ({ range: { start: { line, col: 1 }, end: { line, col: 3 } }, new_text: " " }));
+
+describe("Ruff safe fixes on save", () => {
+  beforeEach(() => ruffFix.mockReset());
+  afterEach(() => vi.restoreAllMocks());
+
+  it("saving applies the safe-fix command without invoking a formatter", async () => {
+    const previous = useProject.getState();
+    const dispose = registerFormatOnSave();
+    const participant = _saveParticipants().find(({ id }) => id === "lsp.formatOnSave")!;
+    useProject.setState({
+      settings: {
+        editor: { codeStyle: { doNotFormat: ["*.py"] } },
+        languages: { ruff: { fixOnSave: true } },
+      } as Settings,
+    });
+    const view = viewOf();
+    const formatting = vi.spyOn(commands, "lspFormat");
+    vi.spyOn(lsp, "lspRequest").mockImplementation(async (run) => {
+      await run();
+      return wholeFile();
+    });
+    ruffFix.mockResolvedValue({ status: "ok", data: wholeFile() });
+    try {
+      await participant.beforeSave(lsp.docOf(view)!, { view } as never, "explicit");
+      expect(ruffFix).toHaveBeenCalledExactlyOnceWith(1);
+      expect(formatting).not.toHaveBeenCalled();
+      expect(view.state.doc.toString()).toBe(["a =  1", "b =  2", "c =  3"].join("\n"));
+    } finally {
+      dispose();
+      view.destroy();
+      useProject.setState(previous);
+    }
+  });
+});
 
 describe("formatting given ranges (Only VCS changed text)", () => {
   const lineRange = (view: EditorView, n: number) => ({
