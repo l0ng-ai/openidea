@@ -92,6 +92,14 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(k.unknownActions).toEqual([]);
   });
 
+  it("maps Compare File with Editor", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="C" parent="$default"><action id="CompareFileWithEditor"><keyboard-shortcut first-keystroke="ctrl alt D"/></action></keymap>`,
+    );
+    expect(k.overrides["diff.compareFileWithEditor"]).toEqual([normalizeBinding("Ctrl+Alt+D")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
   it("maps Increase / Decrease Font Size in All Editors", () => {
     const k = parseIdeaKeymap(
       `<keymap name="F" parent="Mac OS X 10.5+"><action id="EditorIncreaseFontSizeGlobal"><keyboard-shortcut first-keystroke="shift meta EQUALS"/></action><action id="EditorDecreaseFontSizeGlobal"><keyboard-shortcut first-keystroke="shift meta MINUS"/></action></keymap>`,
