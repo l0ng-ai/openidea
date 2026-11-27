@@ -272,7 +272,7 @@ describe("staging operations of the tree's nodes", () => {
     expect(groups[0]).toEqual(
       staging
         ? ["Stage", "Unstage", "vcs.stashSelected", "vcs.rollbackUnstaged", "Delete…"]
-        : ["Commit File…", "vcs.rollback", "vcs.changelist.move", "vcs.changelist.new"],
+        : ["Commit File…", "vcs.rollback", "vcs.changelist.move"],
     );
     expect(groups[1]).toEqual([
       "Show Diff",
@@ -283,6 +283,7 @@ describe("staging operations of the tree's nodes", () => {
       "Copy File Name",
     ]);
     expect(groups).toContainEqual([
+      ...(staging ? [] : ["vcs.changelist.new"]),
       "vcs.createPatch",
       "vcs.copyPatch",
       "vcs.shelve",
