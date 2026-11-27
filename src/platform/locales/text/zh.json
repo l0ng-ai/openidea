@@ -1672,7 +1672,12 @@
   "Create Branch": "创建分支",
   "Create New Branch": "创建新分支",
   "Create New Test…": "创建新测试…",
+  "Create Test…": "创建测试…",
+  "This is a test file": "这是测试文件",
   "Choose Test for {stem} ({count} found)": "选择 {stem} 的测试（找到 {count} 项）",
+  "Create Test for {file}": "为 {file} 创建测试",
+  "No functions or methods to test": "没有可测试的函数或方法",
+  "The chosen tests already exist": "所选测试已存在",
   "Choose Test Subject for {stem} ({count} found)": "选择 {stem} 的被测代码（找到 {count} 项）",
   "Create Patch": "创建补丁",
   "Create Patch…": "创建补丁…",
@@ -10474,6 +10479,8 @@
   "Interface name": "接口名",
   "Type alias": "类型别名",
   "Type parameter": "类型参数",
+  "Abstract class name": "抽象类名",
+  "Enum name": "枚举名",
   "Change Project Icon…": "更改项目图标…",
   "Reset Project Icon": "重置项目图标",
   "Cannot change the project icon": "无法更改项目图标",
@@ -10804,5 +10811,6 @@
   "calc.py": "calc.py",
   "Files, or a class or function in one: calc.py::Stock.take": "文件，或文件中的某个类或函数：calc.py::Stock.take",
   "e.g. -o ELLIPSIS -o NORMALIZE_WHITESPACE": "例如 -o ELLIPSIS -o NORMALIZE_WHITESPACE",
-  "Run doctests": "运行 doctest"
+  "Run doctests": "运行 doctest",
+  "Select a Docker server for '{0}' before running it": "运行“{0}”前请选择 Docker 服务器"
 }

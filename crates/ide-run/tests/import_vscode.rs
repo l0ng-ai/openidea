@@ -385,6 +385,8 @@ fn attach_requests_become_remote_debug_configurations() {
               "restart": { "delay": 500, "maxAttempts": 5 } },
             { "name": "Attach to PID", "type": "debugpy", "request": "attach", "processId": "${command:pickProcess}" },
             { "name": "Debug server", "type": "debugpy", "request": "attach", "listen": { "port": 5679 } },
+            { "name": "Debug server (all interfaces)", "type": "debugpy", "request": "attach",
+              "listen": { "host": "0.0.0.0", "port": 5680 } },
             { "name": "Odd", "type": "node", "request": "test" }
         ]
     }"#);
@@ -394,6 +396,8 @@ fn attach_requests_become_remote_debug_configurations() {
         server.extras.params,
         BTreeMap::from([("host".into(), "localhost".into()), ("port".into(), "5679".into())])
     );
+    // The bind address is not one a program can connect to.
+    assert_eq!(get(&r, "Debug server (all interfaces)").extras.params["host"], "localhost");
     let py = get(&r, "Attach (container)");
     assert_eq!((py.kind.as_str(), py.command.as_str()), ("python-remote", ""));
     assert_eq!(py.debug_adapter.as_deref(), Some("debugpy"));
