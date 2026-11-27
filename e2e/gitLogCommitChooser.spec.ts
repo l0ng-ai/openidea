@@ -65,7 +65,8 @@ test("Git Log commit choices fit their rows and navigate by keyboard after filte
   await expect(filter).toBeFocused();
   await expect(options).toHaveCount(2);
   const before = (await chooser.boundingBox())!;
-  expect(before.height).toBeLessThan(200);
+  // Two rows under the title, and the Close button a macOS sheet without buttons gets.
+  expect(before.height).toBeLessThan(260);
   const first = options.filter({ hasText: firstSubject });
   const subject = first.getByText(firstSubject, { exact: true });
   const author = first.getByText("Priya Kapoor", { exact: true });
