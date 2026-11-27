@@ -240,9 +240,7 @@ fn settings_set_now(
     value: &str,
 ) -> IdeResult<Settings> {
     let applied = ide_host::ops::project::set_settings(&state.host, window, scope, key, value)?;
-    if key == "mcpServer" || key.starts_with("mcpServer.") {
-        state.host.mcp.apply(&state.host);
-    }
+    ide_host::ops::project::apply_setting(&state.host, window, key);
     if key == "toolDownloads" || key.starts_with("toolDownloads.") {
         state.plugins.set_downloads(state.host.global_settings.effective().tool_downloads);
     }
