@@ -542,8 +542,9 @@ impl Smoke {
         self.restore(doc, &before).await;
     }
 
-    /// Completion at the end of the typed line, once it has items, has none labelled `label`.
-    async fn not_offered(&self, typed: Typed, label: &str) {
+    /// Completion at the end of the typed line, once it offers the auto-import `control`, has
+    /// none labelled `label`.
+    async fn not_offered(&self, typed: Typed, label: &str, control: &str) {
         let (doc, pos, before) = self.type_line(typed).await;
         self.retry("completion without the item", self.warm_up, || async {
             let list = ops::lsp::lsp_completion(&self.host, WINDOW, RequestId(7), doc, pos, None).await;
@@ -551,7 +552,8 @@ impl Smoke {
                 Ok(l) => l.items.into_iter().map(|i| i.label).collect(),
                 Err(e) => vec![e.to_string()],
             };
-            if labels.is_empty() || labels.iter().any(|l| l == label) { Err(labels) } else { Ok(()) }
+            let has = |name: &str| labels.iter().any(|l| l == name);
+            if has(control) && !has(label) { Ok(()) } else { Err(labels) }
         })
         .await;
         self.restore(doc, &before).await;
@@ -726,10 +728,16 @@ async fn typescript_import_style() {
                     "include": ["src"]}"#,
             ),
             ("src/lib/alpha.ts", "export function alphaHelper(): number {\n  return 1;\n}\n"),
+            // Never excluded, and matching what is typed (tsserver offers only those): the
+            // auto-import candidates are in the completion list.
+            ("src/lib/betaWord.ts", "export function betaWord(): number {\n  return 3;\n}\n"),
+            ("src/lib/hints.ts", "export function alphaHint(): number {\n  return 4;\n}\n"),
             ("src/app/components/index.ts", "export function betaWidget(): number {\n  return 2;\n}\n"),
             ("src/app/main.ts", "export const ready = true;\n"),
             ("src/app/other.ts", "export const other = true;\n"),
             ("src/app/third.ts", "export const third = true;\n"),
+            ("src/app/fourth.ts", "export const fourth = true;\n"),
+            ("src/app/fifth.ts", "export const fifth = true;\n"),
         ],
         ..TYPESCRIPT
     };
@@ -757,9 +765,17 @@ async fn typescript_import_style() {
     // tsserver keeps the auto-import candidates of the file it last completed in until the
     // program changes; other files see an exclusion at once.
     set("autoImportFileExcludePatterns", r#"["**/index.ts"]"#);
-    smoke.not_offered(typed("src/app/other.ts", "export const other", "betaW"), "betaWidget").await;
+    smoke.not_offered(typed("src/app/other.ts", "export const other", "betaW"), "betaWidget", "betaWord").await;
     set("autoImportSpecifierExcludeRegexes", r#"["lib/alpha$"]"#);
-    smoke.not_offered(typed("src/app/third.ts", "export const third", "alphaH"), "alphaHelper").await;
+    smoke.not_offered(typed("src/app/third.ts", "export const third", "alphaH"), "alphaHelper", "alphaHint").await;
+
+    // Emptied lists reach the server too: the symbols are offered again.
+    set("autoImportFileExcludePatterns", "[]");
+    let beta = typed("src/app/fourth.ts", "export const fourth", "betaW");
+    smoke.auto_import(import(beta, "betaWidget", r#"from "./components""#)).await;
+    set("autoImportSpecifierExcludeRegexes", "[]");
+    let alpha = typed("src/app/fifth.ts", "export const fifth", "alphaH");
+    smoke.auto_import(import(alpha, "alphaHelper", r#"from "../lib/alpha""#)).await;
 }
 
 /// The latest `tsc` diagnostics of `path` (Problems › TypeScript Project Errors), `None` before any.
