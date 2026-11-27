@@ -214,6 +214,7 @@ describe("languages settings", () => {
       languages: ["python"],
       prefer: false,
       runOnSave: false,
+      fixOnSave: false,
     });
     const v = validateLanguages({
       ruff: {
@@ -222,6 +223,7 @@ describe("languages settings", () => {
         languages: ["python", null, "python", "pyi"],
         prefer: true,
         runOnSave: true,
+        fixOnSave: true,
       },
     });
     expect(v.ruff).toEqual({
@@ -230,8 +232,11 @@ describe("languages settings", () => {
       languages: ["python", "pyi"],
       prefer: true,
       runOnSave: true,
+      fixOnSave: true,
     });
     expect(v.prettier).toEqual(DEFAULT_LANGUAGES.prettier);
+    expect(validateLanguages({ ruff: { fixOnSave: "yes" } }).ruff.fixOnSave).toBe(false);
+    expect(validateLanguages({ ruff: { runOnSave: true } }).ruff.fixOnSave).toBe(false);
   });
 
   it("leaves the Markdown preview font size unset (editor font) and keeps a set one in 8..72", () => {
@@ -412,6 +417,7 @@ describe("language pages", () => {
       "Dependencies",
       "Docstrings",
       "Testing",
+      "Profiler",
       "Ruff",
       "Black formatter",
     ]);
@@ -420,6 +426,7 @@ describe("language pages", () => {
       "python.interpreter",
       "python.docstrings",
       "python.testing",
+      "python.profiler",
       "python.ruff",
       "python.black",
     ]);

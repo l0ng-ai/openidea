@@ -235,6 +235,7 @@ export const intellijWindows: Record<string, string[]> = {
   "file.projectStructure": ["Ctrl+Alt+Shift+S"],
   "file.openProject": [],
   "file.newScratchFile": ["Ctrl+Alt+Shift+Insert"],
+  "file.newScratchBuffer": [],
   "editor.closeTab": ["Ctrl+F4"],
   "toolwindow.closeContent": ["Ctrl+F4", "Ctrl+Shift+F4"],
   "editor.reopenClosedTab": [],

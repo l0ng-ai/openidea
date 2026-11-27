@@ -12,6 +12,7 @@ pub mod java_agent;
 pub mod java_cmdline;
 pub mod java_hotswap;
 pub mod junit;
+pub mod plots;
 mod process;
 pub mod python_path;
 pub mod ruby_preload;

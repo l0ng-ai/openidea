@@ -364,6 +364,7 @@ pub fn client_accepts(event: &IdeEvent, trusted: bool) -> bool {
         | IdeEvent::UpdateAvailable { .. } => false,
         IdeEvent::McpRequest { .. } | IdeEvent::McpRequestClosed { .. } => trusted,
         IdeEvent::DbSourcesChanged
+        | IdeEvent::PlotAdded { .. }
         | IdeEvent::ProjectTrustChanged { .. }
         | IdeEvent::Direnv { .. }
         | IdeEvent::FlutterDevices { .. }

@@ -24,6 +24,8 @@ use std::time::{Duration, Instant};
 pub struct Project {
     pub(crate) trusted: Arc<AtomicBool>,
     pub(crate) files_events_active: Arc<AtomicBool>,
+    /// Cancelled synchronously when this project incarnation begins closing.
+    pub(crate) closed: CancellationToken,
     pub root: PathBuf,
     /// Window-scoped event sink, for commands that emit project events.
     pub sink: SharedSink,
@@ -85,6 +87,8 @@ pub struct Project {
     pub(crate) git_metadata: Option<Arc<ide_vcs::MetadataWatch>>,
     /// Picks up data sources edited on disk outside the Database tool window.
     _db_sources_watch: Option<ide_db::SourcesWatch>,
+    /// The Plots tool window's folder watch, started by the first Python run ([`crate::ops::plots`]).
+    pub(crate) plots_watch: Mutex<Option<notify::RecommendedWatcher>>,
     /// A LightEdit window's loose files ([`Host::open_light`]): global settings only,
     /// nothing indexed, no language servers, repositories or project services.
     pub light: bool,
@@ -671,6 +675,7 @@ impl Host {
         let project = Arc::new(Project {
             plugin_diagnostics,
             trusted,
+            closed: CancellationToken::new(),
             flutter: ide_flutter::FlutterDaemon::new(
                 root.clone(),
                 sink.clone(),
@@ -713,6 +718,7 @@ impl Host {
             _scratch_watcher: scratch_watcher,
             git_metadata,
             _db_sources_watch: db_sources_watch,
+            plots_watch: Mutex::default(),
             files_events_active,
             light: false,
         });
@@ -942,6 +948,7 @@ impl Host {
         let project = Arc::new(Project {
             plugin_diagnostics,
             trusted: Arc::new(AtomicBool::new(false)),
+            closed: CancellationToken::new(),
             flutter: ide_flutter::FlutterDaemon::new(
                 dir.clone(),
                 sink.clone(),
@@ -983,6 +990,7 @@ impl Host {
             _scratch_watcher: None,
             git_metadata: None,
             _db_sources_watch: None,
+            plots_watch: Mutex::default(),
             files_events_active: Arc::new(AtomicBool::new(false)),
             light: true,
             root: dir,
