@@ -442,6 +442,19 @@ export const lineChanges = Facet.define<readonly LineChange[], readonly LineChan
   combine: (values) => values[0] ?? [],
 });
 
+/**
+ * Settings › Editor › General › Gutter: where the VCS change markers show. Set from the
+ * editor settings; the scrollbar marks follow the gutter setting, as in IDEA.
+ */
+export interface ChangeMarkerDisplay {
+  gutter: boolean;
+  scrollbar: boolean;
+}
+
+export const changeMarkerDisplay = Facet.define<ChangeMarkerDisplay, ChangeMarkerDisplay>({
+  combine: (values) => values[0] ?? { gutter: true, scrollbar: true },
+});
+
 /** Marker for `gutterLaneMarkers`: a solid 3px bar (or a small wedge for `deleted`). */
 export class LaneMarker extends GutterMarker {
   constructor(

@@ -4373,5 +4373,8 @@
   "manage.py Tasks": "manage.py Tasks",
   "Install django-types to complete Django model fields and managers": "Install django-types to complete Django model fields and managers",
   "Installing django-types": "Installing django-types",
-  "Cannot install django-types": "Cannot install django-types"
+  "Cannot install django-types": "Cannot install django-types",
+  "Gutter": "Gutter",
+  "Highlight modified lines in the gutter": "Highlight modified lines in the gutter",
+  "Highlight modified lines in error stripe on the scrollbar": "Highlight modified lines in error stripe on the scrollbar"
 }
