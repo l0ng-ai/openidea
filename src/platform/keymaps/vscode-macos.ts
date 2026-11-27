@@ -36,6 +36,8 @@ export const vscodeMacos: Record<string, string[]> = {
   "db.addRow": [],
   "db.deleteRows": [],
   "db.restoreRows": [],
+  "db.revertSelected": ["Meta+Alt+Z"],
+  "db.copyAggregationResult": [],
   "db.exportData": [],
   "db.editCell": [],
   "navigate.relatedSymbol": [],

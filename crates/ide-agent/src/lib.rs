@@ -5105,7 +5105,8 @@ fn tool_event(
     i: usize,
     entry: &AgentEntry,
 ) -> Option<AgentEvent> {
-    let AgentEntry::Tool { id, title, kind, status, locations, images, output, diffs, started_ms, ended_ms } = entry
+    let AgentEntry::Tool { id, title, kind, status, locations, images, output, diffs, started_ms, ended_ms, command } =
+        entry
     else {
         return None;
     };
@@ -5120,6 +5121,7 @@ fn tool_event(
         diffs: diffs.clone(),
         started_ms: *started_ms,
         ended_ms: *ended_ms,
+        command: command.clone(),
     };
     let text = output.as_deref().unwrap_or_default();
     let key = (subagent, i);

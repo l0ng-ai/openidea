@@ -1,9 +1,9 @@
-//! Data source files edited outside the Database tool window (by hand, by a coding
-//! agent, by `git checkout`) are picked up while the project is open, as IDEA does
+//! Data source and data source folder files edited outside the Database tool window
+//! (by hand, by a coding agent, by `git checkout`) are picked up while the project is open, as IDEA does
 //! for `dataSources.xml`. The project file tree's watcher is no help here: it never
 //! reports a modification inside a gitignored `.openidea/`.
 
-use crate::source::FILE;
+use crate::source::{FILE, FOLDERS_FILE};
 use ide_core::{IdeError, IdeResult, project_dir};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use parking_lot::Mutex;
@@ -15,8 +15,8 @@ use std::time::Duration;
 /// the files are read.
 const SETTLE: Duration = Duration::from_millis(200);
 
-/// Watches `<root>/.openidea/data-sources.toml` and `<global>/data-sources.toml`;
-/// stops when dropped.
+/// Watches `<root>/.openidea/data-sources.toml`, `data-source-folders.toml` and
+/// `<global>/data-sources.toml`; stops when dropped.
 pub struct SourcesWatch {
     _watcher: Arc<Mutex<RecommendedWatcher>>,
 }
@@ -29,7 +29,7 @@ impl SourcesWatch {
         let (tx, rx) = mpsc::channel::<()>();
         let relevant = {
             let config = config.clone();
-            move |p: &Path| p.file_name().is_some_and(|n| n == FILE) || p == config
+            move |p: &Path| p.file_name().is_some_and(|n| n == FILE || n == FOLDERS_FILE) || p == config
         };
         let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
             if let Ok(e) = res
@@ -130,6 +130,10 @@ mod tests {
         let seen = count.load(Ordering::SeqCst);
         std::fs::write(project.join(".openidea/data-sources.toml"), "").unwrap();
         assert!(wait_for(&count, seen + 1), "project file");
+
+        let seen = count.load(Ordering::SeqCst);
+        std::fs::write(project.join(".openidea/data-source-folders.toml"), "").unwrap();
+        assert!(wait_for(&count, seen + 1), "project folders file");
 
         let seen = count.load(Ordering::SeqCst);
         std::fs::write(global.join("data-sources.toml"), "").unwrap();

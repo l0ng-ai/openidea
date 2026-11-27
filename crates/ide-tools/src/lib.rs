@@ -452,6 +452,26 @@ pub fn managed_bundle(app_data: &Path, name: &str) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
+/// The `location` of the npm tsserver plugin `name` (the folder holding its `node_modules`),
+/// when the package is installed at the registry's pinned version.
+pub fn managed_npm_plugin(app_data: &Path, name: &str) -> Option<PathBuf> {
+    let spec = registry::find(name)?;
+    let root = tools_dir(app_data);
+    npm_plugin_version(&root, spec)?.1.then_some(root)
+}
+
+/// The installed version of an npm plugin's package, and whether it is the pinned one
+/// (any version when unpinned). `None` for other tools or when it is not installed.
+fn npm_plugin_version(root: &Path, spec: &ToolSpec) -> Option<(String, bool)> {
+    let (ToolKind::Plugin, Method::Npm { packages }) = (spec.kind, spec.method) else { return None };
+    let pkg = npm_name(packages[0]);
+    let json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("node_modules").join(pkg).join("package.json")).ok()?).ok()?;
+    let version = json.get("version")?.as_str()?.to_string();
+    let pinned = packages[0].get(pkg.len() + 1..).is_none_or(|pin| pin == version);
+    Some((version, pinned))
+}
+
 /// Installer and detector over one tools directory.
 #[derive(Clone)]
 pub struct Tools {
@@ -843,6 +863,16 @@ impl Tools {
             return match bundled::install(&self.root, spec) {
                 Ok(path) => (ToolStatus::Installed, Some(path), Some(version.to_owned())),
                 Err(_) => (ToolStatus::Missing, None, None),
+            };
+        }
+        if let (ToolKind::Plugin, Method::Npm { packages }) = (spec.kind, spec.method) {
+            return match npm_plugin_version(&self.root, spec) {
+                Some((version, true)) => (
+                    ToolStatus::Installed,
+                    Some(self.root.join("node_modules").join(npm_name(packages[0]))),
+                    Some(version),
+                ),
+                _ => (ToolStatus::Missing, None, None),
             };
         }
         let main = spec.commands[0];

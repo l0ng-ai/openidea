@@ -6,8 +6,9 @@
  */
 import { lazyComponent, lazyWhen, type MenuItem } from "@/ui";
 import { activeEditor, lazyEditorExtension, registerEditorContribution } from "@/editor/api";
+import { onFileOperation } from "@/platform/fileOps";
 import { tx } from "@/platform/i18n";
-import { call, commands, onIdeEvent } from "@/platform/ipc";
+import { call, commands, emitLocalIdeEvent, onIdeEvent } from "@/platform/ipc";
 import { registerActions, type ActionContext } from "@/platform/actions";
 import { activeCellGrid } from "./cellActions";
 import {
@@ -18,9 +19,11 @@ import {
   type TableCommandTarget,
 } from "./tableEditorFocus";
 import { useProject } from "@/platform/project";
+import { useRemote } from "@/platform/remote";
 import {
   registerEditorKind,
   registerOverlay,
+  registerProjectViewRoot,
   registerServiceView,
   registerToolWindow,
   setFileDecorations,
@@ -43,6 +46,7 @@ import {
   inEditorResults,
   setInEditorResults,
   loadSources,
+  loadSourceFolders,
   connect,
   loadSchemas,
   loadDatabases,
@@ -71,7 +75,11 @@ function consoleStartSchema(arg: unknown, id: string): string | undefined {
 
 function useDatabaseHeaderMenu(): MenuItem[] {
   const separate = useDatabase((s) => s.separateProceduresAndFunctions);
-  return [{ kind: "action", action: "db.separateProceduresAndFunctions", checked: separate }];
+  const comments = useDatabase((s) => s.showTableComments);
+  return [
+    { kind: "action", action: "db.separateProceduresAndFunctions", checked: separate },
+    { kind: "action", action: "db.showTableComments", checked: comments },
+  ];
 }
 
 const useDialogOpen = () => useDatabase((s) => !!s.dialog);
@@ -87,6 +95,7 @@ const TABLE_COMMANDS: Array<[TableCommand, string, string, string[]]> = [
   ["exportData", "db.exportData", "Export Data", ["export", "save as"]],
   ["deleteRows", "db.deleteRows", "Delete Rows", ["remove rows"]],
   ["restoreRows", "db.restoreRows", "Restore Rows", ["undelete rows"]],
+  ["revertRows", "db.revertSelected", "Revert Selected", ["revert rows", "discard row changes", "undo"]],
 ];
 
 /** The editor and rows a menu passed (focus has moved to the menu), else the focused grid's. */
@@ -121,14 +130,16 @@ function registerDatabaseWindow(): () => void {
     const seq = ++probe;
     sync(false);
     if (!useProject.getState().project) return;
-    call(commands.dbSources()).then(
-      (sources) => seq === probe && !useDatabase.getState().loaded && sync(sources.length > 0),
-      () => {},
-    );
+    Promise.resolve()
+      .then(() => call(commands.dbSources()))
+      .then(
+        (sources) => seq === probe && !useDatabase.getState().loaded && sync(sources.length > 0),
+        () => {},
+      );
   };
   check();
   const offSources = useDatabase.subscribe((s) => {
-    if (s.loaded) sync(s.sources.length > 0);
+    if (s.loaded) sync(s.sources.length > 0 || (s.foldersLoaded && s.folders.length > 0));
   });
   const offProject = useProject.subscribe((s, prev) => {
     if (s.project?.root !== prev.project?.root) check();
@@ -142,9 +153,45 @@ function registerDatabaseWindow(): () => void {
 }
 
 export function activate(): () => void {
+  let disposed = false;
+  let unregisterConsolesRoot = () => {};
+  let consolesDir: string | null = null;
+  let consolesRootGeneration = 0;
+  const registerConsolesRoot = () => {
+    const current = ++consolesRootGeneration;
+    unregisterConsolesRoot();
+    unregisterConsolesRoot = () => {};
+    consolesDir = null;
+    void call(commands.dbConsolesDir())
+      .then((path) => {
+        if (disposed || current !== consolesRootGeneration) return;
+        consolesDir = path;
+        unregisterConsolesRoot = registerProjectViewRoot({
+          id: "db-consoles",
+          label: tx("Database Consoles"),
+          icon: "db-folder",
+          path,
+          order: 20,
+          scope: "scratches",
+        });
+      })
+      .catch((e: unknown) => console.warn("database consoles: no consoles folder", e));
+  };
+  registerConsolesRoot();
   const disposers = [
+    useRemote.subscribe((state, previous) => {
+      if (state.session !== previous.session) registerConsolesRoot();
+    }),
+    onFileOperation((op) => {
+      const removed =
+        consolesDir && op.kind === "deleted"
+          ? op.paths.filter((path) => path === consolesDir || path.startsWith(`${consolesDir}/`))
+          : [];
+      if (removed.length) emitLocalIdeEvent({ type: "fsChanged", created: [], modified: [], removed });
+    }),
     onIdeEvent("dbSourcesChanged", () => {
       void loadSources();
+      void loadSourceFolders();
     }),
     registerDatabaseWindow(),
     registerServiceView({
@@ -194,7 +241,9 @@ export function activate(): () => void {
       if (s.project?.root === prev.project?.root) return;
       useDatabase.setState({
         sources: [],
+        folders: [],
         loaded: false,
+        foldersLoaded: false,
         connected: new Set(),
         databases: {},
         catalogs: {},
@@ -443,5 +492,10 @@ export function activate(): () => void {
       },
     ]),
   ];
-  return () => disposers.reverse().forEach((d) => d());
+  return () => {
+    disposed = true;
+    consolesRootGeneration++;
+    unregisterConsolesRoot();
+    disposers.reverse().forEach((d) => d());
+  };
 }
