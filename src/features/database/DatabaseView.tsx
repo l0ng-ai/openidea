@@ -702,8 +702,8 @@ export function DatabaseView() {
             }
           }}
           activateExpandable={(n) => n.kind === "table"}
-          onContextMenu={(n, _sel, e) => {
-            const items = nodeMenu(n);
+          onContextMenu={(n, selection, e) => {
+            const items = nodeMenu(n, shownNodes(selection));
             if (items.length) showContextMenu(e, items);
           }}
           speedSearch
@@ -720,6 +720,7 @@ export function DatabaseView() {
  */
 function DatabaseToolbar() {
   const node = useDatabase((s) => s.selectedNode);
+  const selectedNodes = useDatabase((s) => s.selectedNodes);
   const connected = useDatabase((s) => s.connected);
   const sources = useDatabase((s) => s.sources);
   const plus = useRef<HTMLButtonElement>(null);
@@ -727,7 +728,13 @@ function DatabaseToolbar() {
   const setNewOpen = (v: boolean) => useDatabase.setState({ newMenuOpen: v });
   const table = node?.kind === "table" || node?.kind === "column" || node?.kind === "group";
   const target = node ? nodeTarget(node) : sources.length === 1 ? (sources[0]!.id ?? null) : null;
-  const active = !!target && [...connected].some((t) => splitTarget(t).id === splitTarget(target).id);
+  const selectedSources = selectedNodes.filter((selected) => selected.kind === "source");
+  const multiSource = selectedSources.length > 1;
+  const active = multiSource
+    ? selectedSources.some((selected) =>
+        [...connected].some((connectedTarget) => splitTarget(connectedTarget).id === selected.source.id),
+      )
+    : !!target && [...connected].some((t) => splitTarget(t).id === splitTarget(target).id);
   const button = { size: "small", iconSize: 16 } as const;
   return (
     <Toolbar className={styles.dbToolbar} aria-label="Database actions">
@@ -749,10 +756,15 @@ function DatabaseToolbar() {
         onClose={() => setNewOpen(false)}
         aria-label="New"
       />
-      <IconButton {...button} icon="db-properties" action="db.properties" disabled={!sources.length} />
+      <IconButton {...button} icon="db-properties" action="db.properties" disabled={!sources.length || multiSource} />
       <span className={styles.dbToolbarSep} />
       <IconButton {...button} icon="refresh" action="db.refresh" disabled={!sources.length} />
-      <IconButton {...button} icon="db-disconnect" action="db.disconnect" disabled={node ? !active : !connected.size} />
+      <IconButton
+        {...button}
+        icon="db-disconnect"
+        action="db.disconnect"
+        disabled={multiSource ? !active : node ? !active : !connected.size}
+      />
       <span className={styles.dbToolbarSep} />
       <IconButton {...button} icon="db-console" action="db.jumpToConsole" disabled={!target} />
       <IconButton {...button} icon="db-table" action="db.editData" disabled={!table} />
