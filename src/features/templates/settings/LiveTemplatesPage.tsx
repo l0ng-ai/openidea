@@ -1,5 +1,5 @@
 /** Settings › Editor › Live Templates. */
-import { useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { Button, Checkbox, IconButton, Input, SplitGroup, SplitHandle, SplitPanel, T } from "@/ui";
 import { bodyVariables, type LiveTemplate, type TemplateVariable } from "../live/model";
@@ -16,6 +16,7 @@ import {
 import { BUILTIN_IDS } from "../live/builtins";
 import styles from "./Settings.module.css";
 import { tx } from "@/platform/i18n";
+import { useSettingsPageFocus } from "@/workbench/contributions";
 
 export function groupTemplates(templates: readonly LiveTemplate[], filter: string): Array<[string, LiveTemplate[]]> {
   const q = filter.trim().toLowerCase();
@@ -37,6 +38,23 @@ export function LiveTemplatesPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const groups = useMemo(() => groupTemplates(templates, filter), [templates, filter]);
   const selected = templates.find((t) => t.id === selectedId) ?? null;
+
+  // Opened as `editor.liveTemplates#<id>` (Save as Live Template): select that template.
+  const { focus, consume } = useSettingsPageFocus();
+  useEffect(() => {
+    if (!focus) return;
+    const frame = requestAnimationFrame(() => {
+      setFilter("");
+      setSelectedId(focus);
+      consume();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [focus, consume]);
+  const listRef = useRef<HTMLDivElement>(null);
+  const shownId = selected?.id;
+  useEffect(() => {
+    if (shownId) listRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView?.({ block: "nearest" });
+  }, [shownId]);
 
   const add = () => {
     const t: LiveTemplate = {
@@ -93,7 +111,7 @@ export function LiveTemplatesPage() {
                 aria-label="Filter templates"
               />
             </div>
-            <div className={styles.items} role="listbox" aria-label={tx("Live templates")}>
+            <div ref={listRef} className={styles.items} role="listbox" aria-label={tx("Live templates")}>
               {groups.map(([group, list]) => (
                 <div key={group} role="group" aria-label={group}>
                   <div className={styles.groupHeader}>{group}</div>

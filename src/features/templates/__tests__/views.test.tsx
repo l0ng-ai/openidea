@@ -1,6 +1,6 @@
-import { addContributedSnippets } from "@/workbench/contributions";
-import { describe, expect, it } from "vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { addContributedSnippets, SettingsPageFocusContext } from "@/workbench/contributions";
+import { describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { LiveTemplatesPage, groupTemplates } from "../settings/LiveTemplatesPage";
 import { PostfixPage } from "../settings/PostfixPage";
 import { FileTemplatesPage } from "../settings/FileTemplatesPage";
@@ -8,7 +8,7 @@ import { NewFileDialogHost, openNewFileDialog } from "../files/NewFileDialog";
 import { ChooserHost } from "../popup/Chooser";
 import { showChooser } from "../popup/store";
 import { BUILTIN_TEMPLATES } from "../live/builtins";
-import { useLiveTemplates } from "../live/store";
+import { removeTemplate, saveTemplate, useLiveTemplates } from "../live/store";
 import { usePostfixSettings } from "../postfix/store";
 import { reloadFileTemplates, resetInclude, saveInclude, setTemplateScheme, useFileTemplates } from "../files/store";
 import { useProject } from "@/platform/project";
@@ -29,6 +29,49 @@ describe("settings pages", () => {
     expect(screen.getByText("Restore Default")).toBeInTheDocument();
     fireEvent.click(screen.getByText("Restore Default"));
     expect(useLiveTemplates.getState().templates.find((t) => t.id === "java.psvm")?.description).toBe("main() method");
+  });
+
+  it("selects the template it was opened on (Save as Live Template)", async () => {
+    saveTemplate({
+      id: "user.saved",
+      group: "User",
+      abbrev: "abbr",
+      description: "",
+      body: "go($$x);",
+      contexts: ["typescript"],
+    });
+    const consume = vi.fn();
+    const page = (focus: string | null) => (
+      <SettingsPageFocusContext.Provider value={{ focus, consume }}>
+        <LiveTemplatesPage />
+      </SettingsPageFocusContext.Provider>
+    );
+    const view = render(page(null));
+    try {
+      fireEvent.change(screen.getByLabelText("Filter templates"), { target: { value: "psvm" } });
+      expect(screen.getByText("Select a template to edit it")).toBeInTheDocument();
+      view.rerender(page("user.saved"));
+      await waitFor(() => expect(consume).toHaveBeenCalledOnce());
+      expect(screen.getByLabelText("Filter templates")).toHaveValue("");
+      expect(screen.getByRole("option", { selected: true })).toHaveTextContent("abbr");
+      expect(screen.getByLabelText("Template text")).toHaveValue("go($$x);");
+    } finally {
+      view.unmount();
+      removeTemplate("user.saved");
+    }
+  });
+
+  it("shows nothing selected when opened on a template that is gone", async () => {
+    const consume = vi.fn();
+    const view = render(
+      <SettingsPageFocusContext.Provider value={{ focus: "user.missing", consume }}>
+        <LiveTemplatesPage />
+      </SettingsPageFocusContext.Provider>,
+    );
+    await waitFor(() => expect(consume).toHaveBeenCalledOnce());
+    expect(screen.queryByRole("option", { selected: true })).toBeNull();
+    expect(screen.getByText("Select a template to edit it")).toBeInTheDocument();
+    view.unmount();
   });
 
   it("toggles postfix templates", () => {
