@@ -346,7 +346,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.frontend == 'true'
     timeout-minutes: 30
-    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted-light"]') || 'ubuntu-latest' }}
+    # Chromium and vitest need more CPU than the light runners have; GitHub-hosted runners are faster here.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       # scripts/smoke-paths.test.ts runs `cargo metadata`, which is not preinstalled in the runner container.
@@ -391,7 +392,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.e2e == 'true'
     timeout-minutes: 45
-    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted-light"]') || 'ubuntu-latest' }}
+    # Chromium and vitest need more CPU than the light runners have; GitHub-hosted runners are faster here.
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
