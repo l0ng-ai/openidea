@@ -112,6 +112,7 @@
   "menu.code.overrideMethods": "Przesłoń metody…",
   "menu.code.implementMethods": "Zaimplementuj metody…",
   "menu.code.insertLiveTemplate": "Wstaw szablon dynamiczny…",
+  "menu.code.saveAsLiveTemplate": "Zapisz jako szablon dynamiczny…",
   "menu.code.moveLineDown": "Przenieś linię w dół",
   "menu.code.moveLineUp": "Przenieś linię w górę",
   "menu.code.optimizeImports": "Optymalizuj importy",

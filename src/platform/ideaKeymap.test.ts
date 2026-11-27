@@ -147,6 +147,14 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(k.unknownActions).toEqual([]);
   });
 
+  it("maps Save as Live Template, which has no shortcut in the presets", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="E" parent="$default"><action id="SaveAsTemplate"><keyboard-shortcut first-keystroke="ctrl alt shift T"/></action></keymap>`,
+    );
+    expect(k.overrides["code.saveAsLiveTemplate"]).toEqual([normalizeBinding("Ctrl+Alt+Shift+T")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
   it("maps Copy as Plain Text / Copy as Rich Text", () => {
     const k = parseIdeaKeymap(
       `<keymap name="E" parent="Mac OS X 10.5+"><action id="CopyAsPlainText"><keyboard-shortcut first-keystroke="control alt C"/></action><action id="CopyAsRichText"><keyboard-shortcut first-keystroke="control alt shift C"/></action></keymap>`,

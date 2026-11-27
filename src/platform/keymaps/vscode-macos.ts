@@ -64,6 +64,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "code.autoIndentLines": [],
   "code.showErrorDescription": [],
   "code.surroundWithLiveTemplate": [],
+  "code.saveAsLiveTemplate": [],
   "code.moveElementLeft": [],
   "code.moveElementRight": [],
   "analyze.inspectFile": [],

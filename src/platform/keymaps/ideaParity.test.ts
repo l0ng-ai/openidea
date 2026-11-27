@@ -133,6 +133,7 @@ describe("IDEA keymap parity", () => {
     ["code.moveElementLeft", ["Meta+Alt+Shift+Left"], ["Ctrl+Alt+Shift+Left"]],
     ["code.moveElementRight", ["Meta+Alt+Shift+Right"], ["Ctrl+Alt+Shift+Right"]],
     ["code.surroundWithLiveTemplate", ["Meta+Alt+J"], ["Ctrl+Alt+J"]],
+    ["code.saveAsLiveTemplate", [], []],
     ["navigate.customRegion", ["Meta+Alt+."], ["Ctrl+Alt+."]],
     ["navigate.showFilePath", ["Meta+Alt+F12"], ["Ctrl+Alt+F12"]],
     ["navigate.nextHighlightedUsage", ["Ctrl+Alt+Down"], ["Ctrl+Alt+Down"]],

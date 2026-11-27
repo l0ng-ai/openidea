@@ -122,6 +122,7 @@ export const intellijWindows: Record<string, string[]> = {
   "code.surroundWith": ["Ctrl+Alt+T"],
   "code.insertLiveTemplate": ["Ctrl+J"],
   "code.surroundWithLiveTemplate": ["Ctrl+Alt+J"],
+  "code.saveAsLiveTemplate": [],
   "code.fold": ["Ctrl+-"],
   "code.unfold": ["Ctrl+="],
   "code.foldAll": ["Ctrl+Shift+-"],
