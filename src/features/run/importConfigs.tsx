@@ -8,6 +8,7 @@ import type { ReactNode } from "react";
 import { tx, txPart } from "@/platform/i18n";
 import { call, commands, type RunConfig, type RunImport, type RunImportSource, type SkipReason } from "@/platform/ipc";
 import { notifications } from "@/workbench/contributions";
+import { DOCKERFILE, prepareDockerImport } from "../services/runTypes";
 import { loadConfigs, useRun } from "./store";
 
 /** The dialog's link for `source`. */
@@ -121,6 +122,14 @@ export function importSummary(result: RunImport): {
 export async function importConfigs(source: RunImportSource, draft: readonly RunConfig[]): Promise<RunConfig[] | null> {
   try {
     const result = await call(commands.runImportConfigs(source, [...draft]));
+    await Promise.all(
+      result.imported.map(async (entry) => {
+        if (entry.config.kind !== DOCKERFILE) return;
+        entry.config = await prepareDockerImport(entry.config);
+        if (!entry.config.params?.connection)
+          entry.ignored.push(`server-name (${entry.config.params?.serverName || ""})`);
+      }),
+    );
     notifications().notify({ group: "run", key: "run-import", ...importSummary(result) });
     return result.imported.map((c) => c.config);
   } catch (e) {

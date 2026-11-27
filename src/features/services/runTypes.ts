@@ -82,6 +82,7 @@ function runContainer(name: string, image: string, p: Readonly<Record<string, st
 const connectionField = {
   key: "connection",
   label: "Server",
+  required: true,
   control: "select" as const,
   // Read when the form renders: the Services tool window's Docker connections.
   get options() {
@@ -102,6 +103,14 @@ const containerFields: RunConfigTypeContribution["fields"] = [
 /** The connection's environment (daemon selection, docker on `PATH`) for the launched command line. */
 async function withConnection(config: RunConfig): Promise<RunConfig> {
   await loadSettings();
+  if (
+    config.params &&
+    "serverName" in config.params &&
+    config.params.connection !== "default" &&
+    !connections().some((c) => c.id === config.params?.connection)
+  ) {
+    throw new Error(tx`Select a Docker server for '${config.name}' before running it`);
+  }
   const env = await call(commands.dockerRunEnv(endpointOf(config.params?.connection || "default")));
   return { ...config, env: { ...env, ...config.env } };
 }
@@ -166,6 +175,24 @@ export const dockerfileType: RunConfigTypeContribution = {
   },
   prepareLaunch: withConnection,
 };
+
+/** JetBrains stores a server name, while our native Docker form needs a local connection ID. */
+export async function prepareDockerImport(config: RunConfig): Promise<RunConfig> {
+  await loadSettings();
+  const params: Record<string, string> = { ...config.params };
+  const matches = connections().filter((c) => c.name === params.serverName);
+  params.connection = matches.length === 1 ? matches[0]!.id : "";
+  const line = dockerfileType.commandLine(params)!;
+  return {
+    ...config,
+    params,
+    local: true,
+    command: line.command,
+    args: line.args,
+    cwd: line.cwd ?? null,
+    ...(line.stop ? { stopCommand: line.stop } : {}),
+  };
+}
 
 export const dockerImageType: RunConfigTypeContribution = {
   id: DOCKER_IMAGE,
