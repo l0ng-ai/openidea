@@ -52,9 +52,10 @@ function showProfiler() {
   }
 }
 
-const SNAPSHOT_EXTENSIONS = ["cpuprofile", "pstats", "prof"];
+// `.pstat` is what PyCharm saves; other names (`profile.out`) open through "All files".
+const SNAPSHOT_EXTENSIONS = ["cpuprofile", "pstats", "pstat", "prof"];
 
-/** A file the Profiler opens: a V8 `.cpuprofile` or a cProfile `.pstats` / `.prof`. */
+/** A file the Profiler offers to open: a V8 `.cpuprofile` or a cProfile `.pstats` / `.pstat` / `.prof`. */
 export const isSnapshotPath = (path: string) =>
   SNAPSHOT_EXTENSIONS.includes(path.split(".").pop()?.toLowerCase() ?? "");
 
@@ -65,7 +66,10 @@ async function snapshotPaths(arg: unknown): Promise<string[]> {
   return choosePaths({
     directory: false,
     title: tx("Open Snapshot"),
-    filters: [{ name: tx("Profiler snapshots"), extensions: SNAPSHOT_EXTENSIONS }],
+    filters: [
+      { name: tx("Profiler snapshots"), extensions: SNAPSHOT_EXTENSIONS },
+      { name: tx("All files"), extensions: ["*"] },
+    ],
   });
 }
 

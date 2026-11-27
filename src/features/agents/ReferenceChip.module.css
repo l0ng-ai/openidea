@@ -271,3 +271,9 @@
   font-size: var(--fs-small);
   background: var(--bg-editor-inline, var(--bg-elev));
 }
+
+/* A web link: at most a line's part wide, its page named in full on hover. */
+.link {
+  max-width: min(320px, 100%);
+  cursor: pointer;
+}

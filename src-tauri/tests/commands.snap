@@ -337,6 +337,8 @@ history_list                                 always             project_host bin
 history_list_dir                             always             project_host bindings async
 history_put_label                            always             project_host bindings sync
 history_restore                              always             project_host bindings async
+host_end_process                             trusted            project_host bindings async
+host_metrics                                 always             project_host bindings async
 http_curl                                    trusted            project_host bindings async
 http_environment_file                        trusted            project_host bindings async
 http_environments                            trusted            project_host bindings async
@@ -416,6 +418,7 @@ lsp_semantic_tokens                          trusted            project_host bin
 lsp_servers                                  always             project_host bindings sync
 lsp_signature_help                           trusted            project_host bindings async
 lsp_signature_info                           trusted            project_host bindings async
+lsp_snapshot_completion                      trusted            project_host bindings async
 lsp_snapshot_diagnostics                     trusted            project_host bindings async
 lsp_source_action_text                       trusted            project_host bindings async
 lsp_type_hierarchy                           trusted            project_host bindings async
@@ -444,6 +447,7 @@ menu_set_disabled                            always             desktop      bin
 menu_set_remote_recent                       always             desktop      bindings sync
 nav_index_definitions                        always             project_host bindings async
 nav_inheritance                              always             project_host bindings async
+nav_pytest_fixtures                          always             project_host bindings async
 nav_python_stubs                             always             project_host bindings async
 nav_resolve_module                           always             project_host bindings async
 notebook_cell_docs                           trusted            project_host bindings sync
@@ -458,6 +462,7 @@ notebook_reload                              always             project_host bin
 notebook_restart                             trusted            project_host bindings async
 notebook_save                                always             project_host bindings async
 notebook_undo                                always             project_host bindings async
+notebook_variables                           trusted            project_host bindings async
 open_project                                 always             project_host bindings async
 path_completions                             always             project_host bindings async
 plugin_activation_event                      trusted            desktop      bindings async

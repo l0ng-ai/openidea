@@ -123,7 +123,7 @@ const CASES: Record<string, Case | Case[]> = {
       tests: {
         config: "pytest",
         failing: (c) => env(c, { OPENIDEA_FAIL: "1" }),
-        passed: 7,
+        passed: 9,
         failed: "test_intentionally_failing",
         file: "tests/test_models.py",
       },
