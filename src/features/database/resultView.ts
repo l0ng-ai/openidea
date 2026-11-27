@@ -268,6 +268,29 @@ export function aggregates(cells: readonly Cell[]): Aggregates {
   };
 }
 
+/** The Aggregates panel's rows, in its order. */
+export const AGGREGATE_ROWS: ReadonlyArray<[label: string, key: keyof Aggregates]> = [
+  ["Count", "count"],
+  ["Distinct", "distinct"],
+  ["Nulls", "nulls"],
+  ["Sum", "sum"],
+  ["Avg", "avg"],
+  ["Median", "median"],
+  ["Min", "min"],
+  ["Max", "max"],
+];
+
+/** An aggregate as the Aggregates panel shows it; null when the selection has none (Sum of text). */
+export function aggregateText(a: Aggregates, key: keyof Aggregates): string | null {
+  const v = a[key];
+  return v === null ? null : typeof v === "number" ? formatNumber(v) : v;
+}
+
+/** What Copy Aggregation Result copies by default: the Sum of numbers, else the Count. */
+export function defaultAggregate(a: Aggregates): keyof Aggregates {
+  return a.sum !== null ? "sum" : "count";
+}
+
 /** A number for display: integers as is, others to at most 6 significant decimals. */
 export function formatNumber(n: number): string {
   if (Number.isInteger(n)) return String(n);

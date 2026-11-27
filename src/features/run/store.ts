@@ -809,7 +809,7 @@ function newRuntime(config: RunConfig): SessionRuntime {
   };
   const framework = tests && parser ? frameworkFor(config) : null;
   // PHPUnit `--teamcity` and Gradle's test init script report through service messages, Minitest,
-  // node:test, Mocha and Jasmine through the IDE's own reporters (RSpec has none: its progress dots must show as they come).
+  // node:test, Mocha, Jasmine and Python's unittest through the IDE's own reporters (RSpec has none: its progress dots must show as they come).
   const stdout =
     framework === "go"
       ? new GoTestOutput(feed)
@@ -817,7 +817,10 @@ function newRuntime(config: RunConfig): SessionRuntime {
         ? new TeamcityOutput(feed, framework !== "phpunit")
         : framework === "ruby" && config.kind !== "rspec"
           ? new RubyTestOutput(feed)
-          : framework === "node-test" || framework === "mocha" || framework === "jasmine"
+          : framework === "node-test" ||
+              framework === "mocha" ||
+              framework === "jasmine" ||
+              framework === "python-unittest"
             ? new RecordsOutput(feed)
             : null;
   const runtime: SessionRuntime = {

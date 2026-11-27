@@ -16,7 +16,8 @@ export type TableCommand =
   | "addRow"
   | "exportData"
   | "deleteRows"
-  | "restoreRows";
+  | "restoreRows"
+  | "revertRows";
 
 export interface TableCommandHandler {
   enabled(rows: number[]): boolean;

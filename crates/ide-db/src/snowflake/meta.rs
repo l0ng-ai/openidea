@@ -455,6 +455,7 @@ pub(crate) async fn completion(pool: &SnowflakePool) -> IdeResult<Vec<Completion
             primary_key: false,
             has_default: r.get("default").is_some_and(|d| !d.is_empty())
                 || r.get("autoincrement").is_some_and(|a| !a.is_empty()),
+            comment: r.get("comment").filter(|c| !c.trim().is_empty()).map(str::to_owned),
         });
     }
     Ok(tables)

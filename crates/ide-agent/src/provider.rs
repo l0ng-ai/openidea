@@ -289,7 +289,18 @@ fn find_gh_executable() -> Option<PathBuf> {
     ide_core::tool_path::find_gh_executable()
 }
 
+fn is_valid_github_login(account: &str) -> bool {
+    let bytes = account.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 39
+        && bytes[0].is_ascii_alphanumeric()
+        && bytes.iter().all(|b| b.is_ascii_alphanumeric() || *b == b'-' || *b == b'_')
+}
+
 fn github_token_for_account(account: &str) -> Result<String, String> {
+    if !is_valid_github_login(account) {
+        return Err(format!("Invalid GitHub account login: {account}"));
+    }
     let program = find_gh_executable()
         .ok_or_else(|| "GitHub CLI (`gh`) is required to select a Copilot GitHub account".to_owned())?;
     let mut command = std::process::Command::new(program);

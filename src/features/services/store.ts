@@ -21,6 +21,8 @@ import type {
 } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { call, commands, isCancelled, isTauri, nextRequestId } from "@/platform/ipc";
+import { useProject } from "@/platform/project";
+import { useRemote } from "@/platform/remote";
 import { notifications } from "@/workbench/contributions";
 import { DEFAULT_DOCKER_FILTERS, type DockerFilters } from "./model";
 
@@ -120,6 +122,7 @@ function patchConn(id: string, patch: Partial<ConnectionState>) {
 // ---------------------------------------------------------------------------
 // Settings
 
+let sessionEpoch = 0;
 let settingsLoad: Promise<void> | null = null;
 
 export function loadSettings(): Promise<void> {
@@ -127,8 +130,10 @@ export function loadSettings(): Promise<void> {
     useServices.setState({ settings: { connections: [], registries: [] } });
     return Promise.resolve();
   }
+  const epoch = sessionEpoch;
   settingsLoad ??= call(commands.dockerSettings())
     .then((s: DockerSettings) => {
+      if (epoch !== sessionEpoch) return;
       const connections = s.connections ?? [];
       useServices.setState((state) => ({
         settings: { connections, registries: s.registries ?? [] },
@@ -141,6 +146,7 @@ export function loadSettings(): Promise<void> {
       }));
     })
     .catch((e) => {
+      if (epoch !== sessionEpoch) return;
       settingsLoad = null;
       notifications().notify({
         group: "run",
@@ -155,22 +161,26 @@ export function loadSettings(): Promise<void> {
 let settingsWrite = Promise.resolve(true);
 
 function saveSettings(update: (current: Settings) => Settings): Promise<boolean> {
+  const epoch = sessionEpoch;
   // Each write replaces the settings file, so derive it after the previous save.
   settingsWrite = settingsWrite.then(async () => {
+    if (epoch !== sessionEpoch) return false;
     try {
       const current = useServices.getState().settings ?? { connections: [], registries: [] };
       const settings = update(current);
       if (settings === current) return true;
       if (isTauri()) await call(commands.dockerSaveSettings(settings));
-      useServices.setState({ settings });
+      if (epoch === sessionEpoch) useServices.setState({ settings });
       return true;
     } catch (e) {
-      notifications().notify({
-        group: "run",
-        level: "error",
-        title: "Cannot save Docker settings",
-        body: errorMessage(e),
-      });
+      if (epoch === sessionEpoch) {
+        notifications().notify({
+          group: "run",
+          level: "error",
+          title: "Cannot save Docker settings",
+          body: errorMessage(e),
+        });
+      }
       return false;
     }
   });
@@ -277,17 +287,21 @@ export function refresh(id?: string): Promise<void> {
     return running;
   }
   patchConn(id, { loading: true });
+  const epoch = sessionEpoch;
   const p = call(commands.dockerSnapshot(endpointOf(id)))
     .then((snapshot) => {
+      if (epoch !== sessionEpoch) return;
       if (!connections().some((c) => c.id === id) || connectionState(id).disconnected) return;
       const wasReady = connectionState(id).snapshot?.availability.kind === "ready";
       patchConn(id, { snapshot, error: null });
       if (snapshot.availability.kind === "ready" && !wasReady) startEvents(id);
     })
     .catch((e) => {
+      if (epoch !== sessionEpoch) return;
       if (!connectionState(id).disconnected) patchConn(id, { error: errorMessage(e) });
     })
     .finally(() => {
+      if (epoch !== sessionEpoch) return;
       inflight.delete(id);
       if (connections().some((c) => c.id === id)) patchConn(id, { loading: false });
       if (again.delete(id)) void refresh(id);
@@ -311,14 +325,17 @@ let watchers = 0;
 
 function startEvents(id: string) {
   if (events.has(id) || watchers === 0 || connectionState(id).disconnected) return;
+  const epoch = sessionEpoch;
   const request = nextRequestId();
   events.set(id, request);
   const channel = new Channel<DockerEvent>();
-  channel.onmessage = () => refreshSoon(id);
+  channel.onmessage = () => {
+    if (epoch === sessionEpoch) refreshSoon(id);
+  };
   void call(commands.dockerEvents(request, endpointOf(id), channel))
     .catch(() => undefined)
     .finally(() => {
-      if (events.get(id) !== request) return;
+      if (epoch !== sessionEpoch || events.get(id) !== request) return;
       events.delete(id);
       // The stream ended on its own (daemon stopped): re-check the state.
       if (watchers > 0) refreshSoon(id);
@@ -332,6 +349,35 @@ function stopEvents(id?: string) {
     void commands.cancelRequest(r);
   }
 }
+
+function resetForHostChange() {
+  sessionEpoch++;
+  for (const r of events.values()) {
+    void Promise.resolve(commands.cancelRequest?.(r)).catch(() => undefined);
+  }
+  events.clear();
+  for (const timer of debounces.values()) clearTimeout(timer);
+  debounces.clear();
+  inflight.clear();
+  again.clear();
+  closing.clear();
+  settingsLoad = null;
+  settingsWrite = Promise.resolve(true);
+  useServices.setState({ settings: null, conns: {}, task: null });
+  if (watchers > 0) void loadSettings().then(() => refresh());
+}
+
+// Switching between a local window and a remote host (or reconnecting) moves Docker to that host.
+useRemote.subscribe((state, previous) => {
+  if (state.session !== previous.session) resetForHostChange();
+});
+
+// Trusting a Restricted Mode project unlocks `docker_snapshot` without waiting for the 10 s poll.
+useProject.subscribe((state, previous) => {
+  if (state.project?.trusted && !previous.project?.trusted && watchers > 0) {
+    void loadSettings().then(() => refresh());
+  }
+});
 
 /**
  * Keeps the snapshots live while the tree is shown: events while a daemon runs,

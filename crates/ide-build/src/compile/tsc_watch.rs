@@ -323,7 +323,8 @@ mod tests {
                 "exclude": [path(&root.join("node_modules"))],
             })
         );
-        let a = root.join("packages/a");
+        // Chained joins: the configurations name native paths, `packages/a` would mix separators on Windows.
+        let a = root.join("packages").join("a");
         assert_eq!(
             copy(1),
             json!({
@@ -336,14 +337,14 @@ mod tests {
                 "exclude": [path(&a.join("node_modules"))],
             })
         );
-        let b = root.join("packages/b");
+        let b = root.join("packages").join("b");
         assert_eq!(
             copy(2),
             json!({
                 "extends": path(&b.join("tsconfig.json")),
                 "compilerOptions": {
                     "outDir": path(&scratch.join("2")), "tsBuildInfoFile": s("2.tsbuildinfo"),
-                    "declarationDir": path(&scratch.join("2")), "outFile": path(&scratch.join("2/out.js")),
+                    "declarationDir": path(&scratch.join("2")), "outFile": path(&scratch.join("2").join("out.js")),
                 },
                 "references": [{"path": s("1.json")}],
                 "exclude": [path(&b.join("node_modules")), path(&root.join("dist"))],

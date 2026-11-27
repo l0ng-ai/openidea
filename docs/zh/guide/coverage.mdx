@@ -55,9 +55,10 @@ description: "使用覆盖率运行配置，在编辑器、项目视图和覆盖
 - lcov 跟踪文件（`lcov.info`）
 - Go cover profile
 - JaCoCo XML 报告
+- Cobertura XML 报告（coverage.py 的 `coverage xml` 及其他工具生成）；相对文件名按报告的 `<sources>` 解析
 - SimpleCov `.resultset.json`
 
-报告中记录的其他机器上的路径，会按最长匹配后缀映射到当前项目中。
+报告中记录的其他机器上的路径，会按最长匹配后缀映射到当前项目中。导入通知会说明报告中有多少个文件不在此项目中。
 
 ## 管理覆盖率套件
 

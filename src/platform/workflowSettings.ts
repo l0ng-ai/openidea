@@ -279,6 +279,8 @@ export const WORKFLOW_LIMITS = {
   terminalFontSize: { min: 6, max: 72 },
   terminalLineHeight: { min: 0.5, max: 3 },
   terminalColumnWidth: { min: 0.5, max: 2 },
+  agentChatFontSize: { min: 6, max: 72 },
+  agentCodeFontSize: { min: 6, max: 72 },
 } as const;
 
 export const DEFAULT_EXTERNAL_TOOL: ExternalToolValid = {

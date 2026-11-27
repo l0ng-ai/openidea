@@ -341,6 +341,7 @@ impl Cx<'_> {
             DJANGO_SERVER => self.django_server(name, c, &mut ignored)?,
             DJANGO_TESTS => self.django_tests(name, c, &mut ignored)?,
             PYTHON_TESTS if matches!(factory, "py.test" | "pytest") => self.pytest(name, c, &mut ignored)?,
+            PYTHON_TESTS if factory == "Unittests" => self.unittest(name, c, &mut ignored)?,
             NPM => self.npm(name, c, &mut ignored)?,
             JEST | VITEST => self.js_tests(name, c, ty == VITEST, &mut ignored)?,
             NODE => self.node(name, c, &mut ignored)?,
@@ -661,6 +662,38 @@ impl Cx<'_> {
         // Single quotes group words here too (`PyTestsShared.kt:671`).
         args.extend(self.args_quoted(field("_new_additionalArguments").as_deref(), Quotes::Single, &dir)?);
         let mut rc = config(name, "pytest", exe, args, Some("debugpy"));
+        rc.cwd = cwd.map(Into::into);
+        rc.is_test = true;
+        self.python_env(c, &mut rc, ignored)?;
+        Ok(rc)
+    }
+
+    /// PyCharm's Unittests: a Python target (`tests.test_money.TestRound`) as unittest's name, a
+    /// file as its path, a folder discovered (`discover -s`, with the configuration's pattern).
+    fn unittest(&self, name: &str, c: &El, ignored: &mut Vec<String>) -> Res<RunConfig> {
+        let (exe, mut args, dir, cwd) = self.interpreter(c, ignored)?;
+        args.extend(["-m".to_owned(), "unittest".to_owned()]);
+        let field = |key: &str| c.option(key).map(json_string).filter(|v| !v.trim().is_empty());
+        if let Some(target) = field("_new_target") {
+            let target = self.expand(&target)?;
+            match field("_new_targetType").as_deref() {
+                Some("PYTHON") => args.push(target),
+                Some("CUSTOM") => {}
+                _ => {
+                    let path = path_from(self.root, file_url_path(&target), &dir);
+                    if path.ends_with(".py") {
+                        args.push(path);
+                    } else {
+                        args.extend(["discover".to_owned(), "-s".to_owned(), path]);
+                        if let Some(pattern) = field("_new_pattern") {
+                            args.extend(["-p".to_owned(), strip_quotes(&pattern).to_owned()]);
+                        }
+                    }
+                }
+            }
+        }
+        args.extend(self.args_quoted(field("_new_additionalArguments").as_deref(), Quotes::Single, &dir)?);
+        let mut rc = config(name, "unittest", exe, args, Some("debugpy"));
         rc.cwd = cwd.map(Into::into);
         rc.is_test = true;
         self.python_env(c, &mut rc, ignored)?;
