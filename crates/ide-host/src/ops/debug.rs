@@ -12,7 +12,9 @@ use std::path::PathBuf;
 /// Starts a session owned by this window: its events (and those of child sessions) go here only.
 #[command(trust = trusted)]
 pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> IdeResult<DebugSessionId> {
-    host.require_trust(window)?;
+    let project = host.project(window)?;
+    project.require_trust()?;
+    let cancel = project.closed.child_token();
     let unity_pid = if config.adapter == "unity" {
         if config.request != "attach" {
             return Err(ide_core::IdeError::invalid("Unity debugging only supports attachment to a running Editor"));
@@ -60,7 +62,8 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
             python.as_deref(),
             config.cwd.as_deref(),
         );
-        super::python::prepare_debug(&mut config, &paths)?;
+        let plots = super::plots::prepare(host, &project);
+        super::python::prepare_debug(&mut config, &paths, plots.as_ref())?;
     }
     let label = window;
     let (sink, flush_output) = output::coalescing_sink(host.window_sink(label));
@@ -149,10 +152,13 @@ pub async fn debug_start(host: &Host, window: &str, config: LaunchConfig) -> Ide
             .or_else(|| ruby_tools.into_iter().find(|(name, _)| *name == command).map(|(_, path)| path))?;
         Some(path.to_string_lossy().into_owned())
     };
+    if cancel.is_cancelled() {
+        return Err(ide_core::IdeError::cancelled());
+    }
     host.require_trust(window)?;
     let server_port = debug_server_port(&config);
     let exception_classes = server_port.and_then(|port| exception_class_backend(host, window, port));
-    let result = host.debugger.start_with_exception_classes(config, owner, custom, exception_classes).await;
+    let result = host.debugger.start_with_cancel(config, owner, custom, exception_classes, cancel).await;
     flush_output();
     if let Ok(id) = &result {
         let sink = host.window_sink(label);

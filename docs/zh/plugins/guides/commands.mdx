@@ -204,6 +204,11 @@ when = "serviceKind == 'spring-boot' && serviceRunning"
 
 要用插件的 Java 代理启动选中的配置，请把代理绑定到执行器（`[[contributes.javaAgents]]` 的 `executor`）：
 “使用 … 运行”和“使用 … 调试”会出现在运行和调试旁边，也会出现在这个菜单中。
+要做自己的菜单项，命令把收到的参数原样传给 `pluginExecutor.<插件 id>.run`（调试用 `.debug`），需要 `ide.commands`：
+
+```rust
+host::execute_command("pluginExecutor.hotreload.run", arg.as_deref())?;
+```
 
 ## 状态栏项
 
