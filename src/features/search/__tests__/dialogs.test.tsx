@@ -635,6 +635,28 @@ describe("Recent Files multi-selection", () => {
   });
 });
 
+describe("Recent Files database consoles", () => {
+  afterEach(() => {
+    act(() => contributions.setFileDecorations("database", new Map()));
+    vi.restoreAllMocks();
+  });
+
+  it("uses the console's decorated title and data source icon", async () => {
+    const path = "/data/scratches/consoles/db/pg/console.sql";
+    vi.spyOn(commands, "recentFiles").mockResolvedValue({ status: "ok", data: [path] });
+    act(() =>
+      contributions.setFileDecorations(
+        "database",
+        new Map([[path, { tabTitle: "console [Orders]", tabIcon: "postgres" }]]),
+      ),
+    );
+    render(<RecentPopupsOverlay />);
+    act(() => showRecentPopup("files"));
+    await tick();
+    expect(screen.getByText("console [Orders]")).toBeInTheDocument();
+  });
+});
+
 describe("Switcher", () => {
   afterEach(() => vi.restoreAllMocks());
 

@@ -93,7 +93,7 @@ The data source dialog has a name, an optional **Color:** (tints the tree and co
 
 ## Browse the database
 
-The tree shows data source › database (PostgreSQL) › schema › `tables`, `views`, `materialized views`, `routines` and `sequences`. Tables contain `columns`, `keys`, `foreign keys`, `indexes` and `triggers`. Nodes load when you expand them. Turn on **Separate Procedures and Functions** in the tool window's options menu to split `routines`.
+The tree shows data source › database (PostgreSQL) › schema › `tables`, `views`, `materialized views`, `routines` and `sequences`. Tables contain `columns`, `keys`, `foreign keys`, `indexes` and `triggers`. Nodes load when you expand them. Turn on **Separate Procedures and Functions** in the tool window's options menu to split `routines`; **Show Table Comments** shows a table's comment in grey after its name.
 
 Double-click a table to edit its data, a data source to open its console, and a routine, sequence or trigger to see its DDL. Type in **Filter objects** to filter the tree.
 
@@ -125,7 +125,7 @@ These keys work while the Database tree has focus. The context menu also has **T
 
 ## Query console
 
-Each data source has a query console, a `.sql` file kept in the IDE's data directory. Open it with **Query Console** (`⌘⇧L` / `Ctrl+Shift+Q`), from the tree, or with **Tools › Open Query Console**. Any writable `.sql` file in the project gets the same toolbar, so you can bind it to a data source and run it.
+Each data source has a query console, a `.sql` file kept under `consoles/db` in the IDE's data directory and listed under the **Database Consoles** root in **Scratches and Consoles**, grouped by data source name. Open it with **Query Console** (`⌘⇧L` / `Ctrl+Shift+Q`), from the tree, or with **Tools › Open Query Console**. Any writable `.sql` file in the project gets the same toolbar, so you can bind it to a data source and run it. In **Recent Files** (`⌘E` / `Ctrl+E`) a console shows its data source name, such as `console [Orders]`.
 
 The console toolbar has:
 

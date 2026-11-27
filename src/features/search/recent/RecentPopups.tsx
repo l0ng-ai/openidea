@@ -455,14 +455,16 @@ function ToolRow({ tw, title, indices }: { tw: ToolWindowContribution; title: st
 function RecentFileRow({ item, current }: { item: RecentFileItem; current: boolean }) {
   const deco = useFileDecoration(item.editor ? "" : item.path);
   const { icon } = useFilePresentation(item.editor ? "" : item.path);
+  const title = item.editor ? item.name : (deco.tabTitle ?? item.name);
+  const indices = title === item.name ? item.indices : [];
   return (
     <>
-      <Icon name={item.editor?.icon ?? icon} size={16} className={styles.icon} />
+      <Icon name={item.editor?.icon ?? deco.tabIcon ?? icon} size={16} className={styles.icon} />
       <span
         className={clsx(styles.name, styles.fileName, current && styles.current)}
         style={deco.color ? { color: deco.color } : undefined}
       >
-        <HighlightedText text={item.name} indices={item.indices} tone="strong" />
+        <HighlightedText text={title} indices={indices} tone="strong" />
       </span>
       {item.dir && <span className={styles.dir}>{item.dir}</span>}
     </>

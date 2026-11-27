@@ -29,7 +29,16 @@ import { ColumnsPopup } from "./ColumnsPopup";
 import { cellOf, cutLength, hasCutCells, loadCells, loadPage, rowsOf, useCutCells } from "./cutCells";
 import { DataView, ExtractorSelect, PanelToggle, copyFormatOf, exportMenu, type DataPanel } from "./DataView";
 import type { ExportData, ExportFormat } from "./export";
-import { buildRowEdits, emptyEdits, hasEdits, splitTarget, type Cell, type PendingEdits } from "./model";
+import {
+  buildRowEdits,
+  emptyEdits,
+  hasEdits,
+  revertRows,
+  rowsHaveEdits,
+  splitTarget,
+  type Cell,
+  type PendingEdits,
+} from "./model";
 import {
   editStatements,
   pkResultColumns,
@@ -533,6 +542,10 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
             enabled: (rows) => rowsEditable && rows.some((row) => edits.deletes.has(row)),
             run: restoreRows,
           },
+          revertRows: {
+            enabled: (rows) => rowsEditable && rowsHaveEdits(edits, rows, loaded),
+            run: (rows) => setEdits((e) => revertRows(e, rows, loaded)),
+          },
         }
       : undefined;
     tableEditorChanged(handle);
@@ -665,6 +678,12 @@ export function Result({ tab, onClose }: { tab: ResultTab; onClose?: () => void 
                         arg: { rows, editor: handleRef.current },
                       },
                       { kind: "action", action: "db.restoreRows", arg: { rows, editor: handleRef.current } },
+                      {
+                        kind: "action",
+                        action: "db.revertSelected",
+                        icon: "revert",
+                        arg: { rows, editor: handleRef.current },
+                      },
                     ]
                   : []
               }
