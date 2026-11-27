@@ -37,6 +37,7 @@ import {
   type RemoteTarget,
 } from "./ops";
 import { beginGitWork, conflictedFiles, currentRepo, currentRepoRoot, refreshNow, repoName, useVcs } from "./store";
+import { renameBranchInLogFilters } from "./logStore";
 import { tx, txTemplate } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 import { workflowSettings } from "@/platform/workflowSettings";
@@ -761,7 +762,11 @@ export async function renameBranch(branch: Branch) {
       },
     },
   );
-  if (ok !== undefined && useProject.getState().project === project) renameRecent(name, to);
+  if (ok !== undefined && useProject.getState().project === project) {
+    renameRecent(name, to);
+    // The log follows: its Branch filter and "Log: branch" tabs keep naming the branch.
+    if (repo) renameBranchInLogFilters(repo, name, to);
+  }
 }
 
 async function promptBranchRename(
@@ -1762,6 +1767,8 @@ export async function renameInRepos(name: string, roots: readonly string[], upst
       if (useProject.getState().project !== project) return;
       if (complete) renameRecent(name, to);
       else rememberBranch(to);
+      // The log follows the kept renames in every renamed repository.
+      if (complete) for (const root of roots) renameBranchInLogFilters(root, name, to);
       // Only change tracking after the user has decided which renames to retain.
       if (unsetUpstream) {
         for (const { root } of done) {
