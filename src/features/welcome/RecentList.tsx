@@ -98,7 +98,7 @@ export function splitRemoteMatch(m: Pick<RecentMatch, "remote" | "pathMatch" | "
   };
 }
 
-/** Tinted SSH / WSL / Dev Container host pill shown on remote project rows. */
+/** SSH / WSL / Dev Container host label shown on remote project rows. */
 export function RemoteHostPill({
   remote,
   hostMatch,

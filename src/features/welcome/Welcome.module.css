@@ -250,24 +250,13 @@
   gap: var(--space-1);
   max-width: 100%;
   min-width: 0;
-  padding: 1px 6px;
-  border-radius: var(--radius-toolbar-button);
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent);
-  color: var(--link);
-  --icon-color: currentColor;
-  font-size: var(--fs-tiny);
-  line-height: 15px;
-}
-:global(:root[data-theme="light"]) .remoteHostPill {
-  background: color-mix(in srgb, var(--accent) 11%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent);
-  color: var(--accent);
+  color: var(--fg-secondary);
+  --icon-color: var(--fg-muted);
+  font-size: var(--fs-small);
 }
 .remoteKind {
   flex: none;
-  font-weight: 600;
-  letter-spacing: 0.02em;
+  font-weight: normal;
 }
 .remoteDot {
   flex: none;
