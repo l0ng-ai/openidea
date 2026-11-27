@@ -16,6 +16,7 @@
 //!
 //! Lines in the model are 0-based, like every IPC coordinate.
 
+mod cobertura;
 mod goprofile;
 mod import;
 mod jacoco;

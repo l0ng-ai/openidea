@@ -35,7 +35,7 @@ pub async fn coverage_collect(host: &Host, window: &str, report: CoverageReportS
 /// with paths mapped into this project.
 #[command(trust = always)]
 pub async fn coverage_import(host: &Host, window: &str, path: IpcPath) -> IdeResult<CoverageSuite> {
-    // Also reads a SimpleCov resultset.
+    // Also reads Cobertura XML and a SimpleCov resultset.
     let root = host.project(window)?.root.clone();
     blocking(move || ide_coverage::import(&path, &root)).await
 }

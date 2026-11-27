@@ -147,7 +147,7 @@ export class EditorSlot {
         }),
       ],
     });
-    if (model.ctx().language === "markdown") {
+    if (model.ctx().language === "markdown" || model.ctx().language === "mdx") {
       const effects = markdownImageFolds(this.stored);
       if (effects.length) this.stored = this.stored.update({ effects }).state;
     }

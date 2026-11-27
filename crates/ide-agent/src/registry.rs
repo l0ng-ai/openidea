@@ -189,6 +189,11 @@ fn parse(text: &str) -> IdeResult<Vec<Entry>> {
 /// `github/copilot-cli` publishes standalone archives and `SHA256SUMS.txt` on every GitHub
 /// release. Supplying them installs Copilot without Node.js, npm, `~/.npmrc`, or mirror lag.
 fn add_copilot_release_binaries(entry: &mut Entry, release_base: &str) {
+    let sys_root = if cfg!(target_os = "linux") { Some(Path::new("/")) } else { None };
+    add_copilot_release_binaries_with_root(entry, release_base, sys_root);
+}
+
+fn add_copilot_release_binaries_with_root(entry: &mut Entry, release_base: &str, sys_root: Option<&Path>) {
     let tag = format!("v{}", entry.version.trim_start_matches('v'));
     let base = format!("{}/{}", release_base.trim_end_matches('/'), tag);
     let sha256_url = format!("{base}/SHA256SUMS.txt");
@@ -196,9 +201,12 @@ fn add_copilot_release_binaries(entry: &mut Entry, release_base: &str) {
         Some(p) => (p.args.clone(), p.env.clone()),
         None => (vec!["--acp".into()], BTreeMap::new()),
     };
-    let linux = if cfg!(target_env = "musl") { "linuxmusl" } else { "linux" };
-    let linux_arm = format!("copilot-{linux}-arm64.tar.gz");
-    let linux_x64 = format!("copilot-{linux}-x64.tar.gz");
+    let linux_arm = format!(
+        "copilot-{}-arm64.tar.gz",
+        sys_root.map_or("linux", |root| copilot_linux_variant_at(root, Arch::Arm64))
+    );
+    let linux_x64 =
+        format!("copilot-{}-x64.tar.gz", sys_root.map_or("linux", |root| copilot_linux_variant_at(root, Arch::X64)));
     let targets = [
         ("darwin-aarch64", "copilot-darwin-arm64.tar.gz", "./copilot"),
         ("darwin-x86_64", "copilot-darwin-x64.tar.gz", "./copilot"),
@@ -217,6 +225,22 @@ fn add_copilot_release_binaries(entry: &mut Entry, release_base: &str) {
             sha256_url: Some(sha256_url.clone()),
         });
     }
+}
+
+/// Picks `linux` (glibc) or `linuxmusl` from the host's runtime dynamic linker rather than
+/// `cfg!(target_env = "musl")`: `openidea-server` on Linux is built as static musl so it runs
+/// on every distro, while Copilot's Linux archives dynamically link glibc or musl.
+fn copilot_linux_variant_at(root: &Path, arch: Arch) -> &'static str {
+    let (glibc_rel, musl_rel) = match arch {
+        Arch::Arm64 => ("lib/ld-linux-aarch64.so.1", "lib/ld-musl-aarch64.so.1"),
+        Arch::X64 => ("lib64/ld-linux-x86-64.so.2", "lib/ld-musl-x86_64.so.1"),
+    };
+    let glibc = root.join(glibc_rel);
+    let has_musl_name = |p: PathBuf| p.file_name().is_some_and(|n| n.to_string_lossy().contains("musl"));
+    let points_to_musl =
+        fs::read_link(&glibc).is_ok_and(has_musl_name) || fs::canonicalize(&glibc).is_ok_and(has_musl_name);
+    let has_glibc = glibc.exists() && !points_to_musl;
+    if !has_glibc && root.join(musl_rel).exists() { "linuxmusl" } else { "linux" }
 }
 
 fn safe_segment(s: &str) -> bool {
@@ -1303,5 +1327,97 @@ esac
         let npm_bin = p.tools_dir.join("copilot/1.0.114/node_modules/.bin/copilot");
         assert!(npm_bin.is_file());
         assert_eq!(CustomAgent::read(&p.agent_file("copilot")).unwrap().command, npm_bin.to_string_lossy());
+    }
+
+    #[test]
+    fn selects_copilot_linux_archive_from_runtime_dynamic_linker() {
+        let index = r#"{"agents":[
+            {"id":"github-copilot-cli","name":"Copilot","version":"1.0.116",
+             "distribution":{"npx":{"package":"@github/copilot@1.0.116","args":["--acp"]}}}
+        ]}"#;
+        let archives_for = |root: &Path| -> (String, String) {
+            let mut entry = parse(index).unwrap().remove(0);
+            entry.distribution.binary.clear();
+            add_copilot_release_binaries_with_root(&mut entry, "https://example.invalid/releases", Some(root));
+            (
+                entry.distribution.binary["linux-x86_64"].archive.clone(),
+                entry.distribution.binary["linux-aarch64"].archive.clone(),
+            )
+        };
+        let touch = |path: PathBuf| {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"").unwrap();
+        };
+
+        // 1. Non-FHS root (neither loader present) defaults to glibc archives.
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(
+            archives_for(empty.path()),
+            (
+                "https://example.invalid/releases/v1.0.116/copilot-linux-x64.tar.gz".into(),
+                "https://example.invalid/releases/v1.0.116/copilot-linux-arm64.tar.gz".into(),
+            )
+        );
+
+        // 2. Standard glibc host (and glibc host with musl-tools also installed) uses `copilot-linux-*`,
+        //    even when `openidea-server` itself is compiled for `*-unknown-linux-musl`.
+        let glibc = tempfile::tempdir().unwrap();
+        touch(glibc.path().join("lib64/ld-linux-x86-64.so.2"));
+        touch(glibc.path().join("lib/ld-linux-aarch64.so.1"));
+        assert_eq!(
+            archives_for(glibc.path()),
+            (
+                "https://example.invalid/releases/v1.0.116/copilot-linux-x64.tar.gz".into(),
+                "https://example.invalid/releases/v1.0.116/copilot-linux-arm64.tar.gz".into(),
+            )
+        );
+        touch(glibc.path().join("lib/ld-musl-x86_64.so.1"));
+        touch(glibc.path().join("lib/ld-musl-aarch64.so.1"));
+        assert_eq!(
+            archives_for(glibc.path()),
+            (
+                "https://example.invalid/releases/v1.0.116/copilot-linux-x64.tar.gz".into(),
+                "https://example.invalid/releases/v1.0.116/copilot-linux-arm64.tar.gz".into(),
+            )
+        );
+
+        // 3. musl-only host (e.g. Alpine) uses `copilot-linuxmusl-*`.
+        let musl = tempfile::tempdir().unwrap();
+        touch(musl.path().join("lib/ld-musl-x86_64.so.1"));
+        touch(musl.path().join("lib/ld-musl-aarch64.so.1"));
+        assert_eq!(
+            archives_for(musl.path()),
+            (
+                "https://example.invalid/releases/v1.0.116/copilot-linuxmusl-x64.tar.gz".into(),
+                "https://example.invalid/releases/v1.0.116/copilot-linuxmusl-arm64.tar.gz".into(),
+            )
+        );
+
+        // 4. Alpine `libc6-compat` / `gcompat` symlinking `ld-linux` to `ld-musl` still picks `linuxmusl`.
+        #[cfg(unix)]
+        {
+            fs::create_dir_all(musl.path().join("lib64")).unwrap();
+            std::os::unix::fs::symlink("../lib/ld-musl-x86_64.so.1", musl.path().join("lib64/ld-linux-x86-64.so.2"))
+                .unwrap();
+            std::os::unix::fs::symlink("ld-musl-aarch64.so.1", musl.path().join("lib/ld-linux-aarch64.so.1")).unwrap();
+            assert_eq!(
+                archives_for(musl.path()),
+                (
+                    "https://example.invalid/releases/v1.0.116/copilot-linuxmusl-x64.tar.gz".into(),
+                    "https://example.invalid/releases/v1.0.116/copilot-linuxmusl-arm64.tar.gz".into(),
+                )
+            );
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            let parsed = parse(index).unwrap().remove(0);
+            let expected_x64 = format!("copilot-{}-x64.tar.gz", copilot_linux_variant_at(Path::new("/"), Arch::X64));
+            assert!(
+                parsed.distribution.binary["linux-x86_64"].archive.ends_with(&expected_x64),
+                "unexpected linux-x86_64 archive: {}",
+                parsed.distribution.binary["linux-x86_64"].archive
+            );
+        }
     }
 }
