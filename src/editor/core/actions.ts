@@ -31,6 +31,7 @@ import {
   startNewLineBefore,
   swapSelectionBoundaries,
   toggleCase,
+  transpose,
   unselectOccurrence,
 } from "./cm/editing";
 import {
@@ -1259,6 +1260,7 @@ export function registerEditorActions(): () => void {
     }),
     edit("code.joinLines", "Join Lines", (v) => joinLines(v)),
     edit("code.toggleCase", "Toggle Case", (v) => toggleCase(v), { keywords: ["upper", "lower"] }),
+    edit("code.transpose", "Transpose", (v) => transpose(v), { category: "Editor Actions" }),
     edit("code.cycleCase", "Cycle Identifier Case", (v) => cycleCase(v), {
       keywords: ["camel", "snake", "kebab", "pascal", "screaming"],
     }),

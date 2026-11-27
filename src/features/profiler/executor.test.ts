@@ -43,7 +43,7 @@ const config: RunConfig = {
   debugAdapter: null,
 };
 
-const profile = { profiler: "async-profiler", unit: "bytes", mode: "liveObjects" } as unknown as Profile;
+const profile = { profiler: "async-profiler", unit: "bytes", mode: "liveObjects", calls: [] } as unknown as Profile;
 const ok = <T>(data: T) => Promise.resolve({ status: "ok" as const, data });
 
 beforeEach(() => {
@@ -69,6 +69,14 @@ async function snapshotOf(mode: "cpu" | "allocations" | "liveObjects", collected
 }
 
 describe("profiler executors", () => {
+  it("says that a cProfile run's call tree is estimated", async () => {
+    const edge = { caller: 1, callee: 2, selfWeight: 1, total: 2, calls: 3, primitiveCalls: 3 };
+    ipc.collect.mockImplementation(() => ok({ ...profile, profiler: "cProfile", mode: "cpu", calls: [edge] }));
+    expect((await snapshotOf("cpu", null, false)).notice).toMatch(/^cProfile records callers and callees/);
+    ipc.collect.mockImplementation(() => ok({ ...profile, mode: "cpu" }));
+    expect((await snapshotOf("cpu", null, true)).notice).toBeNull();
+  });
+
   it("describes the three modes", () => {
     expect(
       (["cpu", "allocations", "liveObjects"] as const).map((m) => {
