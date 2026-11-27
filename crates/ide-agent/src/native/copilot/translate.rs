@@ -2,11 +2,22 @@
 //! permissions, slash commands, MCP servers) and ACP v1.
 
 use crate::LIMITS_UPDATE;
+use crate::model::{AgentContextCategory, AgentContextUsage};
 use serde_json::{Map, Value, json};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 const MAX_OUTPUT: usize = 64 * 1024;
+const NANO_AIU_PER_CREDIT: f64 = 1_000_000_000.0;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct UsageSnapshot {
+    pub current_tokens: u32,
+    pub token_limit: u32,
+    pub system_tokens: Option<u32>,
+    pub tool_definitions_tokens: Option<u32>,
+    pub conversation_tokens: Option<u32>,
+}
 
 #[derive(Default)]
 pub(super) struct EventTranslator {
@@ -18,6 +29,11 @@ pub(super) struct EventTranslator {
     subagents: HashMap<String, String>,
     /// Last reported prompt token count, used when updating context size.
     pub last_used_tokens: Option<u32>,
+    /// Last reported `session.usage_info` / compaction breakdown, used as fallback when RPC metadata is absent.
+    pub last_usage_snapshot: Option<UsageSnapshot>,
+    /// Accumulated session AI-credit spend in nano-AIU (across main agent and subagents).
+    total_nano_aiu: f64,
+    has_nano_aiu: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -44,6 +60,29 @@ pub(super) enum TurnTerminal {
 impl EventTranslator {
     pub fn reset_turn(&mut self) {
         self.streamed_messages.clear();
+    }
+
+    pub fn set_total_nano_aiu(&mut self, nano_aiu: f64) {
+        if nano_aiu.is_finite() && nano_aiu > 0.0 {
+            self.total_nano_aiu = nano_aiu;
+            self.has_nano_aiu = true;
+        }
+    }
+
+    pub fn record_snapshot(&mut self, snapshot: UsageSnapshot) {
+        self.last_used_tokens = Some(snapshot.current_tokens);
+        self.last_usage_snapshot = Some(snapshot);
+    }
+
+    pub fn usage_update(&self, used: u32, size: u32) -> Value {
+        let mut update = json!({ "sessionUpdate": "usage_update", "used": used, "size": size });
+        if self.has_nano_aiu && self.total_nano_aiu > 0.0 {
+            update["cost"] = json!({
+                "amount": self.total_nano_aiu / NANO_AIU_PER_CREDIT,
+                "currency": "credits",
+            });
+        }
+        update
     }
 
     pub fn translate(&mut self, main_session: &str, event: &Value, fallback_limit: Option<u32>) -> Translated {
@@ -239,34 +278,73 @@ impl EventTranslator {
                 }
             }
             "session.usage_info" => {
-                let used = data.get("currentTokens").and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok());
-                let limit = data
-                    .get("tokenLimit")
-                    .and_then(Value::as_u64)
-                    .and_then(|n| u32::try_from(n).ok())
-                    .filter(|&n| n > 0)
-                    .or(fallback_limit);
+                let used = u32_of(data, "currentTokens");
+                let limit = u32_of(data, "tokenLimit").filter(|&n| n > 0).or(fallback_limit);
                 if let (Some(used), Some(size)) = (used, limit) {
-                    self.last_used_tokens = Some(used);
-                    out.updates.push((
-                        main_session.to_owned(),
-                        json!({ "sessionUpdate": "usage_update", "used": used, "size": size }),
-                    ));
+                    self.record_snapshot(UsageSnapshot {
+                        current_tokens: used,
+                        token_limit: size,
+                        system_tokens: u32_of(data, "systemTokens"),
+                        tool_definitions_tokens: u32_of(data, "toolDefinitionsTokens"),
+                        conversation_tokens: u32_of(data, "conversationTokens"),
+                    });
+                    out.updates.push((main_session.to_owned(), self.usage_update(used, size)));
                 }
             }
             "assistant.usage" => {
+                let added_credits = data
+                    .pointer("/copilotUsage/totalNanoAiu")
+                    .and_then(Value::as_f64)
+                    .filter(|n| n.is_finite() && *n > 0.0);
+                if let Some(nano_aiu) = added_credits {
+                    self.total_nano_aiu += nano_aiu;
+                    self.has_nano_aiu = true;
+                }
                 if agent_id.is_none() {
-                    let used = data.get("inputTokens").and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok());
-                    if let (Some(used), Some(size)) = (used, fallback_limit.filter(|&s| s > 0)) {
+                    let used = u32_of(data, "inputTokens").or(self.last_used_tokens);
+                    let size = self
+                        .last_usage_snapshot
+                        .as_ref()
+                        .map(|s| s.token_limit)
+                        .filter(|&s| s > 0)
+                        .or(fallback_limit.filter(|&s| s > 0));
+                    if let (Some(used), Some(size)) = (used, size) {
                         self.last_used_tokens = Some(used);
-                        out.updates.push((
-                            main_session.to_owned(),
-                            json!({ "sessionUpdate": "usage_update", "used": used, "size": size }),
-                        ));
+                        out.updates.push((main_session.to_owned(), self.usage_update(used, size)));
                     }
+                } else if added_credits.is_some()
+                    && let (Some(used), Some(size)) = (
+                        self.last_used_tokens,
+                        self.last_usage_snapshot
+                            .as_ref()
+                            .map(|s| s.token_limit)
+                            .filter(|&s| s > 0)
+                            .or(fallback_limit.filter(|&s| s > 0)),
+                    )
+                {
+                    out.updates.push((main_session.to_owned(), self.usage_update(used, size)));
                 }
                 if let Some(limits) = quota_limits(data.get("quotaSnapshots")) {
                     out.updates.push((main_session.to_owned(), limits));
+                }
+            }
+            "session.compaction_complete" if agent_id.is_none() => {
+                if data.get("success").and_then(Value::as_bool) == Some(true) {
+                    let used = u32_of(data, "postCompactionTokens");
+                    let size = u32_of(data, "tokenLimit")
+                        .filter(|&n| n > 0)
+                        .or_else(|| self.last_usage_snapshot.as_ref().map(|s| s.token_limit).filter(|&n| n > 0))
+                        .or(fallback_limit.filter(|&n| n > 0));
+                    if let (Some(used), Some(size)) = (used, size) {
+                        self.record_snapshot(UsageSnapshot {
+                            current_tokens: used,
+                            token_limit: size,
+                            system_tokens: u32_of(data, "systemTokens"),
+                            tool_definitions_tokens: u32_of(data, "toolDefinitionsTokens"),
+                            conversation_tokens: u32_of(data, "conversationTokens"),
+                        });
+                        out.updates.push((main_session.to_owned(), self.usage_update(used, size)));
+                    }
                 }
             }
             "session.idle" if agent_id.is_none() => {
@@ -596,7 +674,250 @@ pub(super) fn available_commands(commands_res: Option<&Value>, skills_res: Optio
             "input": hint.map(|h| json!({ "hint": h })),
         }));
     }
+    if seen.insert("compact".to_owned()) {
+        out.push(json!({
+            "name": "compact",
+            "description": "Compact conversation history to free context window space",
+            "source": "command",
+            "input": { "hint": "optional focus instructions" },
+        }));
+    }
     out
+}
+
+/// Converts Copilot's `session.metadata.getContextAttribution` payload into [`AgentContextUsage`],
+/// grouping items into `System` (`System prompt`, `Tool Definitions`, …) and `User Context`
+/// (`Tool Results`, `Messages`, `Skills`, …) without double-counting parent rollup entries.
+pub(super) fn context_usage_from_attribution(
+    res: &Value,
+    fallback_model: &str,
+    fallback_limit: Option<u32>,
+) -> Option<AgentContextUsage> {
+    let attr = res.get("contextAttribution").unwrap_or(res);
+    if !attr.is_object() {
+        return None;
+    }
+    let total_tokens = u32_of(attr, "totalTokens")?;
+    let max_tokens = u32_of(attr, "limit")
+        .filter(|&n| n > 0)
+        .or_else(|| u32_of(attr, "promptTokenLimit").filter(|&n| n > 0))
+        .or_else(|| fallback_limit.filter(|&n| n > 0))?;
+    let reserved_tokens = u32_of(attr, "bufferTokens").filter(|&n| n > 0);
+    let model = str_of(attr, "modelId").filter(|s| !s.is_empty()).unwrap_or(fallback_model).to_owned();
+    let auto_compact_threshold = u32_of(attr, "compactionThreshold").filter(|&n| n > 0);
+    let is_auto_compact_enabled = auto_compact_threshold.map(|_| true);
+
+    let mut categories = Vec::new();
+    let entries = attr.get("entries").and_then(Value::as_array).filter(|e| !e.is_empty());
+
+    if let Some(entries) = entries {
+        // Any entry referenced via `parentId` is a rollup parent whose children are accounted for individually.
+        let parent_ids: HashSet<&str> = entries.iter().filter_map(|e| str_of(e, "parentId")).collect();
+        let mut system_rows: Vec<(String, u32)> = Vec::new();
+        let mut tool_definitions: u32 = 0;
+        let mut tool_results: u32 = 0;
+        let mut skills: u32 = 0;
+        let mut subagents: u32 = 0;
+        let mut mcp_tools: u32 = 0;
+        let mut plugins: u32 = 0;
+        let mut other_user: BTreeMap<String, u32> = BTreeMap::new();
+        let mut accounted: u32 = 0;
+
+        for entry in entries {
+            if let Some(id) = str_of(entry, "id")
+                && parent_ids.contains(id)
+            {
+                continue;
+            }
+            let tokens = u32_of(entry, "tokens").unwrap_or(0);
+            if tokens == 0 {
+                continue;
+            }
+            accounted = accounted.saturating_add(tokens);
+            match str_of(entry, "kind").unwrap_or_default() {
+                "system" => {
+                    let label = normalize_system_label(str_of(entry, "label").unwrap_or("System prompt"));
+                    if let Some((_, existing)) = system_rows.iter_mut().find(|(k, _)| k == &label) {
+                        *existing = existing.saturating_add(tokens);
+                    } else {
+                        system_rows.push((label, tokens));
+                    }
+                }
+                "toolDefinition" => tool_definitions = tool_definitions.saturating_add(tokens),
+                "tool" => tool_results = tool_results.saturating_add(tokens),
+                "skill" => skills = skills.saturating_add(tokens),
+                "subagent" => subagents = subagents.saturating_add(tokens),
+                "mcpServer" => mcp_tools = mcp_tools.saturating_add(tokens),
+                "plugin" => plugins = plugins.saturating_add(tokens),
+                kind => {
+                    let label = str_of(entry, "label").filter(|s| !s.is_empty()).unwrap_or(kind).to_owned();
+                    let slot = other_user.entry(label).or_insert(0);
+                    *slot = slot.saturating_add(tokens);
+                }
+            }
+        }
+
+        for (name, tokens) in system_rows {
+            categories.push(used_category(name, tokens, "System"));
+        }
+        if tool_definitions > 0 {
+            categories.push(used_category("Tool Definitions", tool_definitions, "System"));
+        }
+        if tool_results > 0 {
+            categories.push(used_category("Tool Results", tool_results, "User Context"));
+        }
+        let messages = total_tokens.saturating_sub(accounted);
+        if messages > 0 {
+            categories.push(used_category("Messages", messages, "User Context"));
+        }
+        if skills > 0 {
+            categories.push(used_category("Skills", skills, "User Context"));
+        }
+        if subagents > 0 {
+            categories.push(used_category("Sub-agents", subagents, "User Context"));
+        }
+        if mcp_tools > 0 {
+            categories.push(used_category("MCP tools", mcp_tools, "User Context"));
+        }
+        if plugins > 0 {
+            categories.push(used_category("Plugins", plugins, "User Context"));
+        }
+        for (name, tokens) in other_user {
+            categories.push(used_category(name, tokens, "User Context"));
+        }
+    } else if let Some(cats) = attr.get("categories").and_then(Value::as_object) {
+        let get = |k: &str| cats.get(k).and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok()).unwrap_or(0);
+        let sys_prompt = get("systemPrompt");
+        let custom_inst = get("customInstructions");
+        let tool_defs = get("systemTools").saturating_add(get("mcpTools"));
+        let messages = get("messages");
+        if sys_prompt > 0 {
+            categories.push(used_category("System prompt", sys_prompt, "System"));
+        }
+        if custom_inst > 0 {
+            categories.push(used_category("Custom instructions", custom_inst, "System"));
+        }
+        if tool_defs > 0 {
+            categories.push(used_category("Tool Definitions", tool_defs, "System"));
+        }
+        if messages > 0 {
+            categories.push(used_category("Messages", messages, "User Context"));
+        }
+    }
+
+    push_free_space(&mut categories, total_tokens, max_tokens, reserved_tokens);
+    Some(AgentContextUsage {
+        categories,
+        total_tokens,
+        max_tokens,
+        model,
+        is_auto_compact_enabled,
+        auto_compact_threshold,
+        reserved_tokens,
+    })
+}
+
+/// Converts Copilot's `session.metadata.contextInfo` payload into [`AgentContextUsage`].
+pub(super) fn context_usage_from_context_info(
+    res: &Value,
+    fallback_model: &str,
+    fallback_limit: Option<u32>,
+) -> Option<AgentContextUsage> {
+    let info = res.get("contextInfo").unwrap_or(res);
+    if !info.is_object() {
+        return None;
+    }
+    let total_tokens = u32_of(info, "totalTokens")?;
+    let max_tokens = u32_of(info, "limit")
+        .filter(|&n| n > 0)
+        .or_else(|| u32_of(info, "promptTokenLimit").filter(|&n| n > 0))
+        .or_else(|| fallback_limit.filter(|&n| n > 0))?;
+    let reserved_tokens = u32_of(info, "bufferTokens").filter(|&n| n > 0);
+    let model = str_of(info, "displayModelName")
+        .or_else(|| str_of(info, "modelName"))
+        .filter(|s| !s.is_empty())
+        .unwrap_or(fallback_model)
+        .to_owned();
+    let auto_compact_threshold = u32_of(info, "compactionThreshold").filter(|&n| n > 0);
+    let is_auto_compact_enabled = auto_compact_threshold.map(|_| true);
+
+    let mut categories = Vec::new();
+    if let Some(sys) = u32_of(info, "systemTokens").filter(|&n| n > 0) {
+        categories.push(used_category("System prompt", sys, "System"));
+    }
+    if let Some(tools) = u32_of(info, "toolDefinitionsTokens").filter(|&n| n > 0) {
+        categories.push(used_category("Tool Definitions", tools, "System"));
+    }
+    if let Some(conv) = u32_of(info, "conversationTokens").filter(|&n| n > 0) {
+        categories.push(used_category("Messages", conv, "User Context"));
+    }
+    push_free_space(&mut categories, total_tokens, max_tokens, reserved_tokens);
+    Some(AgentContextUsage {
+        categories,
+        total_tokens,
+        max_tokens,
+        model,
+        is_auto_compact_enabled,
+        auto_compact_threshold,
+        reserved_tokens,
+    })
+}
+
+/// Fallback breakdown from the latest `session.usage_info` / compaction snapshot.
+pub(super) fn context_usage_from_snapshot(snap: &UsageSnapshot, model: &str) -> AgentContextUsage {
+    let mut categories = Vec::new();
+    if let Some(sys) = snap.system_tokens.filter(|&n| n > 0) {
+        categories.push(used_category("System prompt", sys, "System"));
+    }
+    if let Some(tools) = snap.tool_definitions_tokens.filter(|&n| n > 0) {
+        categories.push(used_category("Tool Definitions", tools, "System"));
+    }
+    if let Some(conv) = snap.conversation_tokens.filter(|&n| n > 0) {
+        categories.push(used_category("Messages", conv, "User Context"));
+    }
+    push_free_space(&mut categories, snap.current_tokens, snap.token_limit, None);
+    AgentContextUsage {
+        categories,
+        total_tokens: snap.current_tokens,
+        max_tokens: snap.token_limit,
+        model: model.to_owned(),
+        is_auto_compact_enabled: None,
+        auto_compact_threshold: None,
+        reserved_tokens: None,
+    }
+}
+
+fn used_category(name: impl Into<String>, tokens: u32, group: &str) -> AgentContextCategory {
+    AgentContextCategory { name: name.into(), tokens, kind: Some("used".to_owned()), group: Some(group.to_owned()) }
+}
+
+fn push_free_space(
+    categories: &mut Vec<AgentContextCategory>,
+    total_tokens: u32,
+    max_tokens: u32,
+    reserved_tokens: Option<u32>,
+) {
+    let free = max_tokens.saturating_sub(total_tokens.saturating_add(reserved_tokens.unwrap_or(0)));
+    if free > 0 {
+        categories.push(AgentContextCategory {
+            name: "Free space".to_owned(),
+            tokens: free,
+            kind: Some("free".to_owned()),
+            group: None,
+        });
+    }
+}
+
+fn normalize_system_label(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "system prompt" | "system" | "system instructions" => "System prompt".to_owned(),
+        "custom instructions" => "Custom instructions".to_owned(),
+        _ => raw.trim().to_owned(),
+    }
+}
+
+fn u32_of(v: &Value, key: &str) -> Option<u32> {
+    v.get(key).and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok())
 }
 
 /// The running entries of a `session.tasks.list` result, in the background-task shape the

@@ -3,6 +3,7 @@ import type {
   AgentCommand,
   AgentCommandChoice,
   AgentConfigOption,
+  AgentContextCategory,
   AgentCost,
   AgentEntry,
   AgentImage,
@@ -727,7 +728,78 @@ const LIMIT_WINDOWS: Record<string, { short: string; name: string }> = {
   seven_day: { short: "7d", name: "Weekly limit" },
   seven_day_opus: { short: "7d Opus", name: "Weekly Opus limit" },
   seven_day_sonnet: { short: "7d Sonnet", name: "Weekly Sonnet limit" },
+  chat: { short: "Chat", name: "Chat" },
+  completions: { short: "Completions", name: "Completions" },
+  premium_interactions: { short: "Premium", name: "Premium requests" },
 };
+
+const SYSTEM_CATEGORY_NAMES = new Set([
+  "System prompt",
+  "Custom instructions",
+  "Tool Definitions",
+  "System tools",
+  "System tools (deferred)",
+  "MCP tools",
+  "MCP tools (deferred)",
+  "MCP server instructions",
+  "Custom agents",
+]);
+
+/** Known user-context categories from Claude Code and Copilot (kept explicit so translations stay active). */
+const USER_CONTEXT_CATEGORY_NAMES = new Set([
+  "Tool Results",
+  "Messages",
+  "Memory files",
+  "Skills",
+  "Sub-agents",
+  "Plugins",
+]);
+
+const FREE_CATEGORY_NAMES = new Set(["Free space"]);
+
+/** Splits context categories into `System` and `User Context` sections plus any buffer tokens. */
+export function groupContextCategories(categories: readonly AgentContextCategory[]): {
+  system: AgentContextCategory[];
+  userContext: AgentContextCategory[];
+  bufferTokens: number;
+} {
+  const system: AgentContextCategory[] = [];
+  const userContext: AgentContextCategory[] = [];
+  let bufferTokens = 0;
+  for (const c of categories) {
+    if (
+      c.tokens <= 0 ||
+      c.kind === "free" ||
+      c.kind === "deferred" ||
+      FREE_CATEGORY_NAMES.has(c.name) ||
+      c.name.endsWith(" (deferred)")
+    ) {
+      continue;
+    }
+    if (c.name === "Autocompact buffer") {
+      bufferTokens += c.tokens;
+      continue;
+    }
+    const group =
+      c.group ??
+      (SYSTEM_CATEGORY_NAMES.has(c.name)
+        ? "System"
+        : USER_CONTEXT_CATEGORY_NAMES.has(c.name)
+          ? "User Context"
+          : "User Context");
+    if (group === "System") system.push(c);
+    else userContext.push(c);
+  }
+  return { system, userContext, bufferTokens };
+}
+
+/** Share of the context window as a compact percentage ("2.0%", "20.3%", "<0.1%"). */
+export function contextShareLabel(used: number, max: number): string {
+  if (max <= 0 || used <= 0) return "0.0%";
+  const pct = (used / max) * 100;
+  if (pct < 0.05) return "<0.1%";
+  return `${pct.toFixed(1)}%`;
+}
 
 /** Visual severity for a usage percentage meter: quiet until nearing the cap. */
 export type MeterTone = "warning" | "danger";
@@ -786,8 +858,16 @@ function untilReset(ms: number): string {
   return `${Math.floor(h / 24)}d ${h % 24}h`;
 }
 
-/** "$0.42": what the session has cost so far. */
+/** "$0.42" or "4,211.4 credits": what the session has cost so far. */
 export function costLabel(c: AgentCost): string {
+  if (c.currency === "credits") {
+    const amount = c.amount ?? 0;
+    const formatted = new Intl.NumberFormat("en-US", {
+      minimumFractionDigits: amount > 0 && amount < 10 ? 1 : 0,
+      maximumFractionDigits: 1,
+    }).format(amount);
+    return tx`${formatted} credits`;
+  }
   try {
     return new Intl.NumberFormat("en-US", {
       style: "currency",

@@ -2809,6 +2809,8 @@ export type AgentContextCategory = {
 	name: string,
 	tokens: number,
 	kind: string | null,
+	/**  Visual section group (e.g. `"System"`, `"User Context"`). */
+	group?: string | null,
 };
 
 export type AgentContextUsage = {
@@ -2818,11 +2820,13 @@ export type AgentContextUsage = {
 	model: string,
 	isAutoCompactEnabled: boolean | null,
 	autoCompactThreshold: number | null,
+	/**  Tokens reserved for model response / output buffer, when the agent reports it. */
+	reservedTokens?: number | null,
 };
 
 export type AgentCost = {
 	amount: number | null,
-	/**  ISO 4217 code, e.g. `USD`. */
+	/**  ISO 4217 code (e.g. `USD`), or `"credits"` for AI-credit billing. */
 	currency: string,
 };
 
