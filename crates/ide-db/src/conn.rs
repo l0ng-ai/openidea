@@ -1000,6 +1000,7 @@ impl Pool {
     pub async fn ping(&self) -> IdeResult<()> {
         match self {
             Pool::Jdbc(p) => p.ping().await,
+            Pool::Clickhouse(p) => p.ping().await,
             _ => self.rows(self.ping_sql(), 1).await.map(|_| ()),
         }
     }

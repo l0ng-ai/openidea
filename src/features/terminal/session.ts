@@ -18,6 +18,7 @@ import { fitScheduler, settledResize } from "./fit";
 import { OutputGate, type TerminalMaxFps } from "./outputGate";
 import { watchWindowsPty, windowsPtyOptions } from "./windowsPty";
 import { installTerminalDrop } from "./drop";
+import { isHomePath, terminalHome } from "./home";
 import { installDomRowCache } from "./domRowCache";
 import { installSelectionHighlights, type SelectionHighlightController } from "./highlight";
 import { installLinkHighlights, xtermLink, type LinkHighlightController } from "./linkHighlights";
@@ -197,7 +198,8 @@ export const LINK_HANDLER: ILinkHandler = {
 
 export async function openFileLink(link: Extract<TerminalLink, { kind: "file" }>, cwd: string) {
   const selection = link.line ? { line: link.line - 1, col: Math.max(0, (link.col ?? 1) - 1) } : undefined;
-  const path = resolvePath(link.path, cwd);
+  const home = isHomePath(link.path) ? await terminalHome() : null;
+  const path = resolvePath(link.path, cwd, home);
   const rel = link.path.replace(/\\/g, "/");
   const name = rel.split("/").pop() ?? rel;
   try {

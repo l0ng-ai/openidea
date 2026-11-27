@@ -1259,6 +1259,8 @@ export async function revealOpened(): Promise<void> {
 
 const completionLoads = new Map<string, { current: () => boolean; promise: Promise<DbCompletion | null> }>();
 const preparingConsoles = new Map<string, RequestId>();
+const clickhouseConsoles = new Set<string>();
+const closingClickhouseConsoles = new Map<string, Promise<unknown>>();
 const stopResultDelivery = new Map<RequestId, () => void>();
 const incompleteResultDelivery = Symbol("incomplete SQL result delivery");
 const streamingResultTabs = new Set<number>();
@@ -1294,6 +1296,8 @@ useProject.subscribe((state, previous) => {
   sourceMutations.clear();
   completionLoads.clear();
   preparingConsoles.clear();
+  clickhouseConsoles.clear();
+  closingClickhouseConsoles.clear();
   lastUsed.clear();
   if (useDatabase.getState().pausedConsoleMetadata.size) useDatabase.setState({ pausedConsoleMetadata: new Set() });
 });
@@ -1507,6 +1511,51 @@ async function syncDropped(id: string) {
   log("info", `${targetLabel(id)}: the connection was lost; the next statement reconnects`);
 }
 
+/** Keep a named session while its editor or an operation on its results can use it. */
+export function watchClickhouseConsoles(): () => void {
+  const editor = maybeEditorService();
+  const release = () => {
+    const paths = editor?.openPaths?.();
+    if (!paths || !clickhouseConsoles.size) return;
+    const { results, inline } = useDatabase.getState();
+    const retained = new Set([...paths, ...results.map((tab) => tab.path), ...inline.map((tab) => tab.path)]);
+    for (const path of clickhouseConsoles) {
+      if (retained.has(path)) continue;
+      clickhouseConsoles.delete(path);
+      preparingConsoles.delete(path);
+      cancelConsole(path);
+      const closing = call(commands.dbReleaseConsole(path)).catch(() => {});
+      closingClickhouseConsoles.set(path, closing);
+      void closing.then(() => {
+        if (closingClickhouseConsoles.get(path) === closing) closingClickhouseConsoles.delete(path);
+      });
+    }
+  };
+  const offTabs = editor?.onOpenTabsChange?.(release);
+  const offResults = useDatabase.subscribe((state, previous) => {
+    if (state.results !== previous.results || state.inline !== previous.inline) release();
+  });
+  return () => {
+    offTabs?.();
+    offResults();
+  };
+}
+
+function withConsoleConnection<T>(id: string, path: string | undefined, op: (console: string | null) => Promise<T>) {
+  const current = databaseRequest(id);
+  return withConnection(id, async () => {
+    const console = sourceById(id)?.driver === "clickhouse" && path ? path : null;
+    if (console) {
+      // A reopened editor waits for the previous session's release before using the same path.
+      const closing = closingClickhouseConsoles.get(console);
+      if (closing) await closing;
+      if (!current()) throw new IpcError({ kind: "cancelled", message: tx("Cancelled") });
+      clickhouseConsoles.add(console);
+    }
+    return op(console);
+  });
+}
+
 async function run(
   id: string,
   statements: SqlStatement[],
@@ -1514,6 +1563,7 @@ async function run(
   maxRows = useDatabase.getState().maxRows,
   skip = 0,
   schema?: string,
+  path?: string,
   progress?: {
     emit: (event: StatementProgress) => void;
     current: () => boolean;
@@ -1526,11 +1576,11 @@ async function run(
   // Only a query that is safe to run again has its cells cut: the whole value is read by running it again.
   const driver = sourceById(id)?.driver ?? "sqlite";
   const cellLimit = statements.every((s) => isReadOnlyQuery(s.text, driver)) ? CELL_LIMIT : null;
-  const outcomes = await withConnection(id, async () => {
+  const outcomes = await withConsoleConnection(id, path, async (console) => {
     const execute = async () => {
       progress?.emit({ type: "started", index: 0 });
       const outcomes = await call(
-        commands.dbExecute(request, id, statements, skip, maxRows, schema || null, cellLimit),
+        commands.dbExecute(request, id, statements, skip, maxRows, schema || null, cellLimit, console),
       ).catch((error: unknown) => {
         if (isCancelled(error)) progress?.onStatementCancelled();
         throw error;
@@ -1570,7 +1620,9 @@ async function run(
     });
     try {
       // Large channel frames can arrive after the reply. Bound only this delivery wait.
-      await call(commands.dbExecuteStream(request, id, statements, maxRows, schema || null, cellLimit, channel));
+      await call(
+        commands.dbExecuteStream(request, id, statements, maxRows, schema || null, cellLimit, channel, console),
+      );
       acknowledged = true;
       waitForDelivery();
       const result = await done;
@@ -1863,7 +1915,7 @@ export async function executeConsole(
     };
     let outcomes: DbStatementOutcome[];
     try {
-      outcomes = await run(id, statements, request, pageSize, 0, schema, {
+      outcomes = await run(id, statements, request, pageSize, 0, schema, path, {
         emit,
         current: ownsRun,
         onStatementCancelled: () => {
@@ -2003,9 +2055,14 @@ function showPlan(path: string, id: string, statement: SqlStatement, plan: DbPla
   showServiceView(RESULTS_VIEW, false);
 }
 
-async function explain(id: string, statement: SqlStatement, schema?: string): Promise<DbPlanNode[]> {
-  const plan = await withConnection(id, () =>
-    call(commands.dbExplain(nextRequestId(), id, statement.text, schema || null)),
+async function explain(
+  id: string,
+  statement: SqlStatement,
+  schema: string | undefined,
+  path: string,
+): Promise<DbPlanNode[]> {
+  const plan = await withConsoleConnection(id, path, (console) =>
+    call(commands.dbExplain(nextRequestId(), id, statement.text, schema || null, console)),
   );
   log("statement", `explain ${statement.text}`, `${schema || promptOf(id)}>`);
   log("result", `${plan.length} plan node${plan.length === 1 ? "" : "s"}`);
@@ -2023,7 +2080,7 @@ export async function explainConsole(path: string, text: string, from: number, t
       path,
       id,
       statement,
-      await explain(id, statement, useDatabase.getState().consoleSchemas[path] || undefined),
+      await explain(id, statement, useDatabase.getState().consoleSchemas[path] || undefined, path),
     );
   } catch (e) {
     if (isCancelled(e)) return;
@@ -2071,7 +2128,7 @@ export async function rerunResult(tabId: number): Promise<void> {
     patchResult(tabId, { busy: true });
     try {
       patchResult(tabId, {
-        plan: await explain(tab.sourceId, tab.outcome.statement, tab.schema ?? consoleSchema(tab.path)),
+        plan: await explain(tab.sourceId, tab.outcome.statement, tab.schema ?? consoleSchema(tab.path), tab.path),
         busy: false,
       });
     } catch (e) {
@@ -2091,8 +2148,8 @@ export function pageable(tab: ResultTab): boolean {
 /** Row `row` (from 0, over all pages) of result tab `tab`'s query, with its cells whole. */
 export async function readResultRow(tab: ResultTab, row: number): Promise<DbQueryResult> {
   const schema = tab.schema ?? consoleSchema(tab.path);
-  return withConnection(tab.sourceId, () =>
-    call(commands.dbResultRow(nextRequestId(), tab.sourceId, tab.outcome.statement, row, schema || null)),
+  return withConsoleConnection(tab.sourceId, tab.path, (console) =>
+    call(commands.dbResultRow(nextRequestId(), tab.sourceId, tab.outcome.statement, row, schema || null, console)),
   );
 }
 
@@ -2101,8 +2158,19 @@ export async function readResultPage(tab: ResultTab): Promise<DbQueryResult> {
   const schema = tab.schema ?? consoleSchema(tab.path);
   const rows = Math.max(tab.outcome.result?.rows.length ?? 0, 1);
   const { skip } = pageFetch(tab.page ?? 0, tab.pageSize ?? rows);
-  const [outcome] = await withConnection(tab.sourceId, () =>
-    call(commands.dbExecute(nextRequestId(), tab.sourceId, [tab.outcome.statement], skip, rows, schema || null, null)),
+  const [outcome] = await withConsoleConnection(tab.sourceId, tab.path, (console) =>
+    call(
+      commands.dbExecute(
+        nextRequestId(),
+        tab.sourceId,
+        [tab.outcome.statement],
+        skip,
+        rows,
+        schema || null,
+        null,
+        console,
+      ),
+    ),
   );
   if (!outcome?.result) throw new Error(outcome?.error ?? "The statement returned no result");
   return outcome.result;
@@ -2139,6 +2207,7 @@ export async function loadResultPage(tabId: number, page: number, pageSize: numb
       maxRows,
       skip,
       tab.schema ?? consoleSchema(tab.path),
+      tab.path,
     );
     const r = outcome?.result;
     if (r) {
@@ -2186,6 +2255,7 @@ export async function countResult(tabId: number): Promise<number | null> {
       1,
       0,
       tab.schema ?? consoleSchema(tab.path),
+      tab.path,
     );
     const total = Number(outcome?.result?.rows[0]?.[0]);
     const known = outcome?.error || !Number.isFinite(total) ? null : total;

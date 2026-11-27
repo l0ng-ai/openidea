@@ -4,8 +4,10 @@ import { getSession, newTab, splitTab, syncTerminalProject, unbindTerminals, use
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FIT_SETTLE_MS } from "./fit";
 import { findTerminalLinks, type TerminalLink } from "./links";
+import { _resetTerminalHomeForTests } from "./home";
 import { openFileLink, resolveStartCwd, TerminalSession } from "./session";
 import { usePlatform } from "@/platform/platformInfo";
+import { useRemote } from "@/platform/remote";
 
 const ipc = vi.hoisted(() => ({
   call: vi.fn(async (v: unknown) => v),
@@ -13,6 +15,7 @@ const ipc = vi.hoisted(() => ({
     fsReadDir: vi.fn(),
     fsEntryKind: vi.fn(),
     findFiles: vi.fn(),
+    runSystemEnv: vi.fn(),
     termSpawn: vi.fn(),
     termKill: vi.fn(),
     termResize: vi.fn(),
@@ -268,6 +271,26 @@ describe("openFileLink", () => {
     await openFileLink(fileLink("main.php:1"), "/p");
     expect(ipc.commands.findFiles).toHaveBeenCalledTimes(1);
     expect(workbench.openFile).toHaveBeenCalledWith("/p/x/main.php", { selection: { line: 0, col: 0 }, focus: true });
+  });
+
+  it("opens a `~/` location under the remote host's home, not a same-named project file (#6246)", async () => {
+    _resetTerminalHomeForTests();
+    useRemote.setState({ session: { host: "Ubuntu", os: "linux", root: "/home/linux/p", commands: [] } as never });
+    ipc.commands.runSystemEnv.mockResolvedValue({ HOME: "/home/linux" });
+    ipc.commands.fsReadDir.mockResolvedValue([{ name: "050_loops.py", kind: "file" }]);
+    ipc.commands.findFiles.mockResolvedValue([{ path: "/home/linux/p/old/050_loops.py", relPath: "old/050_loops.py" }]);
+    try {
+      await openFileLink(fileLink("~/projects/odin/python_how_to/050_loops.py:10:5"), "/home/linux/p");
+    } finally {
+      useRemote.setState({ session: null });
+      _resetTerminalHomeForTests();
+    }
+    expect(ipc.commands.fsReadDir).toHaveBeenCalledWith("/home/linux/projects/odin/python_how_to");
+    expect(workbench.openFile).toHaveBeenCalledWith("/home/linux/projects/odin/python_how_to/050_loops.py", {
+      selection: { line: 9, col: 4 },
+      focus: true,
+    });
+    expect(ipc.commands.findFiles).not.toHaveBeenCalled();
   });
 
   it("warns when nothing matches", async () => {

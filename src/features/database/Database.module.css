@@ -1877,3 +1877,10 @@
   flex: none;
   border-top: 1px solid var(--border);
 }
+.modifyKeyColumns {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  max-height: 160px;
+  overflow: auto;
+}

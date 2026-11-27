@@ -2126,6 +2126,8 @@
   "Ignore Whitespaces": "Игнорировать пробелы",
   "Detect Movements Within File": "Определять перемещения внутри файла",
   "Detect Movements Across Files": "Определять перемещения между файлами",
+  "Colors": "Цвета",
+  "Order": "Порядок",
   "Names": "Имена",
   "Initials": "Инициалы",
   "Last Name": "Фамилия",

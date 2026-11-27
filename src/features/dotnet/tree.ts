@@ -7,8 +7,9 @@
  * roots re-register in place on change (as External Libraries does) and nothing
  * registers while the model is empty. The scan starts only when the file index
  * shows .NET files (a cheap index lookup, retried once indexing finishes), so a
- * workspace without .NET pays nothing on open. Discovery states (loading /
- * empty / failure) are the second slice of #5635.
+ * workspace without .NET pays nothing on open. Discovery states (#5635 item 4)
+ * ride on one placeholder root's grey detail text — scanning while the shared
+ * scan runs, the failure after it failed; idle and empty means no root at all.
  */
 import type { DotnetWorkspace } from "@/platform/dotnet";
 import { tx } from "@/platform/i18n";
@@ -47,9 +48,45 @@ async function dotnetCandidates(): Promise<string[]> {
   );
 }
 
-/** One group per solution (a leaf per project), standalone projects as roots of their own. */
-export function treeRoots(model: DotnetWorkspace): ProjectViewRootContribution[] {
-  if (!model.projects.length && !model.solutions.length) return [];
+/**
+ * The placeholder root a discovery state (#5635 item 4) rides on: `.NET` above
+ * the project folder, the state as grey detail text — a group node, so nothing
+ * context-menu or selection related fires on it.
+ */
+const stateRoot = (detail: string): ProjectViewRootContribution => ({
+  id: "dotnetDiscovery",
+  label: ".NET",
+  icon: ICON,
+  beforeProject: true,
+  order: -200,
+  detail,
+});
+
+/**
+ * One group per solution (a leaf per project), standalone projects as roots of
+ * their own. With the model still empty, the one placeholder root carries the
+ * discovery state (#5635 item 4) as grey detail text — scanning while the
+ * shared scan runs, the failure after it failed, so it shows where the
+ * discovered solutions will live. Idle and empty means no root at all: no
+ * spinner (none exists in `ui/icons`), no empty-state node — the NuGet window
+ * stays the explicit empty surface. A failed scan keeps the store's
+ * retry-on-next-use behaviour: the next scan (a context action, the NuGet
+ * window, a reopened project) replaces the placeholder.
+ */
+export function treeRoots({
+  model,
+  busy,
+  error,
+}: {
+  model: DotnetWorkspace;
+  busy: boolean;
+  error: string;
+}): ProjectViewRootContribution[] {
+  if (!model.projects.length && !model.solutions.length) {
+    if (busy) return [stateRoot(tx`Scanning…`)];
+    if (error) return [stateRoot(tx`Scan failed`)];
+    return [];
+  }
   const projectName = (path: string) => model.projects.find((p) => p.path === path)?.name ?? solutionName(path);
   const leaf = (path: string) => ({ label: projectName(path), icon: ICON, path, file: true });
   const grouped = new Set(model.solutions.flatMap((s) => s.projects));
@@ -91,7 +128,7 @@ export function activateTree(): () => void {
     prev.reverse().forEach((d) => d());
   };
   const sync = () => {
-    const roots = treeRoots(useDotnet.getState().model);
+    const roots = treeRoots(useDotnet.getState());
     const key = JSON.stringify(roots);
     if (key === shown) return;
     shown = key;
