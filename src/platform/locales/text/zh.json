@@ -1672,6 +1672,8 @@
   "Create Branch": "创建分支",
   "Create New Branch": "创建新分支",
   "Create New Test…": "创建新测试…",
+  "'{newName}' is not a valid fixture name": "“{newName}”不是有效的 fixture 名称",
+  "The fixture is defined outside the project": "该 fixture 定义在项目之外",
   "Create Test…": "创建测试…",
   "This is a test file": "这是测试文件",
   "Choose Test for {stem} ({count} found)": "选择 {stem} 的测试（找到 {count} 项）",

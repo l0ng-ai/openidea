@@ -445,6 +445,8 @@ menu_set_disabled                            always             desktop      bin
 menu_set_remote_recent                       always             desktop      bindings sync
 nav_index_definitions                        always             project_host bindings async
 nav_inheritance                              always             project_host bindings async
+nav_pytest_fixture_rename                    always             project_host bindings async
+nav_pytest_fixture_usages                    always             project_host bindings async
 nav_pytest_fixtures                          always             project_host bindings async
 nav_python_stubs                             always             project_host bindings async
 nav_resolve_module                           always             project_host bindings async

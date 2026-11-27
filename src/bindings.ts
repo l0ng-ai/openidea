@@ -1212,6 +1212,24 @@ export const commands = {
 	 */
 	navInheritance: () => typedError<ClassInheritance[], IdeError>(__TAURI_INVOKE("nav_inheritance")),
 	/**
+	 *  Rename of the pytest fixture at `pos`: its definition, every place that gets it and the
+	 *  uses of those parameters in their functions. Cancellable.
+	 */
+	navPytestFixtureRename: (doc: DocId, pos: Pos, newName: string, request: RequestId) => typedError<WorkspaceEdit, IdeError>(__TAURI_INVOKE("nav_pytest_fixture_rename", { doc, pos, newName, request })),
+	/**
+	 *  Find Usages of the pytest fixture at `pos` (its definition, or a place asking for it): every
+	 *  test and fixture parameter, `usefixtures` and `getfixturevalue` string that gets it.
+	 *  None when `pos` names no fixture. Cancellable.
+	 */
+	navPytestFixtureUsages: (doc: DocId, pos: Pos, request: RequestId) => typedError<{
+	name: string,
+	definition: Location,
+	/**  Defined in the project (not by a plugin or pytest): it may be renamed. */
+	inProject: boolean,
+	/**  Every place that gets this fixture: parameters, `usefixtures` and `getfixturevalue` strings. */
+	usages: Location[],
+} | null, IdeError>(__TAURI_INVOKE("nav_pytest_fixture_usages", { doc, pos, request })),
+	/**
 	 *  pytest fixtures at `pos` of a Python document: the definition pytest uses for the fixture
 	 *  named there (a test's parameter, a `usefixtures` / `getfixturevalue` string), and the
 	 *  fixtures visible where a fixture name goes, for completion.
@@ -12164,6 +12182,15 @@ export type PytestFixtureReference = {
 	range: Range,
 	/**  None when no visible module defines it (`request`, a fixture from a hook). */
 	definition: Location | null,
+};
+
+export type PytestFixtureUsages = {
+	name: string,
+	definition: Location,
+	/**  Defined in the project (not by a plugin or pytest): it may be renamed. */
+	inProject: boolean,
+	/**  Every place that gets this fixture: parameters, `usefixtures` and `getfixturevalue` strings. */
+	usages: Location[],
 };
 
 /**  A class definition and the methods it declares. */
