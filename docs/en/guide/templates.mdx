@@ -17,6 +17,14 @@ After expansion, the caret is in the first field. `⇥` / `Tab` moves to the nex
 
 Built-in templates exist for Rust, JavaScript / TypeScript, Python, Go, Java, Kotlin, PHP and SQL, plus a few general ones (`todo`, `fixme`, `hack`, `date`). **Insert Live Template…** lists the templates that apply at the caret. By default templates expand only in code, not in comments or strings.
 
+### Import from JetBrains
+
+Choose **File › Manage IDE Settings › Import Settings from JetBrains IDE…** to use an IDE's settings directory on this computer, or **Import Settings…** to select an exported `settings.zip`. The importer reads `templates/*.xml` and lists the imported and skipped counts before writing. Cancel leaves existing templates unchanged.
+
+Template groups, abbreviations, descriptions, `$VAR$` bodies, variable expressions/defaults and language contexts are preserved. JetBrains `alwaysStopAt="false"` becomes **Skip if defined**. Imports use stable `jetbrains.*` ids, so importing again updates the same templates without replacing built-ins or unrelated custom templates.
+
+Unknown or ambiguous contexts are skipped, not treated as global. Macro expressions OpenIDEA cannot evaluate are preserved as expression text and listed in the confirmation; imported defaults still apply, otherwise the field stays editable. Malformed XML is reported and none of that file's templates are imported.
+
 ### Surround With
 
 Select code and press `⌥⌘T` / `Ctrl+Alt+T`. The list starts with the language's wrappers (`if`, `while`, `try` and so on), followed by live templates that use `$SELECTION$`. **Surround with Live Template…** shows only the latter.
