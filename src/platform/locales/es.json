@@ -112,6 +112,7 @@
   "menu.code.overrideMethods": "Sobrescribir métodos…",
   "menu.code.implementMethods": "Implementar métodos…",
   "menu.code.insertLiveTemplate": "Insertar plantilla activa…",
+  "menu.code.saveAsLiveTemplate": "Guardar como plantilla activa…",
   "menu.code.moveLineDown": "Mover línea hacia abajo",
   "menu.code.moveLineUp": "Mover línea hacia arriba",
   "menu.code.optimizeImports": "Optimizar importaciones",

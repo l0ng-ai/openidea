@@ -143,6 +143,7 @@
   "menu.code.overrideMethods": "重寫方法…",
   "menu.code.implementMethods": "實作方法…",
   "menu.code.insertLiveTemplate": "插入即時範本…",
+  "menu.code.saveAsLiveTemplate": "另存為即時範本…",
   "menu.code.moveLineDown": "下移行",
   "menu.code.moveLineUp": "上移行",
   "menu.code.optimizeImports": "最佳化匯入",

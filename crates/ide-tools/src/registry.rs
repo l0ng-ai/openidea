@@ -447,6 +447,17 @@ pub static TOOLS: &[ToolSpec] = &[
         needs: &[],
     },
     ToolSpec {
+        name: "some-sass-language-server",
+        display: "Some Sass Language Server",
+        kind: LanguageServer,
+        commands: &["some-sass-language-server"],
+        method: Method::Npm { packages: &["some-sass-language-server"] },
+        fallback: None,
+        version: V,
+        homepage: "https://github.com/wkillerud/some-sass",
+        needs: &[],
+    },
+    ToolSpec {
         name: "vscode-html-language-server",
         display: "HTML Language Server",
         kind: LanguageServer,

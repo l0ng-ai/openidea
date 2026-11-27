@@ -91,7 +91,7 @@ import type { ResultTab } from "./store";
 /** `templates` feature's language-data key for finer template contexts. */
 const TEMPLATE_CONTEXT_KEY = "openideaTemplateContexts";
 
-import { executionMarks, runField, setPreview, trackExecution } from "./executionMarks";
+import { confirmUnsafe, executionMarks, runField, setPreview, trackExecution } from "./executionMarks";
 import { SQL_LANGUAGE } from "./sqlLanguage";
 import { jdbcDialect } from "./vendors";
 export { SQL_LANGUAGE };
@@ -104,21 +104,33 @@ async function executeRange(view: EditorView, path: string, from: number, to: nu
   const sent = view.state.doc;
   const tracker = trackExecution(view, (error) => `[${sourceById(consoleSource(path))?.name ?? ""}] ${error}`);
   try {
-    await executeConsole(path, sent.toString(), from, to, tracker.start, (events) => {
-      const last = events[events.length - 1]!;
-      const active = last.type === "started" ? { index: last.index, startedAt: Date.now() } : null;
-      const completed = events.filter((event) => event.type !== "started");
-      const spans = tracker.update(
-        active,
-        completed.map(({ index, outcome }) => ({ index, error: outcome.error, ms: outcome.result?.elapsedMs ?? null })),
-      );
-      const placed = new Map<number, DbStatementOutcome>();
-      for (const { index, outcome } of completed) {
-        const span = spans.get(index);
-        if (span) placed.set(index, { ...outcome, statement: { ...outcome.statement, ...span } });
-      }
-      return placed;
-    });
+    await executeConsole(
+      path,
+      sent.toString(),
+      from,
+      to,
+      tracker.start,
+      (events) => {
+        const last = events[events.length - 1]!;
+        const active = last.type === "started" ? { index: last.index, startedAt: Date.now() } : null;
+        const completed = events.filter((event) => event.type !== "started");
+        const spans = tracker.update(
+          active,
+          completed.map(({ index, outcome }) => ({
+            index,
+            error: outcome.error,
+            ms: outcome.result?.elapsedMs ?? null,
+          })),
+        );
+        const placed = new Map<number, DbStatementOutcome>();
+        for (const { index, outcome } of completed) {
+          const span = spans.get(index);
+          if (span) placed.set(index, { ...outcome, statement: { ...outcome.statement, ...span } });
+        }
+        return placed;
+      },
+      confirmUnsafe(view, path, tracker.current),
+    );
   } finally {
     tracker.end();
   }
