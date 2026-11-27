@@ -151,8 +151,8 @@ function debugpyLaunch(rc: RunConfig, cwd: string): LaunchConfig {
     if (tool) args = args.slice(1);
   }
   if (tool) {
-    // A console script (`pytest`, `uvicorn`, …): run it as a module.
-    extra.module = tool;
+    // A console script (`pytest`, `uvicorn`, …): run it as a module; `django-admin` is `python -m django`.
+    extra.module = tool === "django-admin" ? "django" : tool;
     out.args = [...args];
   } else if (args[0] === "-m" && args[1]) {
     extra.module = args[1];
@@ -162,6 +162,7 @@ function debugpyLaunch(rc: RunConfig, cwd: string): LaunchConfig {
     out.args = args.slice(1);
     if (args[0].endsWith("manage.py")) extra.django = true;
   }
+  if (extra.module === "django") extra.django = true;
   out.extraJson = JSON.stringify(extra);
   return out;
 }
