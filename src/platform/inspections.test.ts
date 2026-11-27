@@ -51,6 +51,7 @@ describe("inspection profiles", () => {
 
   it("maps built-in producers to their inspections", () => {
     expect(producerInspectionId("file-references")).toBe("builtin:file-references");
+    expect(producerInspectionId("thymeleaf-references")).toBe("builtin:thymeleaf-references");
     expect(producerInspectionId("ruff")).toBe("lsp:ruff");
   });
 

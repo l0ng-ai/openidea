@@ -28,8 +28,11 @@ def main():
     primes(20000)
     checksum(str(i) for i in range(200000))
     print("done", flush=True)
-    while "--loop" in sys.argv:
+    if "--loop" in sys.argv:
         fib(18)
+        print("looped", flush=True)
+        while True:
+            fib(18)
 
 
 if __name__ == "__main__":

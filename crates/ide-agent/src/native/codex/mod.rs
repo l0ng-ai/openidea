@@ -14,7 +14,7 @@ mod tests;
 use super::Shim;
 use crate::acp::AUTH_REQUIRED;
 use crate::provider::ProviderSpec;
-use crate::{AgentCommand, AgentCommandSource};
+use crate::{AgentCommand, AgentCommandChoice, AgentCommandSource};
 use commands::{BuiltinCommand, ParsedCommand};
 use ide_jsonrpc::{Framing, Handler, Peer, RpcError, codes};
 use parking_lot::Mutex;
@@ -47,6 +47,14 @@ pub(crate) fn builtin_commands() -> Vec<AgentCommand> {
             description: command.description.to_owned(),
             hint: command.hint.map(str::to_owned),
             source: AgentCommandSource::Command,
+            choices: command
+                .choices
+                .iter()
+                .map(|(name, description)| AgentCommandChoice {
+                    name: (*name).to_owned(),
+                    description: (*description).to_owned(),
+                })
+                .collect(),
         })
         .collect()
 }
