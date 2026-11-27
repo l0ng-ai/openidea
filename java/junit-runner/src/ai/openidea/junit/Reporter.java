@@ -25,6 +25,14 @@ final class Reporter {
         }
     }
 
+    /** Output written outside any test, as it was written. */
+    void write(byte[] bytes, int off, int len) {
+        synchronized (out) {
+            out.write(bytes, off, len);
+            out.flush();
+        }
+    }
+
     /** Output written outside any test. */
     void print(String text) {
         synchronized (out) {
