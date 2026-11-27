@@ -10712,5 +10712,19 @@
   "Cannot export the usages": "无法导出用法",
   "Custom command": "自定义命令",
   "{chosen} (not found)": "{chosen}（未找到）",
-  "The interpreter does not exist": "解释器不存在"
+  "The interpreter does not exist": "解释器不存在",
+  "Import paths": "导入路径",
+  "Import path ending": "导入路径结尾",
+  "Do not auto-import from": "不从以下位置自动导入",
+  "Do not auto-import specifiers matching": "不自动导入匹配以下表达式的路径",
+  "Shortest": "最短",
+  "Non-relative (paths, baseUrl)": "非相对路径（paths、baseUrl）",
+  "Relative within the project": "项目内使用相对路径",
+  "Minimal (./components)": "最简（./components）",
+  "Index file (./components/index)": "index 文件（./components/index）",
+  "Extension (./components/index.js)": "带扩展名（./components/index.js）",
+  "For the imports the TypeScript server adds.": "用于 TypeScript 服务器添加的导入。",
+  "Files matching these globs, e.g. **/index.ts.": "匹配这些 glob 的文件，例如 **/index.ts。",
+  "Regular expressions for the import path, e.g. ^node: or /index$.": "匹配导入路径的正则表达式，例如 ^node: 或 /index$。",
+  "No expressions": "没有表达式"
 }

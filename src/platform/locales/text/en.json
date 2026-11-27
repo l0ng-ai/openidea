@@ -4249,5 +4249,20 @@
   "Cannot export the usages": "Cannot export the usages",
   "Custom command": "Custom command",
   "{chosen} (not found)": "{chosen} (not found)",
-  "The interpreter does not exist": "The interpreter does not exist"
+  "The interpreter does not exist": "The interpreter does not exist",
+  "Import paths": "Import paths",
+  "Import path ending": "Import path ending",
+  "Do not auto-import from": "Do not auto-import from",
+  "Do not auto-import specifiers matching": "Do not auto-import specifiers matching",
+  "Shortest": "Shortest",
+  "Non-relative (paths, baseUrl)": "Non-relative (paths, baseUrl)",
+  "Relative within the project": "Relative within the project",
+  "Minimal (./components)": "Minimal (./components)",
+  "Index file (./components/index)": "Index file (./components/index)",
+  "Extension (./components/index.js)": "Extension (./components/index.js)",
+  "For the imports the TypeScript server adds.": "For the imports the TypeScript server adds.",
+  "Files matching these globs, e.g. **/index.ts.": "Files matching these globs, e.g. **/index.ts.",
+  "Regular expressions for the import path, e.g. ^node: or /index$.": "Regular expressions for the import path, e.g. ^node: or /index$.",
+  "No expressions": "No expressions",
+  "Expression": "Expression"
 }
