@@ -17,15 +17,23 @@ import { ResultsView } from "./ResultsView";
 import { streamExecution } from "./executeStream.fixture";
 import {
   cancelConsole,
+  closeResult,
+  countResult,
   executeConsole,
   explainConsole,
+  loadResultPage,
   pinResult,
+  readResultPage,
+  readResultRow,
   rerunResult,
+  runSql,
   useDatabase,
+  watchClickhouseConsoles,
   type ResultTab,
 } from "./store";
 import { registerResultTabActions } from "./resultTabActions";
 import { activeTableEditor, installTableEditorFocus } from "./tableEditorFocus";
+import * as contributions from "@/workbench/contributions";
 import { provideToolWindowService } from "@/workbench/contributions";
 
 const backend = vi.hoisted(() => ({
@@ -34,6 +42,8 @@ const backend = vi.hoisted(() => ({
   details: vi.fn(),
   applyEdits: vi.fn(),
   execute: vi.fn(),
+  resultRow: vi.fn(),
+  releaseConsole: vi.fn(),
   stream: vi.fn(),
   cancel: vi.fn(),
   connected: vi.fn(),
@@ -51,6 +61,8 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       dbTableDetails: backend.details,
       dbApplyEdits: backend.applyEdits,
       dbExecute: backend.execute,
+      dbResultRow: backend.resultRow,
+      dbReleaseConsole: backend.releaseConsole,
       dbExecuteStream: backend.stream,
       cancelRequest: backend.cancel,
       dbConnected: backend.connected,
@@ -1157,6 +1169,76 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
       }
     },
   );
+
+  it("routes ClickHouse runs and result operations through the originating SQL editor", async () => {
+    const first = "/project/console.sql";
+    const second = "/project/console_1.sql";
+    useDatabase.setState({
+      sources: [{ id: "pg", name: "Local", driver: "clickhouse", readOnly: false }],
+    });
+    backend.resultRow.mockResolvedValue({ status: "ok", data: result([{ name: "v" }], [["1"]]) });
+    backend.explain.mockResolvedValue({ status: "ok", data: [] });
+
+    await runIn(first, "SELECT 1");
+    expect(backend.execute.mock.lastCall?.[7]).toBe(first);
+    await runIn(second, "SELECT 2");
+    expect(backend.execute.mock.lastCall?.[7]).toBe(second);
+    const firstResult = useDatabase.getState().results.find((tab) => tab.path === first)!;
+
+    await loadResultPage(firstResult.id, 1, 1);
+    expect(backend.execute.mock.lastCall?.[7]).toBe(first);
+    await countResult(firstResult.id);
+    expect(backend.execute.mock.lastCall?.[7]).toBe(first);
+    await readResultPage(firstResult);
+    expect(backend.execute.mock.lastCall?.[7]).toBe(first);
+    await readResultRow(firstResult, 1);
+    expect(backend.resultRow.mock.lastCall?.[5]).toBe(first);
+
+    await explainConsole(second, "SELECT 2", 0, 0);
+    expect(backend.explain.mock.lastCall?.[4]).toBe(second);
+    const plan = useDatabase.getState().results.find((tab) => !!tab.plan)!;
+    await rerunResult(plan.id);
+    expect(backend.explain.mock.lastCall?.[4]).toBe(second);
+
+    await runSql("pg", ["SELECT 3"]);
+    expect(backend.execute.mock.lastCall?.[7]).toBeNull();
+
+    let paths = [first, second];
+    let tabsChanged!: () => void;
+    let released!: () => void;
+    backend.releaseConsole.mockImplementationOnce(
+      () => new Promise((resolve) => (released = () => resolve({ status: "ok", data: null }))),
+    );
+    const editor = vi.spyOn(contributions, "maybeEditorService").mockReturnValue({
+      openPaths: () => paths,
+      onOpenTabsChange: (listener) => {
+        tabsChanged = listener;
+        return () => {};
+      },
+    } as contributions.EditorService);
+    const stopWatching = watchClickhouseConsoles();
+    try {
+      paths = [second];
+      tabsChanged();
+      expect(backend.releaseConsole).not.toHaveBeenCalled();
+      closeResult(firstResult.id);
+      expect(backend.releaseConsole).toHaveBeenCalledExactlyOnceWith(first);
+
+      paths = [first, second];
+      tabsChanged();
+      const before = backend.execute.mock.calls.length;
+      const reopened = runIn(first, "SELECT 4");
+      await vi.waitFor(() => expect(useDatabase.getState().running[first]).toBeDefined());
+      expect(backend.execute).toHaveBeenCalledTimes(before);
+      released();
+      await reopened;
+      expect(backend.execute.mock.lastCall?.[7]).toBe(first);
+    } finally {
+      released?.();
+      stopWatching();
+      editor.mockRestore();
+    }
+  });
 
   it("never replaces the Query Plan from a run, and appends a new plan beside a pinned one", async () => {
     backend.explain.mockResolvedValue({ status: "ok", data: [] });
