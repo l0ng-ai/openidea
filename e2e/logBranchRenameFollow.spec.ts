@@ -78,7 +78,8 @@ async function openLogOnSd(page: Page) {
     h.vcs_stashes = () => [];
     h.vcs_tags = () => [];
     h.vcs_config_get = () => null;
-    h.vcs_rename_branch = ({ from, to }) => {
+    h.vcs_rename_branch = (args) => {
+      const { from, to } = args as { from: string; to: string };
       if (!branches.some((b) => !b.remote && b.name === from))
         throw { kind: "failed", message: "no such branch", detail: null };
       head = to;
