@@ -1096,6 +1096,7 @@ export const commands = {
 	activeParameter: number,
 } | null, IdeError>(__TAURI_INVOKE("lsp_signature_help", { doc, pos })),
 	lspSignatureInfo: (request: RequestId, doc: DocId, pos: Pos) => typedError<MethodSignature, IdeError>(__TAURI_INVOKE("lsp_signature_info", { request, doc, pos })),
+	lspSnapshotCompletion: (path: string, text: string, pos: Pos, request: RequestId) => typedError<CompletionItem[], IdeError>(__TAURI_INVOKE("lsp_snapshot_completion", { path, text, pos, request })),
 	lspSnapshotDiagnostics: (path: string, text: string, request: RequestId) => typedError<Diagnostic[], IdeError>(__TAURI_INVOKE("lsp_snapshot_diagnostics", { path, text, request })),
 	lspSourceActionText: (path: string, text: string, kind: string, request: RequestId) => typedError<TextEdit[], IdeError>(__TAURI_INVOKE("lsp_source_action_text", { path, text, kind, request })),
 	lspTypeHierarchy: (doc: DocId, pos: Pos, direction: HierarchyDirection) => typedError<HierarchyItem[], IdeError>(__TAURI_INVOKE("lsp_type_hierarchy", { doc, pos, direction })),
@@ -1210,6 +1211,12 @@ export const commands = {
 	 *  for native inheritance gutter markers.
 	 */
 	navInheritance: () => typedError<ClassInheritance[], IdeError>(__TAURI_INVOKE("nav_inheritance")),
+	/**
+	 *  pytest fixtures at `pos` of a Python document: the definition pytest uses for the fixture
+	 *  named there (a test's parameter, a `usefixtures` / `getfixturevalue` string), and the
+	 *  fixtures visible where a fixture name goes, for completion.
+	 */
+	navPytestFixtures: (doc: DocId, pos: Pos) => typedError<PytestFixtureAt, IdeError>(__TAURI_INVOKE("nav_pytest_fixtures", { doc, pos })),
 	/**
 	 *  The stub (`.pyi`) of a Python document, or the implementation of a stub, and the
 	 *  functions and classes declared in both: PyCharm's stub gutter markers.
@@ -12134,6 +12141,29 @@ export type PypiPackage = {
 	latest: string,
 	/**  Releases with files to install, most recently uploaded first; yanked ones left out. */
 	versions: string[],
+};
+
+export type PytestFixtureAt = {
+	/**  The fixture name at the position, and the definition pytest uses for it. */
+	reference: PytestFixtureReference | null,
+	/**
+	 *  At a place a fixture name goes (a test's parameters, a `usefixtures` string): the
+	 *  fixtures visible there, nearest first.
+	 */
+	completions: PytestFixtureItem[] | null,
+};
+
+export type PytestFixtureItem = {
+	name: string,
+	/**  The file defining it. */
+	path: IpcPath,
+};
+
+export type PytestFixtureReference = {
+	name: string,
+	range: Range,
+	/**  None when no visible module defines it (`request`, a fixture from a hook). */
+	definition: Location | null,
 };
 
 /**  A class definition and the methods it declares. */

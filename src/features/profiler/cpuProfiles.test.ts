@@ -118,7 +118,12 @@ describe("Open Snapshot", () => {
     expect(isSnapshotPath("/a/CPU.20261126.cpuprofile")).toBe(true);
     expect(isSnapshotPath("/a/X.CPUPROFILE")).toBe(true);
     expect(isSnapshotPath("/a/cpuprofile.json")).toBe(false);
-    expect(["/a/out.pstats", "/a/run.PROF", "/a/prof"].map(isSnapshotPath)).toEqual([true, true, false]);
+    expect(["/a/out.pstats", "/a/run.PROF", "/a/app.pstat", "/a/prof"].map(isSnapshotPath)).toEqual([
+      true,
+      true,
+      true,
+      false,
+    ]);
   });
 
   it("says that a cProfile snapshot's call tree is estimated", async () => {

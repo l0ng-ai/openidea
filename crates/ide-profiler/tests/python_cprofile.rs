@@ -5,6 +5,7 @@
 use ide_profiler::{Profile, ProfileMode, ProfilePrepared, collect, prepare};
 use ide_run::RunConfig;
 use std::collections::BTreeMap;
+#[cfg(unix)]
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
