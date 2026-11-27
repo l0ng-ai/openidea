@@ -9428,5 +9428,9 @@
   "SQL DELETE": "SQL DELETE 陳述式",
   "Column comment": "欄位註解",
   "Get from Version Control": "從版本控制取得",
-  "Cannot connect to the remote host": "無法連線到遠端主機"
+  "Cannot connect to the remote host": "無法連線到遠端主機",
+  "Pull request link {text}": "拉取請求連結 {text}",
+  "Issue link {text}": "Issue 連結 {text}",
+  "Commit link {text}": "提交連結 {text}",
+  "Link {text}": "連結 {text}"
 }

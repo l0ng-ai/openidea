@@ -8850,5 +8850,9 @@
   "SQL DELETE": "SQL DELETE",
   "Column comment": "Sütun yorumu",
   "Get from Version Control": "Sürüm Kontrolünden Al",
-  "Cannot connect to the remote host": "Uzak sunucuya bağlanılamıyor"
+  "Cannot connect to the remote host": "Uzak sunucuya bağlanılamıyor",
+  "Pull request link {text}": "{text} pull request bağlantısı",
+  "Issue link {text}": "{text} issue bağlantısı",
+  "Commit link {text}": "{text} commit bağlantısı",
+  "Link {text}": "{text} bağlantısı"
 }
