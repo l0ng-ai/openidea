@@ -1661,6 +1661,10 @@ export const commands = {
 	replaceInFiles: (request: RequestId, query: SearchQuery, replacement: string, preserveCase: boolean, targets: ReplaceTarget[], allInScope: boolean, onEvent: Channel<ReplaceEvent>) => typedError<null, IdeError>(__TAURI_INVOKE("replace_in_files", { request, query, replacement, preserveCase, targets, allInScope, onEvent })),
 	/**  Before / after text of `path` for Replace › Preview (unsaved buffer included). */
 	replacePreview: (query: SearchQuery, replacement: string, preserveCase: boolean, path: string, only: Pos[] | null) => typedError<ReplacePreview, IdeError>(__TAURI_INVOKE("replace_preview", { query, replacement, preserveCase, path, only })),
+	/**  Apply Ruff's safe lint fixes (`ruff check --fix-only`) to the current unsaved Python document. */
+	ruffFix: (doc: DocId) => typedError<TextEdit[], IdeError>(__TAURI_INVOKE("ruff_fix", { doc })),
+	/**  Apply Ruff's safe lint fixes to a Python text snapshot without writing the file. */
+	ruffFixText: (path: string, text: string) => typedError<TextEdit[], IdeError>(__TAURI_INVOKE("ruff_fix_text", { path, text })),
 	runApplicationBuild: (config: RunConfig_Deserialize, module: string) => typedError<RunConfig_Serialize, IdeError>(__TAURI_INVOKE("run_application_build", { config, module })),
 	runApplicationPublish: (config: RunConfig_Deserialize, classPaths: string[], mainClass: string) => typedError<null, IdeError>(__TAURI_INVOKE("run_application_publish", { config, classPaths, mainClass })),
 	/**  Kept temporary configurations with the current settings applied. */
@@ -4760,6 +4764,8 @@ export type CommitSettings = {
 	reformat?: boolean,
 	optimizeImports?: boolean,
 	cleanup?: boolean,
+	/**  Apply Ruff's safe lint fixes before composing the commit, independently of formatting. */
+	fixOnCommit?: boolean,
 	blankLineAfterSubject?: boolean,
 	limitSubject?: boolean,
 	subjectLimit?: number,
@@ -7253,6 +7259,8 @@ export type ExternalFormatterSettings = {
 	/**  Prefer this formatter even when a language server offers formatting. */
 	prefer?: boolean,
 	runOnSave?: boolean,
+	/**  Ruff only: apply safe lint fixes (`ruff check --fix-only`) on save, independently of formatting. */
+	fixOnSave?: boolean,
 };
 
 /**  A session on this machine that no task holds yet. */
