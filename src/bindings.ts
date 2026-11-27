@@ -12107,6 +12107,11 @@ export type PythonSettings = {
 	 *  by interpreter executable; absolute or `~/`.
 	 */
 	interpreterPaths?: { [key in string]: string[] },
+	/**
+	 *  Default test runner (Settings › Python › Testing): `auto` (pytest when the project uses
+	 *  it, else unittest), `pytest` or `unittest`.
+	 */
+	testRunner?: string,
 };
 
 export type PythonStubLinks = {

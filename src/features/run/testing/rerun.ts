@@ -17,6 +17,7 @@ import { dotnetFilter } from "./dotnet";
 import { cypressSelection } from "./cypress";
 import { playwrightProject, playwrightTitles } from "./playwright";
 import { withNodeTestNamePattern } from "./nodeTest";
+import { unittestRerunArgs } from "./pythonUnittest";
 import { nodeStatus, type TestNode, type TestResults } from "./results";
 
 /** Paths of failed tests: failed leaves, plus failed suites without any failed children reported. */
@@ -318,6 +319,9 @@ function builtinTestsConfig(config: RunConfig, paths: string[][], name: string):
       if (!tests) return null;
       return { ...config, ...tests, name, detected: true, env: { ...config.env } };
     }
+    case "python-unittest":
+      args = unittestRerunArgs(config.args, paths);
+      break;
     case "phpunit":
       args = phpunitArgs(config.args, { filter: phpunitFilter(paths) });
       break;

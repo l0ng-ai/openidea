@@ -13,6 +13,7 @@ const KIND_LABELS: Record<string, string> = {
   go: "Go",
   python: "Python",
   pytest: "pytest",
+  unittest: "Python unittest",
   phpunit: "PHPUnit",
   composer: "Composer",
   make: "Make",
@@ -72,6 +73,7 @@ export const KIND_CATEGORIES: Record<string, string> = {
   cypress: "JavaScript",
   python: "Python",
   pytest: "Python",
+  unittest: "Python",
   cargo: "Rust",
   rustc: "Rust",
   go: "Go",
@@ -181,6 +183,7 @@ export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {
       return "file-binary";
     case "python":
     case "pytest":
+    case "unittest":
       return "file-python";
     case "phpunit":
     case "composer":
