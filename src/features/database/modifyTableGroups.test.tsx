@@ -104,6 +104,122 @@ describe("Modify Table's list (DataGrip)", () => {
     expect(preview).toContain("comment on column public.orders.note is null;");
   });
 
+  it("adds and drops the primary key, unique keys and indexes of an existing table, previewing each statement", () => {
+    useDatabase.setState({
+      sources: [{ id: "pg", name: "pg", driver: "postgres" }],
+      details: {
+        [detailsKey("pg", "public", "orders")]: {
+          status: "ok",
+          value: {
+            columns: [column("id", "integer", true), column("code", "text"), column("note", "text")],
+            indexes: [
+              { name: "orders_pkey", unique: true, columns: ["id"], key: "primary" },
+              { name: "orders_code_key", unique: true, columns: ["code"], key: "unique" },
+              { name: "orders_note", unique: false, columns: ["note"] },
+            ],
+            foreignKeys: [],
+            triggers: [],
+          },
+        },
+      },
+    } as never);
+    openDialog({ kind: "modifyTable", id: "pg", schema: "public", table: "orders", focusColumn: "code" });
+    render(<ObjectDialogs />);
+    const preview = () => screen.getByLabelText("Preview SQL").textContent;
+    expect(rows("Keys")).toEqual(["PRIMARY KEY(id)", "orders_code_keyUNIQUE (code)"]);
+    expect(rows("Indexes")).toEqual(["orders_note(note)"]);
+
+    // The primary key moves to `code`: dropped by its name, added again.
+    fireEvent.click(screen.getByRole("checkbox", { name: "Primary key" }));
+    fireEvent.mouseDown(within(screen.getByRole("group", { name: "Columns" })).getByText("id"));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Primary key" }));
+    expect(rows("Keys")[0]).toBe("PRIMARY KEY(code)");
+
+    // A new index on the selected column and `note`, made unique.
+    fireEvent.click(screen.getByRole("button", { name: "Add Index" }));
+    expect(screen.getByLabelText("Name")).toHaveProperty("value", "orders_index");
+    fireEvent.click(within(screen.getByRole("group", { name: "Key columns" })).getByRole("checkbox", { name: "note" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Unique" }));
+
+    // The existing unique key is dropped.
+    fireEvent.mouseDown(within(screen.getByRole("group", { name: "Keys" })).getByText("orders_code_key"));
+    fireEvent.click(screen.getByRole("button", { name: "Drop Key" }));
+
+    expect(preview()).toBe(
+      [
+        "alter table public.orders drop constraint orders_pkey;",
+        "alter table public.orders drop constraint orders_code_key;",
+        "alter table public.orders alter column code set not null;",
+        "alter table public.orders add constraint orders_pk primary key (code);",
+        "create unique index orders_index on public.orders (id, note);",
+      ].join("\n"),
+    );
+  });
+
+  it("keeps existing keys and indexes as they are when a column is renamed, and names a new one's columns as renamed", () => {
+    useDatabase.setState({
+      sources: [{ id: "pg", name: "pg", driver: "postgres" }],
+      details: {
+        [detailsKey("pg", "public", "orders")]: {
+          status: "ok",
+          value: {
+            columns: [column("id", "integer", true), column("code", "text")],
+            indexes: [
+              { name: "orders_pkey", unique: true, columns: ["id"], key: "primary" },
+              { name: "orders_code", unique: false, columns: ["code"] },
+            ],
+            foreignKeys: [],
+            triggers: [],
+          },
+        },
+      },
+    } as never);
+    openDialog({ kind: "modifyTable", id: "pg", schema: "public", table: "orders", focusColumn: "code" });
+    render(<ObjectDialogs />);
+    fireEvent.click(screen.getByRole("button", { name: "Add Index" }));
+    fireEvent.mouseDown(within(screen.getByRole("group", { name: "Columns" })).getByText("code"));
+    // Through another column's name and on: the new index keeps to its own column.
+    for (const name of ["id", "sku"]) fireEvent.change(screen.getByLabelText("Name"), { target: { value: name } });
+    expect(screen.getByLabelText("Preview SQL").textContent).toBe(
+      [
+        "alter table public.orders rename column code to sku;",
+        "create index orders_index on public.orders (sku);",
+      ].join("\n"),
+    );
+    // An existing index can be dropped, not edited.
+    fireEvent.mouseDown(within(screen.getByRole("group", { name: "Indexes" })).getByText("orders_code"));
+    expect(screen.getByLabelText("Name")).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: "Drop Index" })).toHaveProperty("disabled", false);
+  });
+
+  it("offers SQLite indexes but not keys on an existing table", () => {
+    useDatabase.setState({
+      details: {
+        [detailsKey("db", "main", "codes")]: {
+          status: "ok",
+          value: {
+            columns: [column("code", "text", true), column("label", "text")],
+            indexes: [{ name: "sqlite_autoindex_codes_2", unique: true, columns: ["label"], key: "unique" }],
+            foreignKeys: [],
+            triggers: [],
+          },
+        },
+      },
+    } as never);
+    openDialog({ kind: "modifyTable", id: "db", schema: "main", table: "codes" });
+    render(<ObjectDialogs />);
+    expect(screen.queryByRole("checkbox", { name: "Primary key" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add Unique Key" })).toBeNull();
+    fireEvent.mouseDown(within(screen.getByRole("group", { name: "Keys" })).getByText("sqlite_autoindex_codes_2"));
+    expect(screen.getByRole("button", { name: "Drop Key" })).toHaveProperty("disabled", true);
+    fireEvent.click(screen.getByRole("button", { name: "Add Index" }));
+    expect(screen.getByLabelText("Preview SQL").textContent).toBe("-- no changes");
+    fireEvent.click(
+      within(screen.getByRole("group", { name: "Key columns" })).getByRole("checkbox", { name: "label" }),
+    );
+    expect(screen.getByLabelText("Preview SQL").textContent).toBe("create index codes_index on codes (label);");
+  });
+
   it("has no comment fields on an engine without comments", () => {
     open();
     expect(screen.queryByLabelText("Comment:")).toBeNull();
