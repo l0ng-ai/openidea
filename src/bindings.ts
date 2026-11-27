@@ -3728,6 +3728,8 @@ export type AppearanceSettings_Deserialize = {
 	smoothScrolling?: boolean,
 	fullPathInTitle?: boolean,
 	projectColorsInToolbar?: boolean,
+	/**  Strength of the project colour tint in the window header, in percent (10–70). */
+	projectColorStrength?: number,
 	dndWithAltOnly?: boolean,
 	menuIcons?: boolean,
 	/**  `hamburger` | `merged` | `toolbar` (a separate row): main menu presentation in the frameless title bar. */
@@ -3805,6 +3807,8 @@ export type AppearanceSettings_Serialize = {
 	smoothScrolling: boolean,
 	fullPathInTitle: boolean,
 	projectColorsInToolbar: boolean,
+	/**  Strength of the project colour tint in the window header, in percent (10–70). */
+	projectColorStrength: number,
 	dndWithAltOnly: boolean,
 	menuIcons: boolean,
 	/**  `hamburger` | `merged` | `toolbar` (a separate row): main menu presentation in the frameless title bar. */

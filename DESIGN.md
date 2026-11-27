@@ -167,7 +167,7 @@ A near-neutral grey ramp with one cool blue accent. Status, VCS and syntax colou
 
 ### Project colour
 
-- **Project wash** (`--project-color`): a radial tint of the project's colour (22% strength, 600 × 300px) that fades in from the frame's top-left corner, as the IDEA project gradient does. It identifies the project window. It is the one gradient in the chrome.
+- **Project wash** (`--project-color`): a full-width top-bar tint paired with a radial glow from the Project widget's icon (`--project-gradient-strength`, default 32%, configurable in Settings › Appearance), fading into `--bg-frame` above the islands so overlapping project windows stay distinguishable across the whole header.
 
 ### Primary
 

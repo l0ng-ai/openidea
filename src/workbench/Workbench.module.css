@@ -104,14 +104,17 @@
     animation: none;
   }
 }
-/* Islands frame; the project colour washes in from the Project widget's icon (IDEA project gradient),
-   or from the top-left corner while the toolbar has no Project widget (`projectGradient.ts`). */
+/* Islands frame; the project colour washes across the top bar and radiates from the Project
+   widget's icon (`projectGradient.ts`), scaled by `--project-gradient-strength` (Appearance). */
 .framed {
+  --project-tint: color-mix(in srgb, var(--project-color) var(--project-gradient-strength, 32%), transparent);
   background:
-    radial-gradient(
-      600px 300px at var(--project-gradient-x, 0) 0,
-      color-mix(in srgb, var(--project-color) var(--project-gradient-strength, 22%), transparent),
-      transparent
+    radial-gradient(700px 260px at var(--project-gradient-x, 0) 0, var(--project-tint), transparent),
+    linear-gradient(
+      180deg,
+      var(--project-tint) 0px,
+      color-mix(in srgb, var(--project-tint) 45%, transparent) 42px,
+      transparent 72px
     ),
     var(--bg-frame);
 }

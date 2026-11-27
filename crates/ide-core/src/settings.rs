@@ -862,6 +862,8 @@ pub struct AppearanceSettings {
     pub smooth_scrolling: bool,
     pub full_path_in_title: bool,
     pub project_colors_in_toolbar: bool,
+    /// Strength of the project colour tint in the window header, in percent (10–70).
+    pub project_color_strength: u8,
     pub dnd_with_alt_only: bool,
     pub menu_icons: bool,
     /// `hamburger` | `merged` | `toolbar` (a separate row): main menu presentation in the frameless title bar.
@@ -1001,6 +1003,7 @@ impl Default for AppearanceSettings {
             smooth_scrolling: true,
             full_path_in_title: false,
             project_colors_in_toolbar: true,
+            project_color_strength: 32,
             dnd_with_alt_only: false,
             menu_icons: true,
             main_menu_style: "hamburger".into(),

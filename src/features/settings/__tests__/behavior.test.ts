@@ -250,3 +250,17 @@ it("loads an old attach setting as ask", () => {
   expect(validateGeneralExtras({ openProjectIn: "attach" }).openProjectIn).toBe("ask");
   expect(validateGeneralExtras({ openProjectIn: "tab" }).openProjectIn).toBe("tab");
 });
+
+it("clamps projectColorStrength to 10–70% and updates --project-gradient-strength on non-default values", () => {
+  expect(validateAppearanceExtras({}).projectColorStrength).toBe(32);
+  expect(validateAppearanceExtras({ projectColorStrength: 2 }).projectColorStrength).toBe(10);
+  expect(validateAppearanceExtras({ projectColorStrength: 95 }).projectColorStrength).toBe(70);
+  expect(validateAppearanceExtras({ projectColorStrength: "loud" }).projectColorStrength).toBe(32);
+
+  const root = document.createElement("div");
+  applyAppearanceOptions(validateSettings({ appearance: { projectColorStrength: 48 } }), root);
+  expect(root.style.getPropertyValue("--project-gradient-strength")).toBe("48%");
+
+  applyAppearanceOptions(validateSettings({ appearance: { projectColorStrength: 32 } }), root);
+  expect(root.style.getPropertyValue("--project-gradient-strength")).toBe("");
+});
