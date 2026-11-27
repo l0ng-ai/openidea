@@ -234,6 +234,7 @@ export const intellijMacos: Record<string, string[]> = {
   "file.projectStructure": ["Meta+;"],
   "file.openProject": ["Meta+Shift+Alt+O"],
   "file.newScratchFile": ["Meta+Shift+N"],
+  "file.newScratchBuffer": [],
   "editor.closeTab": ["Meta+W"],
   "toolwindow.closeContent": ["Meta+W", "Ctrl+Shift+F4"],
   "editor.reopenClosedTab": [],
