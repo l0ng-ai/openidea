@@ -42,6 +42,7 @@ The editor follows IntelliJ IDEA's behaviour and default keymap. Shortcuts below
 | **Comment with Block Comment**                  | `⌥⌘/`           | `Ctrl+Shift+/`                                 |
 | **Join Lines**                                  | `⌃⇧J`           | `Ctrl+Shift+J`                                 |
 | **Toggle Case**                                 | `⇧⌘U`           | `Ctrl+Shift+U`                                 |
+| **Transpose**                                   | —               | —                                              |
 | **Start New Line**                              | `⇧↵`            | `Shift+Enter`                                  |
 | **Start New Line Before Current**               | `⌥⌘↵`           | `Ctrl+Alt+Enter`                               |
 | **Split Line**                                  | `⌘↵`            | `Ctrl+Enter`                                   |
@@ -51,6 +52,8 @@ The editor follows IntelliJ IDEA's behaviour and default keymap. Shortcuts below
 | **Move Caret to Code Block Start** / **End**    | `⌥⌘[` / `⌥⌘]`   | `Ctrl+[` / `Ctrl+]`                            |
 | **Move Caret to Page Top** / **Bottom**         | `⌘⇞` / `⌘⇟`     | `Ctrl+PageUp` / `Ctrl+PageDown`                |
 | **Toggle Insert/Overwrite**                     | `Insert`        | `Insert`                                       |
+
+**Transpose** swaps the Unicode code points immediately before and after each caret and moves the caret after the swapped pair; at line end it swaps the line's last two code points and leaves the caret there. With multiple selections it cycles their texts (the rightmost text moves to the leftmost selection) and keeps each replacement selected. Mixed carets and selections do nothing. It has no default shortcut.
 
 **Move Caret to Page Top** / **Bottom** put the caret on the first / last line the editor shows in full, in the same column, without scrolling; with `⇧` / `Shift` added they select up to it.
 
