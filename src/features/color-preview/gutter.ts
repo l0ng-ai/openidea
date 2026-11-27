@@ -78,10 +78,16 @@ export function lineColor(state: EditorState, pos: number, language: string): Co
   const matches = findColors(line.text, language, isColorName);
   if (!isMarkupLanguage(language)) return matches[0] ?? null;
   const tree = syntaxTree(state);
+  let script: ColorMatch[] | undefined;
   return (
     matches.find((color) => {
       let node: ReturnType<typeof tree.resolveInner> | null = tree.resolveInner(line.from + color.from + 1);
-      for (; node; node = node.parent) if (node.name === "StyleSheet" || node.name === "Styles") return true;
+      for (; node; node = node.parent) {
+        if (node.name === "StyleSheet" || node.name === "Styles") return true;
+        // Embedded scripts keep the rules of a script file: quoted hex values and color functions only.
+        if (node.name === "Script")
+          return (script ??= findColors(line.text, "javascript", isColorName)).some((c) => c.from === color.from);
+      }
       return false;
     }) ?? null
   );
