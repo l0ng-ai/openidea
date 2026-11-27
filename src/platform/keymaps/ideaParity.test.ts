@@ -29,6 +29,7 @@ describe("IDEA keymap parity", () => {
     ["code.quickDefinition", ["Alt+Space", "Meta+Y"], ["Ctrl+Shift+I"]],
     ["editor.copyPathReference", ["Meta+Shift+C"], ["Ctrl+Shift+C"]],
     ["project.open", ["F4", "Meta+Down"], ["F4"]],
+    ["diff.compareFileWithEditor", [], []],
     // Diff.OpenInEditor copies EditSource's shortcuts.
     ["diff.jumpToSource", ["F4", "Meta+Down"], ["F4"]],
     ["project.delete", ["Delete", "Backspace", "Meta+Backspace"], ["Delete"]],

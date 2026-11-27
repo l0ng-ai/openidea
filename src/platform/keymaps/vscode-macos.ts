@@ -305,6 +305,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "project.reformatCode": ["Alt+Shift+F"],
   "project.optimizeImports": ["Alt+Shift+O"],
   "project.compareWith": [],
+  "diff.compareFileWithEditor": [],
 
   // Views / panels
   "toolwindow.project": ["Meta+Shift+E"],

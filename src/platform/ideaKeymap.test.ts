@@ -92,6 +92,14 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(k.unknownActions).toEqual([]);
   });
 
+  it("maps Compare File with Editor", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="C" parent="$default"><action id="CompareFileWithEditor"><keyboard-shortcut first-keystroke="ctrl alt D"/></action></keymap>`,
+    );
+    expect(k.overrides["diff.compareFileWithEditor"]).toEqual([normalizeBinding("Ctrl+Alt+D")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
   it("maps Scroll Up / Scroll Down and Move if Necessary", () => {
     const k = parseIdeaKeymap(
       `<keymap name="E" parent="$default"><action id="EditorScrollUpAndMove"><keyboard-shortcut first-keystroke="alt UP"/></action><action id="EditorScrollDownAndMove"><keyboard-shortcut first-keystroke="alt DOWN"/></action></keymap>`,

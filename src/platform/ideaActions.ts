@@ -165,6 +165,7 @@ export const IDEA_ACTIONS: Readonly<Record<string, string>> = {
   VcsShowNextChangeMarker: "vcs.nextChange",
   VcsShowPrevChangeMarker: "vcs.prevChange",
   "Compare.SameVersion": "vcs.showDiff",
+  CompareFileWithEditor: "diff.compareFileWithEditor",
   "ChangesView.ShelveSilently": "vcs.shelveSilently",
   "ChangesView.UnshelveSilently": "vcs.unshelveSilently",
   ShowUmlDiagram: "db.showDiagram",

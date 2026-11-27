@@ -413,6 +413,7 @@ export const intellijWindows: Record<string, string[]> = {
   "diff.focusOppositePane": ["Ctrl+Shift+Tab"],
   // After Show Diff: Ctrl+D is Compare With… in the project view.
   "project.compareWith": ["Ctrl+D"],
+  "diff.compareFileWithEditor": [],
   // Editing extras, image viewer (keyWhen: image focused) and Markdown editor layouts
   "code.cyclicExpandWord": ["Alt+/"],
   "code.cyclicExpandWordBackward": ["Alt+Shift+/"],
