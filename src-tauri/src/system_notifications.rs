@@ -55,6 +55,12 @@ pub fn init(app: &AppHandle) {
     if STATE.ready.swap(true, Ordering::AcqRel) {
         return;
     }
+    // macOS: with an action handler the plugin parks a thread per toast until it is clicked,
+    // so ignored toasts pile up threads and NSUserNotificationCenter CPU. A click on a toast
+    // already brings the app forward there, so leave the handler out.
+    if cfg!(target_os = "macos") {
+        return;
+    }
     let handle = app.clone();
     if let Err(e) = app.notification().on_action(move |performed| {
         if performed.action_id() != "tap" {
