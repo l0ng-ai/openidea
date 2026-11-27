@@ -28,6 +28,8 @@ pub struct WindowTab {
     pub name: String,
     pub root: Option<ide_core::IpcPath>,
     pub current: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_host: Option<String>,
 }
 
 pub fn current(app: &AppHandle, caller: &str) -> Vec<WindowTab> {
@@ -39,11 +41,11 @@ pub fn current(app: &AppHandle, caller: &str) -> Vec<WindowTab> {
         .iter()
         .filter_map(|label| {
             let window = app.get_webview_window(label)?;
-            let (name, root) = if let Some(c) = host.remote_dev.get(label) {
+            let (name, root, remote_host) = if let Some(c) = host.remote_dev.get(label) {
                 let loc = crate::remote_dev::remote_location(&c.target, &c.root);
-                (window.title().unwrap_or_default(), Some(PathBuf::from(loc).into()))
+                (c.display_name.clone(), Some(PathBuf::from(loc).into()), Some(c.host.clone()))
             } else if let Ok(p) = host.project(label) {
-                (ide_host::ops::project::info(&p).display_name, Some(p.root.clone().into()))
+                (ide_host::ops::project::info(&p).display_name, Some(p.root.clone().into()), None)
             } else if let Some(launch) = state.pending(label) {
                 if let Some(remote) = launch.remote {
                     let loc = crate::remote_dev::remote_location(&remote.target, &remote.path);
@@ -55,19 +57,19 @@ pub fn current(app: &AppHandle, caller: &str) -> Vec<WindowTab> {
                         .filter(|s| !s.is_empty())
                         .map(str::to_owned)
                         .unwrap_or_else(|| window.title().unwrap_or_default());
-                    (name, Some(PathBuf::from(loc).into()))
+                    (name, Some(PathBuf::from(loc).into()), None)
                 } else {
                     let name = launch
                         .project
                         .as_ref()
                         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
                         .unwrap_or_else(|| window.title().unwrap_or_default());
-                    (name, launch.project)
+                    (name, launch.project, None)
                 }
             } else {
-                (window.title().unwrap_or_default(), None)
+                (window.title().unwrap_or_default(), None, None)
             };
-            Some(WindowTab { label: label.clone(), name, root, current: label == caller })
+            Some(WindowTab { label: label.clone(), name, root, current: label == caller, remote_host })
         })
         .collect()
 }
