@@ -417,8 +417,6 @@ async fn local_deployment_runs_on_the_project_host() {
         "db_completion",
         "db_statements",
         "db_execute",
-        "db_execute_held",
-        "db_finish_held",
         "db_table_page",
         "db_apply_edits",
         "db_console_path",

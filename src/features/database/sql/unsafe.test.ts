@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { changesRows, unsafeMessage, unsafeStatement } from "./unsafe";
+import { unsafeMessage, unsafeStatement } from "./unsafe";
 
 const check = (text: string) => unsafeStatement(text, "postgres");
 
@@ -274,31 +274,6 @@ describe("unsafeStatement", () => {
     expect(check("WITH x AS (SELECT 1) DELETE FROM t")).toMatchObject({ kind: "delete", reason: "no-where" });
     expect(check("with x as (select id from u where true) delete from t where id in (select id from x)")).toBeNull();
     expect(check("/* cleanup */ DELETE FROM t -- all of it")).toMatchObject({ reason: "no-where" });
-  });
-});
-
-describe("changesRows", () => {
-  it("finds DELETE, UPDATE and MERGE, also nested", () => {
-    const changes = (text: string) => changesRows(text, "postgres");
-    for (const text of [
-      "DELETE FROM t WHERE id = 1",
-      "update t set a = 1",
-      "MERGE INTO t USING u ON t.id = u.id WHEN MATCHED THEN DELETE",
-      "(DELETE FROM t WHERE id = 1)",
-      "EXPLAIN ANALYZE UPDATE t SET a = 1",
-      "WITH d AS (DELETE FROM t WHERE id = 1 RETURNING *) SELECT * FROM d",
-      "WITH x AS (SELECT 1) UPDATE t SET a = 1",
-    ])
-      expect(changes(text), text).toBe(true);
-    for (const text of [
-      "SELECT * FROM t",
-      "INSERT INTO t VALUES (1)",
-      "EXPLAIN DELETE FROM t",
-      "SELECT 'DELETE FROM t'",
-      "TRUNCATE t",
-      "WITH x AS (SELECT 1) SELECT * FROM x",
-    ])
-      expect(changes(text), text).toBe(false);
   });
 });
 

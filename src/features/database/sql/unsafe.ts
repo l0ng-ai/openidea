@@ -139,22 +139,6 @@ function parts(tokens: readonly Token[]): Parts | null {
   return { tokens, depth, verb, queries };
 }
 
-/** Verbs of statements that change rows (a console shows how many before committing). */
-const CHANGES_ROWS = new Set(["DELETE", "UPDATE", "MERGE"]);
-
-/**
- * Whether `text` deletes or updates rows: a DELETE, UPDATE or MERGE, also
- * inside parentheses, a WITH clause's queries and EXPLAIN ANALYZE.
- */
-export function changesRows(text: string, driver: DbDriver): boolean {
-  const changes = (tokens: readonly Token[]): boolean => {
-    const p = parts(tokens);
-    if (!p) return false;
-    return p.queries.some(changes) || (p.verb >= 0 && CHANGES_ROWS.has(p.tokens[p.verb]!.upper));
-  };
-  return changes(lex(text, driver).tokens.filter((t) => t.text !== ";"));
-}
-
 function check(all: readonly Token[]): UnsafeStatement | null {
   const p = parts(all);
   if (!p) return null;
