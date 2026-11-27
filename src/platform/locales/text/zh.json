@@ -10726,5 +10726,6 @@
   "For the imports the TypeScript server adds.": "用于 TypeScript 服务器添加的导入。",
   "Files matching these globs, e.g. **/index.ts.": "匹配这些 glob 的文件，例如 **/index.ts。",
   "Regular expressions for the import path, e.g. ^node: or /index$.": "匹配导入路径的正则表达式，例如 ^node: 或 /index$。",
-  "No expressions": "没有表达式"
+  "No expressions": "没有表达式",
+  "Show Table Comments": "显示表注释"
 }
