@@ -7,7 +7,15 @@
  */
 import type { ReactNode } from "react";
 import { ChangeSet, Text } from "@codemirror/state";
-import type { FileStatus, HunkRange, PartialCommitFile, Pos, PreparedPartialCommit, TextEdit } from "@/bindings";
+import type {
+  FileStatus,
+  HunkRange,
+  LineHunk,
+  PartialCommitFile,
+  Pos,
+  PreparedPartialCommit,
+  TextEdit,
+} from "@/bindings";
 import { offsetsToRange, textEditsToChanges } from "@/editor/api";
 import { formatExcluded, formatGuardOptions, guardTextEdits } from "@/platform/formatGuard";
 import { call, commands, isTauri, nextRequestId } from "@/platform/ipc";
@@ -77,8 +85,8 @@ async function changedTextEdits(
   const guard = formatGuardOptions(settings);
   if (formatting && formatExcluded(path, project?.root ?? null, guard.doNotFormat)) return null;
   let base = "";
-  let hunks: HunkRange[] = [];
-  let selected: HunkRange[] = [];
+  let hunks: LineHunk[] = [];
+  let selected: LineHunk[] = [];
   let edits = formatting ? guardTextEdits(text, await run(), guard) : await run();
   if (!whole) {
     base = (await call(commands.vcsFileAt(renamedFromPath(file) ?? path, "HEAD"))) ?? "";
