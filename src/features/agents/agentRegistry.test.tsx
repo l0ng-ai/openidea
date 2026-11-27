@@ -425,6 +425,7 @@ class FakeCommands implements CommandsBackend {
   loginSpawn?: CommandsBackend["loginSpawn"];
   ghLoginSpawn?: CommandsBackend["ghLoginSpawn"];
   refreshModels?: CommandsBackend["refreshModels"];
+  previewCopilotModels?: CommandsBackend["previewCopilotModels"];
   chooseExecutable = vi.fn(async () => "/chosen/agent");
   saveCustom = vi.fn(async () => {});
   setAdditionalArgs = vi.fn<CommandsBackend["setAdditionalArgs"]>();
@@ -648,7 +649,8 @@ describe("Built-in executable overrides", () => {
     fireEvent.click(account);
     fireEvent.click(await screen.findByRole("option", { name: "alice-work" }));
     expect(account).toHaveTextContent("alice-work");
-    expect(screen.getByText("Click Apply to load the models available for the selected account.")).toBeInTheDocument();
+    expect(commands.savedEnv).toEqual([]);
+    expect(apply()).toBeEnabled();
 
     await act(async () => fireEvent.click(apply()));
 
@@ -664,7 +666,7 @@ describe("Built-in executable overrides", () => {
     expect(JSON.stringify(commands.savedEnv)).not.toMatch(/gho_|ghp_|token/i);
   });
 
-  it("hides stale Copilot models until authenticated and reloads per-account models after Apply", async () => {
+  it("hides stale Copilot models until authenticated and previews per-account models immediately on switch", async () => {
     const staleModel: AgentProvider["config"][number] = {
       id: "model",
       name: "Model",
@@ -713,6 +715,15 @@ describe("Built-in executable overrides", () => {
         error: null,
       };
     });
+    commands.previewCopilotModels = vi.fn(async (account) => ({
+      provider: "copilot",
+      config: [account === "alice-work" ? staleModel : personalModel],
+      thoughtLevels: {},
+      refreshing: false,
+      refreshedAtMs: Date.now(),
+      retryAtMs: null,
+      error: null,
+    }));
     commands.list = [
       {
         ...claudeProvider("copilot"),
@@ -732,24 +743,29 @@ describe("Built-in executable overrides", () => {
     await screen.findByText("Sign in above to view and choose models available for this account.");
     expect(screen.queryByRole("button", { name: "Model" })).toBeNull();
 
-    // Selecting `alice` stages the switch and asks for Apply before showing models.
+    // Selecting `alice` immediately previews `alice`'s subscription models before Apply, while keeping Apply enabled.
     const account = screen.getByRole("button", { name: "GitHub account" });
     fireEvent.click(account);
     fireEvent.click(await screen.findByRole("option", { name: "alice" }));
-    expect(screen.getByText("Click Apply to load the models available for the selected account.")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Model" })).toBeNull();
-
-    // Applying loads `alice`'s subscription models.
-    await act(async () => fireEvent.click(apply()));
     const modelButton = await screen.findByRole("button", { name: "Model" });
     expect(modelButton).toHaveTextContent("Agent's default (Claude Sonnet 4.5)");
+    expect(commands.previewCopilotModels).toHaveBeenCalledWith("alice", null);
+    expect(commands.savedEnv).toEqual([]);
+    expect(apply()).toBeEnabled();
 
-    // Switching to `alice-work` and applying loads its own subscription models.
+    // Switching to `alice-work` immediately previews `alice-work`'s subscription models too.
     fireEvent.click(screen.getByRole("button", { name: "GitHub account" }));
     fireEvent.click(await screen.findByRole("option", { name: "alice-work" }));
-    expect(screen.queryByRole("button", { name: "Model" })).toBeNull();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("Agent's default (Gemini 4 Neon)"),
+    );
+    expect(commands.previewCopilotModels).toHaveBeenCalledWith("alice-work", null);
+    expect(commands.savedEnv).toEqual([]);
+
+    // Applying saves the staged account without losing the loaded models.
     await act(async () => fireEvent.click(apply()));
-    expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("Agent's default (Gemini 4 Neon)");
+    expect(commands.savedEnv).toEqual([["copilot", { OPENIDEA_COPILOT_GITHUB_ACCOUNT: "alice-work" }]]);
+    expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("Agent's default (Gemini 4 Neon)");
   });
 
   it("runs in-IDE Sign In and Add account PTY dialogs and selects the newly added gh account", async () => {

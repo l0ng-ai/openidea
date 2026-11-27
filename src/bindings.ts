@@ -105,6 +105,8 @@ export const commands = {
 	agentMcpSetEnabled: (id: string, enabled: boolean) => typedError<McpServer[], IdeError>(__TAURI_INVOKE("agent_mcp_set_enabled", { id, enabled })),
 	/**  Tests an MCP server by connecting (`initialize`) and listing its tools (`tools/list`). */
 	agentMcpTest: (id: string) => typedError<McpProbeResult, IdeError>(__TAURI_INVOKE("agent_mcp_test", { id })),
+	/**  Probes Copilot's model catalog for a staged GitHub account without persisting until Apply. */
+	agentPreviewCopilotModels: (account: string, model: string | null) => typedError<AgentModelCatalog, IdeError>(__TAURI_INVOKE("agent_preview_copilot_models", { account, model })),
 	/**
 	 *  What the agent reports about itself when it starts (no session: no MCP servers, hooks
 	 *  or sign-in run). Remembered until `refresh`.

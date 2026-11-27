@@ -39,6 +39,7 @@ export interface CommandsBackend {
   loginSpawn?(id: string, cols: number, rows: number, onEvent: (e: AgentLoginEvent) => void): Promise<TerminalId>;
   ghLoginSpawn?(cols: number, rows: number, onEvent: (e: AgentLoginEvent) => void): Promise<TerminalId>;
   refreshModels?(id: string, model: string | null, force?: boolean): Promise<AgentModelCatalog>;
+  previewCopilotModels?(account: string, model: string | null): Promise<AgentModelCatalog>;
   set(id: string, command: string | null): Promise<void>;
   setAdditionalArgs(id: string, args: string[]): Promise<void>;
   setEnv(id: string, env: Record<string, string>): Promise<void>;
@@ -81,6 +82,7 @@ export const tauriCommands: CommandsBackend = {
     return info.id;
   },
   refreshModels: (id, model, force = false) => call(commands.agentRefreshModels(id, force, model)),
+  previewCopilotModels: (account, model) => call(commands.agentPreviewCopilotModels(account, model)),
   chooseExecutable: async (title, current, location) => {
     if (location !== "desktop") return choosePath({ title, defaultPath: current, directory: false });
     const picked = await open({ title, defaultPath: current || undefined, directory: false, multiple: false });
