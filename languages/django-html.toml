@@ -30,11 +30,3 @@ name = "djlsp"
 command = "djlsp"
 root-markers = ["manage.py"]
 install-hint = "uv tool install django-template-lsp (or: pip install django-template-lsp)"
-
-# Template tags run in Django: breakpoints in them are hit by a Python Debug configuration
-# (debugpy with `django: true`).
-[debugger]
-adapter = "debugpy"
-command = "python3"
-args = ["-m", "debugpy.adapter"]
-install-hint = "pip install debugpy"
