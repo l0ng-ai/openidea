@@ -6098,7 +6098,7 @@
   "{memPct} · {memAvail} free": "{memPct} · 可用 {memAvail}",
   "SSH / RPC RTT {rttMs}": "SSH / RPC 往返延迟 {rttMs}",
   "{diskAvailableBytes} free": "可用 {diskAvailableBytes}",
-  "{diskPct} of {diskTotalBytes} used": "已用 {diskTotalBytes} 的 {diskPct}",
+  "{diskFree} free · {diskIoText}": "可用 {diskFree} · {diskIoText}",
   "up {uptimeMs}": "已运行 {uptimeMs}",
   "Round-trip latency to remote backend": "到远程后端的往返延迟",
   "RTT {rttMs}": "延迟 {rttMs}",
