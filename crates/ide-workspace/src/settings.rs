@@ -999,6 +999,7 @@ mod tests {
                 "reformat": false,
                 "optimizeImports": false,
                 "cleanup": false,
+                "fixOnCommit": false,
                 "blankLineAfterSubject": true,
                 "limitSubject": true,
                 "subjectLimit": 72,
