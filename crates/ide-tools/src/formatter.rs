@@ -247,6 +247,16 @@ pub fn with_python_style(tool: &str, mut args: Vec<OsString>, style: PythonStyle
     args
 }
 
+/// `ruff check --fix-only` over stdin, honoring the project's exclusions and applying no unsafe fixes.
+pub fn ruff_safe_fix_arguments(file: &Path, config_file: Option<&Path>) -> Vec<OsString> {
+    let mut args: Vec<OsString> = ["check", "--fix-only", "--force-exclude"].map(OsString::from).into();
+    if let Some(config_file) = config_file {
+        args.extend(["--config".into(), config_file.as_os_str().to_owned()]);
+    }
+    args.extend(["--stdin-filename".into(), file.as_os_str().to_owned(), "-".into()]);
+    args
+}
+
 /// `ruff check` that sorts the imports (I) of the text on stdin and removes the unused ones (F401)
 /// and prints the result, for Optimize Imports where the Ruff server isn't running. Only those two
 /// are fixed, and F401 only where the project's rules check it (it is in Ruff's defaults; an
@@ -594,6 +604,34 @@ mod tests {
         assert_eq!(args(range(4, 6))[3..], ["--line-ranges", "2-4", "-"]);
         assert_eq!(args(range(2, 1))[3..], ["--line-ranges", "2-2", "-"]);
         assert!(supports_range("black", &config));
+    }
+
+    #[test]
+    fn ruff_applies_only_safe_fixes_to_stdin_with_the_project_config() {
+        let file = Path::new("/project with spaces/src/example.py");
+        let args = |config: Option<&Path>| -> Vec<String> {
+            ruff_safe_fix_arguments(file, config).into_iter().map(|a| a.to_string_lossy().into_owned()).collect()
+        };
+        assert_eq!(
+            args(None),
+            ["check", "--fix-only", "--force-exclude", "--stdin-filename", "/project with spaces/src/example.py", "-"]
+        );
+        assert_eq!(
+            args(Some(Path::new("/shared/ruff.toml"))),
+            [
+                "check",
+                "--fix-only",
+                "--force-exclude",
+                "--config",
+                "/shared/ruff.toml",
+                "--stdin-filename",
+                "/project with spaces/src/example.py",
+                "-"
+            ]
+        );
+        assert!(args(None).contains(&"--force-exclude".into()));
+        assert!(!args(None).contains(&"--unsafe-fixes".into()));
+        assert!(!args(None).contains(&"format".into()));
     }
 
     #[test]

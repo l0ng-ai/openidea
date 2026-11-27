@@ -72,6 +72,11 @@ const DEFAULT_PYTHON_FORMATTER: ExternalFormatterValid = {
   languages: ["python"],
 };
 
+const DEFAULT_RUFF_FORMATTER: LanguagesValid["ruff"] = {
+  ...DEFAULT_PYTHON_FORMATTER,
+  fixOnSave: false,
+};
+
 /** `languages.php.languageLevel` values, newest first; `""` = Auto (from `composer.json`). */
 export const PHP_LANGUAGE_LEVELS = [
   "",
@@ -218,7 +223,7 @@ export interface LanguagesValid {
   oxfmt: ExternalFormatterValid;
   biome: ExternalFormatterValid;
   dprint: ExternalFormatterValid;
-  ruff: ExternalFormatterValid;
+  ruff: ExternalFormatterValid & { fixOnSave: boolean };
   black: ExternalFormatterValid;
   java: {
     jdk: string;
@@ -340,7 +345,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
   oxfmt: DEFAULT_FORMATTER,
   biome: DEFAULT_BIOME_FORMATTER,
   dprint: DEFAULT_DPRINT_FORMATTER,
-  ruff: DEFAULT_PYTHON_FORMATTER,
+  ruff: DEFAULT_RUFF_FORMATTER,
   black: DEFAULT_PYTHON_FORMATTER,
   java: {
     jdk: "",
@@ -443,6 +448,14 @@ function validateFormatter(raw: unknown, d = DEFAULT_FORMATTER): ExternalFormatt
   };
 }
 
+function validateRuffFormatter(raw: unknown): LanguagesValid["ruff"] {
+  const ruff = obj(raw);
+  return {
+    ...validateFormatter(ruff, DEFAULT_RUFF_FORMATTER),
+    fixOnSave: bool(ruff.fixOnSave, DEFAULT_RUFF_FORMATTER.fixOnSave),
+  };
+}
+
 export function validateLanguages(raw: unknown): LanguagesValid {
   const d = DEFAULT_LANGUAGES;
   const l = obj(raw);
@@ -524,7 +537,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
     oxfmt: validateFormatter(l.oxfmt),
     biome: validateFormatter(l.biome, DEFAULT_BIOME_FORMATTER),
     dprint: validateFormatter(l.dprint, DEFAULT_DPRINT_FORMATTER),
-    ruff: validateFormatter(l.ruff, DEFAULT_PYTHON_FORMATTER),
+    ruff: validateRuffFormatter(l.ruff),
     black: validateFormatter(l.black, DEFAULT_PYTHON_FORMATTER),
     java: {
       jdk: text(java.jdk, d.java.jdk),
