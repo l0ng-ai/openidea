@@ -52,11 +52,6 @@ export function applyAppearanceOptions(s: ValidSettings, root: HTMLElement = doc
   flag(root, "reduceMotion", a.reduceMotion);
   flag(root, "toolWindowBg", a.differentToolWindowBackground, "different");
   flag(root, "projectColors", !a.projectColorsInToolbar, "off");
-  flag(
-    root,
-    "projectColorBand",
-    a.projectColorsInToolbar && a.projectColorStrength > DEFAULT_SETTINGS.appearance.projectColorStrength,
-  );
   if (a.projectColorStrength === DEFAULT_SETTINGS.appearance.projectColorStrength)
     root.style.removeProperty("--project-gradient-strength");
   else root.style.setProperty("--project-gradient-strength", `${a.projectColorStrength}%`);

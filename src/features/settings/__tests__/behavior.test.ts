@@ -251,7 +251,7 @@ it("loads an old attach setting as ask", () => {
   expect(validateGeneralExtras({ openProjectIn: "tab" }).openProjectIn).toBe("tab");
 });
 
-it("clamps projectColorStrength to 10–70%, keeps the 22% radial default, and enables the header band above 22%", () => {
+it("clamps projectColorStrength to 10–70% and scales the header wash only when it leaves the 22% default", () => {
   expect(validateAppearanceExtras({}).projectColorStrength).toBe(22);
   expect(validateAppearanceExtras({ projectColorStrength: 2 }).projectColorStrength).toBe(10);
   expect(validateAppearanceExtras({ projectColorStrength: 95 }).projectColorStrength).toBe(70);
@@ -260,19 +260,13 @@ it("clamps projectColorStrength to 10–70%, keeps the 22% radial default, and e
   const root = document.createElement("div");
   applyAppearanceOptions(validateSettings({}), root);
   expect(root.style.getPropertyValue("--project-gradient-strength")).toBe("");
-  expect(root.dataset.projectColorBand).toBeUndefined();
 
   applyAppearanceOptions(validateSettings({ appearance: { projectColorStrength: 15 } }), root);
   expect(root.style.getPropertyValue("--project-gradient-strength")).toBe("15%");
-  expect(root.dataset.projectColorBand).toBeUndefined();
 
   applyAppearanceOptions(validateSettings({ appearance: { projectColorStrength: 36 } }), root);
   expect(root.style.getPropertyValue("--project-gradient-strength")).toBe("36%");
-  expect(root.dataset.projectColorBand).toBe("");
 
-  applyAppearanceOptions(
-    validateSettings({ appearance: { projectColorsInToolbar: false, projectColorStrength: 36 } }),
-    root,
-  );
-  expect(root.dataset.projectColorBand).toBeUndefined();
+  applyAppearanceOptions(validateSettings({}), root);
+  expect(root.style.getPropertyValue("--project-gradient-strength")).toBe("");
 });
