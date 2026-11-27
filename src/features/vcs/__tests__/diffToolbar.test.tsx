@@ -760,7 +760,8 @@ describe("Diff navigation caret", () => {
     const { mounted, view } = await reveal(mode);
     try {
       const button = await screen.findByRole("button", { name: label });
-      if (fromEnd) view().dispatch({ selection: { anchor: view().state.doc.length } });
+      // The diff opens at its only difference: start before or after it.
+      view().dispatch({ selection: { anchor: fromEnd ? view().state.doc.length : 0 } });
       // A click leaves focus on the button, outside the panes.
       button.focus();
       expect(view().hasFocus).toBe(false);
@@ -772,9 +773,19 @@ describe("Diff navigation caret", () => {
     }
   });
 
+  it.each(["split", "unified"] as const)("opens the %s viewer at the first difference (#6427)", async (mode) => {
+    const { mounted, view } = await reveal(mode);
+    try {
+      await waitFor(() => expect(view().state.doc.lineAt(view().state.selection.main.head).number).toBe(2));
+    } finally {
+      mounted.unmount();
+    }
+  });
+
   it.each(["split", "unified"] as const)("leaves the scrolling to the smooth scroll in the %s viewer", async (mode) => {
     const { mounted, view } = await reveal(mode);
     try {
+      view().dispatch({ selection: { anchor: 0 } });
       // A scrollIntoView in the same update sets scrollTop at once and cuts the animation off.
       let instant = false;
       view().dispatch({
@@ -801,6 +812,7 @@ describe("Diff navigation caret", () => {
     const { mounted, view } = await reveal("split");
     try {
       const next = await screen.findByRole("button", { name: "Next Difference" });
+      view().dispatch({ selection: { anchor: 0 } });
       next.focus();
       expect(view().hasFocus).toBe(false);
       next.dispatchEvent(new KeyboardEvent("keydown", { key: "F7", code: "F7", bubbles: true, cancelable: true }));

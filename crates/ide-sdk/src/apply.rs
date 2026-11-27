@@ -1631,6 +1631,37 @@ pub fn configure_path_aliases(cfg: &mut LanguageServerConfig, server_root: &Path
     let Some(plugin) = crate::path_aliases::tsserver_plugin(data_dir, server_root, &packages) else {
         return false;
     };
+    push_global_plugin(cfg, plugin);
+    true
+}
+
+/// Registers CSS Modules Kit (`@css-modules-kit/ts-plugin`, installed under `location`) as a
+/// vtsls global plugin when a tsconfig.json at, above or below `server_root` sets
+/// `cmkOptions.enabled` (#6071). No-op elsewhere, and without the plugin (`None`).
+pub fn configure_css_modules(cfg: &mut LanguageServerConfig, server_root: &Path, location: Option<&Path>) -> bool {
+    if cfg.name != "vtsls" || !cfg.tsserver_project {
+        return false;
+    }
+    let Some(location) = location.filter(|_| crate::css_modules::enabled(server_root)) else {
+        return false;
+    };
+    // Both are Volar plugins sharing the tools' one `@volar/typescript`, which decorates a
+    // tsserver project once: only the first of them to load works. Outside a Vue project
+    // CSS Modules Kit goes first; a Vue project keeps Vue's (`<style module>` is Vue's own).
+    // ponytail: a monorepo whose root isn't the Vue package gives CSS Modules Kit the project.
+    let before = (!vue::vue_project(server_root)).then_some(vue::PLUGIN);
+    insert_global_plugin(cfg, crate::css_modules::tsserver_plugin(location), before);
+    true
+}
+
+/// Adds `plugin` to vtsls' `globalPlugins`, replacing an entry of the same name.
+fn push_global_plugin(cfg: &mut LanguageServerConfig, plugin: Value) {
+    insert_global_plugin(cfg, plugin, None);
+}
+
+/// Adds `plugin` to vtsls' `globalPlugins` (replacing an entry of the same name), in front of
+/// the plugin named `before` when that one is there, else last.
+fn insert_global_plugin(cfg: &mut LanguageServerConfig, plugin: Value, before: Option<&str>) {
     let mut current =
         cfg.initialization_options.as_ref().and_then(|v| serde_json::to_value(v).ok()).unwrap_or_else(|| json!({}));
     let mut node = &mut current;
@@ -1643,13 +1674,21 @@ pub fn configure_path_aliases(cfg: &mut LanguageServerConfig, server_root: &Path
         *plugins = json!([]);
     }
     let plugins = plugins.as_array_mut().expect("made an array above");
-    plugins.retain(|p| p.get("name").and_then(Value::as_str) != Some(crate::path_aliases::PLUGIN));
-    plugins.push(plugin);
+    plugins.retain(|p| p.get("name") != plugin.get("name"));
+    let at = before
+        .and_then(|name| plugins.iter().position(|p| p.get("name").and_then(Value::as_str) == Some(name)))
+        .unwrap_or(plugins.len());
+    plugins.insert(at, plugin);
     match toml::Value::try_from(current) {
         Ok(v) => cfg.initialization_options = Some(v),
         Err(e) => tracing::warn!("{}: cannot apply settings to initialization options: {e}", cfg.name),
     }
-    true
+}
+
+/// Leaves out CSS's vtsls route (`languages/css.toml`) while the CSS Modules Kit plugin is not
+/// installed: without it vtsls has nothing for CSS files.
+pub fn drop_css_modules_route(servers: &mut Vec<LanguageServerConfig>) {
+    servers.retain(|c| c.name != "vtsls" || !c.root_markers.iter().any(|m| m == crate::css_modules::MARKER));
 }
 
 /// Lets vtsls load the tsserver plugins that the project's tsconfig.json / jsconfig.json
@@ -1954,7 +1993,8 @@ pub fn run_target<'a>(config: &RunConfig, settings: &'a Settings) -> Option<&'a 
 }
 
 fn is_python_config(config: &RunConfig, program: &str) -> bool {
-    matches!(config.kind.as_str(), "python" | "pytest" | "unittest" | "django-test") || is_python_command(program)
+    matches!(config.kind.as_str(), "python" | "pytest" | "unittest" | "doctest" | "django-test")
+        || is_python_command(program)
 }
 
 /// Whether the configuration's `JAVA_HOME` is the one Settings choose (the Maven runner JRE,
@@ -2067,7 +2107,7 @@ pub fn apply_to_run_configs_in(configs: &mut [RunConfig], root: &Path, fallback:
         resolve_run_command(c, root, s);
         let mut path_dirs: Vec<PathBuf> = Vec::new();
         match c.kind.as_str() {
-            "python" | "pytest" | "unittest" | "django-test" => {
+            "python" | "pytest" | "unittest" | "doctest" | "django-test" => {
                 let command = Path::new(&c.command);
                 let own = !c.detected && command.components().count() > 1 && is_python_command(&c.command);
                 let python = if own {
@@ -2085,7 +2125,7 @@ pub fn apply_to_run_configs_in(configs: &mut [RunConfig], root: &Path, fallback:
                     let runner_options = runner
                         && c.args.first().map(String::as_str) == Some("run")
                         && c.args.get(1).is_some_and(|a| a.starts_with('-'));
-                    if matches!(c.kind.as_str(), "python" | "unittest" | "django-test")
+                    if matches!(c.kind.as_str(), "python" | "unittest" | "doctest" | "django-test")
                         && !runner_options
                         && (runner || is_python_command(&c.command))
                     {

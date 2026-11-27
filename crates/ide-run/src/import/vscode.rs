@@ -311,15 +311,24 @@ impl Cx<'_> {
     }
 
     fn python_attach(&self, name: &str, obj: &Map<String, Value>) -> Res<RunConfig> {
-        if obj.contains_key("processId") || obj.contains_key("listen") {
+        if obj.contains_key("processId") {
             return Err(SkipReason::UnsupportedAttach);
         }
-        let connect = obj.get("connect").and_then(Value::as_object).unwrap_or(obj);
-        let host = self.string(connect, "host")?.unwrap_or_else(|| "localhost".into());
+        // `listen`: the program connects with `debugpy.connect` (Python Debug Server).
+        let (kind, connect) = match obj.get("listen").and_then(Value::as_object) {
+            Some(listen) => ("python-debug-server", listen),
+            None => ("python-remote", obj.get("connect").and_then(Value::as_object).unwrap_or(obj)),
+        };
+        let mut host = self.string(connect, "host")?.unwrap_or_else(|| "localhost".into());
+        // VS Code's `listen.host` is where the adapter binds; the configuration names the address the
+        // program connects to, which a wildcard is not: left at localhost for the user to change.
+        if kind == "python-debug-server" && matches!(host.as_str(), "0.0.0.0" | "::" | "[::]") {
+            host = "localhost".into();
+        }
         let Some(port) = self.string(connect, "port")? else {
             return Err(SkipReason::UnsupportedAttach);
         };
-        let mut c = config(name, "python-remote", String::new(), Vec::new(), Some("debugpy"));
+        let mut c = config(name, kind, String::new(), Vec::new(), Some("debugpy"));
         c.extras.params = BTreeMap::from([("host".into(), host), ("port".into(), port)]);
         if let Some(Value::Object(m)) = obj.get("pathMappings").and_then(|m| m.get(0)) {
             self.roots(m, &mut c)?;

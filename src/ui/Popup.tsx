@@ -94,6 +94,7 @@ const measureNaturalHeight: Middleware = {
     // Keep the new cap through internal flip/size restarts, not through the next update.
     if (middlewareData.measureNaturalHeight) return {};
     const scrollTop = elements.floating.scrollTop;
+    elements.floating.style.removeProperty("overflow-y");
     const previousLimit = elements.floating.style.removeProperty("max-height");
     return { data: { scrollTop }, reset: previousLimit ? { rects: true } : undefined };
   },
@@ -164,12 +165,14 @@ function PopupInner({
   const centered = anchor === "center";
   const reference = toReference(anchor);
   const hasInlineMaxHeight = style?.maxHeight != null && style.maxHeight !== "";
+  const atPoint = !!anchor && typeof anchor === "object" && "x" in anchor && !("getBoundingClientRect" in anchor);
   const middleware = useMemo(
     () => [
       offsetMw(offset),
       hasInlineMaxHeight ? null : measureNaturalHeight,
       flip({ padding: 6 }),
-      shift({ padding: 6 }),
+      // At a point (a context menu) nothing is covered by moving up: fit the screen before scrolling.
+      shift({ padding: 6, crossAxis: atPoint }),
       sizeMw({
         padding: 6,
         apply({ rects, elements, availableHeight, availableWidth, middlewareData }) {
@@ -177,6 +180,9 @@ function PopupInner({
           const maxHeight = Math.max(120, availableHeight);
           if (!hasInlineMaxHeight && (rects.floating.height > maxHeight || floatingStyle.maxHeight)) {
             floatingStyle.maxHeight = `${maxHeight}px`;
+            // A popup as wide as its content: a scrollbar that only appears on overflow takes its
+            // width from the content (menu labels get cut). Always shown, it widens the popup instead.
+            if (rects.floating.height > maxHeight) floatingStyle.overflowY = "scroll";
             const scrollTop = middlewareData.measureNaturalHeight?.scrollTop;
             if (scrollTop) elements.floating.scrollTop = scrollTop;
           }
@@ -187,7 +193,7 @@ function PopupInner({
         },
       }),
     ],
-    [hasInlineMaxHeight, offset, matchWidth, maxWidthOverAnchor],
+    [hasInlineMaxHeight, offset, matchWidth, maxWidthOverAnchor, atPoint],
   );
   const { refs, floatingStyles, isPositioned } = useFloating({
     placement,

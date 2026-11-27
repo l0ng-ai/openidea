@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useProject } from "@/platform/project";
 import type { RootFolder } from "@/platform/languageSettings";
-import { gotoTestOrSubject, testDirectoryFor, type ChooserItem, type TestNavDeps } from "./gotoTest";
+import { createTestFor, gotoTestOrSubject, testDirectoryFor, type ChooserItem, type TestNavDeps } from "./gotoTest";
 
 const root = (path: string, kind: RootFolder["kind"]): RootFolder => ({ path, kind, detectedFrom: "pom.xml" });
 const ROOTS = [root("src/main/java", "source"), root("src/test/java", "test")];
@@ -18,6 +18,7 @@ function deps(files: string[], roots = ROOTS) {
     hint: vi.fn(),
     createTest: vi.fn(),
     createRustTestModule: vi.fn(),
+    createPythonTest: vi.fn(),
   };
   return d;
 }
@@ -79,6 +80,28 @@ describe("Go to Test / Test Subject", () => {
       extension: "java",
       subject: "Foo.java",
     });
+  });
+
+  it("Python: Create New Test… writes stubs into a new file in the mirrored test package", async () => {
+    const py = [root("src", "source"), root("tests", "test")];
+    const d = deps(["/p/src/tasks/models.py"], py);
+    await gotoTestOrSubject("/p/src/tasks/models.py", "", d);
+    await d.chosen[0]!.items[0]!.run();
+    expect(d.createPythonTest).toHaveBeenCalledWith({ existing: null, path: "/p/tests/tasks/test_models.py" });
+    expect(d.createTest).not.toHaveBeenCalled();
+  });
+
+  it("Create Test… adds to the module's existing test file, without a chooser", async () => {
+    const py = [root("src", "source"), root("tests", "test")];
+    const d = deps(["/p/src/tasks/models.py", "/p/tests/test_models.py"], py);
+    await createTestFor("/p/src/tasks/models.py", d);
+    expect(d.chosen).toEqual([]);
+    expect(d.createPythonTest).toHaveBeenCalledWith({
+      existing: "/p/tests/test_models.py",
+      path: "/p/tests/tasks/test_models.py",
+    });
+    await createTestFor("/p/tests/test_models.py", d);
+    expect(d.hint).toHaveBeenCalledWith("This is a test file");
   });
 
   it("does not take a non-test file of a test-like name as a test", async () => {
