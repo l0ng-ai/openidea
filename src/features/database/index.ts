@@ -60,7 +60,7 @@ import {
   openHistory,
   openSourceDialog,
   useDatabase,
-  watchClickhouseConsoles,
+  watchConsoleSessions,
   watchIdleConnections,
 } from "./store";
 
@@ -274,6 +274,8 @@ export function activate(): () => void {
         treeReveal: null,
         manualCommit: new Set(),
         pendingTx: new Set(),
+        consoleModes: new Map(),
+        consolePendingTx: new Set(),
         running: {},
         executions: {},
         dialog: null,
@@ -285,7 +287,7 @@ export function activate(): () => void {
         setFileDecorations("database", consoleDecorations(s));
     }),
     () => setFileDecorations("database", new Map()),
-    watchClickhouseConsoles(),
+    watchConsoleSessions(),
     watchIdleConnections(),
     installTableEditorFocus(),
     installValueEditorActions(),

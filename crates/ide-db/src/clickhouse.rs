@@ -1424,8 +1424,8 @@ mod tests {
     async fn console_sessions_have_distinct_http_ids() {
         let (port, requests) = server(vec![("200 OK", "", ONE); 8]).await;
         let Pool::Clickhouse(pool) = Pool::connect(&source(port), None, None).await.unwrap() else { unreachable!() };
-        let first = ConsoleId { window: "main", path: "console.sql" };
-        let second = ConsoleId { window: "main", path: "console_1.sql" };
+        let first = ConsoleId::new("main", "console.sql");
+        let second = ConsoleId::new("main", "console_1.sql");
         let cancel = CancellationToken::new();
         for console in [first, second, first] {
             pool.execute_in_console("SELECT 2", 0, 1, &cancel, Some(console)).await.unwrap();
