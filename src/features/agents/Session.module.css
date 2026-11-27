@@ -2150,7 +2150,7 @@
 .contextReservedLegend {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   color: var(--fg-subtle);
   font-size: var(--fs-small);
   justify-self: start;
@@ -2163,7 +2163,7 @@
 }
 .contextBreakdownGroup {
   display: grid;
-  gap: 4px;
+  gap: var(--space-1);
   margin-top: 2px;
 }
 .contextBreakdownTitle {
