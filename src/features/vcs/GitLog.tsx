@@ -45,7 +45,7 @@ import {
 import { branchesByRepo } from "./multiRoot";
 import { stripSlash } from "./model";
 import { clearConsole, useVcsConsole } from "./ops";
-import { loadBranches, useVcs } from "./store";
+import { loadBranches, useNoStash, useVcs } from "./store";
 
 /** The Git window's tabs (they depend on the commit interface) and the one shown. */
 function useGitTabs() {
@@ -55,8 +55,9 @@ function useGitTabs() {
   const tab = useGitLog((s) => s.tab);
   const logTabs = useGitLog((s) => s.logTabs);
   const counts = useStashTabCounts(available && modal);
-  const tabs = gitTabs({ modal, combine, tab, logTabs, ...counts });
-  return { tabs, shown: shownTab(tab, tabs, combine) };
+  const noStash = useNoStash();
+  const tabs = gitTabs({ modal, combine, tab, logTabs, noStash, ...counts });
+  return { tabs, shown: shownTab(tab, tabs, combine, noStash) };
 }
 
 /** Tool window header: [Local Changes / Stash…] Log, log tabs, Console and Worktrees content tabs. */

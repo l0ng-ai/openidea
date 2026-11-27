@@ -1233,6 +1233,60 @@ export const commands = {
 	notebookSave: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_save", { id })),
 	notebookUndo: (id: string) => typedError<NotebookSnapshot, IdeError>(__TAURI_INVOKE("notebook_undo", { id })),
 	openProject: (path: string) => typedError<ProjectInfo_Serialize, IdeError>(__TAURI_INVOKE("open_project", { path })),
+	p4Add: (paths: string[], change: number | null) => typedError<OperationResult, IdeError>(__TAURI_INVOKE("p4_add", { paths, change })),
+	/**  Makes a pending changelist holding `paths` (opened files); returns its number. */
+	p4ChangelistCreate: (root: string | null, description: string, paths: string[]) => typedError<number, IdeError>(__TAURI_INVOKE("p4_changelist_create", { root, description, paths })),
+	p4ChangelistDelete: (root: string | null, change: number) => typedError<null, IdeError>(__TAURI_INVOKE("p4_changelist_delete", { root, change })),
+	p4ChangelistUpdate: (root: string | null, change: number, description: string) => typedError<null, IdeError>(__TAURI_INVOKE("p4_changelist_update", { root, change, description })),
+	/**  The default changelist and the numbered pending ones, with their files. */
+	p4Changelists: (root: string | null) => typedError<PendingChangelist[], IdeError>(__TAURI_INVOKE("p4_changelists", { root })),
+	/**  Opens files for delete; they leave the workspace. */
+	p4Delete: (paths: string[], change: number | null) => typedError<OperationResult, IdeError>(__TAURI_INVOKE("p4_delete", { paths, change })),
+	/**  Opens files for edit (new files for add) in `change`. */
+	p4Edit: (paths: string[], change: number | null) => typedError<OperationResult, IdeError>(__TAURI_INVOKE("p4_edit", { paths, change })),
+	/**  The `p4` found on this machine and its version, for Settings › Version Control › Perforce. */
+	p4Executable: () => typedError<P4Executable, IdeError>(__TAURI_INVOKE("p4_executable")),
+	/**  Links (or with `remove`, unlinks) jobs and a changelist. */
+	p4Fix: (root: string | null, change: number, jobs: string[], remove: boolean) => typedError<null, IdeError>(__TAURI_INVOKE("p4_fix", { root, change, jobs, remove })),
+	/**  The jobs a changelist fixes. */
+	p4Fixes: (root: string | null, change: number) => typedError<string[], IdeError>(__TAURI_INVOKE("p4_fixes", { root, change })),
+	/**  Integrates, merges or copies between two paths (or, on a stream client, from the parent stream). */
+	p4Integrate: (root: string | null, integration: P4Integration) => typedError<OperationResult, IdeError>(__TAURI_INVOKE("p4_integrate", { root, integration })),
+	p4Jobs: (root: string | null, query: string | null, limit: number) => typedError<Job[], IdeError>(__TAURI_INVOKE("p4_jobs", { root, query, limit })),
+	p4Lock: (paths: string[], locked: boolean) => typedError<OperationResult, IdeError>(__TAURI_INVOKE("p4_lock", { paths, locked })),
+	p4Login: (root: string | null, password: string) => typedError<LoginStatus, IdeError>(__TAURI_INVOKE("p4_login", { root, password })),
+	p4LoginStatus: (root: string | null) => typedError<LoginStatus, IdeError>(__TAURI_INVOKE("p4_login_status", { root })),
+	p4Logout: (root: string | null) => typedError<null, IdeError>(__TAURI_INVOKE("p4_logout", { root })),
+	/**
+	 *  Finds files changed outside Perforce below `paths` (empty = the workspace) and, unless
+	 *  `preview`, opens them.
+	 */
+	p4Reconcile: (root: string | null, paths: string[], change: number | null, preview: boolean) => typedError<OperationResult, IdeError>(__TAURI_INVOKE("p4_reconcile", { root, paths, change, preview })),
+	/**  Moves opened files to another changelist (0 = default). */
+	p4Reopen: (paths: string[], change: number) => typedError<null, IdeError>(__TAURI_INVOKE("p4_reopen", { paths, change })),
+	/**  Resolves `paths` (empty = everything unresolved) the way `mode` says. */
+	p4Resolve: (root: string | null, paths: string[], mode: ResolveMode) => typedError<OperationResult, IdeError>(__TAURI_INVOKE("p4_resolve", { root, paths, mode })),
+	/**  The base, depot and workspace texts of a file's pending resolve, for the merge view. */
+	p4ResolveSides: (path: string) => typedError<ResolveSides, IdeError>(__TAURI_INVOKE("p4_resolve_sides", { path })),
+	/**  Finishes a resolve with the text merged in the IDE. */
+	p4ResolveWith: (path: string, text: string) => typedError<null, IdeError>(__TAURI_INVOKE("p4_resolve_with", { path, text })),
+	/**  Reverts opened files that did not change, in one changelist or (`None`) everywhere. */
+	p4RevertUnchanged: (root: string | null, change: number | null) => typedError<OperationResult, IdeError>(__TAURI_INVOKE("p4_revert_unchanged", { root, change })),
+	/**  Deletes shelved files of a changelist (`depot_files` empty = its whole shelf). */
+	p4ShelfDelete: (root: string | null, change: number, depotFiles: string[]) => typedError<null, IdeError>(__TAURI_INVOKE("p4_shelf_delete", { root, change, depotFiles })),
+	/**  Shelves files of a numbered changelist (`paths` empty = all of them). */
+	p4Shelve: (root: string | null, change: number, paths: string[]) => typedError<OperationResult, IdeError>(__TAURI_INVOKE("p4_shelve", { root, change, paths })),
+	p4ShelvedFiles: (root: string | null, change: number) => typedError<ShelvedFile[], IdeError>(__TAURI_INVOKE("p4_shelved_files", { root, change })),
+	/**  Submits a pending changelist (0 = default, which needs `description`); returns its final number. */
+	p4Submit: (root: string | null, change: number, description: string | null) => typedError<number, IdeError>(__TAURI_INVOKE("p4_submit", { root, change, description })),
+	/**  Syncs `paths` (empty = the workspace) to `rev` (`None` = head). With `preview`, reports only. */
+	p4Sync: (root: string | null, paths: string[], rev: string | null, force: boolean, preview: boolean) => typedError<OperationResult, IdeError>(__TAURI_INVOKE("p4_sync", { root, paths, rev, force, preview })),
+	/**  Files waiting for a resolve. */
+	p4Unresolved: (root: string | null) => typedError<UnresolvedFile[], IdeError>(__TAURI_INVOKE("p4_unresolved", { root })),
+	/**  Restores shelved files of `source` into `target` (`None` = the changelist they were shelved from). */
+	p4Unshelve: (root: string | null, source: number, target: number | null, depotFiles: string[], force: boolean) => typedError<OperationResult, IdeError>(__TAURI_INVOKE("p4_unshelve", { root, source, target, depotFiles, force })),
+	/**  The Perforce workspaces of the project. */
+	p4Workspaces: () => typedError<P4WorkspaceInfo[], IdeError>(__TAURI_INVOKE("p4_workspaces")),
 	/**  Files and folders that continue `prefix`, a path being typed in `from`. */
 	pathCompletions: (from: IpcPath, prefix: string) => typedError<PathCompletion[], IdeError>(__TAURI_INVOKE("path_completions", { from, prefix })),
 	/**  An activation event from the UI: `kind` is `language`, `file` (project-relative path) or `view`. */
@@ -2589,6 +2643,15 @@ export type ActionsOnSaveSettings = {
 export type ActiveTheme = {
 	pluginId: string,
 	theme: ThemeDef,
+};
+
+/**  A file a command acted on (`sync`, `reconcile`, `integrate`, `edit`…). */
+export type AffectedFile = {
+	path: IpcPath | null,
+	depotFile: string,
+	/**  `added`, `updated`, `deleted`, `refreshed` for a sync; the open action otherwise. */
+	action: string,
+	rev: number | null,
 };
 
 /**  What accepting a worktree task's changes copied into the local checkout. */
@@ -4945,6 +5008,18 @@ export type ComposerInstallState = {
 
 /**  Which version the user accepts, relative to the merge editor's labels. */
 export type ConflictSide = "ours" | "theirs";
+
+/**  The server, user and client of a workspace (`p4 info`). */
+export type Connection = {
+	serverAddress: string,
+	serverVersion: string,
+	user: string,
+	client: string,
+	clientRoot: IpcPath,
+	/**  The stream of a stream client (`//stream/main`). */
+	stream: string | null,
+	caseSensitive: boolean,
+};
 
 /**  The user's answer on an install or consent page. */
 export type Consent = {
@@ -8949,6 +9024,14 @@ export type InstalledIntellijTheme = {
 	active: boolean,
 };
 
+export type IntegrateKind = 
+/**  `p4 integrate`: branch or propagate between two paths. */
+"integrate" | 
+/**  `p4 merge`: bring the source's changes in for resolving. */
+"merge" | 
+/**  `p4 copy`: make the target identical to the source. */
+"copy";
+
 export type IntellijThemeFile = {
 	/**  The `themeProvider` id (what `laf.xml` names), or the file name without `.theme.json`. */
 	id: string,
@@ -9106,6 +9189,13 @@ export type JetBrainsSettings = {
 	 *  `codestyles/*.xml` and some of `options/`.
 	 */
 	files: { [key in string]: string },
+};
+
+export type Job = {
+	name: string,
+	status: string,
+	user: string,
+	description: string,
 };
 
 /**  The script frame that made a request, where the browser ran it (0-based line and column). */
@@ -9931,6 +10021,13 @@ export type LogcatLine = {
 	level: LogcatLevel,
 	tag: string,
 	message: string,
+};
+
+export type LoginStatus = {
+	loggedIn: boolean,
+	user: string,
+	/**  Seconds until the ticket expires, when the server says. */
+	expiresIn: number | null,
 };
 
 export type LspRefreshKind = "inlayHints" | "semanticTokens" | "codeLens" | 
@@ -10800,6 +10897,34 @@ export type OpenProject = {
 	remote: RemoteTarget | null,
 };
 
+/**  A file opened in the workspace (`p4 opened`, with its resolve state). */
+export type OpenedFile = {
+	path: IpcPath,
+	relPath: string,
+	depotFile: string,
+	/**  `edit`, `add`, `delete`, `branch`, `integrate`, `move/add`, `move/delete`, `import`, `archive`. */
+	action: string,
+	/**  The pending changelist holding it; 0 is the default changelist. */
+	change: number,
+	fileType: string,
+	haveRev: number | null,
+	headRev: number | null,
+	/**  A newer revision or an integration waits to be resolved. */
+	unresolved: boolean,
+	/**  Workspace-relative path the file was moved from (`move/add`). */
+	movedFrom: string | null,
+	locked: boolean,
+	/**  Others who have it opened, as `user@client`. */
+	otherOpen: string[],
+};
+
+/**  The outcome of a command over many files: what it did and what the server said. */
+export type OperationResult = {
+	files: AffectedFile[],
+	/**  Notes and warnings: "file(s) up-to-date", "must resolve before submitting"… */
+	messages: string[],
+};
+
 export type OutgoingCommits = {
 	remote: string,
 	branch: string,
@@ -10825,6 +10950,29 @@ export type OutlineItem = {
 export type OutputChunk = { kind: "stdout"; text: string } | { kind: "stderr"; text: string } | 
 /**  System message from the IDE (command line echo, exit code). */
 { kind: "system"; text: string };
+
+/**  The `p4` executable in use. */
+export type P4Executable = {
+	path: IpcPath | null,
+	version: string | null,
+};
+
+/**  What `p4_integrate` does: `source` into `target` (depot or local file arguments). */
+export type P4Integration = {
+	kind: IntegrateKind,
+	source: string,
+	target: string,
+	/**  The changelist receiving the opened files (`None` = default). */
+	change: number | null,
+	/**  Report what would be opened, without opening it. */
+	preview: boolean,
+};
+
+/**  A Perforce workspace of the project. */
+export type P4WorkspaceInfo = {
+	root: IpcPath,
+	connection: Connection,
+};
 
 /**  A text file of a package the UI generated, at its `/`-separated path in the package. */
 export type PackageFile = {
@@ -10938,6 +11086,17 @@ export type PatchTarget = "project" | "repository";
 export type PathCompletion = {
 	name: string,
 	dir: boolean,
+};
+
+/**  A pending changelist of this workspace with the files opened in it. */
+export type PendingChangelist = {
+	/**  0 is the default changelist. */
+	number: number,
+	description: string,
+	timeMs: number | null,
+	files: OpenedFile[],
+	/**  It has shelved files. */
+	shelved: boolean,
 };
 
 export type PendingCommitApply = {
@@ -12702,6 +12861,27 @@ export type Requirement = {
 /**  `git reset` modes offered by Reset Current Branch to Here. */
 export type ResetMode = "soft" | "mixed" | "hard" | "keep";
 
+export type ResolveMode = 
+/**  `-am`: merge, leaving files with conflicts unresolved. */
+"merge" | 
+/**  `-as`: accept whichever side changed; skip files both changed. */
+"safe" | 
+/**  `-af`: merge and accept the result even with conflict markers. */
+"forceMerge" | 
+/**  `-ay`: keep the workspace file. */
+"yours" | 
+/**  `-at`: take the depot's file. */
+"theirs";
+
+/**  The three texts of a content resolve. */
+export type ResolveSides = {
+	base: string,
+	/**  The depot's side. */
+	theirs: string,
+	/**  The workspace file. */
+	yours: string,
+};
+
 /**  A mapping resolved by the backend for the Remote Host browser. */
 export type ResolvedMapping = {
 	local: IpcPath,
@@ -13511,6 +13691,15 @@ export type ShelvedChangeList = {
 	repo?: IpcPath | null,
 	/**  Paths relative to the patch base. */
 	files: ChangedFile[],
+};
+
+/**  A file in the shelf of a changelist. */
+export type ShelvedFile = {
+	depotFile: string,
+	/**  Workspace-relative path, when the client view maps the file. */
+	relPath: string | null,
+	action: string,
+	rev: number,
 };
 
 export type Signature = {
@@ -14623,6 +14812,19 @@ export type UnrealProjectInfo = {
 	engine: UnrealEngine | null,
 };
 
+/**  A file waiting for `p4 resolve`. */
+export type UnresolvedFile = {
+	path: IpcPath,
+	relPath: string,
+	/**  `content`, `filetype`, `move`, `delete`, `branch`… */
+	resolveType: string,
+	/**  The depot file the other side comes from and its revision. */
+	fromFile: string,
+	fromRev: number | null,
+	baseFile: string | null,
+	baseRev: number | null,
+};
+
 /**  A requirement the project's interpreter does not satisfy. */
 export type UnsatisfiedRequirement = {
 	dependency: ManifestDependency,
@@ -14711,6 +14913,8 @@ export type VcsConfirmationSettings = {
 	onPatchCreated?: string,
 };
 
+export type VcsKind = "git" | "perforce";
+
 /**
  *  Directory Mappings on top of repository detection. Paths are relative to the project
  *  root (`.` for the root itself) or absolute outside it.
@@ -14728,6 +14932,8 @@ export type VcsRoot = {
 	root: IpcPath,
 	/**  Root representing all mapped worktrees of the same Git repository in branch lists. */
 	branchRoot: IpcPath,
+	/**  The version control system holding it. */
+	kind: VcsKind,
 	/**  Merge / rebase / cherry-pick / revert in progress. */
 	operation: string | null,
 	/**  The current rebase uses Git's interactive mode. */

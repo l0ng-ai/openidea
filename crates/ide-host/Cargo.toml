@@ -28,6 +28,7 @@ ide-syntax.workspace = true
 ide-search.workspace = true
 ide-lsp.workspace = true
 ide-vcs.workspace = true
+ide-p4.workspace = true
 ide-dap.workspace = true
 ide-heap.workspace = true
 ide-jvm-attach.workspace = true

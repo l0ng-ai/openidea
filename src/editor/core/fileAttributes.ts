@@ -4,6 +4,7 @@
  * file's writable bit and the open document's editability. Typing into a file
  * whose read-only attribute is set asks the same (IDEA's Clear Read-Only Status).
  */
+import { getContext } from "@/platform/context";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { basename } from "@/platform/project";
 import { notifications } from "@/workbench/contributions";
@@ -12,6 +13,13 @@ import type { DocModel } from "./model/document";
 import { tx } from "@/platform/i18n";
 
 export function readOnlyQuestion(name: string, readOnly: boolean) {
+  // In a Perforce workspace a file is read-only until it is opened: making it writable is `p4 edit`.
+  if (readOnly && getContext().vcsPerforce)
+    return {
+      title: "Open for Edit",
+      message: tx`'${name}' is not opened in Perforce. Open it for edit?`,
+      confirm: "Open for Edit",
+    };
   return readOnly
     ? { title: "Make File Writable", message: tx`'${name}' is read-only. Make it writable?`, confirm: "Make Writable" }
     : { title: "Make File Read-only", message: tx`Make '${name}' read-only?`, confirm: "Make Read-only" };

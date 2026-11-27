@@ -27,7 +27,8 @@ import { currentRepoRoot, focusRepo } from "./store";
 import { showCompareBranches, type BranchComparisonTarget, type BranchComparisonData } from "./CompareBranches";
 import { showCompareRevisions } from "./operations";
 
-const VCS = "vcsAvailable";
+/** Git only: hidden while the selected repository is a Perforce workspace. */
+const GIT = "vcsAvailable && !vcsPerforce";
 const LOG = "vcsAvailable || projectOpen || vcsLogFocus";
 
 function editSelectedFiles(arg: unknown, edit: (commit: Commit, changes: LogChange[]) => Promise<void>) {
@@ -168,7 +169,7 @@ export function registerLogPaneActions(): () => void {
       title: "New Branch…",
       category: "Git Log",
       icon: "plus",
-      when: VCS,
+      when: GIT,
       hidden: true,
       run: ({ arg }) => {
         const targets = branchTargets(arg);
@@ -190,7 +191,7 @@ export function registerLogPaneActions(): () => void {
       title: "Update Selected",
       category: "Git Log",
       icon: "git-pull",
-      when: VCS,
+      when: GIT,
       hidden: true,
       run: ({ arg }) => updateBranches(branchTargets(arg)),
     },
@@ -199,7 +200,7 @@ export function registerLogPaneActions(): () => void {
       title: "Delete Branch",
       category: "Git Log",
       icon: "trash",
-      when: VCS,
+      when: GIT,
       hidden: true,
       run: ({ arg }) => deleteBranches(branchTargets(arg)),
     },
@@ -208,7 +209,7 @@ export function registerLogPaneActions(): () => void {
       title: "Mark/Unmark As Favorite",
       category: "Git Log",
       icon: "star",
-      when: VCS,
+      when: GIT,
       hidden: true,
       run: withBranch(toggleFavoriteBranch),
     },
@@ -279,7 +280,7 @@ export function registerLogPaneActions(): () => void {
       id: "vcs.log.changes.getFromRevision",
       title: "Get from Revision",
       category: "Git Log",
-      when: VCS,
+      when: GIT,
       hidden: true,
       run: ({ arg }) => void getFromRevision(changesArg(arg)),
     },
@@ -288,7 +289,7 @@ export function registerLogPaneActions(): () => void {
       title: "Apply Selected Changes",
       category: "Git Log",
       icon: "check",
-      when: VCS,
+      when: GIT,
       hidden: true,
       run: ({ arg }) => void applySelectedChanges(changesArg(arg)),
     },
@@ -296,7 +297,7 @@ export function registerLogPaneActions(): () => void {
       id: "vcs.log.changes.extract",
       title: "Extract Selected Changes",
       category: "Git Log",
-      when: VCS,
+      when: GIT,
       hidden: true,
       run: ({ arg }) => editSelectedFiles(arg, extractSelectedChanges),
     },
@@ -304,7 +305,7 @@ export function registerLogPaneActions(): () => void {
       id: "vcs.log.changes.drop",
       title: "Drop Selected Changes",
       category: "Git Log",
-      when: VCS,
+      when: GIT,
       hidden: true,
       run: ({ arg }) => editSelectedFiles(arg, dropSelectedChanges),
     },
@@ -313,7 +314,7 @@ export function registerLogPaneActions(): () => void {
       title: "Revert Selected Changes",
       category: "Git Log",
       icon: "revert",
-      when: VCS,
+      when: GIT,
       hidden: true,
       run: ({ arg }) => void revertSelectedChanges(changesArg(arg), useLogChanges.getState().commits),
     },

@@ -34,6 +34,7 @@ const roots: VcsRoot[] = [
   {
     root: git.root,
     branchRoot: git.root,
+    kind: "git",
     head: branch.head,
     headCommit: branch.headCommit,
     operation: "merge",
@@ -200,6 +201,7 @@ describe("VCS status ownership", () => {
           {
             root: nonGit.root,
             branchRoot: nonGit.root,
+            kind: "git",
             head: nextBranch.head,
             headCommit: nextBranch.headCommit,
             operation: null,
@@ -278,7 +280,9 @@ describe("VCS status ownership", () => {
     };
     const remainingStatus = { ...modified, path: remaining + "/src/edited.ts" };
     vi.mocked(commands.vcsRoots).mockResolvedValue(
-      ok([{ root: remaining, branchRoot: remaining, head: "main", headCommit: "def1234", operation: null }]),
+      ok([
+        { root: remaining, branchRoot: remaining, kind: "git", head: "main", headCommit: "def1234", operation: null },
+      ]),
     );
     vi.mocked(commands.vcsStatus).mockResolvedValue(ok([remainingStatus]));
     vi.mocked(commands.vcsBranchInfo).mockImplementation(async (repo) => {

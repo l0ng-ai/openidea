@@ -20,7 +20,7 @@ const config: KnipConfig = {
   ignore: ["plugins/**/web-src/**"],
   ignoreExportsUsedInFile: true,
   // System tools used by formatting and language smoke fixtures.
-  ignoreBinaries: ["rustfmt", "composer", "make"],
+  ignoreBinaries: ["rustfmt", "composer", "make", "p4"],
   compilers: {
     // Fonts come in through `@import` in global.css.
     css: (text: string) => [...text.matchAll(/(?<=@)import[^;]+/g)].join("\n"),

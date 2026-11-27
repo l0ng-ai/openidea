@@ -125,6 +125,7 @@ ide_command::domains!(
     tools: crate::ops::tools,
     vcs: crate::ops::vcs,
     vcs_commands: crate::ops::vcs::commands,
+    vcs_p4: crate::ops::vcs::p4,
     web: crate::ops::web,
 );
 

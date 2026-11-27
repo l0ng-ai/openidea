@@ -4500,6 +4500,7 @@ dependencies = [
  "ide-lsp",
  "ide-mcp",
  "ide-notebook",
+ "ide-p4",
  "ide-plugin",
  "ide-remote",
  "ide-run",
@@ -4759,6 +4760,23 @@ dependencies = [
  "uuid",
  "windows-sys 0.61.2",
  "zeromq",
+]
+
+[[package]]
+name = "ide-p4"
+version = "0.1.54"
+dependencies = [
+ "dunce",
+ "encoding_rs",
+ "ide-core",
+ "ide-vcs",
+ "parking_lot 0.12.5",
+ "serde",
+ "serde_json",
+ "specta",
+ "tempfile",
+ "tracing",
+ "which",
 ]
 
 [[package]]

@@ -39,6 +39,9 @@ pub struct Project {
     pub lsp: Arc<LspManager>,
     /// Git repositories: the one containing the project root and those nested below it.
     pub repos: Arc<RwLock<Repos>>,
+    /// Perforce client workspaces holding the project root or a content root. Found only in a
+    /// trusted project: a `P4CONFIG` file can make `p4` run a command (`P4PORT=rsh:…`).
+    pub p4: Arc<RwLock<Vec<Arc<ide_p4::Workspace>>>>,
     /// Explicitly opened external logs remain read-only and outside project indexing.
     pub(crate) external_log_repos: RwLock<Vec<Arc<Repo>>>,
     /// Incrementally maintained syntax trees of the open documents.
@@ -411,6 +414,7 @@ impl Host {
         let tsc_watch = crate::tsc_watch::TscWatch::new(root.clone(), settings.clone(), sink.clone(), trusted.clone());
         documents.add_observer(tsc_watch.clone());
         let repos = Arc::new(RwLock::new(Repos::enclosing(&root)?));
+        let p4: Arc<RwLock<Vec<Arc<ide_p4::Workspace>>>> = Arc::default();
         for repo in repos.read().all() {
             repo.set_execution_allowed(trusted.load(Ordering::Acquire));
         }
@@ -650,8 +654,10 @@ impl Host {
             let (root, repos, settings, sink) = (root.clone(), repos.clone(), settings.clone(), sink.clone());
             let (build_cache, git_metadata) = (build_cache.clone(), git_metadata.clone());
             let trusted = trusted.load(Ordering::Acquire);
+            let p4 = p4.clone();
             std::thread::Builder::new().name("openidea-vcs-roots".into()).spawn(move || {
-                scan_repositories(&root, &repos, git_metadata.as_deref(), &settings, &sink, &build_cache, trusted)
+                scan_repositories(&root, &repos, git_metadata.as_deref(), &settings, &sink, &build_cache, trusted);
+                scan_p4_workspaces(&root, &p4, &settings, &sink, &build_cache, trusted);
             })?;
         }
         mark("git");
@@ -691,6 +697,7 @@ impl Host {
             index,
             lsp,
             repos,
+            p4,
             external_log_repos: RwLock::default(),
             structure: Arc::new(StructureService::new(syntax.clone())),
             syntax,
@@ -961,6 +968,7 @@ impl Host {
             index,
             lsp,
             repos: Arc::default(),
+            p4: Arc::default(),
             external_log_repos: RwLock::default(),
             structure: Arc::new(StructureService::new(syntax.clone())),
             syntax,
@@ -1144,6 +1152,38 @@ fn detect_repositories(
     Repos::discover_roots(&roots, &skip)
 }
 
+/// Looks for the Perforce workspaces of the project root and its content roots; emits
+/// `VcsChanged` when the set changed. An unreachable server or a missing `p4` leaves none.
+fn scan_p4_workspaces(
+    root: &Path,
+    workspaces: &RwLock<Vec<Arc<ide_p4::Workspace>>>,
+    settings: &SettingsStore,
+    sink: &SharedSink,
+    build_cache: &Path,
+    trusted: bool,
+) {
+    let mut found: Vec<Arc<ide_p4::Workspace>> = Vec::new();
+    if trusted {
+        let mut roots = vec![root.to_path_buf()];
+        roots.extend(content_roots(&settings.effective(), root, build_cache, trusted));
+        for folder in roots {
+            if found.iter().any(|w| folder.starts_with(w.root())) {
+                continue;
+            }
+            match ide_p4::Workspace::discover(&folder) {
+                Ok(Some(workspace)) => found.push(Arc::new(workspace)),
+                Ok(None) => {}
+                Err(e) => tracing::warn!("looking for a Perforce workspace in {}: {e}", folder.display()),
+            }
+        }
+    }
+    let roots = |list: &[Arc<ide_p4::Workspace>]| list.iter().map(|w| w.root().to_path_buf()).collect::<Vec<_>>();
+    if roots(&found) != roots(&workspaces.read()) {
+        *workspaces.write() = found;
+        sink.emit(IdeEvent::VcsChanged { root: root.to_path_buf().into() });
+    }
+}
+
 impl Project {
     /// The repository roots detection finds, before Directory Mappings exclude or add any.
     pub fn detected_repository_roots(&self) -> IdeResult<Vec<PathBuf>> {
@@ -1161,6 +1201,84 @@ impl Project {
             &self.build_cache_dir(),
             self.is_trusted(),
         );
+        scan_p4_workspaces(
+            &self.root,
+            &self.p4,
+            &self.settings,
+            &self.sink,
+            &self.build_cache_dir(),
+            self.is_trusted(),
+        );
+    }
+
+    /// Looks for Perforce workspaces again: they are found in a trusted project only, so
+    /// trusting one (or restricting it) changes the answer.
+    pub fn refresh_p4_workspaces(&self) {
+        scan_p4_workspaces(
+            &self.root,
+            &self.p4,
+            &self.settings,
+            &self.sink,
+            &self.build_cache_dir(),
+            self.is_trusted(),
+        );
+    }
+
+    /// Tells the UI that what version control reports changed without a file event
+    /// (a file was opened or moved between changelists).
+    pub fn vcs_changed(&self) {
+        self.sink.emit(IdeEvent::VcsChanged { root: self.root.clone().into() });
+    }
+
+    /// The project's Perforce workspaces.
+    pub fn p4_workspaces(&self) -> Vec<Arc<ide_p4::Workspace>> {
+        self.p4.read().clone()
+    }
+
+    /// The Perforce workspace `path` belongs to, unless a Git repository inside it holds the path.
+    pub fn p4_workspace_of(&self, path: &Path) -> Option<Arc<ide_p4::Workspace>> {
+        let workspace = self
+            .p4
+            .read()
+            .iter()
+            .filter(|w| path.starts_with(w.root()))
+            .max_by_key(|w| w.root().as_os_str().len())
+            .cloned()?;
+        let nested_git = self.repos.read().for_path(path).is_some_and(|r| r.root().starts_with(workspace.root()));
+        (!nested_git).then_some(workspace)
+    }
+
+    /// The Perforce workspace rooted at `at`; without `at`, the first one of a project
+    /// that has no Git repository.
+    pub fn p4_workspace_at(&self, at: Option<&Path>) -> Option<Arc<ide_p4::Workspace>> {
+        let workspaces = self.p4.read();
+        match at {
+            Some(root) => workspaces.iter().find(|w| w.root() == root).cloned(),
+            None if self.repos.read().is_empty() => workspaces.first().cloned(),
+            None => None,
+        }
+    }
+
+    /// Runs `f` with the Perforce workspace `path` belongs to.
+    pub fn with_p4_of<T>(&self, path: &Path, f: impl FnOnce(&ide_p4::Workspace) -> IdeResult<T>) -> IdeResult<T> {
+        self.require_trust()?;
+        match self.p4_workspace_of(path) {
+            Some(workspace) => f(&workspace),
+            None => Err(IdeError::unavailable(format!("{} is not in a Perforce workspace", path.display()))),
+        }
+    }
+
+    /// Runs `f` with the Perforce workspace rooted at `at` (the project's own when `None`).
+    pub fn with_p4_at<T>(&self, at: Option<&Path>, f: impl FnOnce(&ide_p4::Workspace) -> IdeResult<T>) -> IdeResult<T> {
+        self.require_trust()?;
+        let workspace = match at {
+            Some(root) => self.p4.read().iter().find(|w| w.root() == root).cloned(),
+            None => self.p4.read().first().cloned(),
+        };
+        match workspace {
+            Some(workspace) => f(&workspace),
+            None => Err(IdeError::unavailable("project is not in a Perforce workspace")),
+        }
     }
 
     /// Settings › Version Control › Git › Path to Git executable, this project's value (its own
@@ -1259,6 +1377,9 @@ impl Project {
 
     /// `with_repo_of` through the backend-agnostic Changes-view surface.
     pub fn with_backend_of<T>(&self, path: &Path, f: impl FnOnce(&dyn Backend) -> IdeResult<T>) -> IdeResult<T> {
+        if let Some(workspace) = self.p4_workspace_of(path) {
+            return f(workspace.as_ref());
+        }
         self.with_repo_of(path, |r| f(r as &dyn Backend))
     }
 
@@ -1276,6 +1397,9 @@ impl Project {
 
     /// `with_repo_at` through the backend-agnostic Changes-view surface.
     pub fn with_backend_at<T>(&self, at: Option<&Path>, f: impl FnOnce(&dyn Backend) -> IdeResult<T>) -> IdeResult<T> {
+        if let Some(workspace) = self.p4_workspace_at(at) {
+            return f(workspace.as_ref());
+        }
         self.with_repo_at(at, |r| f(r as &dyn Backend))
     }
 
@@ -1285,11 +1409,17 @@ impl Project {
         at: Option<&Path>,
         f: impl FnOnce(&dyn Backend) -> IdeResult<T>,
     ) -> IdeResult<T> {
+        if let Some(workspace) = self.p4_workspace_at(at) {
+            return f(workspace.as_ref());
+        }
         self.with_log_repo_at(at, |r| f(r as &dyn Backend))
     }
 
     /// `with_log_repo_of` through the backend-agnostic Changes-view surface.
     pub fn with_log_backend_of<T>(&self, path: &Path, f: impl FnOnce(&dyn Backend) -> IdeResult<T>) -> IdeResult<T> {
+        if let Some(workspace) = self.p4_workspace_of(path) {
+            return f(workspace.as_ref());
+        }
         self.with_log_repo_of(path, |r| f(r as &dyn Backend))
     }
 
@@ -1300,7 +1430,33 @@ impl Project {
         operation: Option<&str>,
         f: impl FnOnce(&dyn Backend) -> IdeResult<T>,
     ) -> IdeResult<T> {
-        self.with_repo_recorded(at, operation, |r| f(r as &dyn Backend))
+        let Some(workspace) = self.p4_workspace_at(at) else {
+            return self.with_repo_recorded(at, operation, |r| f(r as &dyn Backend));
+        };
+        self.with_p4_recorded(&workspace, operation, |w| f(w as &dyn Backend))
+    }
+
+    /// Runs a Perforce operation that rewrites workspace files (sync, revert, unshelve,
+    /// resolve): Local History labels around it and a snapshot of every opened file before,
+    /// as `with_repo_recorded` does for Git. Clean buffers follow the files afterwards.
+    pub fn with_p4_recorded<T>(
+        &self,
+        workspace: &ide_p4::Workspace,
+        operation: Option<&str>,
+        f: impl FnOnce(&ide_p4::Workspace) -> IdeResult<T>,
+    ) -> IdeResult<T> {
+        let Some(name) = operation else { return self.with_disk_sync(|| f(workspace)) };
+        self.history_label(&format!("Before {name}"));
+        if let Ok(changed) = Backend::status(workspace) {
+            for file in changed.iter().take(HISTORY_BATCH_LIMIT) {
+                if let Err(e) = self.history.record_file(&file.path, &format!("Before {name}"), false) {
+                    tracing::debug!("local history: {e}");
+                }
+            }
+        }
+        let result = self.with_disk_sync(|| f(workspace));
+        self.history_label(&format!("After {name}"));
+        result
     }
 
     /// Runs `f` with the project's primary git repository, or fails when the project is not under git.
@@ -1566,7 +1722,11 @@ impl Project {
             return encoding_rs::Encoding::for_label(loaded.encoding.as_bytes())
                 .ok_or_else(|| ide_core::IdeError::invalid("unknown file encoding"));
         }
-        let bytes = self.with_log_repo_of(path, |r| r.file_bytes_at(path, rev))?.unwrap_or_default();
+        let bytes = match self.p4_workspace_of(path) {
+            Some(workspace) => workspace.file_bytes_at(path, rev)?,
+            None => self.with_log_repo_of(path, |r| r.file_bytes_at(path, rev))?,
+        }
+        .unwrap_or_default();
         Ok(self.documents.detect_encoding(path, &bytes))
     }
 

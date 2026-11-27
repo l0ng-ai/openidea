@@ -23,15 +23,20 @@ export interface StashTabsInput {
   stashCount: number;
   /** The selected tab: an empty Shelf tab stays while it is shown. */
   tab: string;
+  /** No Git repository in the project (Perforce only): there are no stashes to show. */
+  noStash?: boolean;
 }
 
 /** The tab a Shelf / Stash request lands on (the combined one when they are combined). */
-export function stashTabOf(tab: CommitTab, combine: boolean): CommitTab {
+export function stashTabOf(tab: CommitTab, combine: boolean, noStash = false): CommitTab {
+  if (noStash) return tab === "stashes" ? "changes" : tab;
   return combine && tab === "shelf" ? "stashes" : tab;
 }
 
 /** Shelf and Stash tabs (Shelf only when there are shelves), or the combined one. */
-export function stashTabs({ combine, shelfCount, stashCount, tab }: StashTabsInput): ContentTab[] {
+export function stashTabs({ combine, shelfCount, stashCount, tab, noStash }: StashTabsInput): ContentTab[] {
+  if (noStash)
+    return shelfCount || tab === "shelf" ? [{ id: "shelf", label: "Shelf", count: shelfCount || undefined }] : [];
   if (combine) return [{ id: "stashes", label: "Stashes and Shelves", count: stashCount + shelfCount || undefined }];
   return [
     ...(shelfCount || tab === "shelf" ? [{ id: "shelf", label: "Shelf", count: shelfCount || undefined }] : []),
@@ -64,7 +69,7 @@ export function gitTabs(input: GitTabsInput): ContentTab[] {
 }
 
 /** The tab shown for `tab`: a tab no longer listed (the commit interface changed) falls back to the Log. */
-export function shownTab(tab: string, tabs: readonly ContentTab[], combine: boolean): string {
-  const id = combine && tab === "shelf" ? "stashes" : tab;
+export function shownTab(tab: string, tabs: readonly ContentTab[], combine: boolean, noStash = false): string {
+  const id = !noStash && combine && tab === "shelf" ? "stashes" : tab;
   return tabs.some((t) => t.id === id) ? id : "log";
 }
