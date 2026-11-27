@@ -4769,6 +4769,57 @@ async fn angular_references_leave_out_the_declaration_unless_asked() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn css_references_leave_out_the_selector_where_css_modules_kit_defines_it() {
+    let servers = [("vscode-css-language-server", incremental_caps()), ("vtsls", incremental_caps())];
+    let h = harness_for("css", "css", &servers, &[]);
+    let (doc, path) = h.open("a.module.css", ".button { color: red; }\n");
+    h.wait_status("vscode-css-language-server", ServerStatus::Ready).await;
+    h.wait_status("vtsls", ServerStatus::Ready).await;
+    let tsx = h.root.join("a.tsx");
+    let at = |uri: &str, line: u32, from: u32, to: u32| json!({ "uri": uri, "range": {"start":{"line":line,"character":from},"end":{"line":line,"character":to}} });
+    let (css, tsx_uri) = (uri_of(&path), uri_of(&tsx));
+    // The CSS server lists the rule itself (`.button`) whatever `includeDeclaration` says;
+    // CSS Modules Kit (vtsls) defines the class at `button` and lists the TSX use.
+    h.launcher.state("vscode-css-language-server").respond("textDocument/references", json!([at(&css, 0, 0, 7)]));
+    let vtsls = h.launcher.state("vtsls");
+    vtsls.respond("textDocument/references", json!([at(&tsx_uri, 4, 30, 36)]));
+    vtsls.respond("textDocument/definition", json!([at(&css, 0, 1, 7)]));
+    let mgr = &h.mgr;
+    let found = |include_declaration: bool| async move {
+        let refs =
+            mgr.references_streaming(doc, Pos::new(0, 3), include_declaration, false, true, Default::default(), None);
+        let mut v: Vec<(PathBuf, Range)> =
+            refs.await.unwrap().locations.iter().map(|l| (l.path.to_path_buf(), l.range)).collect();
+        v.sort();
+        v
+    };
+    assert_eq!(found(false).await, [(tsx.clone(), rng(4, 30, 4, 36))]);
+    // Asked for the declaration, vtsls lists it once, as the class name.
+    vtsls.respond("textDocument/references", json!([at(&css, 0, 1, 7), at(&tsx_uri, 4, 30, 36)]));
+    assert_eq!(found(true).await, [(path.clone(), rng(0, 1, 0, 7)), (tsx, rng(4, 30, 4, 36))]);
+
+    // Rename: CSS Modules Kit's edit, not the CSS server's, which would replace `.button`.
+    let css_server = h.launcher.state("vscode-css-language-server");
+    let range = |from: u32, to: u32| json!({"start":{"line":0,"character":from},"end":{"line":0,"character":to}});
+    css_server.respond("textDocument/prepareRename", range(0, 7));
+    css_server.respond(
+        "textDocument/rename",
+        json!({ "changes": { css.clone(): [{ "range": range(0, 7), "newText": "primary" }] } }),
+    );
+    vtsls.respond("textDocument/prepareRename", range(1, 7));
+    vtsls.respond(
+        "textDocument/rename",
+        json!({ "changes": { css.clone(): [{ "range": range(1, 7), "newText": "primary" }] } }),
+    );
+    let edit = h.mgr.rename(doc, Pos::new(0, 3), "primary".into(), Default::default()).await.unwrap().edit;
+    assert!(
+        matches!(&edit.files[..], [FileEdit::Edit { edits, .. }] if edits.len() == 1 && edits[0].range == rng(0, 1, 0, 7)),
+        "{edit:?}"
+    );
+    assert!(css_server.requested("textDocument/rename").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn utf8_server_positions_are_converted() {
     let h = harness(&[(
         "u8",

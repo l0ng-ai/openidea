@@ -15,6 +15,7 @@ import {
   installServerWarningPrompts,
   promptInstall,
 } from "./missing";
+import { installCssModulesHint } from "./cssModules";
 import { activateSettingsPages } from "./settingsPages";
 import { installTool, refreshTools, SETTINGS_PAGE_ID, toolByName, useTools } from "./store";
 
@@ -80,6 +81,7 @@ export function activate(): () => void {
     installMissingServerPrompts(),
     installServerReadyExpiry(),
     installServerWarningPrompts(),
+    installCssModulesHint(),
     installExpiredServerPrompts(),
     registerJdkActions(),
     installJdkPrompts(),

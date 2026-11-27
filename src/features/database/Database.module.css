@@ -377,6 +377,10 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.sourceFolderDrop {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
 
 /* Results. */
 .error {
