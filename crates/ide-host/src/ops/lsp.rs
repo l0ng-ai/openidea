@@ -1899,6 +1899,29 @@ pub async fn lsp_snapshot_diagnostics(
 }
 
 #[command(trust = trusted)]
+pub async fn lsp_snapshot_completion(
+    host: &Host,
+    window: &str,
+    path: std::path::PathBuf,
+    text: String,
+    pos: Pos,
+    request: RequestId,
+) -> IdeResult<Vec<CompletionItem>> {
+    let project = host.project(window)?;
+    if !path.is_absolute() || path.file_name().is_none() {
+        return Err(IdeError::invalid("a text snapshot requires a file path"));
+    }
+    if text.len() as u64 > ide_vfs::LARGE_FILE_THRESHOLD {
+        return Ok(Vec::new());
+    }
+    let language = project.documents.language_of(&path, text.lines().next()).language;
+    let cancel = host.begin_project_read_request(window, request);
+    let result = project.lsp.snapshot_completion(&path, &language, &text, pos, &cancel).await;
+    host.end_request(request);
+    result
+}
+
+#[command(trust = trusted)]
 pub async fn lsp_inlay_hints(host: &Host, window: &str, doc: DocId, range: Range) -> IdeResult<Vec<InlayHint>> {
     let lsp = host.project(window)?.lsp.clone();
     let Some((plugins, d)) = plugin_providers(host, window, doc, ProviderKind::InlayHints) else {
@@ -3255,6 +3278,7 @@ ide_command::domain!(
     lsp_format_text,
     ruff_fix,
     ruff_fix_text,
+    lsp_snapshot_completion,
     lsp_snapshot_diagnostics,
     lsp_source_action_text,
     lsp_goto,

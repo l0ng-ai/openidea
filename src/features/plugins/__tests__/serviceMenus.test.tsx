@@ -8,7 +8,7 @@ import {
   type NotificationService,
   type ServiceContext,
 } from "@/workbench/contributions";
-import { executorLaunch, pluginExecutors, syncPluginExecutors } from "../executors";
+import { executorLaunch, executorTarget, pluginExecutors, syncPluginExecutors } from "../executors";
 import { defineBuiltinUiPoints } from "../points";
 import { clearUiContributions, syncUiContributions } from "../projection";
 import { usePlugins } from "../store";
@@ -181,6 +181,22 @@ describe("plugin executors", () => {
     usePlugins.setState({ plugins: [plugin({ enabled: false, javaAgent: agent("Hot Reload") })] });
     expect(runExecutors().some((e) => e.id.startsWith("plugin:hot"))).toBe(false);
     stop();
+  });
+
+  it("takes the configuration from a plugin command's text argument", () => {
+    expect(executorTarget("app")).toEqual({ config: "app" });
+    const services = JSON.stringify({
+      services: [
+        { provider: "run", id: "x", kind: "folder", name: "Apps", running: false, runConfigurationId: null },
+        { runConfigurationId: "app" },
+      ],
+    });
+    expect(executorTarget(services)).toEqual({ config: "app" });
+    // No configuration among the selected services, or text that is not one: the chooser.
+    expect(executorTarget(JSON.stringify({ services: [{ runConfigurationId: null }] }))).toEqual({ config: "" });
+    expect(executorTarget("{oops")).toEqual({ config: "" });
+    expect(executorTarget({ context: true })).toEqual({ context: true });
+    expect(executorTarget(undefined)).toEqual({});
   });
 
   it("asks for the permission, and refuses run targets, instead of launching without the agent", () => {

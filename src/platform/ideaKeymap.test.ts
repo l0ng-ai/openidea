@@ -57,6 +57,14 @@ describe("IntelliJ IDEA keymap import", () => {
     expect(k.unknownActions).toEqual([]);
   });
 
+  it("maps New Scratch Buffer without requiring a preset shortcut", () => {
+    const k = parseIdeaKeymap(
+      `<keymap name="M" parent="Mac OS X 10.5+"><action id="NewScratchBuffer"><keyboard-shortcut first-keystroke="meta shift B"/></action></keymap>`,
+    );
+    expect(k.overrides["file.newScratchBuffer"]).toEqual([normalizeBinding("Meta+Shift+B")]);
+    expect(k.unknownActions).toEqual([]);
+  });
+
   it("maps Fill Paragraph, which has no shortcut in the presets", () => {
     const k = parseIdeaKeymap(
       `<keymap name="M" parent="Mac OS X 10.5+"><action id="FillParagraph"><keyboard-shortcut first-keystroke="alt meta Q"/></action></keymap>`,

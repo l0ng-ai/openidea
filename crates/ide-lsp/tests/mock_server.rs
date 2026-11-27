@@ -4437,6 +4437,45 @@ async fn snapshot_diagnostics_collect_pull_and_push_without_publishing_problems(
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn snapshot_completion_asks_a_transient_copy_and_leaves_the_live_document() {
+    let caps = json!({
+        "positionEncoding": "utf-8",
+        "textDocumentSync": { "openClose": true, "change": 2 },
+        "completionProvider": {},
+    });
+    let h = harness(&[("mock", caps)]);
+    let (_, path) = h.open("a.mk", "the live editor\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    let uri = uri_of(&path);
+    let live = uri.clone();
+    *s.responder.lock() = Some(Arc::new(move |_, method, params| {
+        (method == "textDocument/completion").then(|| {
+            assert_ne!(params["textDocument"]["uri"], live);
+            // UTF-16 column 4 after the emoji is UTF-8 byte 6.
+            assert_eq!(params["position"], json!({ "line": 1, "character": 6 }));
+            json!([{ "label": "total", "kind": 5 }])
+        })
+    }));
+    let items = h
+        .mgr
+        .snapshot_completion(&path, &LanguageId("mock".into()), "a\n🙂o.\nb", Pos::new(1, 4), &Default::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        items.iter().map(|i| (i.label.as_str(), i.kind)).collect::<Vec<_>>(),
+        [("total", Some(CompletionKind::Field))]
+    );
+    assert!(s.notified("textDocument/didChange").is_empty());
+    eventually(|| s.notified("textDocument/didClose").len() == 1).await;
+    let opened: Vec<_> =
+        s.notified("textDocument/didOpen").into_iter().filter(|notice| notice["textDocument"]["uri"] != uri).collect();
+    assert_eq!(opened.len(), 1);
+    assert_eq!(opened[0]["textDocument"]["text"], "a\n🙂o.\nb");
+    assert!(s.docs.lock().contains_key(&uri));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn source_actions_use_snapshot_text_and_accept_only_its_passive_edits() {
     let caps = json!({
         "positionEncoding": "utf-8",

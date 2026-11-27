@@ -1,12 +1,15 @@
 import type { NotebookSnapshot } from "@/bindings";
 import { registerPendingEdits } from "@/editor/api";
+import { registerActions } from "@/platform/actions";
 import { basename } from "@/platform/project";
 import { lazyComponent } from "@/ui";
 import {
   editorService,
   registerEditorKind,
   registerFileEditorProvider,
+  registerToolWindow,
   registerUriOpener,
+  toolWindowService,
   type EditorDocumentLifecycle,
 } from "@/workbench/contributions";
 import { isTauri } from "@/platform/ipc";
@@ -48,9 +51,30 @@ const document: EditorDocumentLifecycle = {
   },
 };
 
+const VARIABLES = "jupyterVariables";
+
 export function activate(): () => void {
   const disposers = [
     registerConversions(),
+    registerToolWindow({
+      id: VARIABLES,
+      title: "Jupyter Variables",
+      icon: "file-jupyter",
+      anchor: "bottom",
+      // Listed under the stripe's "…" until first opened: most projects have no notebooks.
+      stripe: "onUse",
+      order: 28,
+      component: lazyComponent(() => import("./VariablesView").then((m) => m.VariablesView)),
+    }),
+    registerActions([
+      {
+        id: "notebook.variables.show",
+        title: "Jupyter Variables",
+        category: "Tools",
+        when: "projectOpen",
+        run: () => toolWindowService().show(VARIABLES, true),
+      },
+    ]),
     registerEditorKind({
       kind: "notebook",
       restorable: true,

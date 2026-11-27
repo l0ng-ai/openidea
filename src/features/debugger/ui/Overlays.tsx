@@ -81,6 +81,7 @@ import { StreamAbortDialog } from "../streams/StreamAbortDialog";
 import { closeBreakpointPopover, useOverlays } from "./popoverStore";
 import { TableViewDialog } from "./TableViewDialog";
 import { VariablesView, type VarRoot } from "./VariablesView";
+import { breakpointCompletionSource } from "../conditionCompletion";
 import { useExpressionCompletion } from "./ExpressionCompletion";
 import { pushHistory, readHistory } from "./expressionHistory";
 import styles from "./Overlays.module.css";
@@ -288,6 +289,15 @@ function BreakpointFields({
       commitRef.current = null;
     };
   });
+  const conditionField = useRef<HTMLInputElement>(null);
+  const logField = useRef<HTMLInputElement>(null);
+  const source = useMemo(() => breakpointCompletionSource(path, bp.line), [path, bp.line]);
+  const conditionCompletion = useExpressionCompletion(conditionField, condition, setCondition, null, source);
+  const logCompletion = useExpressionCompletion(logField, logMessage, setLogMessage, null, (before) => {
+    // Only inside a `{expression}` of the message.
+    const open = before.lastIndexOf("{");
+    return open < 0 || before.lastIndexOf("}") > open ? Promise.resolve([]) : source(before.slice(open + 1));
+  });
   const onKey = (e: KeyboardEvent) => {
     if (onEnter && e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -311,16 +321,24 @@ function BreakpointFields({
           <T>Condition</T>
         </span>
         <Input
+          ref={conditionField}
           mono
           value={condition}
-          onChange={(e) => setCondition(e.target.value)}
-          onBlur={commitText}
-          onKeyDown={onKey}
-          list={conditionHistory.length ? historyId : undefined}
+          onChange={(e) => {
+            setCondition(e.target.value);
+            conditionCompletion.onInput();
+          }}
+          onBlur={() => {
+            conditionCompletion.close();
+            commitText();
+          }}
+          onKeyDown={(e) => conditionCompletion.onKeyDown(e) || onKey(e)}
+          list={conditionHistory.length && !conditionCompletion.popup ? historyId : undefined}
           placeholder="e.g. order.total > 100"
           data-autofocus={focus === "condition" ? "" : undefined}
           aria-label="Condition"
         />
+        {conditionCompletion.popup}
         {conditionHistory.length > 0 && (
           <datalist id={historyId}>
             {conditionHistory.map((h) => (
@@ -363,16 +381,24 @@ function BreakpointFields({
         />
         {logEval && (
           <Input
+            ref={logField}
             mono
             value={logMessage}
-            onChange={(e) => setLogMessage(e.target.value)}
-            onBlur={commitText}
-            onKeyDown={onKey}
+            onChange={(e) => {
+              setLogMessage(e.target.value);
+              logCompletion.onInput();
+            }}
+            onBlur={() => {
+              logCompletion.close();
+              commitText();
+            }}
+            onKeyDown={(e) => logCompletion.onKeyDown(e) || onKey(e)}
             placeholder="Value: {expression}"
             data-autofocus={focus === "log" ? "" : undefined}
             aria-label="Evaluate and log"
           />
         )}
+        {logCompletion.popup}
         {showRemoveOnceHit && (
           <Checkbox
             checked={!!bp.temporary}

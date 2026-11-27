@@ -50,6 +50,13 @@ export {
   type NavigationMatch,
 } from "@/editor/navigationProviders";
 export { registerRelatedProvider, type RelatedContext, type RelatedItem } from "@/editor/relatedProviders";
+export {
+  contributedUsages,
+  registerRenameProvider,
+  registerUsageProvider,
+  type ContributedRename,
+  type UsageQuery,
+} from "@/editor/refactorProviders";
 export { offsetsToRange, offsetToPos, posToOffset, rangeToOffsets, textEditsToChanges } from "@/editor/lsp/positions";
 
 /** Documents above this size (UTF-16 units) skip per-line decorations. */

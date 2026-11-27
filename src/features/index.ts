@@ -37,6 +37,7 @@ import { activate as scratch } from "./scratch";
 import { activate as libraries } from "./libraries";
 import { activate as viewers } from "./viewers";
 import { activate as notebook } from "./notebook";
+import { activate as plots } from "./plots";
 import { activate as pythonConsole } from "./python-console";
 import { activate as pythonPackages } from "./python-packages";
 import { activate as web } from "./web";
@@ -45,6 +46,7 @@ import { activate as services } from "./services";
 import { activate as github } from "./github";
 import { activate as httpClient } from "./http-client";
 import { activate as cucumber } from "./cucumber";
+import { activate as pytest } from "./pytest";
 import { activate as rails } from "./rails";
 import { activate as thymeleaf } from "./thymeleaf";
 import { activate as database } from "./database";
@@ -93,6 +95,7 @@ const features: Array<[string, Activate]> = [
   ["scratch", scratch],
   ["libraries", libraries],
   ["notebook", notebook],
+  ["plots", plots],
   ["python-console", pythonConsole],
   ["python-packages", pythonPackages],
   ["viewers", viewers],
@@ -102,6 +105,7 @@ const features: Array<[string, Activate]> = [
   ["github", github],
   ["http-client", httpClient],
   ["cucumber", cucumber],
+  ["pytest", pytest],
   ["rails", rails],
   ["thymeleaf", thymeleaf],
   ["database", database],
