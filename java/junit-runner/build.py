@@ -40,7 +40,7 @@ with tempfile.TemporaryDirectory() as scratch:
         sample = Path(scratch) / "sample"
         cp = os.pathsep.join(jars)
         subprocess.run([tool("javac"), "-encoding", "UTF-8", "-cp", cp, "-d", str(sample),
-                        str(root / "tests" / "SampleTest.java"), str(root / "tests" / "Junit4SampleTest.java")], check=True)
+                        *(str(root / "tests" / t) for t in ("SampleTest.java", "Junit4SampleTest.java", "ParallelSampleTest.java"))], check=True)
         run = subprocess.run([tool("java"), "-cp", os.pathsep.join([str(classes), str(sample), cp]),
                               "ai.openidea.junit.Runner", "sample.SampleTest"], capture_output=True)
         out = run.stdout.decode("utf-8")
@@ -61,6 +61,14 @@ with tempfile.TemporaryDirectory() as scratch:
         method = subprocess.run([tool("java"), "-cp", os.pathsep.join([str(classes), str(sample), cp]),
                                  "ai.openidea.junit.Runner", "sample.SampleTest#parameterized"], capture_output=True)
         assert method.stdout.decode().count("testStarted") == 2, method.stdout
+        # Tests JUnit runs in parallel report from several threads at once: none may be lost.
+        parallel = subprocess.run([tool("java"), "-Djunit.jupiter.execution.parallel.enabled=true",
+                                   "-Djunit.jupiter.execution.parallel.mode.default=concurrent",
+                                   "-cp", os.pathsep.join([str(classes), str(sample), cp]),
+                                   "ai.openidea.junit.Runner", "sample.ParallelSampleTest"], capture_output=True)
+        summary = parallel.stdout.decode().splitlines()[-1]
+        assert summary == "4000 tests completed, 2000 failed", summary
+        assert parallel.returncode == 1, parallel.returncode
         # JUnit 4 runs on JUnitCore, with the JUnit Platform on the classpath (no Vintage engine) and without it.
         junit4 = [j for j in jars if "/junit/junit/" in j or "hamcrest" in j]
         for classpath in (cp, os.pathsep.join(junit4)):

@@ -6,7 +6,8 @@ import java.io.StringWriter;
 
 /**
  * Prints tests as the TeamCity service messages of OpenIDEA's Gradle test init script
- * ({@code gradleTests.gradle}) and counts them for the summary line.
+ * ({@code gradleTests.gradle}) and counts them for the summary line. Parallel tests report from
+ * several threads at once.
  */
 final class Reporter {
     private final PrintStream out;
@@ -32,19 +33,19 @@ final class Reporter {
         }
     }
 
-    void failed(String own, Throwable error) {
+    synchronized void failed(String own, Throwable error) {
         failed++;
         StringWriter trace = new StringWriter();
         if (error != null) error.printStackTrace(new PrintWriter(trace));
         message("testFailed", own + attr("message", error == null ? "" : error.toString()) + attr("details", withoutRunner(trace.toString())));
     }
 
-    void skipped(String own, String reason) {
+    synchronized void skipped(String own, String reason) {
         skipped++;
         message("testIgnored", own + (reason == null ? "" : attr("message", reason)));
     }
 
-    void finished(String own, long duration) {
+    synchronized void finished(String own, long duration) {
         tests++;
         message("testFinished", own + attr("duration", Long.toString(duration)));
     }
@@ -56,7 +57,7 @@ final class Reporter {
         finished(own, 0);
     }
 
-    String summary() {
+    synchronized String summary() {
         StringBuilder summary = new StringBuilder().append(tests).append(tests == 1 ? " test" : " tests");
         summary.append(" completed");
         if (failed > 0) summary.append(", ").append(failed).append(" failed");

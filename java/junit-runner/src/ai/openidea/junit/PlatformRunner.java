@@ -2,10 +2,10 @@ package ai.openidea.junit;
 
 import java.lang.reflect.Method;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import org.junit.platform.engine.DiscoverySelector;
 import org.junit.platform.engine.TestExecutionResult;
 import org.junit.platform.engine.TestSource;
@@ -23,7 +23,8 @@ import org.junit.platform.launcher.core.LauncherFactory;
 /** Runs JUnit Platform tests (Jupiter, and JUnit 4 through the Vintage engine when it is on the classpath). */
 final class PlatformRunner implements TestExecutionListener {
     private final Reporter report;
-    private final Map<String, Long> started = new HashMap<>();
+    /** Written by the threads running the tests: JUnit may run them in parallel. */
+    private final Map<String, Long> started = new ConcurrentHashMap<>();
     private TestPlan plan;
 
     private PlatformRunner(Reporter report) {
