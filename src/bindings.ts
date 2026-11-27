@@ -4212,6 +4212,23 @@ export type CMakeSettings_Serialize = {
 	profiles?: CMakeProfile[] | null,
 };
 
+/**
+ *  What one function spent when called from another, as a call-graph profiler (cProfile)
+ *  records it. Sampling profilers leave [`Profile::calls`] empty; their callers and callees
+ *  come from the call tree.
+ */
+export type CallEdge = {
+	/**  Index into [`Profile::frames`]. */
+	caller: number,
+	callee: number,
+	/**  Weight spent in the callee itself on these calls. */
+	selfWeight: number | null,
+	/**  Weight of these calls, including what the callee called. */
+	total: number | null,
+	calls: number | null,
+	primitiveCalls: number | null,
+};
+
 export type CallHierarchy = {
 	/**  The symbol the hierarchy is for: the first item the server prepared at the position. */
 	root?: HierarchyItem | null,
@@ -10569,6 +10586,10 @@ export type MethodStat = {
 	frame: number,
 	selfWeight: number | null,
 	total: number | null,
+	/**  Calls, when the profiler counts them (cProfile); sampling profilers don't. */
+	calls: number | null,
+	/**  Calls that were not recursive (`pstats`' primitive calls). */
+	primitiveCalls: number | null,
 };
 
 /**  Dependency entry of a module (Project Structure › Modules › Dependencies). */
@@ -11765,6 +11786,11 @@ export type Profile = {
 	nodes: ProfileNode[],
 	/**  Sorted by self weight, heaviest first. */
 	methods: MethodStat[],
+	/**
+	 *  Exact caller → callee totals of a call-graph profile; its call tree is then rebuilt
+	 *  from them, so below the first level it is an estimate. Empty for sampled profiles.
+	 */
+	calls: CallEdge[],
 };
 
 export type ProfileFrame = {
@@ -11816,8 +11842,12 @@ export type ProfileSpec =
  *  out when another one did.
  */
 { kind: "cpuProfiles"; dir: IpcPath; root: IpcPath } | 
-/**  One `.cpuprofile` the user opened (saved by `node --cpu-prof`, Chrome DevTools, CI). */
-{ kind: "cpuProfileFile"; path: IpcPath } | 
+/**
+ *  A snapshot file the user opened: a V8 `.cpuprofile` (`node --cpu-prof`, Chrome
+ *  DevTools, CI) or a `pstats` file (cProfile, profile, yappi), told apart by content.
+ *  Relative source files of a `pstats` file resolve against `root`, then its directory.
+ */
+{ kind: "snapshotFile"; path: IpcPath; root: IpcPath | null } | 
 /**
  *  Collapsed-stack files with extension `ext` in `dir`; relative frame files resolve
  *  against `base`. `jvm_root`: map JVM class frames to sources below it. For the
