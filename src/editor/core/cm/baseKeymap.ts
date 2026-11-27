@@ -4,6 +4,7 @@
  * ⌘/Ctrl+Enter is Split Line, Ctrl+M / ⌃L Scroll to Center, Ctrl+[ / ] code
  * block navigation, ⌥⌘↑↓ / Ctrl+Alt+↑↓ Previous / Next Occurrence.
  * Line up / down (with ⇧ too) keep the caret's visible column (`verticalMotion`).
+ * With sticky selection on, a caret move runs its ⇧ variant.
  */
 import type { Command, KeyBinding } from "@codemirror/view";
 import {
@@ -22,6 +23,7 @@ import {
   selectLineUp as cmSelectLineUp,
   toggleTabFocusMode,
 } from "@codemirror/commands";
+import { stickyMove } from "./stickySelection";
 import { cursorLineDown, cursorLineUp, selectLineDown, selectLineUp } from "./verticalMotion";
 
 const DROPPED = new Set<unknown>([
@@ -53,6 +55,9 @@ export const editorHistoryKeymap: readonly KeyBinding[] = [
 ];
 
 export const editorBaseKeymap: readonly KeyBinding[] = [
-  ...defaultKeymap.filter((b) => !DROPPED.has(b.run)).map(vertical),
+  ...defaultKeymap
+    .filter((b) => !DROPPED.has(b.run))
+    .map(vertical)
+    .map(stickyMove),
   ...editorHistoryKeymap,
 ];

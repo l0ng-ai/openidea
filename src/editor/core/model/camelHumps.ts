@@ -66,3 +66,13 @@ export function wordStartLeft(text: string, pos: number): number {
   while (i > 0 && kindOf(text[i - 1]) !== "space" && (kindOf(text[i - 1]) === "punct") === punct) i--;
   return i;
 }
+
+/** Word end to the right of `pos` without CamelHumps: the whitespace after `pos`, then a run of word characters or of punctuation. */
+export function wordEndRight(text: string, pos: number): number {
+  let i = pos;
+  while (i < text.length && kindOf(text[i]) === "space") i++;
+  if (i >= text.length) return text.length;
+  const punct = kindOf(text[i]) === "punct";
+  while (i < text.length && kindOf(text[i]) !== "space" && (kindOf(text[i]) === "punct") === punct) i++;
+  return i;
+}

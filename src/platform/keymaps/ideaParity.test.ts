@@ -13,8 +13,10 @@ describe("IDEA keymap parity", () => {
     ["view.zoomIn", ["Ctrl+Alt+="], ["Alt+Shift+="]],
     ["view.zoomOut", ["Ctrl+Alt+-"], ["Alt+Shift+-"]],
     ["view.resetZoom", ["Ctrl+Alt+0"], ["Alt+Shift+0"]],
-    ["editor.increaseFontSize", ["Alt+Shift+."], ["Alt+Shift+."]],
-    ["editor.decreaseFontSize", ["Alt+Shift+,"], ["Alt+Shift+,"]],
+    ["editor.increaseFontSize", [], []],
+    ["editor.decreaseFontSize", [], []],
+    ["editor.increaseFontSizeAll", ["Ctrl+Shift+."], ["Alt+Shift+."]],
+    ["editor.decreaseFontSizeAll", ["Ctrl+Shift+,"], ["Alt+Shift+,"]],
     ["vcs.changelist.move", ["Meta+Shift+M"], ["Alt+Shift+M"]],
     ["vcs.changelist.edit", ["F2", "Shift+F6"], ["F2", "Shift+F6"]],
     ["code.quickDocumentation", ["F1", "Ctrl+J"], ["Ctrl+Q"]],
@@ -65,6 +67,8 @@ describe("IDEA keymap parity", () => {
     // `Mac OS X 10.5+` removes the ⌘↑ / ⌘↓ it would inherit from `Mac OS X`.
     ["editor.scrollUp", [], ["Ctrl+Up"]],
     ["editor.scrollDown", [], ["Ctrl+Down"]],
+    ["editor.scrollLeft", [], []],
+    ["editor.scrollRight", [], []],
     ["editor.scrollUpAndMove", [], []],
     ["editor.scrollDownAndMove", [], []],
     ["editor.moveUpAndScroll", [], []],
@@ -86,8 +90,13 @@ describe("IDEA keymap parity", () => {
     ["code.deleteToLineStart", [], []],
     ["code.deleteToLineEnd", [], []],
     ["code.hungryBackspace", [], []],
+    // EditorKillToWordStart / End: only the Emacs keymap binds them.
+    ["code.killToWordStart", [], []],
+    ["code.killToWordEnd", [], []],
     // EditorSwapSelectionBoundaries has no shortcut.
     ["editor.swapSelectionBoundaries", [], []],
+    // EditorToggleStickySelection has no shortcut.
+    ["editor.toggleStickySelection", [], []],
     // EditorSelectLine has no shortcut.
     ["editor.selectLine", [], []],
     // CopyAsPlainText / CopyAsRichText have no shortcut.
@@ -125,6 +134,7 @@ describe("IDEA keymap parity", () => {
     ["code.moveElementLeft", ["Meta+Alt+Shift+Left"], ["Ctrl+Alt+Shift+Left"]],
     ["code.moveElementRight", ["Meta+Alt+Shift+Right"], ["Ctrl+Alt+Shift+Right"]],
     ["code.surroundWithLiveTemplate", ["Meta+Alt+J"], ["Ctrl+Alt+J"]],
+    ["code.saveAsLiveTemplate", [], []],
     ["navigate.customRegion", ["Meta+Alt+."], ["Ctrl+Alt+."]],
     ["navigate.showFilePath", ["Meta+Alt+F12"], ["Ctrl+Alt+F12"]],
     ["navigate.nextHighlightedUsage", ["Ctrl+Alt+Down"], ["Ctrl+Alt+Down"]],
