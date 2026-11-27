@@ -3977,6 +3977,11 @@
   "Unsatisfied package requirements": "Unsatisfied package requirements",
   "Reports requirements in requirements.txt and pyproject.toml that the project's Python interpreter does not have installed, or whose installed version does not match.": "Reports requirements in requirements.txt and pyproject.toml that the project's Python interpreter does not have installed, or whose installed version does not match.",
   "Python Console": "Python Console",
+  "Jupyter Variables": "Jupyter Variables",
+  "Jupyter variables": "Jupyter variables",
+  "No notebook open": "No notebook open",
+  "No kernel running": "No kernel running",
+  "Run a cell to start the kernel.": "Run a cell to start the kernel.",
   "Execute Selection in Python Console": "Execute Selection in Python Console",
   "No Python interpreter": "No Python interpreter",
   "Select an interpreter for this project to use the Python Console.": "Select an interpreter for this project to use the Python Console.",
@@ -4328,5 +4333,10 @@
   "Delimiter: {delimiter}": "Delimiter: {delimiter}",
   "Table view of the file": "Table view of the file",
   "Data": "Data",
-  "CSV editor view": "CSV editor view"
+  "CSV editor view": "CSV editor view",
+  "Pull request link {text}": "Pull request link {text}",
+  "Issue link {text}": "Issue link {text}",
+  "Commit link {text}": "Commit link {text}",
+  "Link {text}": "Link {text}",
+  "Transpose": "Transpose"
 }

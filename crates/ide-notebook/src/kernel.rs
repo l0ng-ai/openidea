@@ -55,6 +55,9 @@ impl KernelState {
 pub struct ExecutionResult {
     pub status: String,
     pub execution_count: Option<u32>,
+    /// The reply's `user_expressions`, by name.
+    #[serde(skip)]
+    pub user_expressions: Option<Value>,
 }
 
 struct Slot {
@@ -62,6 +65,8 @@ struct Slot {
     interrupt: Mutex<Option<CancellationToken>>,
     stop: Mutex<Option<CancellationToken>>,
     closed: AtomicBool,
+    /// A silent inspection holds `operation`; a run waits for it instead of failing as busy.
+    inspecting: AtomicBool,
 }
 
 impl Slot {
@@ -71,6 +76,7 @@ impl Slot {
             interrupt: Mutex::new(None),
             stop: Mutex::new(None),
             closed: AtomicBool::new(false),
+            inspecting: AtomicBool::new(false),
         }
     }
 
@@ -94,6 +100,13 @@ impl Drop for ActiveExecution<'_> {
         if let Some(token) = self.0.interrupt.lock().take() {
             token.cancel();
         }
+    }
+}
+
+struct Inspecting<'a>(&'a Slot);
+impl Drop for Inspecting<'_> {
+    fn drop(&mut self) {
+        self.0.inspecting.store(false, Ordering::Release);
     }
 }
 
@@ -139,7 +152,11 @@ impl KernelManager {
         }
         let _active = ActiveExecution(&slot);
         // A second caller must not sit in a queue and execute stale source later.
-        let mut running = slot.operation.try_lock().map_err(|_| IdeError::unavailable("notebook kernel is busy"))?;
+        let mut running = match slot.operation.try_lock() {
+            Ok(running) => running,
+            Err(_) if slot.inspecting.load(Ordering::Acquire) => slot.operation.lock().await,
+            Err(_) => return Err(IdeError::unavailable("notebook kernel is busy")),
+        };
         if slot.closed.load(Ordering::Acquire) {
             return Err(IdeError::unavailable("notebook kernel was closed"));
         }
@@ -177,7 +194,8 @@ impl KernelManager {
                 return Err(error);
             }
         }
-        let result = running.as_ref().expect("initialized kernel").execute(code, cancel, interrupt, on_output).await;
+        let result =
+            running.as_ref().expect("initialized kernel").execute(code, None, cancel, interrupt, on_output).await;
         if running.as_ref().is_some_and(transport::Running::is_finished) {
             if let Some(dead) = running.take() {
                 dead.shutdown().await;
@@ -185,6 +203,42 @@ impl KernelManager {
             slot.stop.lock().take();
         }
         result
+    }
+
+    /// Runs `code` silently on the notebook's idle kernel and returns the reply's
+    /// `user_expressions`. Never starts a kernel: `None` when none is running.
+    pub async fn inspect(
+        &self,
+        notebook: &Path,
+        code: &str,
+        expressions: HashMap<String, String>,
+    ) -> IdeResult<Option<Value>> {
+        let slot = self.slots.lock().get(notebook).cloned();
+        let Some(slot) = slot else { return Ok(None) };
+        if slot.interrupt.lock().is_some() {
+            return Err(IdeError::unavailable("notebook kernel is busy"));
+        }
+        // Flagged before locking, so a run arriving meanwhile waits rather than failing.
+        slot.inspecting.store(true, Ordering::Release);
+        let _inspecting = Inspecting(&slot);
+        let running = slot.operation.try_lock().map_err(|_| IdeError::unavailable("notebook kernel is busy"))?;
+        let Some(kernel) = running.as_ref().filter(|r| !r.is_finished() && !slot.closed.load(Ordering::Acquire)) else {
+            return Ok(None);
+        };
+        // A fixed bound; a wedged `__repr__` is interrupted when the reply is dropped.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            kernel.execute(
+                code,
+                Some(expressions),
+                CancellationToken::new(),
+                CancellationToken::new(),
+                Arc::new(|_| {}),
+            ),
+        )
+        .await
+        .map_err(|_| IdeError::unavailable("kernel did not answer within 10 seconds"))??;
+        Ok(result.user_expressions)
     }
 
     /// Cancels the active request, including startup. The execution future drains

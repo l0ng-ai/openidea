@@ -191,6 +191,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "code.startNewLineBefore": ["Meta+Shift+Enter"],
   "code.joinLines": ["Ctrl+J"],
   "code.toggleCase": [],
+  "code.transpose": [],
   "code.cycleCase": [],
   "code.pasteFromHistory": [],
   "code.sortLines": [],
