@@ -209,19 +209,26 @@ export function FilterBar({ fileHistory = false }: { fileHistory?: boolean }) {
     const authors = [...new Set(users.flat().concat(commits.map((c) => `${c.author} <${c.email}>`)))].sort((a, b) =>
       a.localeCompare(b),
     );
+    // A click adds the user to the filter or takes them out of it; commits by any of them are shown.
+    const toggleUser = (user: string) =>
+      setLogFilters({
+        authors: filters.authors.includes(user)
+          ? filters.authors.filter((a) => a !== user)
+          : [...filters.authors, user],
+      });
     menuBelow(anchor, [
       ...recentFilterValues("authors").map((authors) => ({
         verbatim: true,
         label: authors.join(", "),
         run: () => setLogFilters({ authors }),
       })),
-      { label: ME, checked: filters.authors.includes(ME), run: () => setLogFilters({ authors: [ME] }) },
+      { label: ME, checked: filters.authors.includes(ME), run: () => toggleUser(ME) },
       ...(authors.length ? [{ kind: "separator" as const }] : []),
       ...authors.slice(0, 30).map((a) => ({
         verbatim: true,
         label: a,
         checked: filters.authors.includes(a),
-        run: () => setLogFilters({ authors: [a] }),
+        run: () => toggleUser(a),
       })),
       { kind: "separator" },
       {
