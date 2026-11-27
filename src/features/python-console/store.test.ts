@@ -26,6 +26,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     commands: {
       runList: () => Promise.resolve([]),
       sdkPythonEffective: () => ok("/venv/bin/python"),
+      findFilesNamed: () => ok([]),
       runStart: (_config: unknown, channel: NonNullable<typeof ipc.started>["channel"]) =>
         new Promise((resolve) => {
           ipc.started = { channel, resolve: (id) => resolve({ status: "ok", data: { id } }) };
@@ -39,7 +40,7 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
   };
 });
 
-const { execute, installConsole, stopConsole, tail, useConsole } = await import("./store");
+const { execute, installConsole, pickManage, settingsModule, stopConsole, tail, useConsole } = await import("./store");
 const { request } = await import("./protocol");
 const settle = () => new Promise((r) => setTimeout(r, 0));
 const text = () =>
@@ -82,4 +83,14 @@ it("keeps the newest output within the cap, cutting into the oldest kept span", 
   expect(tail(spans, 10)).toBe(spans);
   expect(tail(spans, 5)).toEqual([{ text: "a" }, { text: "bb", fg: "red" }, { text: "cc" }]);
   expect(tail(spans, 3)).toEqual([{ text: "b", fg: "red" }, { text: "cc" }]);
+});
+
+it("finds the Django project's manage.py and settings module", () => {
+  expect(pickManage(["/p/.venv/lib/site-packages/x/manage.py", "/p/site/a/manage.py", "/p/site/manage.py"])).toBe(
+    "/p/site/manage.py",
+  );
+  expect(settingsModule(`    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")`)).toBe(
+    "config.settings",
+  );
+  expect(settingsModule("print('hi')")).toBeNull();
 });
