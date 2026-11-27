@@ -3689,3 +3689,114 @@ fn one_pip_run_at_a_time_per_environment() {
     drop(busy);
     assert!(crate::python::Busy::take(&python).is_ok());
 }
+
+#[test]
+fn vtsls_gets_css_modules_kit_where_a_tsconfig_enables_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (root, tools) = (tmp.path().join("app"), tmp.path().join("tools"));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("tsconfig.json"), "{\n  // comments are fine\n  \"compilerOptions\": {}\n}").unwrap();
+    let mut cfg = server("vtsls");
+    cfg.tsserver_project = true;
+    assert!(!crate::apply::configure_css_modules(&mut cfg, &root, Some(&tools)), "no cmkOptions");
+    std::fs::write(root.join("tsconfig.json"), r#"{ "cmkOptions": { "enabled": true } }"#).unwrap();
+    assert!(!crate::apply::configure_css_modules(&mut cfg, &root, None), "plugin not installed");
+    let mut native = server("vtsls");
+    assert!(!crate::apply::configure_css_modules(&mut native, &root, Some(&tools)), "TypeScript 7 hosts no plugins");
+    for _ in 0..2 {
+        assert!(crate::apply::configure_css_modules(&mut cfg, &root, Some(&tools)));
+    }
+    let init = serde_json::to_value(cfg.initialization_options.as_ref().unwrap()).unwrap();
+    assert_eq!(
+        init.pointer("/vtsls/tsserver/globalPlugins").unwrap(),
+        &serde_json::json!([{
+            "name": "@css-modules-kit/ts-plugin",
+            "location": tools.to_string_lossy(),
+            "languages": ["css"],
+            "enableForWorkspaceTypeScriptVersions": true,
+        }]),
+        "once"
+    );
+}
+
+#[test]
+fn css_modules_kit_loads_before_the_vue_plugin_outside_a_vue_project() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (root, tools) = (tmp.path().join("app"), tmp.path().join("tools"));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("tsconfig.json"), r#"{ "cmkOptions": { "enabled": true } }"#).unwrap();
+    let names = |root: &Path| {
+        let mut cfg = server("vtsls");
+        cfg.tsserver_project = true;
+        let vue = serde_json::json!({ "vtsls": { "tsserver": { "globalPlugins": [
+            { "name": "@vue/typescript-plugin" }, { "name": "openidea-vue-module-resolution" },
+        ] } } });
+        cfg.initialization_options = Some(toml::Value::try_from(vue).unwrap());
+        assert!(crate::apply::configure_css_modules(&mut cfg, root, Some(&tools)));
+        let init = serde_json::to_value(cfg.initialization_options.as_ref().unwrap()).unwrap();
+        let plugins = init.pointer("/vtsls/tsserver/globalPlugins").unwrap().as_array().unwrap().clone();
+        plugins.iter().map(|p| p["name"].as_str().unwrap().to_string()).collect::<Vec<_>>()
+    };
+    // Volar decorates a project once: the first Volar plugin to load is the one that works.
+    assert_eq!(
+        names(&root),
+        ["@css-modules-kit/ts-plugin", "@vue/typescript-plugin", "openidea-vue-module-resolution"]
+    );
+    std::fs::write(root.join("package.json"), r#"{ "dependencies": { "vue": "^3.5.0" } }"#).unwrap();
+    assert_eq!(
+        names(&root),
+        ["@vue/typescript-plugin", "openidea-vue-module-resolution", "@css-modules-kit/ts-plugin"]
+    );
+}
+
+#[test]
+fn css_files_reach_vtsls_only_once_css_modules_kit_is_installed() {
+    let reg = ide_language::LanguageRegistry::load(None).unwrap();
+    let css = reg.get(&ide_core::LanguageId::new("css")).unwrap().language_servers;
+    let route = css.iter().find(|c| c.name == "vtsls").expect("css.toml routes CSS Modules to vtsls");
+    assert!(route.require_root_marker);
+    assert_eq!(route.root_markers, [crate::css_modules::MARKER]);
+    // The rest of the definition is TypeScript's: whichever file starts the shared server, it runs the same.
+    let ts = reg.get(&ide_core::LanguageId::new("typescript")).unwrap().language_servers;
+    let ts = ts.iter().find(|c| c.name == "vtsls").unwrap();
+    assert_eq!(
+        (&route.command, &route.args, &route.initialization_options, route.tsserver_project),
+        (&ts.command, &ts.args, &ts.initialization_options, ts.tsserver_project)
+    );
+    let mut servers = css.clone();
+    crate::apply::drop_css_modules_route(&mut servers);
+    assert_eq!(servers.len(), css.len() - 1);
+    assert!(servers.iter().all(|c| c.name != "vtsls"));
+}
+
+#[test]
+fn css_modules_kit_stays_the_ides_copy_when_the_project_declares_or_installs_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (root, tools, data) = (tmp.path().join("app"), tmp.path().join("tools"), tmp.path().join("data"));
+    std::fs::create_dir_all(root.join("node_modules/@css-modules-kit/ts-plugin")).unwrap();
+    std::fs::create_dir_all(root.join("node_modules/project-plugin")).unwrap();
+    let tsconfig = |plugins: &str| {
+        format!(r#"{{ "compilerOptions": {{ "plugins": [{plugins}] }}, "cmkOptions": {{ "enabled": true }} }}"#)
+    };
+    std::fs::write(root.join("tsconfig.json"), tsconfig(r#"{ "name": "@css-modules-kit/ts-plugin" }"#)).unwrap();
+    let mut cfg = server("vtsls");
+    cfg.tsserver_project = true;
+    // In the host's order: the global plugins, then the tsconfig's.
+    assert!(crate::apply::configure_css_modules(&mut cfg, &root, Some(&tools)));
+    assert!(!crate::apply::configure_tsconfig_plugins(&mut cfg, &root, &data), "no probe location for it");
+    let init = |cfg: &LanguageServerConfig| serde_json::to_value(cfg.initialization_options.as_ref().unwrap()).unwrap();
+    let plugins = init(&cfg).pointer("/vtsls/tsserver/globalPlugins").unwrap().as_array().unwrap().clone();
+    assert_eq!(plugins.len(), 1);
+    assert_eq!(plugins[0]["location"], tools.to_string_lossy().as_ref());
+    // Next to another declared plugin, the probe location holds that one only.
+    std::fs::write(
+        root.join("tsconfig.json"),
+        tsconfig(r#"{ "name": "@css-modules-kit/ts-plugin" }, { "name": "project-plugin" }"#),
+    )
+    .unwrap();
+    assert!(crate::apply::configure_tsconfig_plugins(&mut cfg, &root, &data));
+    let paths = init(&cfg).pointer("/typescript/tsserver/pluginPaths").unwrap().as_array().unwrap().clone();
+    let location = Path::new(paths[0].as_str().unwrap());
+    assert!(location.join("node_modules/project-plugin").exists());
+    assert!(!location.join("node_modules/@css-modules-kit").exists());
+}

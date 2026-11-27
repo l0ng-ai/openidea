@@ -10,6 +10,7 @@ pub mod apply;
 pub mod arduino;
 mod astro;
 pub mod container_python;
+mod css_modules;
 mod discover;
 mod exec;
 pub mod flutter;

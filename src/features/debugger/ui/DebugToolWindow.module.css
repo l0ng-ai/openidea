@@ -198,6 +198,8 @@
   padding: 4px 12px;
   color: var(--fg-subtle);
   font-size: var(--fs-ui);
+  white-space: pre-line;
+  overflow-wrap: anywhere;
 }
 
 .framesError {

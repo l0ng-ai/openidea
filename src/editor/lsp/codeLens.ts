@@ -112,7 +112,8 @@ export function lensTargets(items: readonly OutlineItem[]): LensTarget[] {
         out.push({
           name: it.name,
           line: it.selection_range.start.line,
-          col: it.selection_range.start.col,
+          // A CSS selector (`.button`): the name past `.` / `#`, where CSS Modules Kit maps the class.
+          col: it.selection_range.start.col + (/^[.#][\w-]/.test(it.name) ? 1 : 0),
           startLine: it.range.start.line,
           endLine: it.range.end.line,
         });
