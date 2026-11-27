@@ -140,7 +140,7 @@ The console toolbar has:
 - **Browse Query History**: the last 500 statements per data source, with search and **Paste**.
 - A row limit (100 to 50,000; default 500).
 - **Tx: Auto** / **Tx: Manual**. In manual mode **Commit** and **Roll Back** appear.
-  With the built-in PostgreSQL driver, each console owns its manual transaction. Retained result tabs keep access to that console until its last tab closes. Closing the last tab rolls back pending work.
+  With the built-in PostgreSQL driver, each console owns its manual transaction. Retained result tabs keep access to that console until its last tab closes. Closing the last tab rolls back pending work. Switching the console to **Tx: Auto** also releases its transaction slot, including after a read-only query.
 - A schema picker (PostgreSQL, MySQL, SQL Server, Oracle, Snowflake) and the data source picker. Snowflake consoles also have warehouse and role pickers.
 
 Statements are split on `;`, respecting strings, comments and PostgreSQL dollar quoting. Oracle PL/SQL blocks are kept whole, and a line with only `/` ends a statement. Snowflake `$$` bodies and Snowflake Scripting blocks (`BEGIN … END`, `DECLARE …`) are kept whole too. Parameters such as `:id`, `?`, `$1` or `@name` open a **Parameters** dialog; values are inserted as SQL text, so quote strings.
