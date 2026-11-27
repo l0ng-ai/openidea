@@ -1,7 +1,8 @@
 /**
  * `@file` / `@folder/` / `@file:10-20` references drawn as chips (icon, name, lines), in the
  * composer and in sent messages: a click opens the file at its lines (a folder is selected in
- * the Project view), hovering shows the full path and the lines.
+ * the Project view), hovering shows the full path and the lines. Web links are chips as well:
+ * a click opens the page in the browser.
  */
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
@@ -9,6 +10,7 @@ import { computePosition, flip, offset, shift } from "@floating-ui/react-dom";
 import { highlightInto, languageForPath } from "@/editor/lsp/markdown";
 import { iconNode } from "@/ui/iconNode";
 import { executeAction } from "@/platform/actions";
+import { openExternalUrl } from "@/platform/openUrl";
 import { tx, useTx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { basename } from "@/platform/project";
@@ -24,6 +26,7 @@ import {
   resolveTyped,
   type Mention,
 } from "./composerModel";
+import { linkInfo, linkSpans, type LinkKind } from "./composerLinks";
 import styles from "./ReferenceChip.module.css";
 
 export { styles as chipStyles };
@@ -60,6 +63,22 @@ export function openReference(path: string, mention: Mention) {
 const nameOf = (m: Mention) => basename(m.rel.replace(/\/$/, "")) || m.rel;
 const iconOf = (m: Mention) => (m.dir ? "folder" : fileIconName(nameOf(m), m.rel));
 
+/** A × at the end of a chip in the composer. */
+function appendRemove(chip: HTMLElement, onRemove: () => void) {
+  chip.classList.add(styles.removable!);
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = styles.chipRemove!;
+  remove.setAttribute("aria-label", tx("Remove"));
+  remove.append(iconNode("close", 10));
+  remove.addEventListener("mousedown", (e) => e.preventDefault());
+  remove.addEventListener("click", (e) => {
+    e.stopPropagation();
+    onRemove();
+  });
+  chip.append(remove);
+}
+
 /** The chip as DOM, for the composer's editor; `onRemove` adds its × button. */
 export function chipElement(path: string, mention: Mention, onRemove?: () => void): HTMLElement {
   const chip = document.createElement("span");
@@ -79,25 +98,67 @@ export function chipElement(path: string, mention: Mention, onRemove?: () => voi
     lines.textContent = linesLabel(mention.lines);
     chip.append(lines);
   }
-  if (onRemove) {
-    chip.classList.add(styles.removable!);
-    const remove = document.createElement("button");
-    remove.type = "button";
-    remove.className = styles.chipRemove!;
-    remove.setAttribute("aria-label", tx("Remove"));
-    remove.append(iconNode("close", 10));
-    remove.addEventListener("mousedown", (e) => e.preventDefault());
-    remove.addEventListener("click", (e) => {
-      e.stopPropagation();
-      onRemove();
-    });
-    chip.append(remove);
-  }
+  if (onRemove) appendRemove(chip, onRemove);
   if (!mention.dir)
     void fileExists(path).then((exists) => {
       if (!exists) chip.classList.add(styles.missing!);
     });
   return chip;
+}
+
+const LINK_ICONS: Record<LinkKind, string> = {
+  pr: "github-pr-open",
+  issue: "github-issue-open",
+  commit: "commit",
+  web: "web",
+};
+
+function linkAriaLabel(text: string, kind: LinkKind): string {
+  if (kind === "pr") return tx`Pull request link ${text}`;
+  if (kind === "issue") return tx`Issue link ${text}`;
+  if (kind === "commit") return tx`Commit link ${text}`;
+  return tx`Link ${text}`;
+}
+
+const openLink = (url: string) => void openExternalUrl(url);
+
+/** A web link's chip as DOM, for the composer's editor: a click opens it; `onRemove` adds its × button. */
+export function linkChipElement(url: string, label: string | null, onRemove?: () => void): HTMLElement {
+  const { kind, text } = linkInfo(url, label);
+  const chip = document.createElement("span");
+  chip.className = clsx(styles.chip, styles.link);
+  chip.dataset.linkUrl = url;
+  chip.title = url;
+  chip.setAttribute("aria-label", linkAriaLabel(text, kind));
+  chip.append(iconNode(LINK_ICONS[kind], 14));
+  const name = document.createElement("span");
+  name.className = styles.name!;
+  name.textContent = text;
+  chip.append(name);
+  chip.addEventListener("click", (e) => {
+    e.stopPropagation();
+    openLink(url);
+  });
+  if (onRemove) appendRemove(chip, onRemove);
+  return chip;
+}
+
+/** A web link in a sent message. */
+export function LinkChip({ url, label }: { url: string; label: string | null }) {
+  const { kind, text } = linkInfo(url, label);
+  return (
+    <button
+      type="button"
+      className={clsx(styles.chip, styles.link)}
+      data-link-url={url}
+      title={url}
+      aria-label={linkAriaLabel(text, kind)}
+      onClick={() => openLink(url)}
+    >
+      <Icon name={LINK_ICONS[kind]} size={14} />
+      <span className={styles.name}>{text}</span>
+    </button>
+  );
 }
 
 function ariaLabel(m: Mention): string {
@@ -184,7 +245,22 @@ export function ReferencedText({ text, cwd }: { text: string; cwd: string }) {
 }
 
 function inline(text: string, cwd: string): ReactNode[] {
-  return messageTokens(text).map((token, i) => {
+  const out: ReactNode[] = [];
+  let last = 0;
+  for (const link of linkSpans(text)) {
+    out.push(...mentions(text.slice(last, link.from), cwd, out.length));
+    out.push(<LinkChip key={out.length} url={link.url} label={link.label} />);
+    last = link.to;
+  }
+  out.push(...mentions(text.slice(last), cwd, out.length));
+  return out;
+}
+
+/** `text` with its references as chips and `/commands` tagged; keys count on from `key`. */
+function mentions(text: string, cwd: string, key: number): ReactNode[] {
+  if (!text) return [];
+  return messageTokens(text).map((token, n) => {
+    const i = key + n;
     if (token.kind === "text")
       // oxlint-disable-next-line react/no-array-index-key -- tokens can repeat; position is the identity
       return <Fragment key={i}>{token.value}</Fragment>;

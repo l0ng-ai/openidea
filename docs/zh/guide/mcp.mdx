@@ -82,18 +82,18 @@ stdio 配置大致如下（路径以你机器上的为准）：
 
 ## 工具
 
-| 类别        | 工具                                                                                              |
-| ----------- | ------------------------------------------------------------------------------------------------- |
-| 文件        | `get_workspace_roots`、`read_file`、`list_directory_tree`、`create_new_file`、`apply_patch`       |
-| 搜索        | `search_text`、`search_regex`、`search_symbol`、`search_file`                                     |
-| 编辑器      | `get_all_open_file_paths`、`get_current_file`、`open_file_in_editor`                              |
-| 代码        | `get_symbol_info`、`find_references`、`get_call_hierarchy`、`rename_refactoring`、`reformat_file` |
-| 问题        | `get_file_problems`、`get_project_problems`、`check_files`                                        |
-| 运行与构建  | `get_run_configurations`、`execute_run_configuration`、`build_project`                            |
-| 命令        | `run_command`、`wait_for_run`、`send_run_input`、`stop_run`                                       |
-| 命令状态    | `get_run_status`、`read_run_output`、`list_runs`                                                  |
-| Git         | `get_repositories`、`git_status`、`git_diff`                                                      |
-| HTTP 客户端 | `http_list_requests`、`http_run_request`                                                          |
+| 类别        | 工具                                                                                                                  |
+| ----------- | --------------------------------------------------------------------------------------------------------------------- |
+| 文件        | `get_workspace_roots`、`read_file`、`list_directory_tree`、`create_new_file`、`apply_patch`                           |
+| 搜索        | `search_text`、`search_regex`、`search_symbol`、`search_file`                                                         |
+| 编辑器      | `get_all_open_file_paths`、`get_current_file`、`open_file_in_editor`                                                  |
+| 代码        | `get_symbol_info`、`find_references`、`get_call_hierarchy`、`rename_refactoring`、`reformat_file`、`optimize_imports` |
+| 问题        | `get_file_problems`、`get_project_problems`、`check_files`                                                            |
+| 运行与构建  | `get_run_configurations`、`execute_run_configuration`、`build_project`                                                |
+| 命令        | `run_command`、`wait_for_run`、`send_run_input`、`stop_run`                                                           |
+| 命令状态    | `get_run_status`、`read_run_output`、`list_runs`                                                                      |
+| Git         | `get_repositories`、`git_status`、`git_diff`                                                                          |
+| HTTP 客户端 | `http_list_requests`、`http_run_request`                                                                              |
 
 几点说明：
 
@@ -108,6 +108,7 @@ stdio 配置大致如下（路径以你机器上的为准）：
 - `get_file_problems` 和 `get_project_problems` 返回的是问题工具窗口当前显示的内容（已应用你的检查配置文件），而不是重新分析的结果。
 - `check_files` 才是重新分析，适合在任何工具修改文件之后调用：它从磁盘同步每个文件，通知语言服务器文件已保存（这样 `cargo check` 等保存时检查也会运行），并等到服务器答复且分析完成。每个文件都有一个 `status`，说明问题列表是否完整，或者为什么无法检查：没有对应的语言服务器，或者服务器未安装、配置错误、已崩溃。
 - `rename_refactoring` 通过语言服务器重命名，文本搜索找不到的引用也会一并更新；也可以只预览不写入。
+- `reformat_file` 应用代码格式化；`optimize_imports` 只删除未使用的 import 并排序其余 import，不重新格式化。两者都返回最多 200 行的 unified diff；`reformat_file` 传 `optimizeImports: true` 可同时完成两项工作。
 - `apply_patch` 接受 Codex 的 `apply_patch` 格式和 unified diff，路径必须在项目内。
 - `git_diff` 比较的是磁盘上的文件，不包含编辑器中尚未保存的内容。
 - `http_list_requests` 列出项目中 `.http` / `.rest` 文件里的请求；`http_run_request` 按索引发送其中一个（可选 `env`，来自 `http-client.env.json`），会先询问，并返回状态和截断后的响应体——不含请求头或请求体。

@@ -99,6 +99,12 @@ The script uses `# %%` cell markers, the format VS Code and Jupytext read:
 
 **Convert to Jupyter Notebook** on a `.py` file does the reverse: it writes `<name>.ipynb` with a Python 3 kernel and opens it. Each `# %%` (or `#%%`) line starts a cell, `[markdown]` and `[raw]` cells lose their `# ` prefix, and a file without markers becomes a single code cell. Lines commented out on export stay comments.
 
+## Jupyter Variables
+
+**View › Tool Windows › Jupyter Variables** (or **Jupyter Variables** in Find Action) lists the variables of the last active notebook's kernel: name, type and a short value. It refreshes when a run finishes, after a kernel restart and when you switch to another notebook. Names starting with `_`, modules and the names IPython defines itself are not shown.
+
+The list is read from the kernel without a visible run: it adds no output, history entry or execution count. It never starts a kernel; run a cell first.
+
 ## Limits
 
 - Only Python kernels are supported. Kernels for other languages and remote Jupyter servers are not.

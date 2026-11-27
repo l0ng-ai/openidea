@@ -50,6 +50,13 @@ export {
   type NavigationMatch,
 } from "@/editor/navigationProviders";
 export { registerRelatedProvider, type RelatedContext, type RelatedItem } from "@/editor/relatedProviders";
+export {
+  contributedUsages,
+  registerRenameProvider,
+  registerUsageProvider,
+  type ContributedRename,
+  type UsageQuery,
+} from "@/editor/refactorProviders";
 export { offsetsToRange, offsetToPos, posToOffset, rangeToOffsets, textEditsToChanges } from "@/editor/lsp/positions";
 
 /** Documents above this size (UTF-16 units) skip per-line decorations. */
@@ -433,6 +440,19 @@ export interface LineChange {
 
 export const lineChanges = Facet.define<readonly LineChange[], readonly LineChange[]>({
   combine: (values) => values[0] ?? [],
+});
+
+/**
+ * Settings › Editor › General › Gutter: where the VCS change markers show. Set from the
+ * editor settings; the scrollbar marks follow the gutter setting, as in IDEA.
+ */
+export interface ChangeMarkerDisplay {
+  gutter: boolean;
+  scrollbar: boolean;
+}
+
+export const changeMarkerDisplay = Facet.define<ChangeMarkerDisplay, ChangeMarkerDisplay>({
+  combine: (values) => values[0] ?? { gutter: true, scrollbar: true },
 });
 
 /** Marker for `gutterLaneMarkers`: a solid 3px bar (or a small wedge for `deleted`). */

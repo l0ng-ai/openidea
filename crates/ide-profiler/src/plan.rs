@@ -36,10 +36,16 @@ fn append_env(config: &mut RunConfig, key: &str, value: &str) {
     config.env.insert(key.to_owned(), joined);
 }
 
-/// How to run `config` under a sampling profiler. `out` is an existing empty
-/// directory for the profile. Probes tools: call from a blocking thread.
-/// Allocation modes exist for JVM programs only.
-pub fn prepare(root: &Path, config: &RunConfig, out: &Path, mode: ProfileMode) -> ProfilePrepared {
+/// How to run `config` under a profiler. `out` is an existing empty directory for the
+/// profile; `python_profiler` is the `languages.python.profiler` setting. Probes tools:
+/// call from a blocking thread. Allocation modes exist for JVM programs only.
+pub fn prepare(
+    root: &Path,
+    config: &RunConfig,
+    out: &Path,
+    mode: ProfileMode,
+    python_profiler: &str,
+) -> ProfilePrepared {
     let dir = wrap::run_dir(root, config);
     let program = program_name(&config.command);
     if mode != ProfileMode::Cpu && program != "java" {
@@ -52,7 +58,7 @@ pub fn prepare(root: &Path, config: &RunConfig, out: &Path, mode: ProfileMode) -
         "bun" | "deno" => unsupported(format!("Profiling {program} programs is not supported.")),
         _ if config.kind == "native" => native(config, &dir, out),
         _ => match wrap::python_command(config) {
-            Some(py) => python(root, config, &dir, out, py),
+            Some(py) => python(root, config, &dir, out, py, python_profiler),
             None => unsupported(format!("No profiler is known for '{}'.", config.name)),
         },
     }
@@ -74,26 +80,41 @@ fn quote_opt(v: &str) -> String {
     if v.contains(' ') { format!("\"{v}\"") } else { v.to_owned() }
 }
 
-fn python(root: &Path, config: &RunConfig, dir: &Path, out: &Path, py: wrap::PythonCommand) -> ProfilePrepared {
+fn python(
+    root: &Path,
+    config: &RunConfig,
+    dir: &Path,
+    out: &Path,
+    py: wrap::PythonCommand,
+    profiler: &str,
+) -> ProfilePrepared {
     if py.target.is_empty() {
         return unsupported("Profiling needs a Python script or module to run.");
     }
     // py-spy installed into the interpreter's environment lives next to it.
     let beside =
         Path::new(&py.interpreter[0]).parent().map(|d| d.join(if cfg!(windows) { "py-spy.exe" } else { "py-spy" }));
-    let Some(py_spy) = beside.filter(|p| p.is_file()).or_else(|| wrap::find_tool("py-spy", config, dir, root)) else {
-        let install = (py.manager.is_none()).then(|| {
-            let mut argv = py.interpreter.clone();
-            argv.extend([s("-m"), s("pip"), s("install"), s("py-spy")]);
-            let (command, args) = argv.split_first().map(|(c, a)| (c.clone(), a.to_vec())).unwrap_or_default();
-            ProfilerInstall { command, args, cwd: Some(dir.to_path_buf().into()) }
-        });
-        return ProfilePrepared::MissingTool {
-            tool: s("py-spy"),
-            message: s("Profiling Python needs py-spy."),
-            install,
-            homepage: Some(PY_SPY_HOME.into()),
-        };
+    let found = beside.filter(|p| p.is_file()).or_else(|| wrap::find_tool("py-spy", config, dir, root));
+    let py_spy = match (profiler, found) {
+        ("cprofile", _) => return cprofile(config, dir, out, py),
+        ("py-spy", Some(found)) => found,
+        // On macOS py-spy samples only as root, which a run from the IDE isn't.
+        (_, Some(found)) if !cfg!(target_os = "macos") => found,
+        ("py-spy", None) => {
+            let install = (py.manager.is_none()).then(|| {
+                let mut argv = py.interpreter.clone();
+                argv.extend([s("-m"), s("pip"), s("install"), s("py-spy")]);
+                let (command, args) = argv.split_first().map(|(c, a)| (c.clone(), a.to_vec())).unwrap_or_default();
+                ProfilerInstall { command, args, cwd: Some(dir.to_path_buf().into()) }
+            });
+            return ProfilePrepared::MissingTool {
+                tool: s("py-spy"),
+                message: s("Profiling Python with py-spy needs py-spy."),
+                install,
+                homepage: Some(PY_SPY_HOME.into()),
+            };
+        }
+        _ => return cprofile(config, dir, out, py),
     };
     let mut args = vec![
         s("record"),
@@ -117,6 +138,19 @@ fn python(root: &Path, config: &RunConfig, dir: &Path, out: &Path, py: wrap::Pyt
         mode: ProfileMode::Cpu,
     };
     ready("py-spy", launch, spec)
+}
+
+/// `python -m cProfile -o <out>/profile.pstats <script or -m module> …` with the configuration's
+/// own interpreter (`uv run python`, a virtualenv's). cProfile writes the file when the program
+/// ends, also when Stop interrupts it.
+fn cprofile(config: &RunConfig, dir: &Path, out: &Path, py: wrap::PythonCommand) -> ProfilePrepared {
+    let file = out.join("profile.pstats");
+    let mut argv = py.interpreter;
+    argv.extend([s("-m"), s("cProfile"), s("-o"), path(&file)]);
+    argv.extend(py.target);
+    let (command, args) = argv.split_first().map(|(c, a)| (c.clone(), a.to_vec())).unwrap_or_default();
+    let launch = RunConfig { command, args, ..config.clone() };
+    ready("cProfile", launch, ProfileSpec::SnapshotFile { path: file.into(), root: Some(dir.to_path_buf().into()) })
 }
 
 /// `libasyncProfiler.{so,dylib}` from `ASYNC_PROFILER_HOME` or next to `asprof` on the search path.
@@ -285,7 +319,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut c = cfg("node", "node", &["index.js"]);
         c.env.insert("NODE_OPTIONS".into(), "--max-old-space-size=4096".into());
-        match prepare(dir.path(), &c, dir.path(), ProfileMode::Cpu) {
+        match prepare(dir.path(), &c, dir.path(), ProfileMode::Cpu, "auto") {
             ProfilePrepared::Ready { launch, spec, .. } => {
                 let opts = &launch.env["NODE_OPTIONS"];
                 assert!(opts.starts_with("--max-old-space-size=4096 --cpu-prof --cpu-prof-dir="));
@@ -305,7 +339,7 @@ mod tests {
         std::fs::write(&python, "").unwrap();
         let mut c = cfg("python", &python.to_string_lossy(), &["main.py"]);
         c.env.insert("PATH".into(), dir.path().join("nothing").to_string_lossy().into_owned());
-        match prepare(dir.path(), &c, dir.path(), ProfileMode::Cpu) {
+        match prepare(dir.path(), &c, dir.path(), ProfileMode::Cpu, "py-spy") {
             ProfilePrepared::MissingTool { tool, install: Some(i), .. } => {
                 assert_eq!(tool, "py-spy");
                 assert_eq!(i.args, ["-m", "pip", "install", "py-spy"]);
@@ -314,7 +348,7 @@ mod tests {
         }
         let spy = bin.join(if cfg!(windows) { "py-spy.exe" } else { "py-spy" });
         std::fs::write(&spy, "").unwrap();
-        match prepare(dir.path(), &c, dir.path(), ProfileMode::Cpu) {
+        match prepare(dir.path(), &c, dir.path(), ProfileMode::Cpu, "py-spy") {
             ProfilePrepared::Ready { launch, .. } => {
                 assert_eq!(launch.command, spy.to_string_lossy());
                 assert_eq!(&launch.args[..4], ["record", "--format", "raw", "--function"]);
@@ -323,6 +357,58 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// The profiler `setting` picks for `c`, and the launch.
+    fn python_plan(c: &RunConfig, dir: &Path, setting: &str) -> (String, RunConfig, ProfileSpec) {
+        match prepare(dir, c, dir, ProfileMode::Cpu, setting) {
+            ProfilePrepared::Ready { profiler, launch, spec } => (profiler, *launch, spec),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn python_runs_under_cprofile_unless_py_spy_can_sample() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("venv/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let python = bin.join("python").to_string_lossy().into_owned();
+        std::fs::write(&python, "").unwrap();
+        let mut c = cfg("python", &python, &["-X", "utf8", "main.py", "--fast"]);
+        c.env.insert("PATH".into(), dir.path().join("nothing").to_string_lossy().into_owned());
+        let file = dir.path().join("profile.pstats").to_string_lossy().into_owned();
+
+        // Nothing installed: cProfile, whatever the platform.
+        let (profiler, launch, spec) = python_plan(&c, dir.path(), "auto");
+        assert_eq!(profiler, "cProfile");
+        assert_eq!(launch.command, python);
+        assert_eq!(launch.args, ["-X", "utf8", "-m", "cProfile", "-o", &file, "main.py", "--fast"]);
+        let root = Some(dir.path().to_path_buf().into());
+        assert_eq!(spec, ProfileSpec::SnapshotFile { path: PathBuf::from(&file).into(), root });
+
+        // py-spy installed: Automatic takes it except on macOS, where it would need root.
+        std::fs::write(bin.join(if cfg!(windows) { "py-spy.exe" } else { "py-spy" }), "").unwrap();
+        let auto = if cfg!(target_os = "macos") { "cProfile" } else { "py-spy" };
+        assert_eq!(python_plan(&c, dir.path(), "auto").0, auto);
+        assert_eq!(python_plan(&c, dir.path(), "cprofile").0, "cProfile");
+        assert_eq!(python_plan(&c, dir.path(), "py-spy").0, "py-spy");
+    }
+
+    #[test]
+    fn cprofile_keeps_the_configurations_interpreter() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("profile.pstats").to_string_lossy().into_owned();
+        let launch = |c: RunConfig| python_plan(&c, dir.path(), "cprofile").1;
+
+        let uv = launch(cfg("python", "uv", &["run", "--frozen", "python", "-m", "app.cli", "serve"]));
+        assert_eq!(uv.command, "uv");
+        assert_eq!(uv.args, ["run", "--frozen", "python", "-m", "cProfile", "-o", &file, "-m", "app.cli", "serve"]);
+
+        let bin = dir.path().join(".venv/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let pytest = launch(cfg("pytest", &bin.join("pytest").to_string_lossy(), &["tests", "-k", "slow"]));
+        assert!(Path::new(&pytest.command).starts_with(&bin), "{}", pytest.command);
+        assert_eq!(pytest.args, ["-m", "cProfile", "-o", &file, "-m", "pytest", "tests", "-k", "slow"]);
     }
 
     #[test]
@@ -335,12 +421,12 @@ mod tests {
         c.env.insert("PATH".into(), dir.path().to_string_lossy().into_owned());
         c.env.insert("ASYNC_PROFILER_HOME".into(), dir.path().join("none").to_string_lossy().into_owned());
         assert!(matches!(
-            prepare(dir.path(), &c, dir.path(), ProfileMode::Cpu),
+            prepare(dir.path(), &c, dir.path(), ProfileMode::Cpu, "auto"),
             ProfilePrepared::MissingTool { install: None, .. }
         ));
         let home = fake_async_profiler(dir.path());
         c.env.insert("ASYNC_PROFILER_HOME".into(), home.to_string_lossy().into_owned());
-        match prepare(dir.path(), &c, dir.path(), ProfileMode::Cpu) {
+        match prepare(dir.path(), &c, dir.path(), ProfileMode::Cpu, "auto") {
             ProfilePrepared::Ready { launch, spec, .. } => {
                 let opts = &launch.env["JAVA_TOOL_OPTIONS"];
                 assert!(opts.contains("=start,event=cpu,collapsed,file="));
@@ -372,7 +458,7 @@ mod tests {
     }
 
     fn ready_jvm(c: &RunConfig, dir: &Path, mode: ProfileMode) -> (RunConfig, ProfileSpec) {
-        match prepare(dir, c, dir, mode) {
+        match prepare(dir, c, dir, mode, "auto") {
             ProfilePrepared::Ready { launch, spec, .. } => (*launch, spec),
             other => panic!("{other:?}"),
         }
@@ -444,19 +530,22 @@ mod tests {
         let mut c = cfg("application", &java.to_string_lossy(), &["com.x.App"]);
         c.env.insert("PATH".into(), dir.path().join("nothing").to_string_lossy().into_owned());
         c.env.insert("ASYNC_PROFILER_HOME".into(), dir.path().join("none").to_string_lossy().into_owned());
-        match prepare(dir.path(), &c, dir.path(), ProfileMode::LiveObjects) {
+        match prepare(dir.path(), &c, dir.path(), ProfileMode::LiveObjects, "auto") {
             ProfilePrepared::Unsupported { reason } => assert!(reason.contains("JDK 11"), "{reason}"),
             other => panic!("{other:?}"),
         }
         // Allocations do not need the attach listener, so JDK 8 is fine.
         assert!(matches!(
-            prepare(dir.path(), &c, dir.path(), ProfileMode::Allocations),
+            prepare(dir.path(), &c, dir.path(), ProfileMode::Allocations, "auto"),
             ProfilePrepared::MissingTool { .. }
         ));
 
         std::fs::write(dir.path().join("jdk8/release"), "JAVA_VERSION=\"11.0.29\"\n").unwrap();
         c.env.insert("ASYNC_PROFILER_HOME".into(), fake_async_profiler(dir.path()).to_string_lossy().into_owned());
-        assert!(matches!(prepare(dir.path(), &c, dir.path(), ProfileMode::LiveObjects), ProfilePrepared::Ready { .. }));
+        assert!(matches!(
+            prepare(dir.path(), &c, dir.path(), ProfileMode::LiveObjects, "auto"),
+            ProfilePrepared::Ready { .. }
+        ));
     }
 
     #[test]
@@ -473,7 +562,7 @@ mod tests {
         let mut c = cfg("application", "java", &["com.x.App"]);
         c.env.insert("PATH".into(), bin.to_string_lossy().into_owned());
         c.env.insert("ASYNC_PROFILER_HOME".into(), fake_async_profiler(dir.path()).to_string_lossy().into_owned());
-        let prepared = prepare(dir.path(), &c, dir.path(), ProfileMode::LiveObjects);
+        let prepared = prepare(dir.path(), &c, dir.path(), ProfileMode::LiveObjects, "auto");
         assert!(matches!(prepared, ProfilePrepared::Ready { .. }), "{prepared:?}");
     }
 
@@ -482,28 +571,28 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let c = cfg("node", "node", &["index.js"]);
         for mode in [ProfileMode::Allocations, ProfileMode::LiveObjects] {
-            match prepare(dir.path(), &c, dir.path(), mode) {
+            match prepare(dir.path(), &c, dir.path(), mode, "auto") {
                 ProfilePrepared::Unsupported { reason } => assert!(reason.contains("JVM"), "{reason}"),
                 other => panic!("{other:?}"),
             }
         }
-        assert!(matches!(prepare(dir.path(), &c, dir.path(), ProfileMode::Cpu), ProfilePrepared::Ready { .. }));
+        assert!(matches!(prepare(dir.path(), &c, dir.path(), ProfileMode::Cpu, "auto"), ProfilePrepared::Ready { .. }));
     }
 
     #[test]
     fn cargo_and_unknown() {
         let dir = tempfile::tempdir().unwrap();
         assert!(matches!(
-            prepare(dir.path(), &cfg("cargo", "cargo", &["test"]), dir.path(), ProfileMode::Cpu),
+            prepare(dir.path(), &cfg("cargo", "cargo", &["test"]), dir.path(), ProfileMode::Cpu, "auto"),
             ProfilePrepared::Unsupported { .. }
         ));
         assert!(matches!(
-            prepare(dir.path(), &cfg("make", "make", &[]), dir.path(), ProfileMode::Cpu),
+            prepare(dir.path(), &cfg("make", "make", &[]), dir.path(), ProfileMode::Cpu, "auto"),
             ProfilePrepared::Unsupported { .. }
         ));
         if !cfg!(target_os = "linux") {
             assert!(matches!(
-                prepare(dir.path(), &cfg("cargo", "cargo", &["run"]), dir.path(), ProfileMode::Cpu),
+                prepare(dir.path(), &cfg("cargo", "cargo", &["run"]), dir.path(), ProfileMode::Cpu, "auto"),
                 ProfilePrepared::Unsupported { .. }
             ));
         }

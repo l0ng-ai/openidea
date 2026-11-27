@@ -22,10 +22,22 @@ interface WorkingFormat {
 }
 
 export async function modifyReviewedApply(root: string, review: ApplyCommitReview, isCurrent: () => boolean) {
-  const mods = workflowSettings().vcs.commit;
-  if (!mods.reformat && !mods.optimizeImports && !mods.cleanup) return review;
+  const commit = workflowSettings().vcs.commit;
+  const mods = {
+    reformat: commit.reformat,
+    optimizeImports: commit.optimizeImports,
+    cleanup: commit.cleanup,
+    ruffFix: commit.fixOnCommit,
+  };
+  if (!mods.reformat && !mods.optimizeImports && !mods.cleanup && !mods.ruffFix) return review;
   return runOp(
-    mods.reformat ? "Reformat code" : mods.optimizeImports ? "Optimize imports" : "Cleanup",
+    mods.reformat
+      ? "Reformat code"
+      : mods.optimizeImports
+        ? "Optimize imports"
+        : mods.cleanup
+          ? "Cleanup"
+          : "Ruff safe fixes",
     async () => {
       const staged: StagedTextEdit[] = [];
       const working: WorkingFormat[] = [];

@@ -632,7 +632,6 @@
   "Select Ruff Configuration Directory": "Ruff Yapılandırma Dizinini Seç",
   "Empty uses the nearest project pyproject.toml ([tool.ruff]), ruff.toml, or .ruff.toml. A configured directory must contain one of them.": "Boş bırakıldığında en yakın pyproject.toml ([tool.ruff]), ruff.toml veya .ruff.toml dosyası kullanılır. Belirtilen yapılandırma dizini bunlardan birini içermelidir.",
   "Ruff reads the nearest pyproject.toml ([tool.ruff]), ruff.toml, or .ruff.toml. Use it before the language server when preferred.": "Ruff en yakın pyproject.toml ([tool.ruff]), ruff.toml veya .ruff.toml dosyasını okur. Tercih ediliyorsa dil sunucusundan önce kullanılır.",
-  "Run Ruff on save for enabled languages when it is the selected formatting provider.": "Ruff seçili biçimlendirme sağlayıcısıysa, etkin dillerde kaydetme sırasında Ruff'u çalıştır.",
   "Ruff formatting failed": "Ruff biçimlendirmesi başarısız",
   "Ruff formatting timed out": "Ruff biçimlendirmesi zaman aşımına uğradı",
   "Ruff configuration path does not exist: {path}": "Ruff yapılandırma yolu mevcut değil: {path}",
@@ -8850,5 +8849,9 @@
   "SQL DELETE": "SQL DELETE",
   "Column comment": "Sütun yorumu",
   "Get from Version Control": "Sürüm Kontrolünden Al",
-  "Cannot connect to the remote host": "Uzak sunucuya bağlanılamıyor"
+  "Cannot connect to the remote host": "Uzak sunucuya bağlanılamıyor",
+  "Pull request link {text}": "{text} pull request bağlantısı",
+  "Issue link {text}": "{text} issue bağlantısı",
+  "Commit link {text}": "{text} commit bağlantısı",
+  "Link {text}": "{text} bağlantısı"
 }

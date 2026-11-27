@@ -3,7 +3,7 @@
  * Drop, Truncate, SQL Scripts › …, Modify Table, Copy Reference), per dialect.
  * Pure functions.
  */
-import type { DbColumnInfo, DbDriver, DbTableGrant } from "@/platform/ipc";
+import type { DbColumnInfo, DbDriver, DbIndexInfo, DbTableGrant } from "@/platform/ipc";
 import { isReserved } from "./sql/dialect";
 
 export function quoteIdent(driver: DbDriver, name: string): string {
@@ -137,6 +137,9 @@ export function dropSql(driver: DbDriver, o: DbObjectRef, opts: DropOptions): st
     case "index":
       if (driver === "mysql")
         return `drop index ${ident(driver, o.name)} on ${qualifiedName(driver, o.schema, o.table ?? "")};`;
+      // SQL Server names an index within its table.
+      if (driver === "sqlServer")
+        return `drop index ${ifExists}${ident(driver, o.name)} on ${qualifiedName(driver, o.schema, o.table ?? "")};`;
       // Oracle's DROP INDEX takes no IF EXISTS.
       if (driver === "oracle") return `drop index ${qualifiedName(driver, o.schema, o.name)};`;
       return `drop index ${ifExists}${qualifiedName(driver, o.schema, o.name)}${cascade};`;
@@ -434,10 +437,194 @@ export function canAlterColumn(driver: DbDriver, c: ColumnDraft): boolean {
   return driver !== "sqlite" || !c.original;
 }
 
+// ---- Keys and indexes ----------------------------------------------------------
+
+/** What Modify Table adds, changes and drops besides columns, per engine. */
+export interface KeySupport {
+  /** The primary key of an existing table (a new table's is part of `create table`). */
+  primaryKey: boolean;
+  /** Unique constraints (the Keys group). */
+  uniqueKey: boolean;
+  /** Indexes, unique or not. */
+  index: boolean;
+}
+
+export function keySupport(driver: DbDriver): KeySupport {
+  switch (driver) {
+    case "postgres":
+    case "mysql":
+    case "sqlServer":
+    case "oracle":
+      return { primaryKey: true, uniqueKey: true, index: true };
+    // SQLite's ALTER TABLE adds and drops no constraint (that takes rebuilding the table); a unique index does a unique key's work.
+    case "sqlite":
+      return { primaryKey: false, uniqueKey: false, index: true };
+    // Snowflake has no indexes, and its unique keys (not enforced) are not read back.
+    case "snowflake":
+      return { primaryKey: true, uniqueKey: false, index: false };
+    default:
+      return { primaryKey: false, uniqueKey: false, index: false };
+  }
+}
+
+/** Engines that drop a primary key by its constraint name rather than with `drop primary key`. */
+const dropsKeyByName = (driver: DbDriver) => driver === "postgres" || driver === "sqlServer";
+
+/**
+ * Whether Modify Table can change the primary key of a table whose primary-key index is
+ * `pkIndex`: PostgreSQL and SQL Server drop the key by its name, which the index carries.
+ */
+export function canChangePrimaryKey(driver: DbDriver, columns: readonly ColumnDraft[], pkIndex?: string): boolean {
+  if (!keySupport(driver).primaryKey) return false;
+  return !dropsKeyByName(driver) || !!pkIndex || !columns.some((c) => c.original?.primaryKey);
+}
+
+/**
+ * A unique key or an index of the Modify Table dialog; `original` is the one it started as
+ * (absent: new). An existing one is kept or dropped, not edited: the catalog doesn't read
+ * everything that defines it (predicates, expressions, included columns), so it can't be rebuilt.
+ */
+export interface IndexDraft {
+  key: number;
+  /** `unique`: a unique constraint (Keys); `index`: an index (Indexes). */
+  kind: "unique" | "index";
+  original: DbIndexInfo | null;
+  name: string;
+  columns: string[];
+  /** A unique index (kind `index`; a unique key always is). */
+  unique: boolean;
+  dropped: boolean;
+}
+
+/** The draft of an existing index; `null` for the primary key's, which follows the columns' Primary key flags. */
+export function indexDraftOf(i: DbIndexInfo, key: number): IndexDraft | null {
+  if (i.key === "primary") return null;
+  const kind = i.key === "unique" ? "unique" : "index";
+  return { key, kind, original: i, name: i.name, columns: [...i.columns], unique: i.unique, dropped: false };
+}
+
+/** Whether Modify Table can drop the existing key or index `d` (SQLite's constraint indexes stay). */
+export function canAlterIndex(driver: DbDriver, d: IndexDraft): boolean {
+  const s = keySupport(driver);
+  return d.kind === "unique" ? s.uniqueKey : s.index;
+}
+
+/** A name for a new key or index of `table`, as DataGrip names them (`orders_pk`, `orders_name_uindex`). */
+export function keyName(driver: DbDriver, table: string, suffix: string): string {
+  const n = `${table}_${suffix}`;
+  // Oracle and Snowflake fold unquoted names to upper case.
+  return driver === "oracle" || driver === "snowflake" ? n.toUpperCase() : n;
+}
+
+const columnList = (driver: DbDriver, names: readonly string[]) => names.map((c) => ident(driver, c)).join(", ");
+
+/** `create [unique] index` on `table` (Modify Table, Compare Structure's migration). */
+export function createIndexSql(
+  driver: DbDriver,
+  schema: string,
+  table: string,
+  i: Pick<DbIndexInfo, "name" | "unique" | "columns">,
+): string {
+  const unique = i.unique ? "unique " : "";
+  const cols = columnList(driver, i.columns);
+  // SQLite and Oracle put the index in a schema by its name (SQLite's table is then unqualified);
+  // PostgreSQL, MySQL and SQL Server create it in the table's.
+  if (driver === "sqlite")
+    return `create ${unique}index ${qualifiedName(driver, schema, i.name)} on ${ident(driver, table)} (${cols});`;
+  const name = driver === "oracle" ? qualifiedName(driver, schema, i.name) : ident(driver, i.name);
+  return `create ${unique}index ${name} on ${qualifiedName(driver, schema, table)} (${cols});`;
+}
+
+/** `drop index` of `table`'s index `name`. */
+export function dropIndexSql(driver: DbDriver, schema: string, table: string, name: string): string {
+  return dropSql(driver, { kind: "index", schema, name, table }, { ifExists: false, cascade: false });
+}
+
+function primaryKeyChanged(columns: readonly ColumnDraft[]): boolean {
+  const before = columns.filter((c) => c.original?.primaryKey).map((c) => c.key);
+  const after = columns.filter((c) => c.primaryKey && !c.dropped && c.name.trim()).map((c) => c.key);
+  return before.length !== after.length || before.some((k) => !after.includes(k));
+}
+
+/** The keys and indexes Modify Table edits: the primary key's constraint name, and the unique keys and indexes. */
+export interface KeyEdits {
+  /** The primary key's index, named as its constraint (PostgreSQL, SQL Server drop it by that name). */
+  primaryKeyName?: string;
+  indexes: readonly IndexDraft[];
+}
+
+/**
+ * The statements dropping (`drops`, run before the column changes) and adding (`adds`, run
+ * after them, with the columns' new names) the primary key, unique keys and indexes of `table`.
+ * A changed primary key is dropped and added again.
+ */
+function keySql(
+  driver: DbDriver,
+  schema: string,
+  table: string,
+  columns: readonly ColumnDraft[],
+  keys: KeyEdits,
+): { drops: string[]; adds: string[] } {
+  const support = keySupport(driver);
+  const q = qualifiedName(driver, schema, table);
+  const drops: string[] = [];
+  const adds: string[] = [];
+  const pk = columns.filter((c) => c.primaryKey && !c.dropped && c.name.trim()).map((c) => c.name.trim());
+  if (canChangePrimaryKey(driver, columns, keys.primaryKeyName) && primaryKeyChanged(columns)) {
+    if (columns.some((c) => c.original?.primaryKey))
+      drops.push(
+        dropsKeyByName(driver)
+          ? `alter table ${q} drop constraint ${ident(driver, keys.primaryKeyName ?? "")};`
+          : `alter table ${q} drop primary key;`,
+      );
+    // MySQL names every primary key PRIMARY.
+    if (pk.length)
+      adds.push(
+        driver === "mysql"
+          ? `alter table ${q} add primary key (${columnList(driver, pk)});`
+          : `alter table ${q} add constraint ${ident(driver, keyName(driver, table, "pk"))} primary key (${columnList(driver, pk)});`,
+      );
+  }
+  for (const d of keys.indexes) {
+    if (d.kind === "unique" ? !support.uniqueKey : !support.index) continue;
+    const o = d.original;
+    if (o) {
+      if (d.dropped)
+        drops.push(
+          d.kind === "index"
+            ? dropIndexSql(driver, schema, table, o.name)
+            : // MySQL's unique key is its unique index.
+              driver === "mysql"
+              ? `alter table ${q} drop index ${ident(driver, o.name)};`
+              : `alter table ${q} drop constraint ${ident(driver, o.name)};`,
+        );
+      continue;
+    }
+    if (d.dropped || !d.name.trim() || !d.columns.length) continue;
+    adds.push(
+      d.kind === "index"
+        ? createIndexSql(driver, schema, table, { name: d.name.trim(), unique: d.unique, columns: d.columns })
+        : `alter table ${q} add constraint ${ident(driver, d.name.trim())} unique (${columnList(driver, d.columns)});`,
+    );
+  }
+  return { drops, adds };
+}
+
+/** The unique keys and indexes added with New › Table, after its `create table`. */
+export function createTableKeySql(
+  driver: DbDriver,
+  schema: string,
+  name: string,
+  indexes: readonly IndexDraft[],
+): string[] {
+  return keySql(driver, schema, name, [], { indexes: indexes.filter((d) => !d.original) }).adds;
+}
+
 /**
  * The statements turning the table `table` into `name` with `columns`
  * (Modify Table): renames, added / dropped columns, and — PostgreSQL / MySQL /
- * Oracle / Snowflake — type, nullability, default and comment changes, and the table's comment.
+ * Oracle / Snowflake — type, nullability, default and comment changes, and the table's comment;
+ * with `keys`, the primary key, unique keys and indexes (see `keySupport`).
  */
 export function alterTableSql(
   driver: DbDriver,
@@ -446,9 +633,12 @@ export function alterTableSql(
   name: string,
   columns: readonly ColumnDraft[],
   comment?: CommentEdit,
+  keys?: KeyEdits,
 ): string[] {
   if (!canModifyTable(driver)) return [];
-  const out: string[] = [];
+  const { drops, adds } = keys ? keySql(driver, schema, table, columns, keys) : { drops: [], adds: [] };
+  // Keys and indexes go first: a dropped column may be part of one.
+  const out: string[] = [...drops];
   const q = () => qualifiedName(driver, schema, table);
   for (const c of columns) {
     const o = c.original;
@@ -520,6 +710,7 @@ export function alterTableSql(
         `alter table ${q()} alter column ${col} ${c.default.trim() ? `set default ${c.default.trim()}` : "drop default"};`,
       );
   }
+  out.push(...adds);
   out.push(...commentSql(driver, schema, table, columns, comment));
   // Renamed last: the column statements above name the table as it was.
   if (name.trim() && name.trim() !== table)

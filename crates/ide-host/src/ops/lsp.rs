@@ -1836,6 +1836,23 @@ pub async fn lsp_format_text(
     crate::formatter::format_text(host, window, path, text, options).await
 }
 
+/// Apply Ruff's safe lint fixes (`ruff check --fix-only`) to the current unsaved Python document.
+#[command(trust = trusted)]
+pub async fn ruff_fix(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec<TextEdit>> {
+    crate::formatter::ruff_fix(host, window, doc).await
+}
+
+/// Apply Ruff's safe lint fixes to a Python text snapshot without writing the file.
+#[command(trust = trusted)]
+pub async fn ruff_fix_text(
+    host: &Host,
+    window: &str,
+    path: std::path::PathBuf,
+    text: String,
+) -> IdeResult<Vec<TextEdit>> {
+    crate::formatter::ruff_fix_text(host, window, path, text).await
+}
+
 #[command(trust = trusted)]
 pub async fn lsp_source_action_text(
     host: &Host,
@@ -1877,6 +1894,29 @@ pub async fn lsp_snapshot_diagnostics(
     let language = project.documents.language_of(&path, text.lines().next()).language;
     let cancel = host.begin_project_read_request(window, request);
     let result = project.lsp.snapshot_diagnostics(&path, &language, &text, &cancel).await;
+    host.end_request(request);
+    result
+}
+
+#[command(trust = trusted)]
+pub async fn lsp_snapshot_completion(
+    host: &Host,
+    window: &str,
+    path: std::path::PathBuf,
+    text: String,
+    pos: Pos,
+    request: RequestId,
+) -> IdeResult<Vec<CompletionItem>> {
+    let project = host.project(window)?;
+    if !path.is_absolute() || path.file_name().is_none() {
+        return Err(IdeError::invalid("a text snapshot requires a file path"));
+    }
+    if text.len() as u64 > ide_vfs::LARGE_FILE_THRESHOLD {
+        return Ok(Vec::new());
+    }
+    let language = project.documents.language_of(&path, text.lines().next()).language;
+    let cancel = host.begin_project_read_request(window, request);
+    let result = project.lsp.snapshot_completion(&path, &language, &text, pos, &cancel).await;
     host.end_request(request);
     result
 }
@@ -3236,6 +3276,9 @@ ide_command::domain!(
     lsp_extract_interface_info,
     lsp_format,
     lsp_format_text,
+    ruff_fix,
+    ruff_fix_text,
+    lsp_snapshot_completion,
     lsp_snapshot_diagnostics,
     lsp_source_action_text,
     lsp_goto,

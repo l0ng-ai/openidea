@@ -591,13 +591,21 @@ let osHasImage = false;
 /** The clipboard holds Java code, which Paste turns into a file. */
 let osHasJava = false;
 
-/** Keeps Paste enabled for what Explorer copied; called when the window gains focus. */
-export async function refreshOsClipboard() {
-  try {
-    await readOsClipboard();
-  } catch {
+let refreshing: Promise<void> | null = null;
+
+/**
+ * Keeps Paste enabled for what Explorer copied; called when the window gains focus. A focus
+ * while a refresh is still reading (restoring a window fires several) joins that refresh.
+ */
+export function refreshOsClipboard(): Promise<void> {
+  refreshing ??= readOsClipboard()
+    .then(() => undefined)
     // A busy clipboard is not evidence that the user's copy has changed.
-  }
+    .catch(() => undefined)
+    .finally(() => {
+      refreshing = null;
+    });
+  return refreshing;
 }
 
 async function readOsClipboard(): Promise<string[] | null> {
@@ -978,7 +986,34 @@ export function pathsFor(kind: PathKind, nodes: ProjectNode[] = selectedNodes())
 }
 
 export async function copyPaths(kind: PathKind, nodes: ProjectNode[] = selectedNodes()) {
-  const text = pathsFor(kind, nodes).join("\n");
+  await copyText(pathsFor(kind, nodes).join("\n"));
+}
+
+/** IDEA's Reference of each node: `com.example.App` for `App.java`, the package for a folder. */
+export function referencesFor(nodes: ProjectNode[] = selectedNodes()): string[] {
+  const root = useProject.getState().project?.root;
+  const roots = currentRoots();
+  return nodes
+    .map((n) =>
+      root && n.path !== root && isSameOrInside(n.path, root)
+        ? javaReference(relativePath(root, n.path), n.dir, roots)
+        : null,
+    )
+    .filter((r): r is string => r !== null);
+}
+
+export async function copyReferences(nodes: ProjectNode[] = selectedNodes()) {
+  await copyText(referencesFor(nodes).join("\n"));
+}
+
+function javaReference(rel: string, dir: boolean, roots: ReturnType<typeof currentRoots>): string | null {
+  if (!dir && !rel.endsWith(".java")) return null;
+  const name = javaPackageAt(dir ? rel : rel.slice(0, -".java".length), roots);
+  // Every segment a Java identifier: leaves out `package-info.java` and folders like `my-app`.
+  return name && /^[\p{L}_$][\p{L}\p{N}_$]*(\.[\p{L}_$][\p{L}\p{N}_$]*)*$/u.test(name) ? name : null;
+}
+
+async function copyText(text: string) {
   if (!text) return;
   try {
     await writeClipboardText(text);

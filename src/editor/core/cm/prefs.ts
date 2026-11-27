@@ -36,7 +36,7 @@ import {
 import { markdownImages } from "./markdownImages";
 import { selectionMarks } from "./selectionMarks";
 import { seamlessSelection } from "./selectionLayer";
-import { useEditorRegistry } from "@/editor/api";
+import { changeMarkerDisplay, useEditorRegistry } from "@/editor/api";
 import { editorPrefs, type EditorExtras } from "@/platform/editorSettings";
 import { openideaHighlightStyle } from "./highlight";
 import {
@@ -818,6 +818,13 @@ export function prefsExtension(o: PrefsOptions): Extension {
   out.push(g.dragAndDrop ? textDrag : noTextDrag);
   if (g.caretScroll === "center") out.push(centerCaret);
   out.push(g.richTextCopy ? richCopyByDefault : plainCopyByDefault);
+  if (!g.highlightModifiedLines || !g.highlightModifiedLinesInScrollbar)
+    out.push(
+      changeMarkerDisplay.of({
+        gutter: g.highlightModifiedLines,
+        scrollbar: g.highlightModifiedLines && g.highlightModifiedLinesInScrollbar,
+      }),
+    );
   if (k.escapeOnPaste) out.push(stringClipboard(o.language));
   if (!o.readOnly && (k.reformatOnPaste === "indentBlock" || k.reformatOnPaste === "indentEachLine"))
     out.push(pasteReindentFilter(k.reformatOnPaste));
