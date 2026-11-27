@@ -126,11 +126,13 @@ db_execute                                   trusted            project_host bin
 db_execute_stream                            trusted            project_host bindings async
 db_explain                                   trusted            project_host bindings async
 db_export_file                               always             desktop      bindings async
+db_finish_console_transaction                trusted            project_host bindings async
 db_finish_transaction                        trusted            project_host bindings async
 db_history                                   trusted            project_host bindings async
 db_jdbc_driver_classes                       trusted            project_host bindings async
 db_jdbc_drivers                              trusted            project_host bindings sync
 db_object_ddl                                trusted            project_host bindings async
+db_release_console                           trusted            project_host bindings async
 db_release_result                            trusted            project_host bindings sync
 db_remove_history                            trusted            project_host bindings async
 db_remove_jdbc_driver                        trusted            project_host bindings sync
@@ -146,6 +148,7 @@ db_schema_objects                            trusted            project_host bin
 db_schemas                                   trusted            project_host bindings async
 db_server_version                            trusted            desktop      bindings async
 db_session_context                           trusted            project_host bindings async
+db_set_console_manual_commit                 trusted            project_host bindings async
 db_set_manual_commit                         trusted            project_host bindings async
 db_set_password                              trusted            project_host bindings async
 db_set_ssh_secret                            trusted            project_host bindings async

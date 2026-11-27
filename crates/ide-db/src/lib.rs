@@ -8,6 +8,7 @@ mod external_tunnel;
 pub use external_tunnel::stop_external_tunnels_on_exit;
 mod jdbc;
 mod local_settings;
+mod manual_session;
 mod route;
 mod tunnel_approval;
 pub use jdbc::{DbJdbcDriver, jdbc_driver_classes};
@@ -310,7 +311,33 @@ pub struct DbManager {
     on_disk: Mutex<Option<Vec<DataSource>>>,
 }
 
-type Session = Arc<tokio::sync::Mutex<Option<Held>>>;
+use manual_session::Session;
+
+/// A SQL editor's connection identity within the owning project's lifetime.
+#[derive(Clone, Copy)]
+pub struct ConsoleId<'a> {
+    pub window: &'a str,
+    pub path: &'a str,
+    expected_manual: Option<bool>,
+}
+
+impl<'a> ConsoleId<'a> {
+    pub const fn new(window: &'a str, path: &'a str) -> Self {
+        Self { window, path, expected_manual: None }
+    }
+
+    pub fn expecting_manual(mut self, manual: Option<bool>) -> Self {
+        self.expected_manual = manual;
+        self
+    }
+}
+
+fn postgres_console_mode_changed() -> IdeError {
+    IdeError::new(
+        ErrorKind::OutOfSync,
+        "PostgreSQL console transaction mode changed. Set the mode again before running SQL.",
+    )
+}
 
 const MAX_META_ROWS: usize = 100_000;
 /// Completion columns of the default schema, which are read without the shared cap.
@@ -422,12 +449,7 @@ pub(crate) fn keep_alive(pool: &Arc<Pool>, every: Duration) {
 
 /// Rolls back a session's transaction and releases its connection.
 async fn end_session(session: &Session) {
-    let held = session.lock().await.take();
-    if let Some(mut conn) = held
-        && (conn.finish_manual(false).await.is_err() || conn.restore_default().await.is_err())
-    {
-        conn.discard().await;
-    }
+    let _ = session.rollback_and_release().await;
 }
 
 impl DbManager {
@@ -1576,13 +1598,26 @@ impl DbManager {
 
     /// Refuses transaction control anywhere in a guarded console script before running its first statement.
     pub async fn validate_script(&self, id: &str, statements: &[split::SqlStatement]) -> IdeResult<()> {
+        self.validate_console_script(id, statements, None).await
+    }
+
+    pub async fn validate_console_script(
+        &self,
+        id: &str,
+        statements: &[split::SqlStatement],
+        console: Option<ConsoleId<'_>>,
+    ) -> IdeResult<()> {
         if statements.len() > 1
             && self.source(id).is_ok_and(|s| s.driver == DbDriver::Postgres && s.read_only)
             && self.pool(id).await?.transaction_read_only()
         {
             for statement in statements {
                 if let Err(error) = conn::validate_pg_read_only(&statement.text) {
-                    self.finish_transaction(id, false).await?;
+                    if let Some(console) = console {
+                        self.finish_postgres_console_transaction(id, console, false).await?;
+                    } else {
+                        self.finish_transaction(id, false).await?;
+                    }
                     return Err(IdeError::invalid(error));
                 }
             }
@@ -1603,7 +1638,22 @@ impl DbManager {
         cancel: &CancellationToken,
         schema: Option<&str>,
     ) -> IdeResult<QueryResult> {
-        let r = self.run(id, statement, skip, max_rows, cancel, schema).await;
+        self.execute_in_console(id, statement, skip, max_rows, cancel, schema, None).await
+    }
+
+    /// Executes in the originating editor's transaction or session when supported by the driver.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn execute_in_console(
+        &self,
+        id: &str,
+        statement: &str,
+        skip: usize,
+        max_rows: usize,
+        cancel: &CancellationToken,
+        schema: Option<&str>,
+        console: Option<ConsoleId<'_>>,
+    ) -> IdeResult<QueryResult> {
+        let r = self.run(id, statement, skip, max_rows, cancel, schema, console).await;
         let ran = match &r {
             Ok(_) => true,
             Err(e) => !matches!(e.kind, ErrorKind::Cancelled | ErrorKind::PermissionDenied),
@@ -1625,12 +1675,34 @@ impl DbManager {
         cancel: &CancellationToken,
         schema: Option<&str>,
     ) -> IdeResult<QueryResult> {
-        self.run_paged(id, statement, row, 1, cancel, schema, false).await
+        self.read_console_row(id, statement, row, cancel, schema, None).await
+    }
+
+    pub async fn read_console_row(
+        &self,
+        id: &str,
+        statement: &str,
+        row: usize,
+        cancel: &CancellationToken,
+        schema: Option<&str>,
+        console: Option<ConsoleId<'_>>,
+    ) -> IdeResult<QueryResult> {
+        self.run_paged(id, statement, row, 1, cancel, schema, console, false).await
     }
 
     /// Closes the cursor that reads the pages of `statement` on `id` (its result tab was closed).
     pub fn release_result(&self, id: &str, statement: &str, schema: Option<&str>) {
-        self.cursors.release(&conn::CursorKey::new(id, statement, schema));
+        self.release_console_result(id, statement, schema, None);
+    }
+
+    pub fn release_console_result(
+        &self,
+        id: &str,
+        statement: &str,
+        schema: Option<&str>,
+        console: Option<ConsoleId<'_>>,
+    ) {
+        self.cursors.release(&conn::CursorKey::new(id, statement, schema).with_console(console));
     }
 
     fn remember_statement(&self, id: &str, statement: &str) {
@@ -1663,6 +1735,17 @@ impl DbManager {
         cancel: &CancellationToken,
         schema: Option<&str>,
     ) -> IdeResult<Vec<PlanNode>> {
+        self.explain_in_console(id, statement, cancel, schema, None).await
+    }
+
+    pub async fn explain_in_console(
+        &self,
+        id: &str,
+        statement: &str,
+        cancel: &CancellationToken,
+        schema: Option<&str>,
+        console: Option<ConsoleId<'_>>,
+    ) -> IdeResult<Vec<PlanNode>> {
         let driver = self.pool(id).await?.driver();
         if driver == DbDriver::Jdbc {
             return Err(IdeError::invalid("Custom JDBC execution plans are unsupported"));
@@ -1684,18 +1767,21 @@ impl DbManager {
                 MAX_META_ROWS,
                 cancel,
                 schema,
+                None,
             )
             .await?;
-            let result = self.run(id, &plan::oracle_plan_query(&plan_id), 0, MAX_META_ROWS, cancel, None).await?;
+            let result = self.run(id, &plan::oracle_plan_query(&plan_id), 0, MAX_META_ROWS, cancel, None, None).await?;
             let nodes = plan::parse(driver, &result);
-            let _ = self.run(id, &plan::oracle_plan_cleanup(&plan_id), 0, 0, cancel, None).await;
+            let _ = self.run(id, &plan::oracle_plan_cleanup(&plan_id), 0, 0, cancel, None, None).await;
             return nodes;
         }
-        let result =
-            self.run(id, &plan::explain_statement(driver, statement), 0, MAX_META_ROWS, cancel, schema).await?;
+        let result = self
+            .run(id, &plan::explain_statement(driver, statement), 0, MAX_META_ROWS, cancel, schema, console)
+            .await?;
         plan::parse(driver, &result)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn run(
         &self,
         id: &str,
@@ -1704,8 +1790,9 @@ impl DbManager {
         max_rows: usize,
         cancel: &CancellationToken,
         schema: Option<&str>,
+        console: Option<ConsoleId<'_>>,
     ) -> IdeResult<QueryResult> {
-        self.run_paged(id, statement, skip, max_rows, cancel, schema, true).await
+        self.run_paged(id, statement, skip, max_rows, cancel, schema, console, true).await
     }
 
     /// `paging`: whether the page may continue a cursor of `statement` (see `conn::cursor`).
@@ -1718,13 +1805,31 @@ impl DbManager {
         max_rows: usize,
         cancel: &CancellationToken,
         schema: Option<&str>,
+        console: Option<ConsoleId<'_>>,
         paging: bool,
     ) -> IdeResult<QueryResult> {
-        let pool = self.pool(id).await?;
+        let connection = self.connection(id).await?;
+        let pool = connection.pool;
+        let expected_manual = console.and_then(|console| console.expected_manual);
+        if expected_manual.is_some() && !matches!(&*pool, Pool::Postgres(_)) {
+            return Err(postgres_console_mode_changed());
+        }
         if let Pool::Jdbc(p) = &*pool {
             return p.query_in_schema(statement, skip, max_rows, cancel, schema).await;
         }
-        let session = self.sessions.lock().get(id).cloned();
+        if let Pool::Clickhouse(p) = &*pool
+            && console.is_some()
+        {
+            return p.execute_in_console(statement, skip, max_rows, cancel, console).await;
+        }
+        let console = console.filter(|_| matches!(&*pool, Pool::Postgres(_)));
+        let session = match console {
+            Some(console) => connection.console_transactions.session(console),
+            None => self.sessions.lock().get(id).cloned(),
+        };
+        if expected_manual.is_some_and(|manual| manual != session.is_some()) {
+            return Err(postgres_console_mode_changed());
+        }
         let protected = pool.transaction_read_only();
         let cursor = protected || conn::cursor_statement(statement);
         if !cursor || (protected && skip == 0 && paging) {
@@ -1732,7 +1837,7 @@ impl DbManager {
             self.cursors.release_target(id);
         }
         if paging && session.is_none() && (skip > 0 || protected) && pool.keeps_cursors() && cursor {
-            let key = conn::CursorKey::new(id, statement, schema);
+            let key = conn::CursorKey::new(id, statement, schema).with_console(console);
             let started = std::time::Instant::now();
             let page = match self.cursors.resume(&key, skip, max_rows, cancel, protected).await {
                 Some(page) => page,
@@ -1768,44 +1873,9 @@ impl DbManager {
         if pool.driver() == DbDriver::Clickhouse {
             return Err(IdeError::invalid("ClickHouse manual transactions are unsupported"));
         }
-        let mut held = session.lock().await;
-        if pool.transaction_read_only() {
-            // Own the session during awaits so a dropped request cannot return an unfinished transaction.
-            let mut conn = match held.take() {
-                Some(conn) => conn,
-                None => {
-                    let mut conn = Held::acquire(&pool).await?;
-                    conn.begin_manual(pool.driver()).await?;
-                    conn
-                }
-            };
-            let result = async {
-                conn.apply_context(schema).await?;
-                conn.execute_from(&pool, statement, skip, max_rows, cancel).await
-            }
-            .await;
-            if result.is_ok() {
-                *held = Some(conn);
-            } else if cancel.is_cancelled() || conn.finish_manual(false).await.is_err() {
-                conn.discard().await;
-            }
-            return result;
-        }
-        if held.is_none() {
-            let mut conn = Held::acquire(&pool).await?;
-            conn.apply_context(schema).await?;
-            conn.begin_manual(pool.driver()).await?;
-            *held = Some(conn);
-        }
-        let conn = held.as_mut().expect("opened above");
-        conn.apply_context(schema).await?;
-        let r = conn.execute_from(&pool, statement, skip, max_rows, cancel).await;
-        if cancel.is_cancelled() {
-            // The server rolls the transaction back with the connection.
-            held.take().expect("opened above").discard().await;
-            return Err(IdeError::cancelled());
-        }
-        r
+        session
+            .execute(&pool, &connection.console_transactions.capacity, statement, skip, max_rows, cancel, schema)
+            .await
     }
 
     /// Switches `id` between auto-commit and manual commit. Leaving manual
@@ -1838,23 +1908,37 @@ impl DbManager {
         }
         let session = self.sessions.lock().get(id).cloned();
         let Some(session) = session else { return Ok(()) };
-        let mut held = session.lock().await;
-        let Some(mut conn) = held.take() else { return Ok(()) };
-        if let Err(e) = conn.finish_manual(commit).await {
-            // Discarding a Snowflake connection doesn't end its session, which the data source's
-            // other targets share: the transaction stays open, so it stays held to be ended again.
-            if matches!(conn, conn::Held::Snowflake(..)) {
-                *held = Some(conn);
-            } else {
-                conn.discard().await;
+        session.finish(commit).await
+    }
+
+    /// Changes manual-commit mode for one PostgreSQL console. Returns whether it opened a new mode entry.
+    pub async fn set_postgres_console_manual(&self, id: &str, console: ConsoleId<'_>, manual: bool) -> IdeResult<bool> {
+        if self.source(id)?.driver != DbDriver::Postgres {
+            return Err(IdeError::invalid("Scoped manual transactions require a PostgreSQL data source"));
+        }
+        if manual {
+            self.connection(id).await?.console_transactions.enable(console)
+        } else {
+            if let Some(connection) = self.opened_connection(id) {
+                connection.console_transactions.release(console).await?;
             }
-            return Err(e);
+            Ok(false)
         }
-        if let Err(e) = conn.restore_default().await {
-            conn.discard().await;
-            return Err(e);
+    }
+
+    /// Commits or rolls back work held by this PostgreSQL console.
+    pub async fn finish_postgres_console_transaction(
+        &self,
+        id: &str,
+        console: ConsoleId<'_>,
+        commit: bool,
+    ) -> IdeResult<()> {
+        let session =
+            self.opened_connection(id).and_then(|connection| connection.console_transactions.session(console));
+        match session {
+            Some(session) => session.finish(commit).await,
+            None => Err(postgres_console_mode_changed()),
         }
-        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]

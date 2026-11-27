@@ -11,21 +11,33 @@ import type {
 } from "@/platform/ipc";
 import { installKeyboardDispatcher, useKeymap } from "@/platform/keymap";
 import { disableRemote, enableRemote } from "@/platform/remote";
+import { useProject } from "@/platform/project";
 import { installCellActions } from "./cellActions";
 import { getContext } from "@/platform/context";
 import { ResultsView } from "./ResultsView";
 import { streamExecution } from "./executeStream.fixture";
 import {
   cancelConsole,
+  closeResult,
+  consoleHasPending,
+  countResult,
   executeConsole,
   explainConsole,
+  finishTransaction,
+  loadResultPage,
   pinResult,
+  readResultPage,
+  readResultRow,
   rerunResult,
+  runSql,
+  setManualCommit,
   useDatabase,
+  watchConsoleSessions,
   type ResultTab,
 } from "./store";
 import { registerResultTabActions } from "./resultTabActions";
 import { activeTableEditor, installTableEditorFocus } from "./tableEditorFocus";
+import * as contributions from "@/workbench/contributions";
 import { provideToolWindowService } from "@/workbench/contributions";
 
 const backend = vi.hoisted(() => ({
@@ -34,6 +46,10 @@ const backend = vi.hoisted(() => ({
   details: vi.fn(),
   applyEdits: vi.fn(),
   execute: vi.fn(),
+  resultRow: vi.fn(),
+  releaseConsole: vi.fn(),
+  setConsoleManualCommit: vi.fn(),
+  finishConsoleTransaction: vi.fn(),
   stream: vi.fn(),
   cancel: vi.fn(),
   connected: vi.fn(),
@@ -51,6 +67,10 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
       dbTableDetails: backend.details,
       dbApplyEdits: backend.applyEdits,
       dbExecute: backend.execute,
+      dbResultRow: backend.resultRow,
+      dbReleaseConsole: backend.releaseConsole,
+      dbSetConsoleManualCommit: backend.setConsoleManualCommit,
+      dbFinishConsoleTransaction: backend.finishConsoleTransaction,
       dbExecuteStream: backend.stream,
       cancelRequest: backend.cancel,
       dbConnected: backend.connected,
@@ -706,7 +726,12 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
   const ids = () => useDatabase.getState().results.map((r) => r.id);
   const runNumber = (title: string) => Number(/^Result (\d+)/.exec(title)![1]);
 
+  let nextProject = 0;
   beforeEach(() => {
+    const project = useProject.getState().project;
+    useProject.setState({
+      project: { ...project, root: `/test/result-tabs-${++nextProject}` } as NonNullable<typeof project>,
+    });
     useDatabase.setState({
       sources: [{ id: "pg", name: "Local", driver: "postgres", readOnly: false }],
       completion: { pg: { defaultSchema: "public", tables: [], foreignKeys: [] } },
@@ -719,6 +744,8 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
       running: {},
       manualCommit: new Set(),
       pendingTx: new Set(),
+      consoleModes: new Map(),
+      consolePendingTx: new Set(),
     });
     backend.statements.mockImplementation((_id: unknown, text: string) => {
       let from = 0;
@@ -730,6 +757,8 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
       });
       return Promise.resolve({ status: "ok", data: statements });
     });
+    backend.setConsoleManualCommit.mockResolvedValue({ status: "ok", data: false });
+    backend.finishConsoleTransaction.mockResolvedValue({ status: "ok", data: null });
     backend.execute.mockImplementation((_r: unknown, _id: unknown, statements: Array<{ text: string }>) =>
       Promise.resolve({
         status: "ok",
@@ -892,7 +921,7 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
   it.each([true, false])(
     "waits for the real terminal event after Stop before the reply (cancelled: %s)",
     async (cancelled) => {
-      useDatabase.setState({ manualCommit: new Set(["pg"]) });
+      useDatabase.setState({ consoleModes: new Map([[JSON.stringify(["pg", "a.sql"]), true]]) });
       let acknowledge!: () => void;
       let sendDone!: () => void;
       backend.stream.mockImplementationOnce(
@@ -932,7 +961,7 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
         const output = useDatabase.getState().output.map((line) => line.text);
         expect(output.includes("Cancelled")).toBe(cancelled);
         expect(output.includes("Transaction rolled back")).toBe(cancelled);
-        expect(useDatabase.getState().pendingTx.has("pg")).toBe(!cancelled);
+        expect(consoleHasPending(useDatabase.getState(), "pg", "a.sql")).toBe(!cancelled);
         expect(strip()).toEqual(cancelled ? [] : ["a.sql:SELECT n FROM t"]);
       } finally {
         acknowledge?.();
@@ -957,7 +986,7 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
   ])(
     "keeps the completed write and reports transaction state after cancellation $label",
     async ({ started, terminal, pending }) => {
-      useDatabase.setState({ manualCommit: new Set(["pg"]) });
+      useDatabase.setState({ consoleModes: new Map([[JSON.stringify(["pg", "a.sql"]), true]]) });
       backend.stream.mockImplementationOnce(
         async (_r, _id, statements: SqlStatement[], _max, _schema, _limit, channel) => {
           channel.onmessage({ type: "started", index: 0 });
@@ -977,7 +1006,7 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
       const output = useDatabase.getState().output.map((line) => line.text);
       expect(output.filter((line) => line === "3 rows affected in 1 ms")).toHaveLength(1);
       expect(output.includes("Transaction rolled back")).toBe(!pending);
-      expect(useDatabase.getState().pendingTx.has("pg")).toBe(pending);
+      expect(consoleHasPending(useDatabase.getState(), "pg", "a.sql")).toBe(pending);
     },
   );
 
@@ -1157,6 +1186,170 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
       }
     },
   );
+
+  it("keeps PostgreSQL transaction modes and pending writes separate across consoles", async () => {
+    useDatabase.setState({
+      sources: [{ id: "pg", name: "Local", driver: "postgres", options: { transaction: "manual" } }],
+    });
+    await setManualCommit("pg", false, "b.sql");
+    expect(backend.setConsoleManualCommit).toHaveBeenLastCalledWith("pg", "b.sql", false);
+
+    await runIn("a.sql", "INSERT INTO t VALUES (1)");
+    expect(backend.setConsoleManualCommit).toHaveBeenLastCalledWith("pg", "a.sql", true);
+    expect(backend.execute.mock.lastCall?.slice(7)).toEqual(["a.sql", true]);
+    await runIn("b.sql", "INSERT INTO t VALUES (2)");
+    expect(backend.execute.mock.lastCall?.slice(7)).toEqual(["b.sql", false]);
+    expect(consoleHasPending(useDatabase.getState(), "pg", "a.sql")).toBe(true);
+    expect(consoleHasPending(useDatabase.getState(), "pg", "b.sql")).toBe(false);
+
+    await runIn("a.sql", "SELECT 17");
+    const resultA = useDatabase.getState().results.find((tab) => tab.path === "a.sql")!;
+    backend.resultRow.mockResolvedValue({ status: "ok", data: result([{ name: "v" }], [["17"]]) });
+    await readResultRow(resultA, 0);
+    expect(backend.resultRow.mock.lastCall?.slice(5)).toEqual(["a.sql", true]);
+
+    await finishTransaction("pg", true, "a.sql");
+    expect(backend.finishConsoleTransaction).toHaveBeenCalledExactlyOnceWith("pg", "a.sql", true);
+    expect(consoleHasPending(useDatabase.getState(), "pg", "a.sql")).toBe(false);
+  });
+
+  it("refuses a manual query on an older host and when the previous transaction is lost", async () => {
+    useDatabase.setState({
+      sources: [{ id: "pg", name: "Local", driver: "postgres", options: { transaction: "manual" } }],
+    });
+    backend.setConsoleManualCommit.mockResolvedValueOnce({
+      status: "error",
+      error: { kind: "protocol", message: "command db_set_console_manual_commit is not available remotely" },
+    });
+    await runIn("a.sql", "INSERT INTO t VALUES (1)");
+    expect(backend.execute).not.toHaveBeenCalled();
+
+    await runIn("a.sql", "INSERT INTO t VALUES (2)");
+    expect(consoleHasPending(useDatabase.getState(), "pg", "a.sql")).toBe(true);
+    backend.setConsoleManualCommit.mockResolvedValueOnce({ status: "ok", data: true });
+    await runIn("a.sql", "INSERT INTO t VALUES (3)");
+    expect(backend.execute).toHaveBeenCalledTimes(1);
+    expect(consoleHasPending(useDatabase.getState(), "pg", "a.sql")).toBe(false);
+    expect(
+      useDatabase
+        .getState()
+        .output.map((line) => line.text)
+        .join("\n"),
+    ).toContain("The previous transaction is no longer available");
+
+    await runIn("a.sql", "INSERT INTO t VALUES (4)");
+    backend.setConsoleManualCommit.mockResolvedValueOnce({ status: "ok", data: true });
+    expect(await finishTransaction("pg", true, "a.sql")).toBe(false);
+    expect(backend.finishConsoleTransaction).not.toHaveBeenCalled();
+  });
+
+  it("retires a closed console after delayed manual registration without sending its SQL", async () => {
+    useDatabase.setState({
+      sources: [{ id: "pg", name: "Local", driver: "postgres", options: { transaction: "manual" } }],
+    });
+    const path = "a.sql";
+    let paths = [path];
+    let tabsChanged!: () => void;
+    let registered!: () => void;
+    backend.setConsoleManualCommit.mockImplementationOnce(
+      () => new Promise((resolve) => (registered = () => resolve({ status: "ok", data: true }))),
+    );
+    backend.releaseConsole.mockResolvedValue({ status: "ok", data: null });
+    const editor = vi.spyOn(contributions, "maybeEditorService").mockReturnValue({
+      openPaths: () => paths,
+      onOpenTabsChange: (listener) => {
+        tabsChanged = listener;
+        return () => {};
+      },
+    } as contributions.EditorService);
+    const stopWatching = watchConsoleSessions();
+    const running = runIn(path, "INSERT INTO t VALUES (1)");
+    try {
+      await vi.waitFor(() => expect(registered).toBeTypeOf("function"));
+      paths = [];
+      tabsChanged();
+      expect(backend.releaseConsole).not.toHaveBeenCalled();
+      registered();
+      await running;
+      await vi.waitFor(() => expect(backend.releaseConsole).toHaveBeenCalledExactlyOnceWith(path, "pg"));
+      expect(backend.execute).not.toHaveBeenCalled();
+    } finally {
+      registered?.();
+      await running;
+      stopWatching();
+      editor.mockRestore();
+    }
+  });
+
+  it("routes ClickHouse runs and result operations through the originating SQL editor", async () => {
+    const first = "/project/console.sql";
+    const second = "/project/console_1.sql";
+    useDatabase.setState({
+      sources: [{ id: "pg", name: "Local", driver: "clickhouse", readOnly: false }],
+    });
+    backend.resultRow.mockResolvedValue({ status: "ok", data: result([{ name: "v" }], [["1"]]) });
+    backend.explain.mockResolvedValue({ status: "ok", data: [] });
+
+    await runIn(first, "SELECT 1");
+    expect(backend.execute.mock.lastCall?.[7]).toBe(first);
+    await runIn(second, "SELECT 2");
+    expect(backend.execute.mock.lastCall?.[7]).toBe(second);
+    const firstResult = useDatabase.getState().results.find((tab) => tab.path === first)!;
+
+    await loadResultPage(firstResult.id, 1, 1);
+    expect(backend.execute.mock.lastCall?.[7]).toBe(first);
+    await countResult(firstResult.id);
+    expect(backend.execute.mock.lastCall?.[7]).toBe(first);
+    await readResultPage(firstResult);
+    expect(backend.execute.mock.lastCall?.[7]).toBe(first);
+    await readResultRow(firstResult, 1);
+    expect(backend.resultRow.mock.lastCall?.[5]).toBe(first);
+
+    await explainConsole(second, "SELECT 2", 0, 0);
+    expect(backend.explain.mock.lastCall?.[4]).toBe(second);
+    const plan = useDatabase.getState().results.find((tab) => !!tab.plan)!;
+    await rerunResult(plan.id);
+    expect(backend.explain.mock.lastCall?.[4]).toBe(second);
+
+    await runSql("pg", ["SELECT 3"]);
+    expect(backend.execute.mock.lastCall?.[7]).toBeNull();
+
+    let paths = [first, second];
+    let tabsChanged!: () => void;
+    let released!: () => void;
+    backend.releaseConsole.mockImplementationOnce(
+      () => new Promise((resolve) => (released = () => resolve({ status: "ok", data: null }))),
+    );
+    const editor = vi.spyOn(contributions, "maybeEditorService").mockReturnValue({
+      openPaths: () => paths,
+      onOpenTabsChange: (listener) => {
+        tabsChanged = listener;
+        return () => {};
+      },
+    } as contributions.EditorService);
+    const stopWatching = watchConsoleSessions();
+    try {
+      paths = [second];
+      tabsChanged();
+      expect(backend.releaseConsole).not.toHaveBeenCalled();
+      closeResult(firstResult.id);
+      await vi.waitFor(() => expect(backend.releaseConsole).toHaveBeenCalledExactlyOnceWith(first, "pg"));
+
+      paths = [first, second];
+      tabsChanged();
+      const before = backend.execute.mock.calls.length;
+      const reopened = runIn(first, "SELECT 4");
+      await vi.waitFor(() => expect(useDatabase.getState().running[first]).toBeDefined());
+      expect(backend.execute).toHaveBeenCalledTimes(before);
+      released();
+      await reopened;
+      expect(backend.execute.mock.lastCall?.[7]).toBe(first);
+    } finally {
+      released?.();
+      stopWatching();
+      editor.mockRestore();
+    }
+  });
 
   it("never replaces the Query Plan from a run, and appends a new plan beside a pinned one", async () => {
     backend.explain.mockResolvedValue({ status: "ok", data: [] });
