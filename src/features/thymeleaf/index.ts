@@ -16,7 +16,7 @@ import { setFileDiagnostics } from "@/editor/lsp/diagnostics";
 import { docOf } from "@/editor/lsp/lsp";
 import { tx } from "@/platform/i18n";
 import { call, commands, isTauri, onIdeEvent, type Location } from "@/platform/ipc";
-import { useProject } from "@/platform/project";
+import { projectFolder, useProject } from "@/platform/project";
 import {
   fragmentDefinition,
   inBundle,
@@ -101,7 +101,7 @@ function unresolvedReferences(ctx: EditorDocContext): Extension {
               path,
               text,
               await applicationConfig(resources),
-              useProject.getState().project?.root ?? null,
+              projectFolder(useProject.getState().project, path)?.root ?? null,
               read,
             )
           : [];
