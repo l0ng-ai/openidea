@@ -10696,7 +10696,6 @@
   "Download GitHub CLI…": "下载 GitHub CLI…",
   "Checking sign-in status…": "正在检查登录状态…",
   "Sign in above to view and choose models available for this account.": "请在上方登录以查看并选择此账户可用的模型。",
-  "Click Apply to load the models available for the selected account.": "点击“应用”以加载所选账户可用的模型。",
   "Loading models for this account…": "正在加载此账户的模型…",
   "Account": "账户",
   "Automatic ({activeLogin})": "自动（{activeLogin}）",

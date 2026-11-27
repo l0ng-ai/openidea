@@ -34,6 +34,7 @@ agent_mcp_save                               always             project_host bin
 agent_mcp_save_json                          always             project_host bindings sync
 agent_mcp_set_enabled                        always             project_host bindings sync
 agent_mcp_test                               trusted            project_host bindings async
+agent_preview_copilot_models                 trusted            project_host bindings async
 agent_probe                                  trusted            project_host bindings async
 agent_prompt                                 trusted            project_host bindings async
 agent_providers                              trusted            project_host bindings async

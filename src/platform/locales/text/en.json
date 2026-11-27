@@ -4235,7 +4235,6 @@
   "Download GitHub CLI…": "Download GitHub CLI…",
   "Checking sign-in status…": "Checking sign-in status…",
   "Sign in above to view and choose models available for this account.": "Sign in above to view and choose models available for this account.",
-  "Click Apply to load the models available for the selected account.": "Click Apply to load the models available for the selected account.",
   "Loading models for this account…": "Loading models for this account…",
   "Account": "Account",
   "Automatic ({activeLogin})": "Automatic ({activeLogin})",
