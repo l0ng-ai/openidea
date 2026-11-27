@@ -349,29 +349,27 @@ function ProjectColorsOption() {
       />
       <Indented>
         <Row label="Project color strength" htmlFor={id} disabled={!on}>
-          <div className={styles.strengthControl}>
-            <input
-              id={id}
-              type="range"
-              className={styles.strengthSlider}
-              min={PROJECT_COLOR_STRENGTH.min}
-              max={PROJECT_COLOR_STRENGTH.max}
-              step={1}
-              value={strength}
-              disabled={!on}
-              onChange={(e) => setStrength(Number(e.target.value))}
-            />
-            <NumberInput
-              value={strength}
-              min={PROJECT_COLOR_STRENGTH.min}
-              max={PROJECT_COLOR_STRENGTH.max}
-              integer
-              unit="%"
-              disabled={!on}
-              aria-label="Project color strength"
-              onChange={setStrength}
-            />
-          </div>
+          <input
+            id={id}
+            type="range"
+            className={styles.strengthSlider}
+            min={PROJECT_COLOR_STRENGTH.min}
+            max={PROJECT_COLOR_STRENGTH.max}
+            step={1}
+            value={strength}
+            disabled={!on}
+            onChange={(e) => setStrength(Number(e.target.value))}
+          />
+          <NumberInput
+            value={strength}
+            min={PROJECT_COLOR_STRENGTH.min}
+            max={PROJECT_COLOR_STRENGTH.max}
+            integer
+            unit="%"
+            disabled={!on}
+            aria-label="Project color strength"
+            onChange={setStrength}
+          />
         </Row>
       </Indented>
     </>
