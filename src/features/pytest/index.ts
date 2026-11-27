@@ -1,8 +1,10 @@
 /**
  * pytest fixtures: Go to Declaration on a fixture name (a test's or fixture's parameter, a
- * `usefixtures` / `getfixturevalue` string) opens the fixture pytest uses, and completion
- * offers the visible fixtures there. Resolution (conftest.py files, plugins, pytest's own
- * fixtures) is the backend's (`navPytestFixtures`); the language server knows none of it.
+ * `usefixtures` / `getfixturevalue` string) opens the fixture pytest uses, completion offers
+ * the visible fixtures there, and Find Usages / Rename on a fixture cover every place that
+ * gets it. Resolution (conftest.py files, plugins, pytest's own fixtures) is the backend's
+ * (`navPytestFixtures`, `navPytestFixtureUsages`, `navPytestFixtureRename`); the language
+ * server knows none of it.
  */
 import type { CompletionContext, CompletionResult } from "@codemirror/autocomplete";
 import { EditorState } from "@codemirror/state";
@@ -10,12 +12,16 @@ import type { EditorView } from "@codemirror/view";
 import {
   registerEditorContribution,
   registerNavigationProvider,
+  registerRenameProvider,
+  registerUsageProvider,
   whenSynced,
+  type ContributedRename,
   type EditorDocContext,
 } from "@/editor/api";
 import { docOf } from "@/editor/lsp/lsp";
 import { offsetToPos, posToOffset } from "@/editor/lsp/positions";
-import { call, commands, isTauri, type PytestFixtureAt } from "@/platform/ipc";
+import { tx } from "@/platform/i18n";
+import { call, commands, isTauri, nextRequestId, type Location, type Pos, type PytestFixtureAt } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 
 /** The fixtures at `offset`, once the backend has the editor's text; null when the text changed meanwhile. */
@@ -70,6 +76,32 @@ function completion(doc: EditorDocContext) {
   };
 }
 
+const NAME = /^[A-Za-z_]\w*$/;
+
+const contains = (l: Location, path: string, pos: Pos) =>
+  l.path === path &&
+  (l.range.start.line < pos.line || (l.range.start.line === pos.line && l.range.start.col <= pos.col)) &&
+  (pos.line < l.range.end.line || (pos.line === l.range.end.line && pos.col <= l.range.end.col));
+
+/** Rename of the fixture at `offset`: from its definition or any place that gets it. */
+async function fixtureRename(view: EditorView, offset: number): Promise<ContributedRename | null> {
+  const doc = docOf(view);
+  if (!doc || doc.virtual || doc.language !== "python" || !isTauri()) return null;
+  const text = view.state.doc;
+  await whenSynced(view);
+  if (view.state.doc !== text) return null;
+  const pos = offsetToPos(text, offset);
+  const found = await call(commands.navPytestFixtureUsages(doc.doc, pos, nextRequestId()));
+  const here = found && [found.definition, ...found.usages].find((l) => contains(l, doc.path, pos));
+  if (!found || !here || view.state.doc !== text) return null;
+  const span = { from: posToOffset(text, here.range.start), to: posToOffset(text, here.range.end) };
+  const edit = async (newName: string, request: number) => {
+    if (!NAME.test(newName)) throw new Error(tx`'${newName}' is not a valid fixture name`);
+    return call(commands.navPytestFixtureRename(doc.doc, pos, newName, request));
+  };
+  return found.inProject ? { ...span, edit } : { ...span, edit, refused: "The fixture is defined outside the project" };
+}
+
 export function activate(): () => void {
   const offNavigation = registerNavigationProvider(async (view, offset) => {
     const doc = docOf(view);
@@ -91,8 +123,16 @@ export function activate(): () => void {
         ? EditorState.languageData.of(() => [{ openideaCompletion: completion(doc) }])
         : [],
   });
+  const offUsages = registerUsageProvider(async (query, request) => {
+    if (!query.path.endsWith(".py") || !isTauri()) return null;
+    const found = await call(commands.navPytestFixtureUsages(query.doc, query.pos, request));
+    return found?.usages ?? null;
+  });
+  const offRename = registerRenameProvider(fixtureRename);
   return () => {
     offNavigation();
     offCompletion();
+    offUsages();
+    offRename();
   };
 }
