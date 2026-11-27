@@ -1,0 +1,8 @@
+<config>
+  <JDBC_PING2
+      connection_driver="com.mysql.cj.jdbc.Driver"
+      <!--
+      insert_sp="CREATE PROCEDURE ..."
+      -->
+  />
+</config>

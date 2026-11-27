@@ -679,6 +679,11 @@ function CommitChecks() {
           />
           <BoundToggle k="vcs.commit.checkTodo" label="Check TODO" hint="Looks for TODO and FIXME in added lines." />
           <BoundToggle k="vcs.commit.cleanup" label="Cleanup" hint="Applies fix-all code actions." />
+          <BoundToggle
+            k="vcs.commit.fixOnCommit"
+            label="Fix Ruff safe lint issues"
+            hint="Runs ruff check --fix-only on Python files before composing the commit. This does not format code."
+          />
         </>
       }
       right={
@@ -848,7 +853,14 @@ export const VCS_PAGES: PageSpec[] = [
           {
             kind: "custom",
             label: "Analyze code",
-            keywords: ["Check TODO", "Reformat code", "Optimize imports", "Cleanup", "before commit"],
+            keywords: [
+              "Check TODO",
+              "Reformat code",
+              "Optimize imports",
+              "Cleanup",
+              "Fix Ruff safe lint issues",
+              "before commit",
+            ],
             component: CommitChecks,
           },
         ],

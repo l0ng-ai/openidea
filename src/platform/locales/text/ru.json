@@ -2942,7 +2942,6 @@
   "Run on save": "Запускать при сохранении",
   "Run Prettier on save for enabled languages when it is the selected formatting provider.": "Запускать Prettier при сохранении для включённых языков, если он выбран в качестве поставщика форматирования.",
   "Run oxfmt on save for enabled languages when it is the selected formatting provider.": "Запускать oxfmt при сохранении для включённых языков, если он выбран в качестве поставщика форматирования.",
-  "Run Ruff on save for enabled languages when it is the selected formatting provider.": "Запускать Ruff при сохранении для включённых языков, если он выбран в качестве поставщика форматирования.",
   "oxfmt formats an enabled language instead of Prettier below an oxfmt configuration file (.oxfmtrc.json, oxfmt.config.ts) or when it is the selected provider.": "oxfmt форматирует включённый язык вместо Prettier в каталогах с файлом конфигурации oxfmt (.oxfmtrc.json, oxfmt.config.ts) или когда он выбран в качестве поставщика.",
   "Ruff reads the nearest pyproject.toml ([tool.ruff]), ruff.toml, or .ruff.toml. Use it before the language server when preferred.": "Ruff считывает ближайший pyproject.toml ([tool.ruff]), ruff.toml или .ruff.toml. Используйте его перед языковым сервером при необходимости.",
   "Enabled languages": "Включённые языки",
