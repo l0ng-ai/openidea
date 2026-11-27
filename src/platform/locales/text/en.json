@@ -4273,5 +4273,7 @@
   "Testing": "Testing",
   "Runs tests from the gutter and the context menu. Autodetect uses pytest when the project uses it, else unittest, except for modules that don't import unittest.": "Runs tests from the gutter and the context menu. Autodetect uses pytest when the project uses it, else unittest, except for modules that don't import unittest.",
   "tests.test_models": "tests.test_models",
-  "unittest": "unittest"
+  "unittest": "unittest",
+  "1 file of the report is not in this project.": "1 file of the report is not in this project.",
+  "{count} files of the report are not in this project.": "{count} files of the report are not in this project."
 }

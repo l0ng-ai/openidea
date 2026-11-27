@@ -10735,5 +10735,7 @@
   "Testing": "测试",
   "Runs tests from the gutter and the context menu. Autodetect uses pytest when the project uses it, else unittest, except for modules that don't import unittest.": "从边栏和上下文菜单运行测试时使用。自动检测：项目使用 pytest 时用 pytest，否则用 unittest；未导入 unittest 的模块仍用 pytest。",
   "tests.test_models": "tests.test_models",
-  "unittest": "unittest"
+  "unittest": "unittest",
+  "1 file of the report is not in this project.": "报告中有 1 个文件不在此项目中。",
+  "{count} files of the report are not in this project.": "报告中有 {count} 个文件不在此项目中。"
 }

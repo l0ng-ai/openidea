@@ -104,6 +104,21 @@ it("remembers a late coverage import only in the requesting project", async () =
   expect(backend.show).toHaveBeenCalledWith("coverage");
 });
 
+it("says how many imported files are not in the project", async () => {
+  const file = data.files[0]!;
+  const foreign = (path: string) => ({ ...file, path });
+  backend.coverageImport.mockResolvedValue(
+    ok({ ...data, files: [file, foreign("/home/runner/work/a/b.py"), foreign(`${origin}-old/c.py`)] }),
+  );
+  await importReport(report);
+  expect(backend.notify).toHaveBeenLastCalledWith(
+    expect.objectContaining({ level: "warning", body: "2 files of the report are not in this project." }),
+  );
+  backend.coverageImport.mockResolvedValue(ok(data));
+  await importReport(report);
+  expect(backend.notify).toHaveBeenLastCalledWith(expect.objectContaining({ level: "info", body: undefined }));
+});
+
 it.each([
   ["while the next project opens", () => useProject.setState({ opening: true, openingPath: next })],
   ["after the next project opens", () => switchTo(next)],
