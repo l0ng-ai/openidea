@@ -157,9 +157,18 @@ export function ImageViewer({ input, source }: { input: EditorInput; source?: st
   useForwardFocus(live ? NO_FOCUS_TARGET : rootRef);
 
   const onLoad = (img: HTMLImageElement) => {
+    if (!live) return applyNatural(img.naturalWidth, img.naturalHeight);
+    // WebKit keeps the old natural size when a sized <img> gets a new SVG src; measure a detached copy.
+    const loaded = img.src;
+    const probe = new Image();
+    probe.onload = () => img.src === loaded && applyNatural(probe.naturalWidth, probe.naturalHeight);
+    probe.src = loaded;
+  };
+
+  const applyNatural = (naturalW: number, naturalH: number) => {
     // SVGs without intrinsic size report 0×0; show them at a usable size.
-    const w = img.naturalWidth || 300;
-    const h = img.naturalHeight || 150;
+    const w = naturalW || 300;
+    const h = naturalH || 150;
     setNatural({ w, h });
     const a = available();
     const el = canvasRef.current;
