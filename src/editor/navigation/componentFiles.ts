@@ -10,7 +10,7 @@ type Group = "source" | "template" | "styles" | "test" | "stories";
 
 const ORDER: Group[] = ["source", "template", "styles", "test", "stories"];
 const LABELS: Record<Group, () => string> = {
-  source: () => tx("Source"),
+  source: () => tx("Source File"),
   template: () => tx("Template"),
   styles: () => tx("Styles"),
   test: () => tx("Test"),

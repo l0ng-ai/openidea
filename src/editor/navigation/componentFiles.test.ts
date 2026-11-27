@@ -40,7 +40,7 @@ describe("component related files", () => {
     const others = ["user.component.html", "user.component.scss", "user.component.spec.ts"];
     const all = await Promise.all(others.map((o) => componentFileItems(`/p/app/user/${o}`, "", ANGULAR)));
     all.forEach((items, i) => {
-      expect(items[0]).toEqual({ path: "/p/app/user/user.component.ts", group: "Source" });
+      expect(items[0]).toEqual({ path: "/p/app/user/user.component.ts", group: "Source File" });
       expect(items).toHaveLength(3);
       expect(items.map((it) => it.path)).not.toContain(`/p/app/user/${others[i]}`);
     });

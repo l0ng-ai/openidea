@@ -48,5 +48,6 @@ test("Related Symbol lists an Angular component's template, styles and spec", as
   await related();
   await expect(options).toHaveCount(3);
   await expect(options.nth(0)).toContainText("user.component.ts");
+  await expect(options.nth(0)).toContainText("Source File");
   await page.screenshot({ path: testInfo.outputPath("spec-related.png"), animations: "disabled" });
 });
