@@ -592,6 +592,9 @@ let osHasImage = false;
 let osHasJava = false;
 
 /** Keeps Paste enabled for what Explorer copied; called when the window gains focus. */
+// TODO(#6388): a focus while a refresh is still reading starts another full read (files, image
+// and text). The backend now reads the clipboard one call at a time, so this is only wasted work;
+// reuse the running refresh instead of starting a second one.
 export async function refreshOsClipboard() {
   try {
     await readOsClipboard();
