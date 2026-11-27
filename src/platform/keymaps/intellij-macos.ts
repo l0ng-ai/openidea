@@ -103,6 +103,7 @@ export const intellijMacos: Record<string, string[]> = {
   "code.duplicateLine": ["Meta+D"],
   "code.duplicateEntireLines": [],
   "code.deleteLine": ["Meta+Backspace"],
+  "code.transpose": [],
   "code.deleteToLineStart": [],
   "code.deleteToLineEnd": [],
   "code.cutLineEnd": ["Ctrl+K"],

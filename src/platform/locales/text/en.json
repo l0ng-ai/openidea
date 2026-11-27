@@ -4328,5 +4328,6 @@
   "Delimiter: {delimiter}": "Delimiter: {delimiter}",
   "Table view of the file": "Table view of the file",
   "Data": "Data",
-  "CSV editor view": "CSV editor view"
+  "CSV editor view": "CSV editor view",
+  "Transpose": "Transpose"
 }
