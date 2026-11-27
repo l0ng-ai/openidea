@@ -10,8 +10,13 @@ vi.mock("@/platform/ipc", async (original) => {
   const actual = await original<typeof import("@/platform/ipc")>();
   return {
     ...actual,
-    commands: { ...actual.commands, dbSources: () => "dbSources" },
-    call: (request: unknown) => (request === "dbSources" ? mocks.sources() : Promise.reject(new Error("unmocked"))),
+    commands: { ...actual.commands, dbSources: () => "dbSources", dbConsolesDir: () => "dbConsolesDir" },
+    call: (request: unknown) =>
+      request === "dbSources"
+        ? mocks.sources()
+        : request === "dbConsolesDir"
+          ? Promise.resolve("/data/consoles/db")
+          : Promise.reject(new Error("unmocked")),
   };
 });
 

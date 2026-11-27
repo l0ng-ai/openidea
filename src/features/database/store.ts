@@ -10,6 +10,7 @@ import {
   IpcError,
   call,
   commands,
+  emitLocalIdeEvent,
   isCancelled,
   nextRequestId,
   type DataSource,
@@ -224,6 +225,7 @@ interface DatabaseState {
   /** Console path → its active schema (unqualified names resolve there; see `consoleSchema`). */
   consoleSchemas: Record<string, string>;
   separateProceduresAndFunctions: boolean;
+  showTableComments: boolean;
   completion: Record<string, DbCompletion>;
   results: ResultTab[];
   /** Results shown in the editor under their statements (In-Editor Results), oldest first. */
@@ -275,14 +277,32 @@ function readConsoleSchemas(): Record<string, string> {
   }
 }
 
-function readSeparateProceduresAndFunctions(): boolean {
+function consoleTargetFromPath(path: string, sources: readonly DataSource[]): string | null {
+  const folder = /(?:^|[\\/])consoles[\\/]db[\\/]([^\\/]+)[\\/]console(?:_\d+)?\.sql$/i.exec(path)?.[1];
+  if (!folder) return null;
+  const source = sources.find((candidate) => {
+    const id = candidate.id ?? "";
+    return !!id && (folder === id || folder.startsWith(`${id}.`));
+  });
+  if (!source?.id) return null;
+  const database = folder === source.id ? null : folder.slice(source.id.length + 1);
+  return database ? `${source.id}:${database}` : source.id;
+}
+
+function readViewOptions(): Pick<DatabaseState, "separateProceduresAndFunctions" | "showTableComments"> {
   try {
     const raw = localStorage.getItem(VIEW_OPTIONS_KEY);
-    return raw ? JSON.parse(raw)?.separateProceduresAndFunctions === true : false;
+    const value = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    return {
+      separateProceduresAndFunctions: value.separateProceduresAndFunctions === true,
+      showTableComments: value.showTableComments !== false,
+    };
   } catch {
-    return false;
+    return { separateProceduresAndFunctions: false, showTableComments: true };
   }
 }
+
+const initialViewOptions = readViewOptions();
 
 export const useDatabase = create<DatabaseState>(() => ({
   sources: [],
@@ -297,7 +317,7 @@ export const useDatabase = create<DatabaseState>(() => ({
   objects: {},
   consoles: readBindings(),
   consoleSchemas: readConsoleSchemas(),
-  separateProceduresAndFunctions: readSeparateProceduresAndFunctions(),
+  ...initialViewOptions,
   completion: {},
   results: [],
   inline: [],
@@ -338,8 +358,19 @@ useDatabase.subscribe((state, previous) => {
 export function toggleSeparateProceduresAndFunctions() {
   const separateProceduresAndFunctions = !useDatabase.getState().separateProceduresAndFunctions;
   useDatabase.setState({ separateProceduresAndFunctions });
+  saveViewOptions();
+}
+
+export function toggleShowTableComments() {
+  const showTableComments = !useDatabase.getState().showTableComments;
+  useDatabase.setState({ showTableComments });
+  saveViewOptions();
+}
+
+function saveViewOptions() {
+  const { separateProceduresAndFunctions, showTableComments } = useDatabase.getState();
   try {
-    localStorage.setItem(VIEW_OPTIONS_KEY, JSON.stringify({ separateProceduresAndFunctions }));
+    localStorage.setItem(VIEW_OPTIONS_KEY, JSON.stringify({ separateProceduresAndFunctions, showTableComments }));
   } catch {
     // Per-viewer convenience only.
   }
@@ -755,18 +786,31 @@ export function watchIdleConnections(everyMs = 5000): () => void {
 /** Managed consoles show their source in the tab. Ordinary SQL files can also inherit a source tint. */
 export function consoleDecorations(s: Pick<DatabaseState, "consoles" | "sources">): Map<string, FileDecoration> {
   const out = new Map<string, FileDecoration>();
+  const roots = new Set<string>();
   for (const [path, target] of Object.entries(s.consoles)) {
     const { id, database } = splitTarget(target);
     const source = s.sources.find((x) => x.id === id);
     if (!source) continue;
     const tint = colorVar(source.color);
     // db_console_path and db_consoles own this directory, including already saved consoles.
-    const consoleName = /(?:^|\/)consoles\/db\/[^/]+\/(console(?:_\d+)?)\.sql$/.exec(path.replaceAll("\\", "/"))?.[1];
-    if (consoleName) {
+    const match = /[\\/]consoles[\\/]db[\\/][^\\/]+[\\/](console(?:_\d+)?)\.sql$/i.exec(path);
+    if (match) {
+      const folder = path.replace(/[\\/]console(?:_\d+)?\.sql$/i, "");
+      const root = folder.replace(/[\\/][^\\/]+$/, "");
       const name = source.name || id;
       const label = database ? `${name}: ${database}` : name;
-      out.set(path, { tint, tabTitle: `${consoleName} [${label}]`, tabIcon: sourceIcon(source) });
+      const icon = sourceIcon(source);
+      out.set(path, { tint, tabTitle: `${match[1]} [${label}]`, tabIcon: icon });
+      out.set(folder, { label, icon });
+      roots.add(root);
     } else if (tint) out.set(path, { tint });
+  }
+  for (const root of roots) {
+    const separator = root.includes("\\") ? "\\" : "/";
+    for (const source of s.sources) {
+      if (!source.id) continue;
+      out.set(`${root}${separator}${source.id}`, { label: source.name || source.id, icon: sourceIcon(source) });
+    }
   }
   return out;
 }
@@ -1145,6 +1189,8 @@ export function consoleSource(path: string): string | null {
   const s = useDatabase.getState();
   const bound = s.consoles[path];
   if (bound && s.sources.some((x) => x.id === splitTarget(bound).id)) return bound;
+  const inferred = consoleTargetFromPath(path, s.sources);
+  if (inferred) return inferred;
   const scope = scopeOf(path);
   if (scope) return scope.dataSource;
   return s.sources.length === 1 ? (s.sources[0]!.id ?? null) : null;
@@ -1155,6 +1201,7 @@ export async function openConsole(id: string, schema?: string): Promise<void> {
   try {
     const path = await call(commands.dbConsolePath(id));
     bindConsole(path, id);
+    announceConsoleFile(path);
     if (schema) setConsoleSchema(path, schema);
     await editorService().openFile(path, { focus: true });
   } catch (e) {
@@ -1180,10 +1227,17 @@ export async function newConsole(id: string, schema?: string): Promise<void> {
     const before = new Set(await consoleFiles(id));
     const after = await call(commands.dbConsoles(id, true));
     const path = after.find((p) => !before.has(p)) ?? after[after.length - 1];
-    if (path) await openConsoleFile(id, path, schema);
+    if (path) {
+      announceConsoleFile(path);
+      await openConsoleFile(id, path, schema);
+    }
   } catch (e) {
     notifications().notify({ level: "error", title: "Cannot open the query console", body: message(e) });
   }
+}
+
+function announceConsoleFile(path: string) {
+  emitLocalIdeEvent({ type: "fsChanged", created: [path], modified: [], removed: [] });
 }
 
 let nextTab = 1;

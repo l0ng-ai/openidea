@@ -623,7 +623,16 @@ pub fn db_consoles(host: &Host, id: String, create: bool) -> IdeResult<Vec<IpcPa
     Ok(out)
 }
 
-/// `<dataDir>/consoles/db/<id>`: `<id>` for the default database, `<id>.<database>` for the others.
+/// The project view root for every data source's query consoles (`<dataDir>/consoles/db`).
+#[command(trust = always)]
+pub fn db_consoles_dir(host: &Host) -> IdeResult<IpcPath> {
+    let dir = host.data_dir.join("consoles").join("db");
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir.into())
+}
+
+/// `<dataDir>/consoles/db/<id>`: `<id>` for the default database,
+/// `<id>.<database>` for the others.
 fn console_dir(host: &Host, id: &str) -> IdeResult<PathBuf> {
     let (source, database) = ide_db::split_target(id);
     if source.is_empty() || !source.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
@@ -681,6 +690,7 @@ ide_command::domain!(
     db_connect,
     db_connected,
     db_console_path,
+    db_consoles_dir,
     db_consoles,
     db_create_database,
     db_create_ducklake,

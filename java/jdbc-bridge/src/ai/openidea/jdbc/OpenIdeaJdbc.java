@@ -277,13 +277,13 @@ public final class OpenIdeaJdbc {
         String catalog = catalogs && !name.isEmpty() ? name : connection.getCatalog();
         String schema = catalogs || name.isEmpty() ? null : pattern(m, name);
         if (op.equals("tables")) {
-            header(out, "name", "kind");
+            header(out, "name", "kind", "comment");
             try (ResultSet rs = m.getTables(catalog, schema, "%", null)) {
                 int n = 0;
                 while (rs.next() && n < 20000) {
                     String type = rs.getString("TABLE_TYPE").toLowerCase(Locale.ROOT);
                     if (!Set.of("table","base table","view","materialized view","system table","local temporary","foreign table").contains(type)) continue;
-                    row(out, rs.getString("TABLE_NAME"), type);
+                    row(out, rs.getString("TABLE_NAME"), type, rs.getString("REMARKS"));
                     n++;
                 }
             }
