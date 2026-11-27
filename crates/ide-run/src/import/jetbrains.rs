@@ -4,7 +4,7 @@
 //! than one place is taken from the first, in that order.
 //!
 //! Python, Django server, Django tests, pytest, npm, Jest, Vitest, Node.js, Shell Script,
-//! Application, JAR Application, Spring Boot, Go Application / Go Test, Flutter and compound configurations become the
+//! Application, JAR Application, Spring Boot, Go Application / Go Test, Flutter, Dockerfile and compound configurations become the
 //! matching kinds; other types are skipped with their type.
 //! `$PROJECT_DIR$` (and `$MODULE_DIR$`, `$MODULE_WORKING_DIR$`, `$ContentRoot$`,
 //! `$ProjectFileDir$`, all the project directory here) and `$USER_HOME$` are replaced; another
@@ -169,6 +169,7 @@ const SPRING_BOOT: &str = "SpringBootApplicationConfigurationType";
 const GO_APPLICATION: &str = "GoApplicationRunConfiguration";
 const GO_TEST: &str = "GoTestRunConfiguration";
 const FLUTTER: &str = "FlutterRunConfigurationType";
+const DOCKER: &str = "docker-deploy";
 
 type Res<T> = Result<T, SkipReason>;
 
@@ -353,6 +354,7 @@ impl Cx<'_> {
             GO_APPLICATION => self.go_config(name, c, false, &mut ignored)?,
             GO_TEST => self.go_config(name, c, true, &mut ignored)?,
             FLUTTER => self.flutter(name, c)?,
+            DOCKER => self.dockerfile(name, c, &mut ignored)?,
             COMPOUND => {
                 members = c.children_named("toRun").filter_map(|t| t.attr("name")).map(str::to_owned).collect();
                 config(name, "compound", String::new(), Vec::new(), None)
@@ -361,6 +363,40 @@ impl Cx<'_> {
             other => return Err(SkipReason::UnsupportedType { type_: other.to_owned() }),
         };
         Ok(Found { config, members, ignored })
+    }
+
+    /// Keep Docker's form fields; the frontend resolves the server name to a saved connection
+    /// and uses the native Dockerfile type to generate the platform's run and stop commands.
+    fn dockerfile(&self, name: &str, c: &El, ignored: &mut Vec<String>) -> Res<RunConfig> {
+        let deployment = c.child("deployment").ok_or(SkipReason::NothingToRun)?;
+        if deployment.attr("type") != Some("dockerfile") {
+            return Err(SkipReason::UnsupportedType {
+                type_: format!("{DOCKER} ({})", deployment.attr("type").unwrap_or_default()),
+            });
+        }
+        let settings = deployment.child("settings").ok_or(SkipReason::NothingToRun)?;
+        let file = self.path(settings.option("sourceFilePath"))?.ok_or(SkipReason::NothingToRun)?;
+        let mut rc = config(name, "docker-dockerfile", String::new(), Vec::new(), None);
+        rc.extras.params.extend([
+            ("dockerfile".into(), path_from(self.root, file, self.root)),
+            ("runImage".into(), "true".into()),
+            ("serverName".into(), c.attr("server-name").unwrap_or_default().trim().to_owned()),
+        ]);
+        for (from, to) in [("imageTag", "tag"), ("containerName", "containerName")] {
+            if let Some(value) = self.text(settings.option(from))? {
+                rc.extras.params.insert(to.into(), value);
+            }
+        }
+        for option in settings.children_named("option") {
+            if let Some(key) = option.attr("name")
+                && !matches!(key, "sourceFilePath" | "imageTag" | "containerName")
+            {
+                ignored.push(key.into());
+            }
+        }
+        // The resolved connection ID belongs to this machine, not to the shared project.
+        self.machine_values.set(true);
+        Ok(rc)
     }
 
     /// A Go Application (`GoApplicationRunConfiguration`) or Go Test configuration. Both share

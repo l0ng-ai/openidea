@@ -10477,6 +10477,8 @@
   "Interface name": "接口名",
   "Type alias": "类型别名",
   "Type parameter": "类型参数",
+  "Abstract class name": "抽象类名",
+  "Enum name": "枚举名",
   "Change Project Icon…": "更改项目图标…",
   "Reset Project Icon": "重置项目图标",
   "Cannot change the project icon": "无法更改项目图标",
@@ -10807,5 +10809,6 @@
   "calc.py": "calc.py",
   "Files, or a class or function in one: calc.py::Stock.take": "文件，或文件中的某个类或函数：calc.py::Stock.take",
   "e.g. -o ELLIPSIS -o NORMALIZE_WHITESPACE": "例如 -o ELLIPSIS -o NORMALIZE_WHITESPACE",
-  "Run doctests": "运行 doctest"
+  "Run doctests": "运行 doctest",
+  "Select a Docker server for '{0}' before running it": "运行“{0}”前请选择 Docker 服务器"
 }
