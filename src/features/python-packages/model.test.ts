@@ -5,7 +5,15 @@ const INSTALLED = [
   { name: "requests", version: "2.31.0" },
   { name: "typing_extensions", version: "4.12.0" },
 ];
-const found = (name: string) => ({ name, summary: "", latest: "1.0", versions: ["1.0"] });
+const found = (name: string) => ({
+  name,
+  summary: "",
+  latest: "1.0",
+  versions: ["1.0"],
+  description: "",
+  markdown: false,
+  links: [],
+});
 
 describe("package rows", () => {
   it("lists the installed packages with their newer release", () => {
