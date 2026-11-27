@@ -31,7 +31,7 @@ import {
   type ViewUpdate,
 } from "@codemirror/view";
 import { completionStatus } from "@codemirror/autocomplete";
-import { isExternalChange } from "@/editor/api";
+import { isExternalChange, settleWorkspaceEdit } from "@/editor/api";
 import { tooltipBounds } from "@/editor/core/cm/setup";
 import { tx } from "@/platform/i18n";
 
@@ -301,7 +301,10 @@ const watcher = ViewPlugin.fromClass(
           !changesWithin(tr.changes, before.primary)
         );
       });
-      if (outside || foreignEdit) queueMicrotask(() => endInplaceRename(this.view, "commit"));
+      // Undoing the refactoring from its notification puts the introduced name back first.
+      const settle = u.transactions.some((tr) => tr.effects.some((e) => e.is(settleWorkspaceEdit)));
+      if (settle) queueMicrotask(() => endInplaceRename(this.view, "cancel"));
+      else if (outside || foreignEdit) queueMicrotask(() => endInplaceRename(this.view, "commit"));
     }
   },
 );

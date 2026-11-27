@@ -27,6 +27,7 @@ import {
   type EditorState,
   type Extension,
   type RangeSet,
+  type Text,
   type Transaction,
 } from "@codemirror/state";
 import { GutterMarker, ViewPlugin, type EditorView, type ViewUpdate } from "@codemirror/view";
@@ -1104,3 +1105,23 @@ export function onWorkspaceEditHistory(listener: (state: WorkspaceEditHistorySta
 export function _emitWorkspaceEditHistory(state: WorkspaceEditHistoryState) {
   for (const listener of workspaceHistoryListeners) listener(state);
 }
+
+/** On the transaction that puts refactoring `id`'s history marker into an editor. */
+export const workspaceEditMarker = Annotation.define<number>();
+
+/**
+ * Local edits that finished a refactoring in one editor (its reformatting, the in-place rename
+ * of an introduced name), kept out of the undo history. Undoing the refactoring reverts them
+ * first, while the text is still `end`; redoing it applies `changes` again.
+ */
+export interface WorkspaceEditFollowUp {
+  changes: ChangeSet;
+  revert: ChangeSet;
+  end: Text;
+}
+
+/** Looks up the follow-up edits of refactoring `id` recorded in an editor state. */
+export const workspaceEditFollowUps = Facet.define<(state: EditorState, id: number) => WorkspaceEditFollowUp | null>();
+
+/** Asks an editor to finish an interactive edit (an in-place rename) before refactoring `id` is undone. */
+export const settleWorkspaceEdit = StateEffect.define<number>();
