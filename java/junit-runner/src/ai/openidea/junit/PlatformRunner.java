@@ -1,7 +1,14 @@
 package ai.openidea.junit;
 
+import java.io.ByteArrayOutputStream;
+import java.io.OutputStream;
+import java.io.PrintStream;
+import java.io.UnsupportedEncodingException;
 import java.lang.reflect.Method;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -10,7 +17,6 @@ import org.junit.platform.engine.DiscoverySelector;
 import org.junit.platform.engine.TestExecutionResult;
 import org.junit.platform.engine.TestSource;
 import org.junit.platform.engine.discovery.DiscoverySelectors;
-import org.junit.platform.engine.reporting.ReportEntry;
 import org.junit.platform.engine.support.descriptor.ClassSource;
 import org.junit.platform.engine.support.descriptor.MethodSource;
 import org.junit.platform.launcher.Launcher;
@@ -20,27 +26,47 @@ import org.junit.platform.launcher.TestPlan;
 import org.junit.platform.launcher.core.LauncherDiscoveryRequestBuilder;
 import org.junit.platform.launcher.core.LauncherFactory;
 
-/** Runs JUnit Platform tests (Jupiter, and JUnit 4 through the Vintage engine when it is on the classpath). */
+/**
+ * Runs JUnit Platform tests (Jupiter, and JUnit 4 through the Vintage engine when it is on the classpath).
+ * A thread's stdout and stderr while it runs a test (or a class's set-up) are reported with it, line by
+ * line; any other output is printed as is.
+ */
 final class PlatformRunner implements TestExecutionListener {
     private final Reporter report;
     private final Map<String, Long> started = new HashMap<>();
+    /** The tests and classes each thread is running, innermost first: its output belongs to the first. */
+    private final ThreadLocal<Deque<String>> owners = ThreadLocal.withInitial(ArrayDeque::new);
+    private final List<Output> outputs = new ArrayList<>();
     private TestPlan plan;
 
     private PlatformRunner(Reporter report) {
         this.report = report;
     }
 
-    static void run(Reporter report, String[] args) {
+    static void run(Reporter report, String[] args) throws UnsupportedEncodingException {
         List<DiscoverySelector> selectors = new ArrayList<>();
         for (String arg : args) selectors.addAll(selectors(arg));
         Launcher launcher = LauncherFactory.create();
-        launcher.execute(
-                LauncherDiscoveryRequestBuilder.request()
-                        .selectors(selectors)
-                        .configurationParameter("junit.platform.output.capture.stdout", "true")
-                        .configurationParameter("junit.platform.output.capture.stderr", "true")
-                        .build(),
-                new PlatformRunner(report));
+        PlatformRunner listener = new PlatformRunner(report);
+        PrintStream stdout = System.out;
+        PrintStream stderr = System.err;
+        System.setOut(new PrintStream(listener.new Output("testStdOut", null), true, "UTF-8"));
+        System.setErr(new PrintStream(listener.new Output("testStdErr", stderr), true, "UTF-8"));
+        try {
+            // JUnit's own capture also writes everything to the original stream: each line would show twice.
+            launcher.execute(
+                    LauncherDiscoveryRequestBuilder.request()
+                            .selectors(selectors)
+                            .configurationParameter("junit.platform.output.capture.stdout", "false")
+                            .configurationParameter("junit.platform.output.capture.stderr", "false")
+                            .build(),
+                    listener);
+        } finally {
+            System.out.flush();
+            System.err.flush();
+            System.setOut(stdout);
+            System.setErr(stderr);
+        }
     }
 
     /** Every method named {@code method} (parameterized ones too); the class when there is none. */
@@ -75,6 +101,11 @@ final class PlatformRunner implements TestExecutionListener {
 
     @Override
     public void executionStarted(TestIdentifier id) {
+        String owner = owner(id);
+        if (owner != null) {
+            flushOutput();
+            owners.get().push(owner);
+        }
         if (!id.isTest()) return;
         started.put(id.getUniqueId(), System.currentTimeMillis());
         report.message("testStarted", id(id));
@@ -90,6 +121,10 @@ final class PlatformRunner implements TestExecutionListener {
 
     @Override
     public void executionFinished(TestIdentifier id, TestExecutionResult result) {
+        if (owner(id) != null) {
+            flushOutput();
+            owners.get().pop();
+        }
         TestExecutionResult.Status status = result.getStatus();
         if (!id.isTest()) {
             // A class whose set-up failed (`@BeforeAll`): reported as a test, like JUnit 4's initializationError.
@@ -108,15 +143,13 @@ final class PlatformRunner implements TestExecutionListener {
         report.finished(own, start == null ? 0 : System.currentTimeMillis() - start);
     }
 
-    @Override
-    public void reportingEntryPublished(TestIdentifier id, ReportEntry entry) {
-        for (Map.Entry<String, String> e : entry.getKeyValuePairs().entrySet()) {
-            String kind = e.getKey().equals("stdout") ? "testStdOut" : e.getKey().equals("stderr") ? "testStdErr" : null;
-            if (kind == null) continue;
-            // A class's own output (`@BeforeAll`, `@AfterAll`) carries no test name.
-            String own = id.isTest() ? id(id) : className(id).map(c -> Reporter.attr("className", c)).orElse(null);
-            if (own != null) report.message(kind, own + Reporter.attr("out", e.getValue()));
-        }
+    /** Whose output a thread's is while it runs {@code id}: the test, or a class (`@BeforeAll`, `@AfterAll`) with no test name. */
+    private String owner(TestIdentifier id) {
+        return id.isTest() ? id(id) : className(id).map(c -> Reporter.attr("className", c)).orElse(null);
+    }
+
+    private void flushOutput() {
+        for (Output o : outputs) o.flushLines(true);
     }
 
     /** `name='method' className='a.B$Nested'`, the method and class of the test or its closest source. */
@@ -136,5 +169,56 @@ final class PlatformRunner implements TestExecutionListener {
     private Optional<String> className(TestIdentifier id) {
         TestSource source = id.getSource().orElse(null);
         return source instanceof ClassSource ? Optional.of(((ClassSource) source).getClassName()) : Optional.empty();
+    }
+
+    /** System.out or System.err: reported with the thread's test, else passed through ({@code null}: the reporter's stdout). */
+    private final class Output extends OutputStream {
+        private final String kind;
+        private final PrintStream passThrough;
+        private final ThreadLocal<ByteArrayOutputStream> pending = ThreadLocal.withInitial(ByteArrayOutputStream::new);
+
+        Output(String kind, PrintStream passThrough) {
+            this.kind = kind;
+            this.passThrough = passThrough;
+            outputs.add(this);
+        }
+
+        @Override
+        public void write(int b) {
+            write(new byte[] {(byte) b}, 0, 1);
+        }
+
+        @Override
+        public void write(byte[] b, int off, int len) {
+            if (owners.get().isEmpty()) {
+                if (passThrough == null) report.write(b, off, len);
+                else {
+                    passThrough.write(b, off, len);
+                    passThrough.flush();
+                }
+                return;
+            }
+            pending.get().write(b, off, len);
+            for (int i = off; i < off + len; i++) {
+                if (b[i] == '\n') {
+                    flushLines(false);
+                    return;
+                }
+            }
+        }
+
+        /** The thread's complete lines, or with {@code all} its partial line too, as a message of its test. */
+        void flushLines(boolean all) {
+            String owner = owners.get().peek();
+            ByteArrayOutputStream buffer = pending.get();
+            if (owner == null || buffer.size() == 0) return;
+            byte[] bytes = buffer.toByteArray();
+            int end = bytes.length;
+            if (!all) while (end > 0 && bytes[end - 1] != '\n') end--;
+            if (end == 0) return;
+            buffer.reset();
+            buffer.write(bytes, end, bytes.length - end);
+            report.message(kind, owner + Reporter.attr("out", new String(bytes, 0, end, StandardCharsets.UTF_8)));
+        }
     }
 }
