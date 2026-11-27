@@ -163,7 +163,7 @@ pub async fn doc_outline(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec
                 }
                 items
             }
-            None if snap.large && snap.language.as_str() != "markdown" => Vec::new(),
+            None if snap.large && !matches!(snap.language.as_str(), "markdown" | "mdx") => Vec::new(),
             None => syntax(),
         })
     })

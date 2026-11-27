@@ -1150,11 +1150,12 @@ export function consoleSource(path: string): string | null {
   return s.sources.length === 1 ? (s.sources[0]!.id ?? null) : null;
 }
 
-/** Opens (creating it on first use) the query console of data source `id`. */
-export async function openConsole(id: string): Promise<void> {
+/** Opens (creating it on first use) the query console of data source `id`, switched to `schema` if given. */
+export async function openConsole(id: string, schema?: string): Promise<void> {
   try {
     const path = await call(commands.dbConsolePath(id));
     bindConsole(path, id);
+    if (schema) setConsoleSchema(path, schema);
     await editorService().openFile(path, { focus: true });
   } catch (e) {
     notifications().notify({ level: "error", title: "Cannot open the query console", body: message(e) });
@@ -1166,19 +1167,20 @@ export function consoleFiles(id: string): Promise<string[]> {
   return call(commands.dbConsoles(id, false));
 }
 
-/** Opens one of the query consoles of data source `id`. */
-export async function openConsoleFile(id: string, path: string): Promise<void> {
+/** Opens one of the query consoles of data source `id`, switched to `schema` if given. */
+export async function openConsoleFile(id: string, path: string, schema?: string): Promise<void> {
   bindConsole(path, id);
+  if (schema) setConsoleSchema(path, schema);
   await editorService().openFile(path, { focus: true });
 }
 
 /** Creates and opens another query console of data source `id` (DataGrip's New › Query Console). */
-export async function newConsole(id: string): Promise<void> {
+export async function newConsole(id: string, schema?: string): Promise<void> {
   try {
     const before = new Set(await consoleFiles(id));
     const after = await call(commands.dbConsoles(id, true));
     const path = after.find((p) => !before.has(p)) ?? after[after.length - 1];
-    if (path) await openConsoleFile(id, path);
+    if (path) await openConsoleFile(id, path, schema);
   } catch (e) {
     notifications().notify({ level: "error", title: "Cannot open the query console", body: message(e) });
   }

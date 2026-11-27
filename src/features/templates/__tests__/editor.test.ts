@@ -19,12 +19,13 @@ import {
   expandLiveTemplateAtCaret,
   insertLiveTemplate,
   expandPostfixAtCaret,
+  saveAsLiveTemplate,
   surroundWith,
   templateCompletionSource,
   templateEditorExtension,
 } from "../editor";
 import { closeChooser, useChooser } from "../popup/store";
-import { removeTemplate, saveTemplate } from "../live/store";
+import { liveTemplates, removeTemplate, saveTemplate } from "../live/store";
 
 const MODES: Record<string, string> = { typescript: "TypeScript", rust: "Rust", python: "Python", java: "Java" };
 
@@ -482,5 +483,55 @@ describe("completion source", () => {
     option.apply(v, option, r!.from, 5);
     expect(v.state.doc.toString()).toBe("console.log();\nconsole.log();");
     expect(v.state.selection.ranges).toHaveLength(2);
+  });
+});
+
+describe("Save as Live Template", () => {
+  /** Runs the action with `file.settings` stubbed; returns the added templates and the Settings targets. */
+  function save(v: EditorView) {
+    const run = vi.fn();
+    const dispose = registerAction({ id: "file.settings", title: "Settings…", run });
+    const before = new Set(liveTemplates().map((t) => t.id));
+    try {
+      saveAsLiveTemplate(v);
+      const added = liveTemplates().filter((t) => !before.has(t.id));
+      return { added, opened: run.mock.calls.map(([ctx]) => ctx.arg) };
+    } finally {
+      dispose();
+      for (const t of liveTemplates()) if (!before.has(t.id)) removeTemplate(t.id);
+    }
+  }
+
+  it("adds a User template with the selection in the file's language and opens it in Settings", async () => {
+    const doc = "class A {\n  run() {\n    if (ok) {\n      go($x);\n    }\n  }\n}";
+    const v = await editor("typescript", doc, 0);
+    v.dispatch({ selection: EditorSelection.range(doc.indexOf("if (ok)"), doc.indexOf("  }\n}") - 1) });
+    const { added, opened } = save(v);
+    expect(added).toEqual([
+      expect.objectContaining({
+        group: "User",
+        abbrev: "abbr",
+        description: "",
+        body: "if (ok) {\n  go($$x);\n}",
+        contexts: ["typescript"],
+      }),
+    ]);
+    expect(opened).toEqual([`editor.liveTemplates#${added[0]!.id}`]);
+    expect(v.state.doc.toString()).toBe(doc);
+  });
+
+  it("uses the primary selection, or the first non-empty one when the primary caret has none", async () => {
+    const v = await editor("python", "alpha\nbeta\ngamma", 0);
+    v.dispatch({ selection: EditorSelection.create([EditorSelection.range(0, 5), EditorSelection.range(6, 10)], 1) });
+    expect(save(v).added.map((t) => [t.body, t.contexts])).toEqual([["beta", ["python"]]]);
+    v.dispatch({ selection: EditorSelection.create([EditorSelection.range(0, 5), EditorSelection.cursor(8)], 1) });
+    expect(save(v).added.map((t) => t.body)).toEqual(["alpha"]);
+  });
+
+  it("does nothing without a selection or with only whitespace selected", async () => {
+    const v = await editor("typescript", "const a = 1;\n    \nlet b;", 3);
+    expect(save(v)).toEqual({ added: [], opened: [] });
+    v.dispatch({ selection: EditorSelection.range(12, 18) });
+    expect(save(v)).toEqual({ added: [], opened: [] });
   });
 });

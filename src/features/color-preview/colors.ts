@@ -35,7 +35,7 @@ export function cssColor(color: ColorMatch): string {
   return `#${digits.slice(alpha)}${digits.slice(0, alpha)}`;
 }
 /** Prose: `#123` is an issue, `#fab` a heading or a tag. */
-const PROSE = new Set(["markdown", "plaintext", "text", "restructuredtext", "asciidoc", "git-commit"]);
+const PROSE = new Set(["markdown", "mdx", "plaintext", "text", "restructuredtext", "asciidoc", "git-commit"]);
 
 const HEX = String.raw`#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3,4})(?![\w-])`;
 const NUMBER = String.raw`[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?`;

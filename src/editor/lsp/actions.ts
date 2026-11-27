@@ -250,11 +250,13 @@ function editorAction(
  */
 export function formatsOnSave(settings: Settings | null, language: string): boolean {
   const { prettier, oxfmt, biome, dprint, ruff, black } = validateLanguages(settings?.languages);
+  // MDX follows the Markdown entry of the formatters' language lists (as in the backend).
+  const entry = language === "mdx" ? "markdown" : language;
   return (
     !!settings?.editor?.formatOnSave ||
     dprint.runOnSave ||
     [prettier, oxfmt, biome, ruff, black].some(
-      (formatter) => formatter.runOnSave && formatter.languages.includes(language),
+      (formatter) => formatter.runOnSave && formatter.languages.includes(entry),
     )
   );
 }

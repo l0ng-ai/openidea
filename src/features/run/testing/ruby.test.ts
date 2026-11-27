@@ -152,7 +152,7 @@ describe("the IDE's Minitest reporter", () => {
   const collect = (chunks: string[]) => {
     const lines: string[] = [];
     const out = new RubyTestOutput((line) => lines.push(line));
-    const text = chunks.map((c) => out.feed(c)).join("") + out.end();
+    const text = [...chunks.flatMap((c) => out.feed(c)), ...out.end()].map((c) => c.text).join("");
     return { text, records: lines.filter((l) => l.includes(M)), lines };
   };
 
