@@ -131,6 +131,7 @@ db_history                                   trusted            project_host bin
 db_jdbc_driver_classes                       trusted            project_host bindings async
 db_jdbc_drivers                              trusted            project_host bindings sync
 db_object_ddl                                trusted            project_host bindings async
+db_release_console                           trusted            project_host bindings sync
 db_release_result                            trusted            project_host bindings sync
 db_remove_history                            trusted            project_host bindings async
 db_remove_jdbc_driver                        trusted            project_host bindings sync
