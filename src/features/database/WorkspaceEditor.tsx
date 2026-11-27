@@ -4,11 +4,13 @@ import {
   hasNextSnippetField,
   hasPrevSnippetField,
   snippet,
+  startCompletion,
+  type Completion,
   type CompletionSource,
 } from "@codemirror/autocomplete";
 import { EditorState, Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
-import { Fragment, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { findLanguageDescription, loadSupport } from "@/editor/core/cm/languages";
 import { baseExtensions, compartments } from "@/editor/core/cm/setup";
 import { executeAction } from "@/platform/actions";
@@ -24,25 +26,26 @@ import {
   type RequestId,
 } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { Button, Dialog, IconButton, Input, Select, Spinner, T, Tabs, Toolbar } from "@/ui";
+import { Button, Dialog, Icon, IconButton, Input, Select, Spinner, T, Tabs, Toolbar } from "@/ui";
 import type { EditorInput } from "@/workbench/contributions";
 import { executionMarks, trackExecution } from "./executionMarks";
 import { Grid } from "./Grid";
 import { jdbcProfileOption, JdbcDriverProfiles, useJdbcDrivers } from "./JdbcDriverProfiles";
+import { sourceLabel, targetOf } from "./model";
 import { projectRequest } from "./requests";
 import { formatElapsed } from "./resultView";
 import { quoteIdent } from "./sql/complete";
 import { identName, inLiteral, lex } from "./sql/lexer";
 import { loadCompletion, loadSources, useDatabase } from "./store";
-import { DUCKDB_JDBC_CLASS, vendorOf } from "./vendors";
+import { DUCKDB_JDBC_CLASS, DUCKDB_JDBC_PREFIX, vendorOf } from "./vendors";
 import {
   WORKSPACE_SQL_LIMIT,
   workspaceJoinColumnOptions,
   workspaceJoinColumnTarget,
   workspaceJoinQuery,
   workspaceSourceAliasError,
-  workspaceSourceNames,
-  workspaceSourceSide,
+  workspaceSourceResolver,
+  type WorkspaceSourceReference,
   workspaceStatementRanges,
 } from "./workspaceQuery";
 import dbStyles from "./Database.module.css";
@@ -71,35 +74,33 @@ function resultBytes(result: DbQueryResult, available: number): number {
 function resultLabel(n: number) {
   return tx`Result ${n}`;
 }
-const sides = ["left", "right"] as const;
-type Side = (typeof sides)[number];
-type Selections = Record<Side, string>;
-type Configuration = Selections & { profile: string; sourceAliases: Record<string, string> };
-type SourceReferences = { names: Selections; aliases: Selections; labels: Selections };
-
-function preferredName({ names, aliases }: SourceReferences, side: Side): string {
-  return aliases[side].trim() || names[side];
-}
+type Configuration = {
+  profile: string;
+  sourceAliases: Record<string, string>;
+  legacySources: { left: string; right: string };
+};
+type SavedSource = DataSource & { id: string };
+type SourceResolver = ReturnType<typeof workspaceSourceResolver>;
 
 function sourcePrefix(name: string) {
-  return "#" + (name === "left" || name === "right" ? name : quoteIdent(name, "postgres"));
+  return "#" + quoteIdent(name, "postgres");
 }
 
-function joinTemplate(names: Selections) {
-  const prefix = (side: Side) => sourcePrefix(names[side]).replace(/[{}]/g, "\\$&");
-  return (
-    "SELECT *\nFROM " +
-    prefix("left") +
-    ".${1:public}.${2:customers} AS a\nJOIN " +
-    prefix("right") +
-    ".${3:events}.${4:purchases} AS b\n  ON a.${5:id} = b.${6:customer_id}"
-  );
+function preferredReference(ref: WorkspaceSourceReference, resolve: SourceResolver) {
+  if (ref.alias && resolve(ref.alias)?.id === ref.id) return sourcePrefix(ref.alias);
+  const prefix = sourcePrefix(ref.name);
+  if (resolve(ref.name, prefix.startsWith('#"'))?.id === ref.id) return prefix;
+  if (resolve(ref.name, true)?.id === ref.id) return '#"' + ref.name.replaceAll('"', '""') + '"';
+  return undefined;
 }
+
+const JOIN_TEMPLATE =
+  "SELECT *\nFROM ${1:#source_a}.${3:schema.table_a} AS a\nJOIN ${2:#source_b}.${4:schema.table_b} AS b\n  ON a.${5:key} = b.${6:key}";
 
 const exampleKeywords = new Set(["SELECT", "FROM", "AS", "JOIN", "ON"]);
 
-function JoinExample({ template }: { template: string }) {
-  const sql = template.replace(/\$\{\d+:([^}]+)\}/g, "$1").replace(/\\([{}])/g, "$1");
+function JoinExample() {
+  const sql = JOIN_TEMPLATE.replace(/\$\{\d+:([^}]+)\}/g, "$1");
   const tokens = lex(sql, "postgres").tokens.filter(
     (token) => token.kind === "quoted" || exampleKeywords.has(token.upper),
   );
@@ -118,42 +119,84 @@ function JoinExample({ template }: { template: string }) {
   );
 }
 
-function eligible(source: DataSource): source is DataSource & { id: string } {
-  return (
-    !!source.id &&
-    (source.driver === "postgres" || source.driver === "clickhouse") &&
-    !source.options?.startupScript?.trim()
-  );
+function eligible(source: DataSource): source is SavedSource {
+  if (!source.id || source.id.includes(":") || source.options?.startupScript?.trim()) return false;
+  if (source.driver === "postgres" || source.driver === "clickhouse") return true;
+  if (source.driver === "sqlite") return !!source.file && !source.file.includes(":memory:");
+  if (source.driver !== "jdbc" || vendorOf(source).id !== "duckdb") return false;
+  const endpoint = source.url?.split(";", 1)[0];
+  if (!endpoint?.startsWith(DUCKDB_JDBC_PREFIX)) return false;
+  const path = endpoint.slice(DUCKDB_JDBC_PREFIX.length);
+  return !!path && !/^[: ]|^(?:memory|md):/i.test(path) && !path.includes("://");
 }
 
-function complete(bindings: () => { config: Configuration; references: SourceReferences }): CompletionSource {
+function sourceReferences(sources: SavedSource[], config: Configuration): WorkspaceSourceReference[] {
+  return sources.map((source) => ({
+    id: source.id,
+    name: source.name || source.id,
+    alias: Object.hasOwn(config.sourceAliases, source.id) ? config.sourceAliases[source.id]!.trim() : undefined,
+    legacy:
+      source.id === config.legacySources.left ? "left" : source.id === config.legacySources.right ? "right" : undefined,
+  }));
+}
+
+function metadataTarget(source: SavedSource, database: string) {
+  if (!database || database === source.database || (source.driver === "sqlite" && database === "main"))
+    return source.id;
+  if (source.driver === "postgres" || source.driver === "clickhouse")
+    return targetOf(source.id, database, source.database ?? null);
+  // A file source's completion is for its saved file only.
+  return null;
+}
+
+function complete(
+  bindings: () => {
+    references: WorkspaceSourceReference[];
+    resolve: SourceResolver;
+    candidates: SavedSource[];
+    configureAliases: () => void;
+  },
+): CompletionSource {
   return async (context) => {
-    if (context.pos > WORKSPACE_SQL_LIMIT) return null;
-    const sql = context.state.sliceDoc(0, context.pos);
+    const field = context.state.selection.main;
+    const selectingField =
+      context.explicit &&
+      !field.empty &&
+      field.from === context.pos &&
+      (hasNextSnippetField(context.state) || hasPrevSnippetField(context.state));
+    const end = selectingField ? field.to : context.pos;
+    if (end > WORKSPACE_SQL_LIMIT) return null;
+    const sql = context.state.sliceDoc(0, end);
     const parsed = lex(sql, "postgres");
-    const state = inLiteral(parsed, context.pos);
+    const state = inLiteral(parsed, end);
     if (state === "string" || state === "comment") return null;
-    const { config, references } = bindings();
-    const { names, aliases, labels } = references;
-    const target = workspaceJoinColumnTarget(sql, names, aliases, parsed);
-    if (target && config[target.source]) {
-      const current = projectRequest();
-      const id = config[target.source];
+    const { references, resolve, candidates, configureAliases } = bindings();
+    const current = projectRequest();
+    const stillCurrent = () =>
+      current() && !context.aborted && (!context.view || context.view.state.doc === context.state.doc);
+    const target = workspaceJoinColumnTarget(sql, resolve, parsed);
+    if (target) {
+      const source = candidates.find((candidate) => candidate.id === target.sourceId);
+      const id = source && metadataTarget(source, target.database);
+      if (!id) return null;
       const catalog = useDatabase.getState().completion[id] ?? (await loadCompletion(id));
-      const latest = bindings();
+      if (!catalog || !stillCurrent()) return null;
+      const updated = workspaceJoinColumnTarget(sql, bindings().resolve, parsed);
       if (
-        !current() ||
-        context.aborted ||
-        (context.view && context.view.state.doc !== context.state.doc) ||
-        !catalog ||
-        latest.config.left !== config.left ||
-        latest.config.right !== config.right
+        updated?.sourceId !== target.sourceId ||
+        updated.database !== target.database ||
+        updated.schema !== target.schema ||
+        updated.table !== target.table
       )
         return null;
-      const updated = workspaceJoinColumnTarget(sql, latest.references.names, latest.references.aliases, parsed);
-      if (updated?.source !== target.source || updated.schema !== target.schema || updated.table !== target.table)
-        return null;
-      return { from: target.from, options: workspaceJoinColumnOptions(target, catalog), filter: false };
+      const selectingKey = selectingField && field.from === target.from;
+      const column = selectingKey ? { ...target, prefix: "" } : target;
+      return {
+        from: target.from,
+        to: selectingKey ? field.to : undefined,
+        options: workspaceJoinColumnOptions(column, catalog),
+        filter: false,
+      };
     }
     const hash = parsed.tokens.findLastIndex((token) => token.text === "#");
     if (hash < 0) return null;
@@ -164,47 +207,80 @@ function complete(bindings: () => { config: Configuration; references: SourceRef
     if (/\s$/.test(prefix) && state !== "quoted") return null;
     if (tokens.length < 2) {
       const typed = tokens[0]?.text.toLowerCase() ?? "";
-      return {
-        from,
-        options: sides
-          .filter((side) => config[side])
-          .flatMap((side) => {
-            const preferred = preferredName(references, side);
-            const detail = labels[side] !== preferred ? labels[side] : undefined;
-            const option = { label: sourcePrefix(preferred), type: "namespace", detail, boost: 5 };
-            return typed && preferred !== side && side.startsWith(typed)
-              ? [option, { label: sourcePrefix(side), type: "namespace", detail: labels[side] }]
-              : [option];
-          }),
-      };
+      const options: Completion[] = [];
+      const vendors = new Map(candidates.map((source) => [source.id, vendorOf(source).label]));
+      let needsAliases = false;
+      for (const ref of references) {
+        const preferred = preferredReference(ref, resolve);
+        if (!preferred) needsAliases = true;
+        else {
+          const detail = preferred === sourcePrefix(ref.name) ? vendors.get(ref.id) : ref.name;
+          options.push({ label: preferred, type: "namespace", detail, boost: 5 });
+        }
+        if (ref.legacy && preferred !== "#" + ref.legacy && typed && ref.legacy.startsWith(typed))
+          options.push({ label: "#" + ref.legacy, type: "namespace", detail: ref.name });
+      }
+      if (needsAliases) {
+        options.push({
+          label: prefix,
+          displayLabel: tx("Set unique SQL aliases…"),
+          type: "namespace",
+          boost: -10,
+          apply: configureAliases,
+        });
+      }
+      const selectingSource = selectingField && field.from === from;
+      return { from, to: selectingSource ? field.to : undefined, options, filter: !selectingSource };
     }
-    const name = tokens[0]!.kind === "quoted" ? identName(tokens[0]!) : tokens[0]!.text.toLowerCase();
-    const side = workspaceSourceSide(name, names, aliases);
-    if (!side || tokens[1]!.text !== "." || !config[side]) return null;
-    const current = projectRequest();
-    const id = config[side];
+    const sourceToken = tokens[0]!;
+    const name = identName(sourceToken);
+    const quoted = sourceToken.kind === "quoted";
+    const ref = resolve(name, quoted);
+    if (!ref || tokens[1]!.text !== ".") return null;
+    const source = candidates.find((candidate) => candidate.id === ref.id);
+    const qualifier = tokens[2];
+    const explicitDatabase = qualifier && qualifier.text !== "." && tokens[3]?.text === "." && tokens[5]?.text === ".";
+    const database = explicitDatabase
+      ? qualifier.kind === "word"
+        ? qualifier.text.toLowerCase()
+        : identName(qualifier)
+      : "";
+    const id = source && metadataTarget(source, database);
+    if (!id) return null;
     const catalog = useDatabase.getState().completion[id] ?? (await loadCompletion(id));
-    const latest = bindings();
-    if (
-      !current() ||
-      context.aborted ||
-      (context.view && context.view.state.doc !== context.state.doc) ||
-      latest.config[side] !== id ||
-      !catalog ||
-      workspaceSourceSide(name, latest.references.names, latest.references.aliases) !== side
-    )
-      return null;
-    const options = [];
+    if (!catalog || !stillCurrent() || bindings().resolve(name, quoted)?.id !== ref.id) return null;
+    // Keep the user's quoted or bare source spelling, which the resolver interpreted above.
+    const sourcePath = sql.slice(from, sourceToken.to) + (database ? "." + quoteIdent(database, "postgres") : "");
+    const prefixLower = prefix.toLowerCase();
+    const selectingTable = selectingField && field.from === tokens[1]!.to;
+    const options: Completion[] = [];
     for (const table of catalog.tables) {
       if (table.kind !== "table") continue;
+      const tableName = quoteIdent(table.name, "postgres");
+      const schema = quoteIdent(table.schema || catalog.defaultSchema, "postgres");
+      const qualified = `${sourcePath}.${schema}.${tableName}`;
+      const direct = `${sourcePath}.${tableName}`;
       const label =
-        sourcePrefix(name) + "." + quoteIdent(table.schema, "postgres") + "." + quoteIdent(table.name, "postgres");
-      if (label.toLowerCase().startsWith(prefix.toLowerCase())) {
-        options.push({ label, type: "class", detail: name === labels[side] ? table.kind : labels[side] });
+        selectingTable || qualified.toLowerCase().startsWith(prefixLower)
+          ? qualified
+          : !database && table.schema === catalog.defaultSchema && direct.toLowerCase().startsWith(prefixLower)
+            ? direct
+            : null;
+      if (label) {
+        options.push({
+          label: selectingTable ? label.slice(sourcePath.length + 1) : label,
+          type: "class",
+          detail: ref.name,
+        });
         if (options.length === 100) break;
       }
     }
-    return { from, options, filter: false };
+    return {
+      from: selectingTable ? field.from : from,
+      to: selectingTable ? field.to : undefined,
+      options,
+      filter: false,
+    };
   };
 }
 
@@ -216,9 +292,12 @@ function readDraft(key: string) {
   } catch {
     /* Storage may be disabled. */
   }
+  const legacy = value.legacySources as Partial<Configuration["legacySources"]> | null | undefined;
   return {
-    left: typeof value.left === "string" ? value.left : "",
-    right: typeof value.right === "string" ? value.right : "",
+    legacySources: {
+      left: typeof legacy?.left === "string" ? legacy.left : typeof value.left === "string" ? value.left : "",
+      right: typeof legacy?.right === "string" ? legacy.right : typeof value.right === "string" ? value.right : "",
+    },
     profile: typeof value.profile === "string" ? value.profile : "",
     sourceAliases: Object.fromEntries(
       value.sourceAliases && typeof value.sourceAliases === "object"
@@ -236,12 +315,12 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
   const sources = useDatabase((state) => state.sources);
   const registry = useJdbcDrivers();
   const [config, setConfig] = useState<Configuration>({
-    left: draft.left,
-    right: draft.right,
+    legacySources: draft.legacySources,
     profile: draft.profile,
     sourceAliases: draft.sourceAliases,
   });
   const [settings, setSettings] = useState<Configuration | null>(null);
+  const [showAliases, setShowAliases] = useState(false);
   const settingsRequested = useDatabase((state) => state.workspaceSettingsRequest === input.key);
   const [manage, setManage] = useState(false);
   const [empty, setEmpty] = useState(() => draft.sql.length === 0);
@@ -254,40 +333,47 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const running = useRef<WorkspaceRun | null>(null);
-  const candidates = sources.filter(eligible);
+  const candidates = useMemo(() => sources.filter(eligible), [sources]);
   const drivers = registry.drivers?.filter((d) => d.vendor === "duckdb" && d.className === DUCKDB_JDBC_CLASS) ?? [];
-  const driverFor = (id: string) => (id ? drivers.find((driver) => driver.id === id) : drivers[0]);
-  const sourceFor = (id: string) => candidates.find((source) => source.id === id);
-  const configured = (value: Configuration) =>
-    !!driverFor(value.profile) && sides.every((side) => sourceFor(value[side])) && value.left !== value.right;
-  const referencesFor = (value: Configuration): SourceReferences => {
-    const labels = { left: sourceFor(value.left)?.name ?? "", right: sourceFor(value.right)?.name ?? "" };
-    return {
-      labels,
-      names: workspaceSourceNames(labels.left, labels.right),
-      aliases: {
-        left: Object.hasOwn(value.sourceAliases, value.left) ? value.sourceAliases[value.left]! : "",
-        right: Object.hasOwn(value.sourceAliases, value.right) ? value.sourceAliases[value.right]! : "",
-      },
-    };
+  const driverFor = (id: string) =>
+    id ? drivers.find((driver) => driver.id === id) : drivers.length === 1 ? drivers[0] : undefined;
+  const references = useMemo(() => sourceReferences(candidates, config), [candidates, config]);
+  const resolve = useMemo(() => workspaceSourceResolver(references, config), [references, config]);
+  const usableReferences = useMemo(
+    () => references.filter((ref) => preferredReference(ref, resolve)).length,
+    [references, resolve],
+  );
+  const aliasError = useMemo(() => workspaceSourceAliasError(references, resolve), [references, resolve]);
+  const needsAliases = usableReferences !== references.length;
+  const ready = !!driverFor(config.profile) && candidates.length >= 2;
+  const settingsError = useMemo(() => {
+    if (!settings) return null;
+    const sources = sourceReferences(candidates, settings);
+    return workspaceSourceAliasError(sources, workspaceSourceResolver(sources, settings));
+  }, [candidates, settings]);
+  const current = useRef({
+    config,
+    references,
+    resolve,
+    candidates,
+    execute: () => {},
+    configureAliases: () => {},
+  });
+  const openSettings = (aliases = needsAliases || !!aliasError) => {
+    if (running.current) return;
+    setShowAliases(aliases);
+    setSettings(config);
   };
-  const references = referencesFor(config);
-  const aliasError = workspaceSourceAliasError(references.names, references.aliases);
-  const ready = configured(config) && !aliasError;
-  const settingsReferences = settings ? referencesFor(settings) : null;
-  const settingsError = settingsReferences
-    ? workspaceSourceAliasError(settingsReferences.names, settingsReferences.aliases)
-    : null;
-  const current = useRef({ config, references, execute: () => {} });
 
   useEffect(() => {
     if (!settingsRequested || busy) return;
     const frame = requestAnimationFrame(() => {
       useDatabase.setState({ workspaceSettingsRequest: null });
+      setShowAliases(needsAliases || !!aliasError);
       setSettings(config);
     });
     return () => cancelAnimationFrame(frame);
-  }, [settingsRequested, busy, config]);
+  }, [settingsRequested, busy, config, needsAliases, aliasError]);
 
   const stop = () => {
     const run = running.current;
@@ -300,7 +386,7 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
     if (running.current || !editor) return;
     const driver = driverFor(config.profile);
     if (!ready || !driver) {
-      setSettings(config);
+      openSettings();
       return;
     }
     const state = editor.state;
@@ -332,23 +418,12 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
       return;
     }
     const tracker = trackExecution(editor);
-    const table = (ref: ReturnType<typeof workspaceJoinQuery>[number]) => {
-      const source = sourceFor(config[ref.source])!;
-      return {
-        sourceId: source.id,
-        database: source.driver === "clickhouse" ? ref.schema : "",
-        schema: ref.schema,
-        table: ref.table,
-        key: ref.key,
-      };
-    };
     const queries = [];
-    // Validate the entire batch before the first request touches either source.
+    // Validate the entire batch before the first request touches any source.
     for (const span of spans) {
       const text = state.sliceDoc(span.from, span.to);
       try {
-        const [a, b] = workspaceJoinQuery(text, references.names, references.aliases);
-        queries.push({ text, left: table(a), right: table(b) });
+        queries.push({ text, plan: workspaceJoinQuery(text, resolve) });
       } catch (e) {
         const error = e instanceof Error ? e.message : String(e);
         tracker.start([span]);
@@ -370,7 +445,7 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
     let rows = 0;
     let bytes = 0;
     try {
-      for (const [index, { text, left, right }] of queries.entries()) {
+      for (const [index, { text, plan }] of queries.entries()) {
         if (!ownsRun()) break;
         if (run.cancelled) {
           reportError(tx("Cancelled"));
@@ -383,7 +458,7 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
         try {
           // Each JOIN owns the source reads and staging until it finishes.
           // oxlint-disable-next-line no-await-in-loop
-          const data = await call(commands.dbWorkspaceJoin(request, driver.id, left, right));
+          const data = await call(commands.dbWorkspaceJoin(request, driver.id, plan));
           if (!ownsRun()) break;
           rows += data.rows.length;
           bytes += resultBytes(data, MAX_BATCH_BYTES - bytes);
@@ -411,7 +486,14 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
     }
   };
   useLayoutEffect(() => {
-    current.current = { config, references, execute: () => void execute() };
+    current.current = {
+      config,
+      references,
+      resolve,
+      candidates,
+      execute: () => void execute(),
+      configureAliases: () => openSettings(true),
+    };
   });
 
   useEffect(() => {
@@ -486,22 +568,17 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
     };
   }, [draft, storageKey]);
 
-  const template = joinTemplate(
-    ready
-      ? { left: preferredName(references, "left"), right: preferredName(references, "right") }
-      : { left: "accounts", right: "events" },
-  );
   const insertJoin = () => {
     const editor = view.current;
     if (!editor || editor.state.doc.length) return;
-    snippet(template)(editor, null, 0, 0);
+    snippet(JOIN_TEMPLATE)(editor, null, 0, 0);
     editor.focus();
+    startCompletion(editor);
   };
   const applySettings = () => {
-    if (!settings || !configured(settings) || settingsError) return;
+    if (!settings || !driverFor(settings.profile) || settingsError) return;
     const next = {
       ...settings,
-      profile: driverFor(settings.profile)!.id,
       sourceAliases: Object.fromEntries(
         Object.entries(settings.sourceAliases)
           .map(([id, alias]) => [id, alias.trim()])
@@ -509,8 +586,6 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
       ),
     };
     if (
-      next.left !== config.left ||
-      next.right !== config.right ||
       next.profile !== config.profile ||
       JSON.stringify(next.sourceAliases) !== JSON.stringify(config.sourceAliases)
     ) {
@@ -533,17 +608,9 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
   const hasFeedback = busy || results.length > 0 || !!error;
   const setPage = (page: number) =>
     setResults((previous) => previous.map((item) => (item === result ? { ...item, page } : item)));
-  const configureLabel = t("Configure Sources…");
-  const connectionContext = ready
-    ? [
-        configureLabel,
-        ...sides.map((side) => {
-          const source = sourceFor(config[side])!;
-          return `${source.name || source.id} (${vendorOf({ driver: source.driver }).label})`;
-        }),
-        driverFor(config.profile)!.name,
-      ].join(" · ")
-    : configureLabel;
+  const configureLabel = t("Workspace Settings…");
+  const driver = driverFor(config.profile);
+  const connectionContext = driver ? `${configureLabel} · ${driver.name}` : configureLabel;
   const newSource = () => void executeAction("db.newDataSource");
   return (
     <section className={styles.workspace} aria-label={t("Query Workspace")}>
@@ -566,30 +633,27 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
           variant="ghost"
           size="small"
           className={styles.context}
+          icon="settings"
           aria-label={connectionContext}
           title={connectionContext}
           disabled={busy}
-          onClick={() => setSettings(config)}
+          onClick={() => openSettings()}
         >
-          <span>
-            {ready ? `${preferredName(references, "left")} ↔ ${preferredName(references, "right")}` : configureLabel}
-          </span>
+          <span>{driver?.name ?? configureLabel}</span>
         </Button>
       </Toolbar>
       <div className={styles.query} data-result={hasFeedback ? "" : undefined}>
         <div className={styles.editor} ref={host} />
         {empty && (
           <div className={styles.firstRun}>
-            {ready ? (
-              <T>Use qualified table names to join the selected sources.</T>
-            ) : candidates.length < 2 ? (
-              <T>Save two PostgreSQL or ClickHouse data sources first.</T>
+            {candidates.length < 2 ? (
+              <T>Save at least two PostgreSQL, ClickHouse, SQLite, or file-backed DuckDB sources.</T>
             ) : (
-              <T>Choose two saved data sources and a DuckDB JDBC driver.</T>
+              <T>Type # to choose a saved data source.</T>
             )}
-            <JoinExample template={template} />
+            <JoinExample />
             <div className={styles.firstRunActions}>
-              {ready ? (
+              {usableReferences >= 2 ? (
                 <Button variant="secondary" size="small" onClick={insertJoin}>
                   <T>Insert JOIN</T>
                 </Button>
@@ -598,8 +662,8 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
                   <T>New Data Source…</T>
                 </Button>
               ) : (
-                <Button variant="primary" size="small" onClick={() => setSettings(config)}>
-                  <T>Configure Sources…</T>
+                <Button variant="primary" size="small" onClick={() => openSettings()}>
+                  <T>Workspace Settings…</T>
                 </Button>
               )}
             </div>
@@ -701,8 +765,8 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
       {settings && (
         <Dialog
           open
-          title={t("Configure Workspace Sources")}
-          width={440}
+          title={t("Workspace Settings")}
+          width={480}
           onClose={() => {
             setManage(false);
             setSettings(null);
@@ -712,27 +776,12 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
             {
               label: "OK",
               role: "default",
-              disabled: !configured(settings) || !!settingsError,
+              disabled: !driverFor(settings.profile) || !!settingsError,
               onClick: applySettings,
             },
           ]}
         >
           <div className={styles.settings}>
-            {sides.map((side) => (
-              <label key={side} className={styles.field}>
-                <span>{t(side === "left" ? "Left data source" : "Right data source")}</span>
-                <Select
-                  aria-label={t(side === "left" ? "Left data source" : "Right data source")}
-                  searchable
-                  value={settings[side]}
-                  placeholder="Select data source"
-                  options={candidates
-                    .filter((s) => s.id !== settings[side === "left" ? "right" : "left"])
-                    .map((s) => ({ value: s.id, label: s.name || s.id, verbatim: true, icon: vendorOf(s).icon }))}
-                  onChange={(id) => setSettings({ ...settings, [side]: id })}
-                />
-              </label>
-            ))}
             <label className={styles.field}>
               <span>
                 <T>Workspace DuckDB driver</T>
@@ -749,15 +798,12 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
                 onChange={(profile) => setSettings({ ...settings, profile })}
               />
             </label>
+            {!settings.profile && registry.drivers && !driverFor(settings.profile) && (
+              <p>
+                <T>Choose a DuckDB JDBC driver to run workspace SQL.</T>
+              </p>
+            )}
             <div className={styles.settingsActions}>
-              <Button
-                variant="ghost"
-                icon="swap-panels"
-                disabled={!settings.left && !settings.right}
-                onClick={() => setSettings({ ...settings, left: settings.right, right: settings.left })}
-              >
-                <T>Swap Sides</T>
-              </Button>
               <Button variant="ghost" disabled={registry.drivers === null} onClick={() => setManage(true)}>
                 <T>Manage Drivers…</T>
               </Button>
@@ -767,54 +813,74 @@ export function WorkspaceEditor({ input }: { input: EditorInput }) {
                 </Button>
               )}
             </div>
-            {settingsReferences && sides.some((side) => sourceFor(settings[side])) && (
-              <div className={styles.aliasFields}>
-                <p>
-                  <T>Use a short SQL name for a source. Leave it blank to use the connection name.</T>
-                </p>
-                {sides
-                  .filter((side) => sourceFor(settings[side]))
-                  .map((side) => (
-                    <label key={side} className={styles.field}>
-                      <span>{t(side === "left" ? "Left SQL alias" : "Right SQL alias")}</span>
-                      <Input
-                        aria-label={t(side === "left" ? "Left SQL alias" : "Right SQL alias")}
-                        mono
-                        invalid={!!settingsError}
-                        value={settingsReferences.aliases[side]}
-                        placeholder={settingsReferences.labels[side]}
-                        onChange={(event) =>
-                          setSettings({
-                            ...settings,
-                            sourceAliases: { ...settings.sourceAliases, [settings[side]]: event.target.value },
-                          })
-                        }
-                      />
-                    </label>
-                  ))}
+            {candidates.length > 0 && (
+              <div>
+                <Button
+                  variant="ghost"
+                  size="small"
+                  icon={showAliases ? "chevron-down" : "chevron-right"}
+                  aria-expanded={showAliases}
+                  aria-controls={showAliases ? `${panelId}-aliases` : undefined}
+                  onClick={() => setShowAliases(!showAliases)}
+                >
+                  <T>SQL aliases</T>
+                </Button>
+                {showAliases && (
+                  <div id={`${panelId}-aliases`} className={styles.aliasFields}>
+                    <p>
+                      <T>Use a short SQL name for a source. Leave it blank to use the connection name.</T>
+                    </p>
+                    {candidates.map((source) => {
+                      const label = sourceLabel({ ...source, name: source.name || source.id });
+                      const detail = source.file || [source.host, source.database].filter(Boolean).join(" / ");
+                      const alias = Object.hasOwn(settings.sourceAliases, source.id)
+                        ? settings.sourceAliases[source.id]
+                        : "";
+                      return (
+                        <label key={source.id} className={styles.aliasField}>
+                          <span className={styles.aliasName} title={detail ? `${label} · ${detail}` : label}>
+                            <Icon name={vendorOf(source).icon} size={14} />
+                            <span>
+                              {source.name || source.id}
+                              {detail && <small>{detail}</small>}
+                            </span>
+                          </span>
+                          <Input
+                            aria-label={t`SQL alias for ${label}`}
+                            aria-description={detail || undefined}
+                            mono
+                            value={alias}
+                            placeholder={source.name || source.id}
+                            onChange={(event) =>
+                              setSettings({
+                                ...settings,
+                                sourceAliases: { ...settings.sourceAliases, [source.id]: event.target.value },
+                              })
+                            }
+                          />
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
+            )}
+            {settings.profile && registry.drivers && !driverFor(settings.profile) && (
+              <p role="alert">
+                <T>The saved DuckDB driver is unavailable.</T>
+              </p>
             )}
             {settingsError && <p role="alert">{settingsError}</p>}
             {registry.error && <div role="alert">{registry.error}</div>}
             {candidates.length < 2 && (
               <div className={styles.settingsActions}>
                 <p>
-                  <T>Save two PostgreSQL or ClickHouse data sources first.</T>
+                  <T>Save at least two PostgreSQL, ClickHouse, SQLite, or file-backed DuckDB sources.</T>
                 </p>
                 <Button variant="secondary" size="small" onClick={newSource}>
                   <T>New Data Source…</T>
                 </Button>
               </div>
-            )}
-            {sides.some((side) => settings[side] && !sourceFor(settings[side])) && (
-              <p role="alert">
-                <T>A saved workspace source is unavailable.</T>
-              </p>
-            )}
-            {settings.profile && registry.drivers && !driverFor(settings.profile) && (
-              <p role="alert">
-                <T>The saved DuckDB driver is unavailable.</T>
-              </p>
             )}
           </div>
         </Dialog>

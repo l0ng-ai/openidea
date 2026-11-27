@@ -1,14 +1,14 @@
 import type { Locator, Page } from "@playwright/test";
 import { expect, ipcCalls, stubDesktop, test } from "./fixtures";
 
-async function setupWorkspace(page: Page) {
+async function setupWorkspace(page: Page, options: { multipleDrivers?: boolean; fullNames?: boolean } = {}) {
   await stubDesktop(page);
-  await page.evaluate(async () => {
+  await page.evaluate(async ({ fullNames, multipleDrivers }) => {
     const store = "/src/features/database/store.ts";
     const { useDatabase } = await import(/* @vite-ignore */ store);
     const sources = [
-      { id: "accounts", name: "Accounts · PostgreSQL", driver: "postgres" },
-      { id: "events", name: "Events · ClickHouse", driver: "clickhouse" },
+      { id: "accounts", name: fullNames ? "Accounts · PostgreSQL" : "accounts", driver: "postgres" },
+      { id: "events", name: fullNames ? "Events · ClickHouse" : "events", driver: "clickhouse" },
     ];
     const table = (schema: string, name: string, ...keys: string[]) => ({
       schema,
@@ -47,13 +47,15 @@ async function setupWorkspace(page: Page) {
         [
           { id: "duck", name: "DuckDB JDBC" },
           { id: "duck-local", name: "DuckDB Local" },
-        ].map((driver) => ({
-          ...driver,
-          className: "org.duckdb.DuckDBDriver",
-          vendor: "duckdb",
-          jars: [],
-          urlTemplate: "jdbc:duckdb:",
-        })),
+        ]
+          .slice(0, multipleDrivers ? 2 : 1)
+          .map((driver) => ({
+            ...driver,
+            className: "org.duckdb.DuckDBDriver",
+            vendor: "duckdb",
+            jars: [],
+            urlTemplate: "jdbc:duckdb:",
+          })),
       db_workspace_join: () => ({
         statement: "",
         columns: [
@@ -80,7 +82,7 @@ async function setupWorkspace(page: Page) {
         truncated: [],
       }),
     });
-  });
+  }, options);
 }
 
 async function openWorkspace(page: Page) {
@@ -91,7 +93,16 @@ async function openWorkspace(page: Page) {
   return page.getByRole("region", { name: "Query Workspace" });
 }
 
-const SQL = "SELECT * FROM #left.public.customers a JOIN #right.events.purchases b ON a.id = b.customer_id";
+const SQL = "SELECT * FROM #accounts.public.customers a JOIN #events.events.purchases b ON a.id = b.customer_id";
+
+async function saveWorkspaceDraft(page: Page, draft: Record<string, unknown>) {
+  await page.evaluate(async (draft) => {
+    const module = "/src/platform/project.ts";
+    const { useProject } = await import(/* @vite-ignore */ module);
+    const root = useProject.getState().project.root;
+    localStorage.setItem("openidea.db-workspace:" + root, JSON.stringify(draft));
+  }, draft);
+}
 
 async function showDatabase(page: Page) {
   await page.evaluate(async () => {
@@ -104,18 +115,92 @@ async function showDatabase(page: Page) {
 async function settingsFor(page: Page, workspace: Locator) {
   await workspace
     .getByRole("toolbar", { name: "Workspace actions" })
-    .getByRole("button", { name: "Configure Sources…" })
+    .getByRole("button", { name: /Workspace Settings…/ })
     .click();
-  return page.getByRole("dialog", { name: "Configure Workspace Sources" });
+  return page.getByRole("dialog", { name: "Workspace Settings" });
 }
 
-async function selectSources(page: Page, settings: Locator) {
-  await settings.getByRole("button", { name: "Left data source" }).click();
-  await page.getByRole("option", { name: "Accounts · PostgreSQL" }).click();
-  await settings.getByRole("button", { name: "Right data source" }).click();
-  await expect(page.getByRole("option", { name: "Accounts · PostgreSQL" })).toHaveCount(0);
-  await page.getByRole("option", { name: "Events · ClickHouse" }).click();
-}
+test("joins four saved data sources without registering them in the workspace", async ({ workbench: page }, info) => {
+  await setupWorkspace(page);
+  await page.evaluate(async () => {
+    const module = "/src/features/database/store.ts";
+    const { useDatabase } = await import(/* @vite-ignore */ module);
+    const sources = [
+      { id: "accounts", name: "accounts", driver: "postgres" },
+      { id: "events", name: "events", driver: "clickhouse" },
+      { id: "warehouse", name: "warehouse", driver: "jdbc", vendor: "duckdb", url: "jdbc:duckdb:/warehouse.duckdb" },
+      { id: "lookup", name: "lookup", driver: "sqlite", file: "lookup.sqlite" },
+      { id: "memory", name: "memory", driver: "jdbc", vendor: "duckdb", url: "jdbc:duckdb:memory:session" },
+      { id: "arbitrary", name: "arbitrary", driver: "jdbc", url: "jdbc:other:anywhere" },
+      { id: "startup", name: "startup", driver: "postgres", options: { startupScript: "SELECT 1" } },
+    ];
+    useDatabase.setState({ sources, loaded: true });
+    window.__ipc.handlers.db_sources = () => sources;
+    const reply = window.__ipc.handlers.db_workspace_join;
+    window.__ipc.handlers.db_workspace_join = (args) => ({
+      ...(reply?.(args) as object),
+      columns: [
+        { name: "id", typeName: "BIGINT" },
+        { name: "label", typeName: "VARCHAR" },
+      ],
+      rows: [
+        ["9007199254740993", "Retail"],
+        ["9007199254740994", "Wholesale"],
+      ],
+    });
+  });
+  const workspace = await openWorkspace(page);
+  const editor = workspace.getByLabel("Workspace SQL");
+  await editor.focus();
+  await page.screenshot({ path: info.outputPath("workspace-four-source-empty.png"), animations: "disabled" });
+  expect(await ipcCalls(page, "db_completion")).toHaveLength(0);
+  await page.keyboard.insertText("SELECT * FROM ");
+  await page.keyboard.insertText("#");
+  for (const name of ["accounts", "events", "warehouse", "lookup"]) {
+    await expect(page.getByRole("option", { name: new RegExp(`^#${name}`) })).toBeVisible();
+  }
+  await expect(page.getByRole("option", { name: /^#(memory|arbitrary|startup)/ })).toHaveCount(0);
+  await page.screenshot({ path: info.outputPath("workspace-four-source-completion.png"), animations: "disabled" });
+  expect(await ipcCalls(page, "db_completion")).toHaveLength(0);
+  await editor.press("Escape");
+  await editor.press("Meta+A");
+  await page.keyboard.insertText(
+    [
+      "SELECT a.id, l.label FROM #accounts.public.customers AS a",
+      "JOIN #events.events.purchases AS e ON a.id=e.customer_id",
+      "JOIN #warehouse.main.items AS w ON e.customer_id=w.id",
+      "JOIN #lookup.main.labels AS l ON l.id=w.id;",
+    ].join("\n"),
+  );
+  await editor.press("Meta+Enter");
+  await expect(workspace.getByRole("tab", { name: "Result 1", exact: true })).toBeVisible();
+  await expect(workspace.getByRole("dialog", { name: "Workspace Settings" })).toHaveCount(0);
+  await expect(workspace.getByRole("grid").getByText("Retail", { exact: true })).toBeVisible();
+  await page.screenshot({ path: info.outputPath("workspace-four-source-results.png"), animations: "disabled" });
+  expect(await ipcCalls(page, "db_workspace_join")).toMatchObject([
+    {
+      driver: "duck",
+      plan: {
+        tables: [
+          { sourceId: "accounts", schema: "public", table: "customers" },
+          { sourceId: "events", schema: "events", table: "purchases" },
+          { sourceId: "warehouse", schema: "main", table: "items" },
+          { sourceId: "lookup", schema: "main", table: "labels" },
+        ],
+        joins: [
+          { left: { relation: 0, column: "id" }, rightColumn: "customer_id" },
+          { left: { relation: 1, column: "customer_id" }, rightColumn: "id" },
+          { left: { relation: 2, column: "id" }, rightColumn: "id" },
+        ],
+        projection: [
+          { relation: 0, column: "id" },
+          { relation: 3, column: "label" },
+        ],
+      },
+    },
+  ]);
+  expect(await ipcCalls(page, "db_completion")).toHaveLength(0);
+});
 
 test("shows the workspace before any data sources are added", async ({ workbench: page }, info) => {
   await setupWorkspace(page);
@@ -133,10 +218,10 @@ test("shows the workspace before any data sources are added", async ({ workbench
   const editor = workspace.getByLabel("Workspace SQL");
   await expect(editor).toBeEmpty();
   await expect(editor).toBeFocused();
-  await expect(workspace.locator("pre")).toContainText("FROM #accounts.public.customers");
+  await expect(workspace.locator("pre")).toContainText("FROM #source_a.schema.table_a");
   await expect(workspace.getByRole("button", { name: "Insert JOIN" })).toHaveCount(0);
   await expect(workspace.getByRole("button", { name: "New Data Source…" })).toBeVisible();
-  await expect(workspace.locator("pre")).toContainText("ON a.id = b.customer_id");
+  await expect(workspace.locator("pre")).toContainText("ON a.key = b.key");
   await expect(workspace.getByRole("grid")).toHaveCount(0);
   const height = await editor.evaluate((element) => element.closest(".cm-editor")!.getBoundingClientRect().height);
   expect(height).toBeGreaterThan(500);
@@ -155,9 +240,10 @@ test("shows the workspace before any data sources are added", async ({ workbench
   });
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
   await editor.press("Meta+Enter");
-  const settings = page.getByRole("dialog", { name: "Configure Workspace Sources" });
-  await expect(settings.getByText("Save two PostgreSQL or ClickHouse data sources first.")).toBeVisible();
-  await expect(settings.getByRole("button", { name: "OK", exact: true })).toBeDisabled();
+  const settings = page.getByRole("dialog", { name: "Workspace Settings" });
+  await expect(
+    settings.getByText("Save at least two PostgreSQL, ClickHouse, SQLite, or file-backed DuckDB sources."),
+  ).toBeVisible();
   const dialog = (await settings.boundingBox())!;
   expect(dialog.x + dialog.width).toBeLessThanOrEqual(720);
   await settings.getByRole("button", { name: "New Data Source…" }).click();
@@ -169,21 +255,19 @@ test("shows the workspace before any data sources are added", async ({ workbench
 });
 
 test("completes preferred aliases and pages the same workspace result", async ({ workbench: page }, info) => {
-  await setupWorkspace(page);
+  await setupWorkspace(page, { fullNames: true });
   const node = await showDatabase(page);
   await node.click({ button: "right" });
-  await page.getByRole("menuitem", { name: "Configure Sources…" }).click();
+  await page.getByRole("menuitem", { name: /Workspace Settings…/ }).click();
   const workspace = page.getByRole("region", { name: "Query Workspace" });
-  const settings = page.getByRole("dialog", { name: "Configure Workspace Sources" });
-  await selectSources(page, settings);
+  const settings = page.getByRole("dialog", { name: "Workspace Settings" });
   await expect(settings.getByText("In memory", { exact: true })).toBeVisible();
   await page.screenshot({ path: info.outputPath("workspace-settings.png"), animations: "disabled" });
-  await settings.getByRole("textbox", { name: "Left SQL alias" }).fill("  acct  ");
-  const rightAlias = settings.getByRole("textbox", { name: "Right SQL alias" });
+  await settings.getByRole("button", { name: "SQL aliases", exact: true }).press("Enter");
+  await settings.getByRole("textbox", { name: /^SQL alias for Accounts/ }).fill("  acct  ");
+  const rightAlias = settings.getByRole("textbox", { name: /^SQL alias for Events/ });
   await rightAlias.fill("acct");
-  await expect(settings.getByRole("alert")).toHaveText(
-    "Choose a unique SQL alias. The names left and right are reserved.",
-  );
+  await expect(settings.getByRole("alert")).toHaveText("Choose a SQL alias unique to this source.");
   const ok = settings.getByRole("button", { name: "OK", exact: true });
   await expect(ok).toBeDisabled();
   await rightAlias.fill("events");
@@ -193,23 +277,38 @@ test("completes preferred aliases and pages the same workspace result", async ({
   const editor = workspace.getByLabel("Workspace SQL");
   await expect(editor).toBeFocused();
   const context = workspace.getByRole("button", {
-    name: /Configure Sources.*Accounts.*PostgreSQL.*Events.*ClickHouse.*DuckDB JDBC/,
+    name: /Workspace Settings.*DuckDB JDBC/,
   });
-  await expect(context).toHaveText("acct ↔ events");
+  await expect(context).toHaveText("DuckDB JDBC");
   await workspace.getByRole("button", { name: "Insert JOIN" }).click();
-  const left = "#acct";
-  await expect(editor).toContainText(left + ".public.customers");
-  await expect(editor).toContainText("#events.events.purchases");
+  await expect(editor).toContainText("#source_a.schema.table_a");
+  await expect(editor).toContainText("#source_b.schema.table_b");
   const selection = () => page.evaluate(() => window.getSelection()?.toString());
-  expect(await selection()).toBe("public");
+  expect(await selection()).toBe("#source_a");
+  await page.getByRole("option", { name: /^#acct/ }).click();
+  await expect(editor).toContainText("#acct.schema.table_a");
   await editor.press("Tab");
-  expect(await selection()).toBe("customers");
-  await editor.press("Escape");
+  expect(await selection()).toBe("#source_b");
+  await editor.press("Control+Space");
+  await page.getByRole("option", { name: /^#events/ }).click();
+  await editor.press("Tab");
+  expect(await selection()).toBe("schema.table_a");
+  await editor.press("Control+Space");
+  await page.getByRole("option", { name: /^public\.customers/ }).click();
+  await expect(editor).toContainText("#acct.public.customers");
+  await editor.press("Tab");
+  expect(await selection()).toBe("schema.table_b");
 
   await editor.press("Meta+A");
   await page.keyboard.insertText('SELECT * FROM #"Accounts · PostgreSQL".');
   await editor.press("Control+Space");
   await expect(page.getByRole("option", { name: /public\.customers/ })).toBeVisible();
+  await editor.press("Escape");
+
+  await editor.press("Meta+A");
+  await page.keyboard.insertText("SELECT * FROM #ACCT.");
+  await editor.press("Control+Space");
+  await expect(page.getByRole("option", { name: /^#ACCT\.public\.customers/ })).toBeVisible();
   await editor.press("Escape");
 
   await editor.press("Meta+A");
@@ -252,8 +351,14 @@ test("completes preferred aliases and pages the same workspace result", async ({
   await expect(grid.getByText("<null>", { exact: true })).toBeVisible();
   expect((await ipcCalls(page, "db_workspace_join"))[0]).toMatchObject({
     driver: "duck",
-    left: { sourceId: "accounts", database: "", schema: "public", table: "customers", key: "id" },
-    right: { sourceId: "events", database: "events", schema: "events", table: "purchases", key: "customer_id" },
+    plan: {
+      tables: [
+        { sourceId: "accounts", database: "", schema: "public", table: "customers" },
+        { sourceId: "events", database: "", schema: "events", table: "purchases" },
+      ],
+      joins: [{ left: { relation: 0, column: "id" }, rightColumn: "customer_id" }],
+      projection: null,
+    },
   });
   expect(await ipcCalls(page, "db_completion")).toEqual([{ id: "accounts" }, { id: "events" }]);
   await workspace.getByRole("button", { name: "Next Page" }).click();
@@ -271,16 +376,15 @@ test("runs the selected JOIN or the one at the caret from a multi-statement draf
 }, info) => {
   await setupWorkspace(page);
   const workspace = await openWorkspace(page);
-  const settings = await settingsFor(page, workspace);
-  await selectSources(page, settings);
-  await settings.getByRole("button", { name: "OK", exact: true }).click();
   const editor = workspace.getByLabel("Workspace SQL");
   const second = SQL.replace("public.customers", "legacy.customers");
   await editor.click();
   await page.keyboard.insertText(SQL + ";\n" + second + ";");
   await editor.press("Meta+Enter");
   await expect.poll(async () => (await ipcCalls(page, "db_workspace_join")).length).toBe(1);
-  expect((await ipcCalls(page, "db_workspace_join"))[0]).toMatchObject({ left: { schema: "legacy" } });
+  expect((await ipcCalls(page, "db_workspace_join"))[0]).toMatchObject({
+    plan: { tables: [{ schema: "legacy" }, { sourceId: "events" }] },
+  });
 
   await editor.press("Meta+Home");
   await editor.press("Shift+End");
@@ -288,7 +392,9 @@ test("runs the selected JOIN or the one at the caret from a multi-statement draf
   expect(selected).toBe(SQL + ";");
   await workspace.getByRole("button", { name: "Run", exact: true }).click();
   await expect.poll(async () => (await ipcCalls(page, "db_workspace_join")).length).toBe(2);
-  expect((await ipcCalls(page, "db_workspace_join"))[1]).toMatchObject({ left: { schema: "public" } });
+  expect((await ipcCalls(page, "db_workspace_join"))[1]).toMatchObject({
+    plan: { tables: [{ schema: "public" }, { sourceId: "events" }] },
+  });
 
   await page.evaluate(() => {
     const reply = window.__ipc.handlers.db_workspace_join;
@@ -297,7 +403,8 @@ test("runs the selected JOIN or the one at the caret from a multi-statement draf
         window.addEventListener("workspace-test-release", () => resolve(), { once: true });
       });
       const result = reply?.(args) as { rows: string[][] };
-      if ((args.left as { schema: string }).schema === "legacy") result.rows[0]![1] = "Legacy customer";
+      if ((args.plan as { tables: { schema: string }[] }).tables[0]!.schema === "legacy")
+        result.rows[0]![1] = "Legacy customer";
       return result;
     };
   });
@@ -336,31 +443,40 @@ test("runs the selected JOIN or the one at the caret from a multi-statement draf
   await expect(grid.getByText("Last customer", { exact: true })).toBeVisible();
   await page.screenshot({ path: info.outputPath("workspace-batch-results.png"), animations: "disabled" });
   const calls = await ipcCalls(page, "db_workspace_join");
-  expect(calls.slice(2)).toMatchObject([{ left: { schema: "public" } }, { left: { schema: "legacy" } }]);
+  expect(calls.slice(2)).toMatchObject([
+    { plan: { tables: [{ schema: "public" }, { sourceId: "events" }] } },
+    { plan: { tables: [{ schema: "legacy" }, { sourceId: "events" }] } },
+  ]);
   expect(await ipcCalls(page, "db_execute")).toHaveLength(0);
 
   await editor.press("Meta+A");
   await editor.press("Backspace");
   await workspace.getByRole("button", { name: "Insert JOIN" }).click();
-  expect(await page.evaluate(() => window.getSelection()?.toString())).toBe("public");
+  await page.getByRole("option", { name: /^#accounts/ }).click();
+  await editor.press("Tab");
+  await editor.press("Control+Space");
+  await page.getByRole("option", { name: /^#events/ }).click();
+  for (const field of ["public.customers", "events.purchases", "id", "customer_id"]) {
+    await editor.press("Tab");
+    await page.keyboard.insertText(field);
+  }
   await editor.press("Meta+Enter");
   await expect.poll(async () => (await ipcCalls(page, "db_workspace_join")).length).toBe(5);
-  expect((await ipcCalls(page, "db_workspace_join"))[4]).toMatchObject({ left: { table: "customers" } });
+  expect((await ipcCalls(page, "db_workspace_join"))[4]).toMatchObject({
+    plan: { tables: [{ table: "customers" }, { sourceId: "events" }] },
+  });
   await release();
 });
 
 test("cancels the active request and surfaces parser, source and limit errors", async ({ workbench: page }) => {
   await setupWorkspace(page);
   const workspace = await openWorkspace(page);
-  const settings = await settingsFor(page, workspace);
-  await selectSources(page, settings);
-  await settings.getByRole("button", { name: "OK", exact: true }).click();
   const run = workspace.getByRole("button", { name: "Run", exact: true });
   const alert = workspace.getByRole("alert");
   const editor = workspace.getByLabel("Workspace SQL");
   await editor.click();
   await editor.press("Meta+A");
-  await page.keyboard.insertText("DELETE FROM #left.public.customers");
+  await page.keyboard.insertText("DELETE FROM #accounts.public.customers");
   await run.click();
   await expect(alert).toHaveText("Expected SELECT in the workspace query.");
   expect(await ipcCalls(page, "db_workspace_join")).toHaveLength(0);
@@ -381,7 +497,7 @@ test("cancels the active request and surfaces parser, source and limit errors", 
   });
   await run.click();
   await expect(workspace.getByText("Running query", { exact: true })).toBeVisible();
-  await expect(workspace.getByRole("button", { name: "Configure Sources…" })).toBeDisabled();
+  await expect(workspace.getByRole("button", { name: /Workspace Settings…/ })).toBeDisabled();
   await workspace.getByRole("button", { name: "Stop", exact: true }).click();
   await expect(alert).toHaveText("Cancelled");
   await expect(run).toBeEnabled();
@@ -410,13 +526,10 @@ test("cancels the active request and surfaces parser, source and limit errors", 
 test("validates all selected statements before reading either source", async ({ workbench: page }) => {
   await setupWorkspace(page);
   const workspace = await openWorkspace(page);
-  const settings = await settingsFor(page, workspace);
-  await selectSources(page, settings);
-  await settings.getByRole("button", { name: "OK", exact: true }).click();
   const editor = workspace.getByLabel("Workspace SQL");
   const alert = workspace.getByRole("alert");
   await editor.click();
-  await page.keyboard.insertText(SQL + ";\nDELETE FROM #left.public.customers;");
+  await page.keyboard.insertText(SQL + ";\nDELETE FROM #accounts.public.customers;");
   await editor.press("Meta+A");
   await editor.press("Meta+Enter");
   await expect(alert).toHaveText("Expected SELECT in the workspace query.");
@@ -433,17 +546,14 @@ for (const failure of ["cancel", "error", "row budget"] as const) {
   test(`stops the script after ${failure} and keeps the completed result`, async ({ workbench: page }) => {
     await setupWorkspace(page);
     const workspace = await openWorkspace(page);
-    const settings = await settingsFor(page, workspace);
-    await selectSources(page, settings);
-    await settings.getByRole("button", { name: "OK", exact: true }).click();
     const editor = workspace.getByLabel("Workspace SQL");
     await editor.click();
     await page.keyboard.insertText([SQL, SQL.replace("public.customers", "legacy.customers"), SQL].join(";\n") + ";");
     await page.evaluate((failure) => {
       const reply = window.__ipc.handlers.db_workspace_join;
-      window.__ipc.handlers.db_workspace_join = ({ request, left, ...args }) => {
-        const result = reply?.({ request, left, ...args }) as { rows: Array<Array<string | null>> };
-        if ((left as { schema: string }).schema !== "legacy") return result;
+      window.__ipc.handlers.db_workspace_join = ({ request, plan, ...args }) => {
+        const result = reply?.({ request, plan, ...args }) as { rows: Array<Array<string | null>> };
+        if ((plan as { tables: { schema: string }[] }).tables[0]!.schema !== "legacy") return result;
         if (failure === "error") throw { kind: "invalidInput", message: "Could not connect to Events", data: null };
         if (failure === "row budget") return { ...result, rows: Array(100_000).fill(result.rows[0]) };
         return new Promise((_, reject) => {
@@ -474,23 +584,35 @@ for (const failure of ["cancel", "error", "row budget"] as const) {
   });
 }
 
-test("restores the SQL, sources and driver on reopen within each project", async ({ workbench: page }) => {
-  await setupWorkspace(page);
+test("migrates old source slots, aliases and driver with each project's SQL", async ({ workbench: page }) => {
+  await setupWorkspace(page, { multipleDrivers: true });
+  const legacySQL = SQL.replace("#accounts", "#left").replace("#events", "#right");
+  await saveWorkspaceDraft(page, {
+    left: "accounts",
+    right: "events",
+    sourceAliases: { accounts: "acct", events: "evt" },
+    profile: "duck-local",
+    sql: legacySQL,
+  });
   const workspace = await openWorkspace(page);
-  const settings = await settingsFor(page, workspace);
-  await selectSources(page, settings);
-  const leftAlias = settings.getByRole("textbox", { name: "Left SQL alias" });
-  const rightAlias = settings.getByRole("textbox", { name: "Right SQL alias" });
-  await leftAlias.fill("acct");
-  await rightAlias.fill("events");
-  const driver = settings.getByRole("button", { name: "Workspace DuckDB driver" });
-  await driver.click();
-  await page.getByRole("option", { name: "DuckDB Local" }).click();
-  await settings.getByRole("button", { name: "OK", exact: true }).click();
   const editor = workspace.getByLabel("Workspace SQL");
-  await editor.click();
-  await editor.press("Meta+A");
-  await page.keyboard.insertText(SQL);
+  await expect(editor).toHaveText(legacySQL);
+  await editor.press("Meta+Enter");
+  await expect(workspace.getByRole("tab", { name: "Result 1", exact: true })).toBeVisible();
+  expect(await ipcCalls(page, "db_workspace_join")).toMatchObject([
+    { driver: "duck-local", plan: { tables: [{ sourceId: "accounts" }, { sourceId: "events" }] } },
+  ]);
+
+  const settings = await settingsFor(page, workspace);
+  const driver = settings.getByRole("button", { name: "Workspace DuckDB driver" });
+  await expect(driver).toHaveText("DuckDB Local");
+  await settings.getByText("SQL aliases", { exact: true }).click();
+  const accountsAlias = settings.getByRole("textbox", { name: /^SQL alias for accounts/ });
+  const eventsAlias = settings.getByRole("textbox", { name: /^SQL alias for events/ });
+  await expect(accountsAlias).toHaveValue("acct");
+  await expect(eventsAlias).toHaveValue("evt");
+  await accountsAlias.fill("customers");
+  await settings.getByRole("button", { name: "OK", exact: true }).click();
 
   const close = page
     .getByRole("region", { name: "Editor", exact: true })
@@ -498,41 +620,18 @@ test("restores the SQL, sources and driver on reopen within each project", async
   await close.click();
   await expect(workspace).toHaveCount(0);
   await openWorkspace(page);
-  await expect(editor).toHaveText(SQL);
+  await expect(editor).toHaveText(legacySQL);
   await settingsFor(page, workspace);
-  await expect(settings.getByRole("button", { name: "Left data source" })).toHaveText("Accounts · PostgreSQL");
-  await expect(settings.getByRole("button", { name: "Right data source" })).toHaveText("Events · ClickHouse");
+  await settings.getByText("SQL aliases", { exact: true }).click();
+  await expect(accountsAlias).toHaveValue("customers");
+  await expect(eventsAlias).toHaveValue("evt");
   await expect(driver).toHaveText("DuckDB Local");
-  await expect(leftAlias).toHaveValue("acct");
-  await expect(rightAlias).toHaveValue("events");
-  await settings.getByRole("button", { name: "Swap Sides" }).click();
-  await expect(leftAlias).toHaveValue("events");
-  await expect(rightAlias).toHaveValue("acct");
-  await leftAlias.fill("discarded");
-  await expect(settings.getByRole("button", { name: "Left data source" })).toHaveText("Events · ClickHouse");
-  await expect(settings.getByRole("button", { name: "Right data source" })).toHaveText("Accounts · PostgreSQL");
-  await driver.click();
-  await page.getByRole("option", { name: "DuckDB JDBC" }).click();
+  await accountsAlias.fill("discarded");
   await settings.getByRole("button", { name: "Cancel", exact: true }).click();
-  await expect(editor).toHaveText(SQL);
   await settingsFor(page, workspace);
-  await expect(driver).toHaveText("DuckDB Local");
-  await expect(leftAlias).toHaveValue("acct");
-  await expect(rightAlias).toHaveValue("events");
-  await expect(settings.getByRole("button", { name: "Left data source" })).toHaveText("Accounts · PostgreSQL");
-  await expect(settings.getByRole("button", { name: "Right data source" })).toHaveText("Events · ClickHouse");
+  await settings.getByText("SQL aliases", { exact: true }).click();
+  await expect(accountsAlias).toHaveValue("customers");
   await settings.getByRole("button", { name: "Cancel", exact: true }).click();
-  await page.evaluate(async () => {
-    const store = "/src/features/database/store.ts";
-    const { useDatabase } = await import(/* @vite-ignore */ store);
-    useDatabase.setState({ sources: [{ id: "events", name: "Events · ClickHouse", driver: "clickhouse" }] });
-  });
-  await workspace.getByRole("button", { name: "Run", exact: true }).click();
-  await expect(settings.getByRole("alert")).toHaveText("A saved workspace source is unavailable.");
-  await expect(settings.getByRole("button", { name: "OK", exact: true })).toBeDisabled();
-  await settings.getByRole("button", { name: "Cancel", exact: true }).click();
-  await expect(editor).toHaveText(SQL);
-  await expect(workspace.getByRole("grid")).toHaveCount(0);
   await close.click();
 
   await page.evaluate(async () => {
@@ -544,7 +643,124 @@ test("restores the SQL, sources and driver on reopen within each project", async
   await openWorkspace(page);
   await expect(editor).toBeEmpty();
   await settingsFor(page, workspace);
-  await expect(settings.getByRole("button", { name: "Left data source" })).toHaveText("Select data source");
-  await expect(driver).toHaveText("DuckDB JDBC");
+  await expect(driver).toHaveText("Select DuckDB driver");
+  await settings.getByText("SQL aliases", { exact: true }).click();
+  await expect(accountsAlias).toHaveValue("");
+  expect(await ipcCalls(page, "db_workspace_join")).toHaveLength(1);
+});
+
+test("does not retarget a deleted legacy source to an unrelated source named left", async ({ workbench: page }) => {
+  await setupWorkspace(page);
+  await page.evaluate(async () => {
+    const module = "/src/features/database/store.ts";
+    const { useDatabase } = await import(/* @vite-ignore */ module);
+    const sources = [
+      { id: "replacement", name: "left", driver: "postgres" },
+      { id: "events", name: "events", driver: "clickhouse" },
+    ];
+    useDatabase.setState({ sources, loaded: true });
+    window.__ipc.handlers.db_sources = () => sources;
+  });
+  const sql = SQL.replace("#accounts", "#left").replace("#events", "#right");
+  await saveWorkspaceDraft(page, { sql, left: "deleted", right: "events" });
+  const workspace = await openWorkspace(page);
+  const editor = workspace.getByLabel("Workspace SQL");
+  const alert = workspace.getByRole("alert");
+  await editor.press("Meta+Enter");
+  await expect(alert).toHaveText("Data source left is unavailable. Type # to see available sources.");
+  await editor.press("Meta+A");
+  await page.keyboard.insertText(sql.replace("#left", '#"left"'));
+  await editor.press("Meta+Enter");
+  await expect(alert).toHaveText("Data source left is unavailable. Type # to see available sources.");
   expect(await ipcCalls(page, "db_workspace_join")).toHaveLength(0);
+
+  await editor.press("Meta+A");
+  await page.keyboard.insertText("SELECT * FROM #");
+  await editor.press("Control+Space");
+  await expect(page.getByRole("option", { name: /^#"?left/ })).toHaveCount(0);
+  await page.getByRole("option", { name: "Set unique SQL aliases…" }).click();
+  const settings = page.getByRole("dialog", { name: "Workspace Settings" });
+  await settings.getByRole("textbox", { name: "SQL alias for left (PostgreSQL)" }).fill("replacement_src");
+  await settings.getByRole("button", { name: "OK", exact: true }).click();
+
+  await editor.press("Meta+A");
+  await page.keyboard.insertText(sql.replace("#left", "#replacement_src"));
+  await editor.press("Meta+Enter");
+  await expect(workspace.getByRole("tab", { name: "Result 1", exact: true })).toBeVisible();
+  expect(await ipcCalls(page, "db_workspace_join")).toMatchObject([
+    { plan: { tables: [{ sourceId: "replacement" }, { sourceId: "events" }] } },
+  ]);
+});
+
+test("offers aliases when identical saved names cannot be resolved", async ({ workbench: page }) => {
+  await setupWorkspace(page);
+  await page.evaluate(async () => {
+    const module = "/src/features/database/store.ts";
+    const { useDatabase } = await import(/* @vite-ignore */ module);
+    const sources = [
+      { id: "accounts", name: "Shared", driver: "postgres", host: "accounts.example" },
+      { id: "events", name: "Shared", driver: "clickhouse", host: "events.example" },
+    ];
+    useDatabase.setState({ sources, loaded: true });
+    window.__ipc.handlers.db_sources = () => sources;
+  });
+  const workspace = await openWorkspace(page);
+  const editor = workspace.getByLabel("Workspace SQL");
+  await editor.focus();
+  await page.keyboard.insertText("SELECT * FROM #");
+  await editor.press("Control+Space");
+  const aliasOption = page.getByRole("option", { name: "Set unique SQL aliases…" });
+  await expect(aliasOption).toBeVisible();
+  await expect(page.getByRole("option", { name: /^#"Shared"/ })).toHaveCount(0);
+  await aliasOption.click();
+  const settings = page.getByRole("dialog", { name: "Workspace Settings" });
+  await expect(settings.getByText("accounts.example", { exact: true })).toBeVisible();
+  await settings.getByRole("textbox", { name: "SQL alias for Shared (PostgreSQL)" }).fill("accounts");
+  await settings.getByRole("textbox", { name: "SQL alias for Shared (ClickHouse)" }).fill("events");
+  await settings.getByRole("button", { name: "OK", exact: true }).click();
+  await editor.press("Control+Space");
+  await expect(page.getByRole("option", { name: /^#accounts/ })).toBeVisible();
+  await expect(page.getByRole("option", { name: /^#events/ })).toBeVisible();
+  expect(await ipcCalls(page, "db_completion")).toHaveLength(0);
+});
+
+test("keeps unrelated queries executable when a stored alias becomes ambiguous", async ({ workbench: page }) => {
+  await setupWorkspace(page);
+  await page.evaluate(async () => {
+    const module = "/src/features/database/store.ts";
+    const { useDatabase } = await import(/* @vite-ignore */ module);
+    const sources = [
+      ...useDatabase.getState().sources,
+      { id: "old", name: "old", driver: "postgres" },
+      { id: "new", name: "colliding", driver: "postgres" },
+    ];
+    useDatabase.setState({ sources, loaded: true });
+    window.__ipc.handlers.db_sources = () => sources;
+  });
+  await saveWorkspaceDraft(page, { sql: SQL, sourceAliases: { old: "colliding" } });
+  const workspace = await openWorkspace(page);
+  await workspace.getByLabel("Workspace SQL").press("Meta+Enter");
+  await expect(workspace.getByRole("tab", { name: "Result 1", exact: true })).toBeVisible();
+  expect(await ipcCalls(page, "db_workspace_join")).toHaveLength(1);
+  const settings = await settingsFor(page, workspace);
+  await expect(settings.getByRole("alert")).toHaveText("Choose a SQL alias unique to this source.");
+  await expect(settings.getByRole("button", { name: "OK", exact: true })).toBeDisabled();
+});
+
+test("asks before replacing a missing explicitly selected execution driver", async ({ workbench: page }) => {
+  await setupWorkspace(page);
+  await saveWorkspaceDraft(page, { sql: SQL, profile: "missing" });
+  const workspace = await openWorkspace(page);
+  const editor = workspace.getByLabel("Workspace SQL");
+  await editor.press("Meta+Enter");
+  const settings = page.getByRole("dialog", { name: "Workspace Settings" });
+  await expect(settings.getByRole("alert")).toHaveText("The saved DuckDB driver is unavailable.");
+  expect(await ipcCalls(page, "db_workspace_join")).toHaveLength(0);
+  const driver = settings.getByRole("button", { name: "Workspace DuckDB driver" });
+  await driver.click();
+  await page.getByRole("option", { name: "DuckDB JDBC" }).click();
+  await settings.getByRole("button", { name: "OK", exact: true }).click();
+  await editor.press("Meta+Enter");
+  await expect(workspace.getByRole("tab", { name: "Result 1", exact: true })).toBeVisible();
+  expect(await ipcCalls(page, "db_workspace_join")).toMatchObject([{ driver: "duck" }]);
 });

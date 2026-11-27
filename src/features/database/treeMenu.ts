@@ -128,7 +128,7 @@ export function nodeMenu(n: DbNode | null): MenuItem[] {
   if (n.kind === "workspace")
     return [
       { kind: "action", action: "db.queryWorkspace", label: "Query Workspace", icon: "db-console" },
-      { kind: "action", action: "db.queryWorkspace", label: "Configure Sources…", icon: "settings", arg: "configure" },
+      { kind: "action", action: "db.queryWorkspace", label: "Workspace Settings…", icon: "settings", arg: "configure" },
     ];
   const id = nodeTarget(n) ?? "";
   const driver = sourceById(id)?.driver ?? "sqlite";
