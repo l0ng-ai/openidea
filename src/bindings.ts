@@ -1480,7 +1480,7 @@ export const commands = {
 	 *  run that is gone, remote, or has no JVM with an attach listener.
 	 */
 	profilerGcBeforeStop: (run: RunId) => typedError<number, IdeError>(__TAURI_INVOKE("profiler_gc_before_stop", { run })),
-	/**  How to run `config` under a sampling profiler, or which profiler is missing. */
+	/**  How to run `config` under a profiler, or which profiler is missing. */
 	profilerPrepare: (config: RunConfig_Deserialize, mode: ProfileMode) => typedError<ProfilePrepared_Serialize, IdeError>(__TAURI_INVOKE("profiler_prepare", { config, mode })),
 	/**  The project open in this window (a settings window: its parent's), if any. */
 	projectCurrent: () => __TAURI_INVOKE<{
@@ -12232,6 +12232,11 @@ export type PythonSettings = {
 	 *  it, else unittest), `pytest` or `unittest`.
 	 */
 	testRunner?: string,
+	/**
+	 *  What Profile runs Python under (Settings › Python › Profiler): `auto` (py-spy where it
+	 *  is installed and samples without root, else cProfile), `cprofile` or `py-spy`.
+	 */
+	profiler?: string,
 };
 
 export type PythonStubLinks = {

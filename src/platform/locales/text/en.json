@@ -4328,5 +4328,8 @@
   "Delimiter: {delimiter}": "Delimiter: {delimiter}",
   "Table view of the file": "Table view of the file",
   "Data": "Data",
-  "CSV editor view": "CSV editor view"
+  "CSV editor view": "CSV editor view",
+  "cProfile": "cProfile",
+  "py-spy": "py-spy",
+  "Automatic uses py-spy where it is installed and can sample without root (not on macOS), else cProfile from the standard library.": "Automatic uses py-spy where it is installed and can sample without root (not on macOS), else cProfile from the standard library."
 }

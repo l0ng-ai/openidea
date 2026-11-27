@@ -10831,5 +10831,8 @@
   "Delimiter: {delimiter}": "分隔符：{delimiter}",
   "Table view of the file": "文件的表格视图",
   "Data": "数据",
-  "CSV editor view": "CSV 编辑器视图"
+  "CSV editor view": "CSV 编辑器视图",
+  "cProfile": "cProfile",
+  "py-spy": "py-spy",
+  "Automatic uses py-spy where it is installed and can sample without root (not on macOS), else cProfile from the standard library.": "自动：已安装 py-spy 且无需 root 即可采样时（macOS 除外）使用 py-spy，否则使用标准库的 cProfile。"
 }

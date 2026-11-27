@@ -1451,6 +1451,9 @@ pub struct PythonSettings {
     /// Default test runner (Settings › Python › Testing): `auto` (pytest when the project uses
     /// it, else unittest), `pytest` or `unittest`.
     pub test_runner: String,
+    /// What Profile runs Python under (Settings › Python › Profiler): `auto` (py-spy where it
+    /// is installed and samples without root, else cProfile), `cprofile` or `py-spy`.
+    pub profiler: String,
 }
 
 impl Default for PythonSettings {
@@ -1464,6 +1467,7 @@ impl Default for PythonSettings {
             show_interpreter_paths: true,
             interpreter_paths: BTreeMap::new(),
             test_runner: "auto".into(),
+            profiler: "auto".into(),
         }
     }
 }
