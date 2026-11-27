@@ -143,7 +143,11 @@ function moveSourcesMenu(sources: Extract<DbNode, { kind: "source" }>[]): MenuIt
         icon: "folder",
         run: () => openDialog({ kind: "sourceFolder", folder: null, sources: ids }),
       },
-      { label: "Move to Root", run: () => void moveSourcesToFolder(ids, null) },
+      {
+        label: "Move to Root",
+        disabled: !folders.some((folder) => folder.sources.some((id) => ids.includes(id))),
+        run: () => void moveSourcesToFolder(ids, null),
+      },
     ],
   };
 }
