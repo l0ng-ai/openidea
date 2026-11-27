@@ -52,6 +52,27 @@ describe("configSource", () => {
     expect(await configSource(app)).toEqual({ path: `${ROOT}/api/src/main/java/com/acme/App.java`, line: 3 });
   });
 
+  it("opens a unittest target's module at the class or test it names", async () => {
+    files.set(
+      `${ROOT}/tests/test_models.py`,
+      "import unittest\n\nclass ModelTests(unittest.TestCase):\n    def test_save(self):\n        pass\n",
+    );
+    const unittest = (target: string) => config({ kind: "unittest", params: { target } });
+    expect(await configSource(unittest("tests.test_models.ModelTests.test_save"))).toEqual({
+      path: `${ROOT}/tests/test_models.py`,
+      line: 3,
+    });
+    expect(await configSource(unittest("tests.test_models.ModelTests"))).toEqual({
+      path: `${ROOT}/tests/test_models.py`,
+      line: 2,
+    });
+    expect(await configSource(unittest("tests/test_models.py"))).toEqual({
+      path: `${ROOT}/tests/test_models.py`,
+      line: 0,
+    });
+    expect(await configSource(unittest("discover -s tests"))).toBeNull();
+  });
+
   it("opens a Kotlin file class at its main function", async () => {
     files.set(`${ROOT}/src/main/kotlin/demo/Main.kt`, "package demo\n\nfun main() {}\n");
     const app = config({ kind: "application", params: { mainClass: "demo.MainKt" } });

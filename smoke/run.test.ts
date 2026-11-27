@@ -112,21 +112,35 @@ const CASES: Record<string, Case | Case[]> = {
       },
     },
   ],
-  python: {
-    fixture: "python-app",
-    // A project venv with pytest, as the fixture's README sets it up.
-    setup: (root) => {
-      execFileSync("python3", ["-m", "venv", ".venv"], { cwd: root, stdio: "ignore" });
-      execFileSync(join(root, ".venv", "bin", "pip"), ["install", "-q", "pytest"], { cwd: root, stdio: "ignore" });
+  python: [
+    {
+      fixture: "python-app",
+      // A project venv with pytest, as the fixture's README sets it up.
+      setup: (root) => {
+        execFileSync("python3", ["-m", "venv", ".venv"], { cwd: root, stdio: "ignore" });
+        execFileSync(join(root, ".venv", "bin", "pip"), ["install", "-q", "pytest"], { cwd: root, stdio: "ignore" });
+      },
+      tests: {
+        config: "pytest",
+        failing: (c) => env(c, { OPENIDEA_FAIL: "1" }),
+        passed: 7,
+        failed: "test_intentionally_failing",
+        file: "tests/test_models.py",
+      },
     },
-    tests: {
-      config: "pytest",
-      failing: (c) => env(c, { OPENIDEA_FAIL: "1" }),
-      passed: 7,
-      failed: "test_intentionally_failing",
-      file: "tests/test_models.py",
+    {
+      // The standard library's unittest, no pytest: `python -m unittest` through the IDE's reporter.
+      fixture: "unittest-app",
+      tests: {
+        config: "unittest",
+        failing: (c) => env(c, { OPENIDEA_FAIL: "1" }),
+        // Three subtests, an expected failure and the other five tests; one skipped.
+        passed: 9,
+        failed: "test_failing",
+        file: "tests/test_stock.py",
+      },
     },
-  },
+  ],
   rust: {
     fixture: "rust-app",
     run: { config: "cargo:run:inventory", prints: "Sold 3 mice, 9 left" },

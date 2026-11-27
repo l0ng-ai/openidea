@@ -22,6 +22,7 @@ const SOURCE_KINDS = new Set([
   "spring-boot",
   "python",
   "pytest",
+  "unittest",
   "ruby",
   "shell",
   "npm",
@@ -58,6 +59,27 @@ async function file(path: string | null, pattern?: RegExp): Promise<ConfigSource
   const source = await text(path);
   if (source === null) return null;
   return { path, line: pattern ? lineOf(source, pattern) : 0 };
+}
+
+/**
+ * A unittest target: a file, or a dotted name (`tests.test_models.ModelTests.test_save`) whose
+ * longest prefix that is a module file is opened at the class or test the rest names.
+ */
+async function unittestSource(cwd: string, target: string | undefined): Promise<ConfigSource | null> {
+  const name = target?.trim().split(/\s+/)[0];
+  if (!name || name === "discover" || name.startsWith("-")) return null;
+  if (name.endsWith(".py")) return file(joinPath(cwd, name));
+  const parts = name.split(".");
+  for (let n = parts.length; n > 0; n--) {
+    const rest = parts.slice(n);
+    const pattern = rest.length
+      ? new RegExp(String.raw`^[ \t]*(?:async\s+)?(?:class|def)\s+${escape(rest[rest.length - 1]!)}\b`, "m")
+      : undefined;
+    // oxlint-disable-next-line no-await-in-loop -- longest module prefix first
+    const found = await file(joinPath(cwd, `${parts.slice(0, n).join("/")}.py`), pattern);
+    if (found) return found;
+  }
+  return null;
 }
 
 async function firstFile(dir: string, names: string[], pattern?: RegExp): Promise<ConfigSource | null> {
@@ -114,6 +136,8 @@ export async function configSource(config: RunConfig): Promise<ConfigSource | nu
       return file(at(p.script));
     case "pytest":
       return file(at(p.target?.split("::")[0]));
+    case "unittest":
+      return unittestSource(cwd, p.target);
     case "ruby":
       return file(at(p.script));
     case "node":
