@@ -591,16 +591,21 @@ let osHasImage = false;
 /** The clipboard holds Java code, which Paste turns into a file. */
 let osHasJava = false;
 
-/** Keeps Paste enabled for what Explorer copied; called when the window gains focus. */
-// TODO(#6388): a focus while a refresh is still reading starts another full read (files, image
-// and text). The backend now reads the clipboard one call at a time, so this is only wasted work;
-// reuse the running refresh instead of starting a second one.
-export async function refreshOsClipboard() {
-  try {
-    await readOsClipboard();
-  } catch {
+let refreshing: Promise<void> | null = null;
+
+/**
+ * Keeps Paste enabled for what Explorer copied; called when the window gains focus. A focus
+ * while a refresh is still reading (restoring a window fires several) joins that refresh.
+ */
+export function refreshOsClipboard(): Promise<void> {
+  refreshing ??= readOsClipboard()
+    .then(() => undefined)
     // A busy clipboard is not evidence that the user's copy has changed.
-  }
+    .catch(() => undefined)
+    .finally(() => {
+      refreshing = null;
+    });
+  return refreshing;
 }
 
 async function readOsClipboard(): Promise<string[] | null> {
