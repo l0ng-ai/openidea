@@ -225,7 +225,7 @@ impl KernelManager {
         let Some(kernel) = running.as_ref().filter(|r| !r.is_finished() && !slot.closed.load(Ordering::Acquire)) else {
             return Ok(None);
         };
-        // ponytail: a fixed bound; a wedged `__repr__` is interrupted when the reply is dropped.
+        // A fixed bound; a wedged `__repr__` is interrupted when the reply is dropped.
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(10),
             kernel.execute(
