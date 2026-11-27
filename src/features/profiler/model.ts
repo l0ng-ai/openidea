@@ -176,6 +176,15 @@ export function colorSlot(name: string): number {
   return (Math.abs(h) % 4) + 1;
 }
 
+// A plain literal: the profiler view translates it with `tx`, and the catalog test only counts literals.
+const ESTIMATED_TREE =
+  "cProfile records callers and callees, not whole stacks: the flame graph and call tree are estimated from them. The method list is exact.";
+
+/** The notice of a call-graph profile (cProfile): its call edges are exact, its call tree an estimate. */
+export function treeNotice(profile: Profile): string | null {
+  return profile.calls.length ? ESTIMATED_TREE : null;
+}
+
 /** A caller or callee of a function, with what the calls between the two took. */
 export interface CallSite {
   frame: number;

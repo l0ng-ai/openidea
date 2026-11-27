@@ -332,6 +332,9 @@ describe("catalogs", () => {
     "JavaScript",
     "TypeScript",
     "Vue Router",
+    // Python profilers (Settings › Python › Profiler).
+    "cProfile",
+    "py-spy",
     // Python unittest: the runner's name and a dotted module placeholder.
     "unittest",
     "tests.test_models",

@@ -180,6 +180,8 @@ export interface LanguagesValid {
     interpreterPaths: Record<string, string[]>;
     /** Default test runner of gutter and context-menu runs (Settings › Python › Testing). */
     testRunner: PythonTestRunner;
+    /** What Profile runs Python under (Settings › Python › Profiler). */
+    profiler: PythonProfiler;
     /** matplotlib figures of Python runs go to the Plots tool window. */
     showPlotsInToolWindow: boolean;
   };
@@ -312,6 +314,9 @@ export type FolderListKey =
 export const PYTHON_TEST_RUNNERS = ["auto", "pytest", "unittest"] as const;
 export type PythonTestRunner = (typeof PYTHON_TEST_RUNNERS)[number];
 
+export const PYTHON_PROFILERS = ["auto", "cprofile", "py-spy"] as const;
+export type PythonProfiler = (typeof PYTHON_PROFILERS)[number];
+
 export const DEFAULT_LANGUAGES: LanguagesValid = {
   pluginFormatters: {},
   python: {
@@ -323,6 +328,7 @@ export const DEFAULT_LANGUAGES: LanguagesValid = {
     showInterpreterPaths: true,
     interpreterPaths: {},
     testRunner: "auto",
+    profiler: "auto",
     showPlotsInToolWindow: true,
   },
   ruby: { interpreter: "" },
@@ -481,6 +487,7 @@ export function validateLanguages(raw: unknown): LanguagesValid {
         Object.entries(obj(py.interpreterPaths)).map(([python, paths]) => [python, strings(paths)]),
       ),
       testRunner: oneOf(py.testRunner, PYTHON_TEST_RUNNERS, d.python.testRunner),
+      profiler: oneOf(py.profiler, PYTHON_PROFILERS, d.python.profiler),
       showPlotsInToolWindow: bool(py.showPlotsInToolWindow, d.python.showPlotsInToolWindow),
     },
     ruby: { interpreter: text(ruby.interpreter, d.ruby.interpreter) },

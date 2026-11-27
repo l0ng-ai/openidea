@@ -10880,5 +10880,8 @@
   "Delete Plot": "删除绘图",
   "Delete All Plots": "删除全部绘图",
   "Show plots in tool window": "在工具窗口中显示绘图",
-  "Runs, debug sessions and the Python Console send matplotlib figures to the Plots tool window, unless the run sets MPLBACKEND. Off: figures open in matplotlib's own window.": "运行、调试会话和 Python 控制台的 matplotlib 图形会发送到“绘图”工具窗口，除非运行自行设置了 MPLBACKEND。关闭后，图形在 matplotlib 自己的窗口中打开。"
+  "Runs, debug sessions and the Python Console send matplotlib figures to the Plots tool window, unless the run sets MPLBACKEND. Off: figures open in matplotlib's own window.": "运行、调试会话和 Python 控制台的 matplotlib 图形会发送到“绘图”工具窗口，除非运行自行设置了 MPLBACKEND。关闭后，图形在 matplotlib 自己的窗口中打开。",
+  "cProfile": "cProfile",
+  "py-spy": "py-spy",
+  "Automatic uses py-spy where it is installed and can sample without root (not on macOS), else cProfile from the standard library.": "自动：已安装 py-spy 且无需 root 即可采样时（macOS 除外）使用 py-spy，否则使用标准库的 cProfile。"
 }
