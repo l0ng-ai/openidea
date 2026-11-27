@@ -271,7 +271,7 @@ function inTripleQuotes(lines: readonly string[]): boolean[] {
   let open: string | null = null;
   return lines.map((line) => {
     const inside = open !== null;
-    // ponytail: only triple quotes are tracked; one in a one-line string or a comment throws it off.
+    // Only triple quotes are tracked; one in a one-line string or a comment throws it off.
     for (const [quote] of line.matchAll(/"""|'''/g)) open = open === null ? quote : open === quote ? null : open;
     return inside;
   });
@@ -281,7 +281,7 @@ function inTripleQuotes(lines: readonly string[]): boolean[] {
 function bodyLine(lines: readonly string[], from: number): number {
   let depth = 0;
   for (let i = from; i < lines.length; i++) {
-    // ponytail: a `#` in a string of the header is taken as a comment.
+    // A `#` in a string of the header is taken as a comment.
     const code = lines[i]!.replace(/#.*$/, "");
     for (let k = 0; k < code.length; k++) {
       const c = code[k]!;
