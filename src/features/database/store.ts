@@ -1669,7 +1669,7 @@ function withConsoleConnection<T>(
   const current = databaseRequest(id);
   return withConnection(id, async () => {
     const driver = sourceById(id)?.driver;
-    if (!path || (driver !== "clickhouse" && driver !== "postgres")) return op(null, null);
+    if (!path || (driver !== "clickhouse" && driver !== "postgres" && driver !== "jdbc")) return op(null, null);
     const key = consoleScopeKey(id, path);
     // A reopened editor waits for the previous session's release before using the same path.
     const closing = closingConsoles.get(key);

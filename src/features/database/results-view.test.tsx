@@ -1281,11 +1281,11 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
     }
   });
 
-  it("routes ClickHouse runs and result operations through the originating SQL editor", async () => {
+  it.each(["clickhouse", "jdbc"] as const)("keeps %s results in their editor session", async (driver) => {
     const first = "/project/console.sql";
     const second = "/project/console_1.sql";
     useDatabase.setState({
-      sources: [{ id: "pg", name: "Local", driver: "clickhouse", readOnly: false }],
+      sources: [{ id: "pg", name: "Local", driver, readOnly: false }],
     });
     backend.resultRow.mockResolvedValue({ status: "ok", data: result([{ name: "v" }], [["1"]]) });
     backend.explain.mockResolvedValue({ status: "ok", data: [] });
@@ -1305,11 +1305,13 @@ describe("result tab reuse (IDEA: new results replace the console's unpinned tab
     await readResultRow(firstResult, 1);
     expect(backend.resultRow.mock.lastCall?.[5]).toBe(first);
 
-    await explainConsole(second, "SELECT 2", 0, 0);
-    expect(backend.explain.mock.lastCall?.[4]).toBe(second);
-    const plan = useDatabase.getState().results.find((tab) => !!tab.plan)!;
-    await rerunResult(plan.id);
-    expect(backend.explain.mock.lastCall?.[4]).toBe(second);
+    if (driver === "clickhouse") {
+      await explainConsole(second, "SELECT 2", 0, 0);
+      expect(backend.explain.mock.lastCall?.[4]).toBe(second);
+      const plan = useDatabase.getState().results.find((tab) => !!tab.plan)!;
+      await rerunResult(plan.id);
+      expect(backend.explain.mock.lastCall?.[4]).toBe(second);
+    }
 
     await runSql("pg", ["SELECT 3"]);
     expect(backend.execute.mock.lastCall?.[7]).toBeNull();
