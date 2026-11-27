@@ -1574,6 +1574,9 @@ pub fn configure_server(cfg: &mut LanguageServerConfig, root: &Path, server_root
     {
         cfg.command = bin.to_string_lossy().into_owned();
     }
+    if name == crate::mdx::SERVER {
+        crate::mdx::configure(cfg, root, server_root, s);
+    }
     if name == crate::arduino::SERVER {
         crate::arduino::configure(cfg, root, server_root, s);
     }

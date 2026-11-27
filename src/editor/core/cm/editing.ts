@@ -677,6 +677,7 @@ export const KEYWORD_BLOCK_LANGS = new Set([
   "ocaml.interface",
   "yaml",
   "markdown",
+  "mdx",
   "plaintext",
   "makefile",
   "cmake",
