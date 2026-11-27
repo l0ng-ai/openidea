@@ -625,8 +625,9 @@ export const commands = {
 	docReloadFromDisk: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_reload_from_disk", { doc })),
 	/**
 	 *  Keeps the encoding the user chose for a project file in the project's File Encodings
-	 *  mappings, so the file opens in it again. Nothing is kept for a document without a file
-	 *  in the project.
+	 *  mappings, so the file opens in it again. A converted document is kept once it is saved:
+	 *  until then its file is still in the old encoding. Nothing is kept for a document without
+	 *  a file in the project.
 	 */
 	docRememberEncoding: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_remember_encoding", { doc })),
 	docSave: (doc: DocId) => typedError<null, IdeError>(__TAURI_INVOKE("doc_save", { doc })),
