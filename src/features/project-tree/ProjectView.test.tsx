@@ -18,7 +18,7 @@ import { MessagesHost } from "@/workbench/messages";
 import { FileRefactorDialogHost } from "./FileRefactorDialogs";
 import { setRefactorBackendForTests } from "./fileRefactor";
 import { ProjectView } from "./ProjectView";
-import { beginNew, canPaste } from "./operations";
+import { beginNew, beginRename, canPaste } from "./operations";
 import { initProjectTree, selectModel, setSelection, setViewOption, useProjectTree } from "./store";
 import type { OutlineItem } from "@/bindings";
 import { _emitEditorEvent, useEditorRegistry } from "@/editor/api";
@@ -864,6 +864,58 @@ describe("ProjectView", () => {
     await waitFor(() => expect(useProjectTree.getState().listings.get("/w/acme/big")?.length).toBe(10_000));
     const rendered = within(tree).getAllByRole("treeitem").length;
     expect(rendered).toBeLessThan(80);
+  });
+
+  describe("inline editor in a folder scrolled out of view", () => {
+    // jsdom has no layout: keep the scroll offset the virtualizer writes and report it back.
+    function scrollable(tree: HTMLElement) {
+      let top = 0;
+      Object.defineProperty(tree, "scrollTop", {
+        configurable: true,
+        get: () => top,
+        set: (v: number) => void (top = v),
+      });
+      tree.scrollTo = ((opts: ScrollToOptions) => {
+        top = opts.top ?? top;
+        tree.dispatchEvent(new Event("scroll"));
+      }) as Element["scrollTo"];
+      return (to: number) => act(() => tree.scrollTo({ top: to }));
+    }
+
+    async function scrolledBigFolder() {
+      for (let i = 0; i < 300; i++)
+        fs.nodes.set(`/w/acme/big/f${String(i).padStart(3, "0")}.txt`, { kind: "file", size: 1 });
+      fs.nodes.set("/w/acme/big", { kind: "dir" });
+      const view = setup();
+      const scroll = scrollable(view.tree);
+      act(() => useProjectTree.setState({ expanded: new Set([ROOT, "/w/acme/big"]) }));
+      await waitFor(() => expect(view.rows()).toContain("f000.txt"));
+      scroll(250 * 22);
+      await waitFor(() => expect(view.rows()).not.toContain("f000.txt"));
+      return { ...view, scroll };
+    }
+
+    it("brings a new file's name field into view", async () => {
+      await scrolledBigFolder();
+      await act(() => beginNew("file", "/w/acme/big"));
+      expect(await screen.findByRole("textbox", { name: "New file name" })).toHaveFocus();
+    });
+
+    it("keeps the viewport when the edited row is already in view", async () => {
+      const { tree, rows } = await scrolledBigFolder();
+      expect(rows()).toContain("f240.txt");
+      const top = tree.scrollTop;
+      act(() => beginRename(selectModel(useProjectTree.getState()).byKey.get("/w/acme/big/f240.txt")!));
+      expect(await screen.findByRole("textbox", { name: "New name" })).toHaveFocus();
+      expect(tree.scrollTop).toBe(top);
+    });
+
+    it("brings a renamed file's name field into view", async () => {
+      const { rows } = await scrolledBigFolder();
+      expect(rows()).not.toContain("f001.txt");
+      act(() => beginRename(selectModel(useProjectTree.getState()).byKey.get("/w/acme/big/f001.txt")!));
+      expect(await screen.findByRole("textbox", { name: "New name" })).toHaveFocus();
+    });
   });
 });
 

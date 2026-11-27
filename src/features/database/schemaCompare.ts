@@ -4,7 +4,16 @@
  * makes the chosen parts of the target match the source. Pure functions; nothing is run.
  */
 import type { DbColumnInfo, DbDriver, DbForeignKey, DbIndexInfo, DbTableKind } from "@/platform/ipc";
-import { alterTableSql, createTableSql, draftOf, ident, qualifiedName, type ColumnDraft } from "./objects";
+import {
+  alterTableSql,
+  createIndexSql,
+  createTableSql,
+  draftOf,
+  dropIndexSql,
+  ident,
+  qualifiedName,
+  type ColumnDraft,
+} from "./objects";
 
 export interface TableSnapshot {
   name: string;
@@ -151,17 +160,6 @@ export function differenceKeys(diffs: readonly TableDiff[]): Set<string> {
   return keys;
 }
 
-function createIndexSql(driver: DbDriver, schema: string, table: string, i: DbIndexInfo): string {
-  const cols = i.columns.map((c) => ident(driver, c)).join(", ");
-  return `create ${i.unique ? "unique " : ""}index ${ident(driver, i.name)} on ${qualifiedName(driver, schema, table)} (${cols});`;
-}
-
-function dropIndexSql(driver: DbDriver, schema: string, table: string, i: DbIndexInfo): string {
-  if (driver === "mysql" || driver === "sqlServer")
-    return `drop index ${ident(driver, i.name)} on ${qualifiedName(driver, schema, table)};`;
-  return `drop index ${qualifiedName(driver, schema, i.name)};`;
-}
-
 function addForeignKeySql(driver: DbDriver, schema: string, table: string, k: DbForeignKey): string {
   const cols = (names: string[]) => names.map((c) => ident(driver, c)).join(", ");
   return `alter table ${qualifiedName(driver, schema, table)} add foreign key (${cols(k.columns)}) references ${qualifiedName(driver, k.refSchema && k.refSchema !== k.schema ? k.refSchema : schema, k.refTable)} (${cols(k.refColumns)});`;
@@ -213,7 +211,7 @@ export function migrationSql(
         );
     for (const i of t.indexes)
       if (pick(i) && (i.state === "removed" || i.state === "changed"))
-        first.push(dropIndexSql(driver, schema, t.name, i.target!));
+        first.push(dropIndexSql(driver, schema, t.name, i.target!.name));
     const drafts: ColumnDraft[] = [];
     t.columns.forEach((c, n) => {
       if (!pick(c)) return;
