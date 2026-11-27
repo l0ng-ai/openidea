@@ -17,9 +17,9 @@ vi.mock("@/platform/ipc", async (importOriginal) => ({
 import { _resetI18nForTests, setLocale } from "@/platform/i18n";
 import type { RunConfig, RunImport } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { provideNotificationService, type NotificationService } from "@/workbench/contributions";
+import { provideNotificationService, registerRunConfigType, type NotificationService } from "@/workbench/contributions";
 import { EditConfigsOverlay } from "./EditConfigsDialog";
-import { importSummary } from "./importConfigs";
+import { importConfigs, importSummary } from "./importConfigs";
 import { resetRuns, useRun } from "./store";
 import { registerBuiltinTypes } from "./types";
 
@@ -209,5 +209,46 @@ describe("Run/Debug Configurations › Import from .vscode/launch.json", () => {
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Apply" }));
     await waitFor(() => expect(ipc.runSaveConfigs).toHaveBeenCalledWith([local], []));
+  });
+});
+
+describe("importConfigs", () => {
+  it("lets the configuration's type complete it, reporting what it couldn't carry over", async () => {
+    notes = [];
+    provideNotificationService({ notify: (n) => void notes.push(n) });
+    const prepareImport = vi.fn(async (c: RunConfig) => ({
+      config: { ...c, command: "prepared", local: true },
+      unmapped: ["server-name (Remote)"],
+    }));
+    const dispose = registerRunConfigType({
+      id: "imported-kind",
+      label: "Imported",
+      icon: "run",
+      fields: [],
+      commandLine: () => null,
+      prepareImport,
+    });
+    const other = cfg({ id: "user:other", name: "Other" });
+    ipc.runImportConfigs.mockResolvedValue(
+      ok(
+        result({
+          imported: [
+            { config: cfg({ kind: "imported-kind" }), ignored: [] },
+            { config: other, ignored: [] },
+          ],
+          skipped: [],
+        }),
+      ),
+    );
+    try {
+      const configs = await importConfigs("jetbrains", []);
+      expect(configs?.map((c) => c.command)).toEqual(["prepared", other.command]);
+      expect(prepareImport).toHaveBeenCalledTimes(1);
+      render(<>{notes.at(-1)!.body}</>);
+      expect(screen.getByText(/server-name \(Remote\)/)).toBeInTheDocument();
+    } finally {
+      dispose();
+      cleanup();
+    }
   });
 });
