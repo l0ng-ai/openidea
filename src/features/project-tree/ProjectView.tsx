@@ -30,8 +30,10 @@ import { useDetectedRoots, useEffectiveRoots } from "@/platform/projectRoots";
 import { macStroke, strokeOf } from "@/platform/keymap";
 import {
   OWNS_FILE_DROP,
+  getFileDecoration,
   prepareMenuGroups,
   useFileDecoration,
+  useFileDecorations,
   type DecorationSegment,
 } from "@/workbench/contributions";
 import { useFileColors } from "@/workbench/fileColors";
@@ -71,7 +73,7 @@ import { relativePath } from "@/platform/project";
 import { folderKind } from "./folderKind";
 import { PROJECT_TYPES } from "@/ui/projectType";
 import { useHomeDir } from "./home";
-import { keyLike, memberNodes, nodeKeyFor, visibleInfo, type ProjectNode } from "./model";
+import { compareNames, keyLike, memberNodes, nodeKeyFor, visibleInfo, type ProjectNode } from "./model";
 import {
   cancelEditing,
   checkEditingName,
@@ -127,7 +129,8 @@ export function showNewPopup(): boolean {
 }
 
 const getKey = (n: ProjectNode) => n.key;
-const getLabel = (n: ProjectNode) => n.label;
+const getLabel = (n: ProjectNode) =>
+  n.placeholder || n.member ? n.label : (getFileDecoration(n.path)?.label ?? n.label);
 
 function iconFor(
   node: ProjectNode,
@@ -298,11 +301,13 @@ const Row = memo(function Row({
   const file = useJvmPresentation(node.dir || node.placeholder ? "" : node.path, node.entry?.mtimeMs);
   const expanded = useProjectTree((s) => node.dir && s.expanded.has(node.key));
   const holdsOpen = useProjectTree((s) => node.dir && holdsOpenFile(node.path, s.openFiles));
-  const icon = projectType
-    ? PROJECT_TYPES[projectType].icon
-    : node.dir || node.placeholder || node.icon
-      ? iconFor(node, roots, root, build, detected, expanded, holdsOpen)
-      : presentationIcon(node.path, file, roots, root, build.spring);
+  const icon =
+    deco.icon ??
+    (projectType
+      ? PROJECT_TYPES[projectType].icon
+      : node.dir || node.placeholder || node.icon
+        ? iconFor(node, roots, root, build, detected, expanded, holdsOpen)
+        : presentationIcon(node.path, file, roots, root, build.spring));
   const moduleFolder =
     node.dir && !node.placeholder && !!root && isModuleFolder(relativePath(root, node.path), node.root, build.modules);
   const isEditing =
@@ -310,6 +315,7 @@ const Row = memo(function Row({
   const faded = node.ignored || deco.faded;
   // IDEA dims the icon of excluded folders only; git-ignored ones just get the ignored colour.
   const dimIcon = node.excluded;
+  const label = deco.label ?? node.label;
   return (
     <span
       className={clsx(styles.content, cut && styles.cut, dropTarget && styles.dropTarget)}
@@ -354,7 +360,7 @@ const Row = memo(function Row({
                 deco.error && styles.error,
               )}
               style={deco.color ? { color: deco.color } : undefined}
-              text={node.label}
+              text={label}
               indices={matches}
               tone="accent"
             />
@@ -479,6 +485,8 @@ export function ProjectView() {
   const txTemplate = useTxTemplate();
   // Rows compute their file icons while rendering: redraw when the icon theme changes.
   useFileIconRevision();
+  // Display aliases (data source names for console folders) also decide sibling order.
+  const decorationProviders = useFileDecorations((s) => s.providers);
   const root = useProjectTree((s) => s.root);
   const model = useProjectTree(selectModel);
   const fileColors = useFileColors("projectView");
@@ -572,9 +580,25 @@ export function ProjectView() {
   );
 
   const getChildren = useCallback(
-    (n: ProjectNode) =>
-      n.member ? memberNodes(n.path, n.member.children) : n.dir ? model.children.get(n.key) : outlineRows.get(n.path),
-    [model, outlineRows],
+    (n: ProjectNode) => {
+      if (n.member) return memberNodes(n.path, n.member.children);
+      if (!n.dir) return outlineRows.get(n.path);
+      const children = model.children.get(n.key);
+      if (
+        !children ||
+        !decorationProviders.size ||
+        options.sortBy !== "name" ||
+        !children.some((child) => getLabel(child) !== child.label)
+      )
+        return children;
+      const labels = new Map(children.map((child) => [child, getLabel(child)]));
+      return [...children].sort((a, b) => {
+        if (!!a.placeholder !== !!b.placeholder) return a.placeholder ? -1 : 1;
+        if (options.foldersFirst && a.dir !== b.dir) return a.dir ? -1 : 1;
+        return compareNames(labels.get(a)!, labels.get(b)!);
+      });
+    },
+    [decorationProviders, model, options.foldersFirst, options.sortBy, outlineRows],
   );
 
   const onExpandedChange = useCallback((next: Set<string>, node: ProjectNode, open: boolean) => {

@@ -117,6 +117,8 @@ Notes on what they do:
 
 `run_command` runs a shell command line in a tab of the Run tool window, with the shell of **Settings › Tools › Terminal**. The agent names the tab and OpenIDEA shows it as `_agent_<name>`, so you see the output as it comes and can type into the command, rerun it or stop it like any run.
 
+Run configurations an agent starts with `execute_run_configuration` open a tab in the Run tool window too, as when you press Run: the console shows their output and Stop ends them. In a background project without a window (brave mode) they run without a tab.
+
 As JetBrains IDEs do, the command runs on pipes, not a terminal: programs print plain lines instead of progress bars and redraws. The agent gets that output cleaned of escape sequences and cut to 2000 lines (`maxLinesCount`); beyond that the end stays, or the start or both ends with `truncateMode`. The tab's raw output log stays complete.
 
 - **Servers return once they are up.** The call waits 10 seconds by default for the command to finish. A server, watcher or app never finishes: the agent passes `pattern` with its ready line (`Listening on`, `Started … in`) and gets the answer as soon as the line appears, while the command keeps running.

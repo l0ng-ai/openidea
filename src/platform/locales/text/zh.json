@@ -1707,6 +1707,7 @@
   "Data type": "数据类型",
   "Database": "数据库",
   "Database actions": "数据库操作",
+  "Database Consoles": "数据库控制台",
   "Database output": "数据库输出",
   "Database:": "数据库：",
   "Date": "日期",
@@ -10758,5 +10759,6 @@
   "tests.test_models": "tests.test_models",
   "unittest": "unittest",
   "1 file of the report is not in this project.": "报告中有 1 个文件不在此项目中。",
-  "{count} files of the report are not in this project.": "报告中有 {count} 个文件不在此项目中。"
+  "{count} files of the report are not in this project.": "报告中有 {count} 个文件不在此项目中。",
+  "Show Table Comments": "显示表注释"
 }
