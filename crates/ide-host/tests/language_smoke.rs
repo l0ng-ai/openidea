@@ -8,6 +8,8 @@
 //! pinned versions and runs one language per job:
 //! `cargo test -p ide-host --test language_smoke -- --ignored --exact <language>`.
 
+mod common;
+
 use ide_core::{ChangeSet, DocId, IdeEvent, Pos, Range, RequestId, TextChange};
 use ide_host::{Host, HostConfig, ops};
 use ide_lsp::types::{FormatOptions, GotoKind};
@@ -126,7 +128,9 @@ struct Smoke {
 }
 
 fn fixture_dir(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures").join(name)
+    let manifest_dir =
+        std::env::var_os("CARGO_MANIFEST_DIR").map_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")), PathBuf::from);
+    manifest_dir.join("../../fixtures").join(name)
 }
 
 fn copy_dir(from: &Path, to: &Path) {
@@ -182,11 +186,6 @@ impl Smoke {
         let events: Events = Arc::default();
         let app = tmp.path().join("app");
         let host = Arc::new(Host::new(HostConfig {
-            config_dir: app.join("config"),
-            data_dir: app.join("data"),
-            local_data_dir: app.join("data"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
             sink_for: Box::new({
                 let events = events.clone();
                 move |_| {
@@ -194,9 +193,7 @@ impl Smoke {
                     Arc::new(move |e: IdeEvent| events.lock().unwrap().push(e))
                 }
             }),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
+            ..common::host_config(&app)
         }));
         host.trust.decide(&root, true, false).unwrap();
         host.open_project(WINDOW, &root).unwrap();
@@ -231,8 +228,8 @@ impl Smoke {
     }
 
     async fn doc(&self, file: &str) -> (DocId, String) {
-        let info = ops::doc::open(&self.host, WINDOW, self.root.join(file)).await.unwrap();
-        let info = ops::doc::snapshot(&self.host, WINDOW, info.id).await.unwrap();
+        let info = ops::doc::doc_open(&self.host, WINDOW, self.root.join(file)).await.unwrap();
+        let info = ops::doc::doc_snapshot(&self.host, WINDOW, info.id).await.unwrap();
         (info.id, info.text)
     }
 
@@ -260,13 +257,13 @@ impl Smoke {
     }
 
     async fn replace(&self, doc: DocId, from: u32, to: u32, insert: &str) {
-        let version = ops::doc::snapshot(&self.host, WINDOW, doc).await.unwrap().version;
+        let version = ops::doc::doc_snapshot(&self.host, WINDOW, doc).await.unwrap().version;
         let changes = ChangeSet { changes: vec![TextChange { from, to, insert: insert.into() }] };
-        ops::doc::edit(&self.host, WINDOW, doc, version, changes).unwrap();
+        ops::doc::doc_edit(&self.host, WINDOW, doc, version, changes).await.unwrap();
     }
 
     async fn restore(&self, doc: DocId, text: &str) {
-        let current = ops::doc::snapshot(&self.host, WINDOW, doc).await.unwrap().text;
+        let current = ops::doc::doc_snapshot(&self.host, WINDOW, doc).await.unwrap().text;
         self.replace(doc, 0, utf16_len(&current), text).await;
     }
 
@@ -699,6 +696,132 @@ async fn typescript() {
     smoke("typescript", TYPESCRIPT).await;
 }
 
+/// The latest `tsc` diagnostics of `path` (Problems › TypeScript Project Errors), `None` before any.
+#[cfg(unix)]
+fn tsc_errors(events: &Events, path: &Path) -> Option<Vec<String>> {
+    events.lock().unwrap().iter().rev().find_map(|e| match e {
+        IdeEvent::Diagnostics { path: p, source, items } if source == "tsc" && **p == *path => {
+            Some(items.iter().map(|d| d.message.clone()).collect())
+        }
+        _ => None,
+    })
+}
+
+/// Problems › TypeScript Project Errors (#6073): the project's own `tsc --watch` reports the error
+/// an edit of one file causes in another that is not open, holds it back while that file is open,
+/// clears it once fixed, checks a solution with project references as well, and writes nothing
+/// into the project. TypeScript comes from `OPENIDEA_SMOKE_TYPESCRIPT` (a `typescript` package
+/// folder), else the global npm install.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "language smoke: needs typescript"]
+async fn typescript_project_errors() {
+    let typescript = std::env::var_os("OPENIDEA_SMOKE_TYPESCRIPT").map_or_else(
+        || {
+            let out = std::process::Command::new("npm").args(["root", "-g"]).output().expect("npm root -g");
+            PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()).join("typescript")
+        },
+        PathBuf::from,
+    );
+    assert!(typescript.join("bin/tsc").is_file(), "no TypeScript in {}", typescript.display());
+    let checks = Checks {
+        files: &[
+            // Fails from the start: its error marks the end of the first compilation.
+            ("src/probe.ts", "export const probe: number = \"x\";\n"),
+            ("packages/tsconfig.json", r#"{"files": [], "references": [{"path": "./core"}, {"path": "./app"}]}"#),
+            (
+                "packages/core/tsconfig.json",
+                r#"{"compilerOptions": {"composite": true, "strict": true, "outDir": "out"}}"#,
+            ),
+            ("packages/core/index.ts", "export const version: number = 1;\n"),
+            (
+                "packages/app/tsconfig.json",
+                r#"{"compilerOptions": {"composite": true, "strict": true, "outDir": "out"}, "references": [{"path": "../core"}]}"#,
+            ),
+            (
+                "packages/app/index.ts",
+                "import { version } from \"../core/index\";\nexport const label: string = version;\n",
+            ),
+        ],
+        ..TYPESCRIPT
+    };
+    let smoke = Smoke::start("typescript", &checks).await;
+    let root = smoke.root.clone();
+    std::fs::create_dir_all(root.join("node_modules/.bin")).unwrap();
+    std::os::unix::fs::symlink(&typescript, root.join("node_modules/typescript")).unwrap();
+    std::os::unix::fs::symlink("../typescript/bin/tsc", root.join("node_modules/.bin/tsc")).unwrap();
+    async fn wait(what: &str, ok: impl Fn() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while !ok() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+    let errors = |file: &str| tsc_errors(&smoke.events, &root.join(file));
+    let has = |file: &'static str, text: &'static str| {
+        move || errors(file).is_some_and(|e| e.iter().any(|m| m.contains(text)))
+    };
+    let clear = |file: &'static str| move || errors(file).is_some_and(|e| e.is_empty());
+    let set = |on: bool| {
+        let scope = ide_workspace::settings::SettingsScope::Project;
+        ops::project::settings_set(
+            &smoke.host,
+            WINDOW,
+            scope,
+            "languages.typescript.watchProblems".into(),
+            on.to_string(),
+        )
+        .unwrap();
+    };
+
+    set(true);
+    wait("the first compilation", has("src/probe.ts", "not assignable")).await;
+    wait("the solution's error", has("packages/app/index.ts", "not assignable to type 'string'")).await;
+
+    // Renaming an export in money.ts breaks index.ts, which is not open.
+    let money = root.join("src/money.ts");
+    let original = std::fs::read_to_string(&money).unwrap();
+    std::fs::write(&money, original.replace("export function formatMoney", "export function formatPrice")).unwrap();
+    wait("index.ts to break", has("src/index.ts", "formatMoney")).await;
+    assert_eq!(errors("src/money.ts"), None, "the edited file itself is fine");
+
+    // Open, it shows the language server's errors only; closed again, the watcher's.
+    let doc = ops::doc::doc_open(&smoke.host, WINDOW, root.join("src/index.ts")).await.unwrap();
+    wait("index.ts held back while open", clear("src/index.ts")).await;
+    ops::doc::doc_close(&smoke.host, WINDOW, doc.id).await.unwrap();
+    wait("index.ts back once closed", has("src/index.ts", "formatMoney")).await;
+
+    std::fs::write(&money, &original).unwrap();
+    // The fixture's own error (an unused function) stays.
+    let fixed =
+        move || errors("src/index.ts").is_some_and(|e| !e.is_empty() && !e.iter().any(|m| m.contains("formatMoney")));
+    wait("index.ts fixed", fixed).await;
+
+    set(false);
+    wait("every error cleared", || {
+        ["src/probe.ts", "src/index.ts", "packages/app/index.ts"].into_iter().all(|f| clear(f)())
+    })
+    .await;
+
+    // A background check writes nothing into the project: no `.js`, `.d.ts` or `.tsbuildinfo`.
+    fn outputs(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if entry.file_name() == "node_modules" {
+                continue;
+            }
+            if path.is_dir() {
+                outputs(&path, out);
+            } else if [".js", ".d.ts", ".tsbuildinfo"].iter().any(|ext| path.to_string_lossy().ends_with(ext)) {
+                out.push(path);
+            }
+        }
+    }
+    let mut written = Vec::new();
+    outputs(&root, &mut written);
+    assert_eq!(written, Vec::<PathBuf>::new());
+}
+
 const PYTHON: Checks = Checks {
     fixture: "python-app",
     // Ruff (lint, quick fixes, formatting) starts in projects configured for it.
@@ -742,8 +865,8 @@ const PYTHON: Checks = Checks {
         typed("src/tasks/models.py", "from enum import IntEnum", "import abc"),
         Imports::Before("import os"),
     )),
-    // basedpyright has no `workspace/willRenameFiles`.
-    file_move: None,
+    // basedpyright has no `workspace/willRenameFiles`: the IDE rewrites the imports.
+    file_move: Some(("src/tasks/models.py", "src/tasks/domain.py", "src/tasks/cli.py", "from .domain import")),
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

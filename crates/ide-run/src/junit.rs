@@ -26,8 +26,10 @@ pub struct TestCaseReport {
     pub duration_ms: Option<f64>,
     /// Failure / error / skip message.
     pub message: Option<String>,
-    /// Failure stack trace and captured output.
+    /// Failure / error stack trace.
     pub output: Option<String>,
+    /// What the test printed (`<system-out>`, `<system-err>`).
+    pub stdout: Option<String>,
 }
 
 fn decode(s: &str) -> String {
@@ -124,11 +126,13 @@ pub fn parse_report(xml: &str) -> Vec<TestCaseReport> {
         if let Some(name) = tag.strip_prefix('/') {
             match name.trim() {
                 "testcase" => out.extend(current.take()),
-                "failure" | "error" | "rerunFailure" | "rerunError" | "skipped" | "system-out" | "system-err" => {
+                name @ ("failure" | "error" | "rerunFailure" | "rerunError" | "skipped" | "system-out"
+                | "system-err") => {
                     if let (Some(t), Some(c)) = (text.take(), current.as_mut()) {
                         let t = t.trim_matches('\n');
                         if !t.trim().is_empty() {
-                            let o = c.output.get_or_insert_with(String::new);
+                            let field = if name.starts_with("system-") { &mut c.stdout } else { &mut c.output };
+                            let o = field.get_or_insert_with(String::new);
                             if !o.is_empty() {
                                 o.push('\n');
                             }
@@ -160,6 +164,7 @@ pub fn parse_report(xml: &str) -> Vec<TestCaseReport> {
                     duration_ms,
                     message: None,
                     output: None,
+                    stdout: None,
                 };
                 if self_closing {
                     out.push(case);
@@ -238,6 +243,8 @@ mod tests {
     <failure message="expected: &lt;1&gt; but was: &lt;2&gt;" type="org.opentest4j.AssertionFailedError"><![CDATA[org.opentest4j.AssertionFailedError: expected: <1> but was: <2>
 	at com.example.demo.todo.TodoServiceTests.fails(TodoServiceTests.java:30)
 ]]></failure>
+    <system-out><![CDATA[printed before failing
+]]></system-out>
   </testcase>
   <testcase name="later" classname="com.example.demo.todo.TodoServiceTests" time="0">
     <skipped message="not yet"/>
@@ -254,10 +261,13 @@ mod tests {
         assert_eq!(cases[0].status, TestCaseStatus::Passed);
         assert_eq!(cases[0].duration_ms, Some(31.0));
         assert_eq!(cases[1].name, "deleteReturnsFalseForUnknownId");
-        assert_eq!(cases[1].output.as_deref(), Some("hello <world>"));
+        assert_eq!(cases[1].stdout.as_deref(), Some("hello <world>"));
+        assert_eq!(cases[1].output, None);
         assert_eq!(cases[2].status, TestCaseStatus::Failed);
         assert_eq!(cases[2].message.as_deref(), Some("expected: <1> but was: <2>"));
         assert!(cases[2].output.as_deref().unwrap().contains("TodoServiceTests.java:30"));
+        assert!(!cases[2].output.as_deref().unwrap().contains("printed"));
+        assert_eq!(cases[2].stdout.as_deref(), Some("printed before failing"));
         assert_eq!(cases[2].duration_ms, Some(1_234_500.0));
         assert_eq!(cases[3].status, TestCaseStatus::Skipped);
         assert_eq!(cases[3].message.as_deref(), Some("not yet"));

@@ -7,8 +7,10 @@ import { useProject } from "@/platform/project";
 import { Channel } from "@tauri-apps/api/core";
 import type {
   ActiveTheme,
+  RunAnythingItem,
   CapabilityInfo,
   CatalogPlugin,
+  ClipboardAnswer,
   CommitAnswer,
   CommandAnswer,
   CommitSelection,
@@ -23,6 +25,8 @@ import type {
   PluginContextKey,
   PluginEditor,
   PluginEndpoint,
+  PluginSearchPage,
+  RequestId,
   PluginEvent,
   PluginInfo,
   PluginOutputLine,
@@ -36,6 +40,8 @@ import type {
   Viewport,
   WorkbenchEvent,
 } from "@/bindings";
+import { toBase64 } from "@/platform/base64";
+import { choosePath } from "@/platform/choosePath";
 import { tx } from "@/platform/i18n";
 import { useRemote } from "@/platform/remote";
 import { call, commands, IpcError, isCancelled, isTauri, nextRequestId } from "@/platform/ipc";
@@ -59,6 +65,12 @@ export interface PluginsBackend {
   pickProgram(): Promise<string | null>;
   setCapability(id: string, capability: string, granted: boolean): Promise<PluginInfo>;
   revokeNetHost(id: string, host: string): Promise<PluginInfo>;
+  /** The host a `net:setting:` grant derives from `value` (a bare host or a URL); an error refuses it. */
+  netSettingHost(id: string, setting: string, value: string): Promise<string>;
+  /** Approves `host` for a `net:setting:` grant; refused when the setting no longer holds it. */
+  approveNetSetting(id: string, setting: string, http: boolean, host: string): Promise<PluginInfo>;
+  /** Drops the approved host of a `net:setting:` grant (revoked, or the setting cleared). */
+  forgetNetSetting(id: string, setting: string, http: boolean): Promise<PluginInfo>;
   /** Validated assets (icon theme mapping and SVGs) whose id starts with `prefix`. */
   assets(pluginId: string, prefix: string): Promise<[string, string][]>;
   /** `language` / `file` / `view` activation events. */
@@ -76,7 +88,13 @@ export interface PluginsBackend {
     paths: string[],
     settingsScope?: "global" | "project",
     commandChain?: string[],
+    /** Aborting rejects the call and cancels that backend request. */
+    signal?: AbortSignal,
   ): Promise<string | null>;
+  /** Run Anything entries of the plugin declaring `prefix`, for the field's text (API 1.18). */
+  runAnythingSuggest(pluginId: string, prefix: string, text: string): Promise<RunAnythingItem[]>;
+  /** Runs a Run Anything line starting with the plugin's `prefix` (API 1.18): whether it claimed it. */
+  runAnythingRun(pluginId: string, prefix: string, line: string): Promise<boolean>;
   /** Workbench events plugins subscribed to (see `eventKinds`). */
   postEvents(events: WorkbenchEvent[]): Promise<void>;
   /** Kinds of workbench events plugins want; re-fetch on `subscriptionsChanged`. */
@@ -101,6 +119,8 @@ export interface PluginsBackend {
   finishOperation(id: string, status: number | null, stopped: boolean): Promise<void>;
   contentTabAction(pluginId: string, action: import("@/bindings").ContentTabAction): Promise<void>;
   answerCommit(requestId: string, answer: CommitAnswer): Promise<void>;
+  /** This window's clipboard for a plugin's `clipboardRequested`. */
+  answerClipboard(requestId: string, answer: ClipboardAnswer): Promise<void>;
   /** Runs plugins' before-commit checks on what `selection` commits. */
   commitChecks(selection: CommitSelection, checks: PluginCommitCheckRef[]): Promise<PluginCommitCheckResult[]>;
   /** Marketplace plugins: the index read again (`refresh`) or the last one read. */
@@ -125,13 +145,20 @@ export interface PluginsBackend {
   stagePackage(name: string, files: { path: string; text: string }[]): Promise<string>;
   /** Content of a plugin view (`doc`: the document of a custom editor). */
   renderView(pluginId: string, view: string, viewport: Viewport | null, doc: number | null): Promise<View>;
-  viewEvent(pluginId: string, view: string, event: ViewEvent, doc: number | null): Promise<void>;
+  viewEvent(pluginId: string, view: string, event: ViewEvent, doc: number | null, editor?: PluginEditor): Promise<void>;
   /** The detail tabs of item `key` in a Services or `detail = true` view. */
   serviceDetail(pluginId: string, view: string, key: string): Promise<ServiceTab[]>;
   /** The HTTP routes a plugin reports for this window's project (`[[contributes.endpoints]]`). */
   runTargets(): Promise<import("@/bindings").RegisteredRunTarget[]>;
   answerRunTarget(id: string, useTarget: boolean): Promise<import("@/bindings").Settings>;
   endpoints(pluginId: string): Promise<PluginEndpoint[]>;
+  search(
+    pluginId: string,
+    category: string,
+    query: string,
+    limit: number,
+    request: RequestId,
+  ): Promise<PluginSearchPage>;
   /**
    * Runs the program of node `key`'s log tab `tab` (with the toggles in `on`) and streams its
    * lines until it exits (`onExit`) or the returned stop function is called.
@@ -154,6 +181,7 @@ export interface PluginsBackend {
   openWebFile(filters: FileFilter[] | undefined): Promise<{ name: string; data: Uint8Array } | null>;
   /** The bytes of a file on this machine, at most 64 MiB (a web custom editor's `document.bytes`). */
   readFileBytes(path: string): Promise<Uint8Array>;
+  readFileRange(path: string, offset: number, length: number): Promise<{ total: number; data: Uint8Array }>;
   /** Which of a plugin's declared secrets are stored (values never come back). */
   secrets(pluginId: string): Promise<PluginSecretState[]>;
   /** Stores a secret (`null` removes it). */
@@ -183,12 +211,6 @@ export function webSchemeUrl(path: string, windows = /windows/i.test(navigator.u
   return windows ? `http://openidea-plugin.localhost/${encoded}` : `openidea-plugin://localhost/${encoded}`;
 }
 
-function toBase64(bytes: Uint8Array): string {
-  let binary = "";
-  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return btoa(binary);
-}
-
 function fromBase64(b64: string): Uint8Array {
   const binary = atob(b64);
   const out = new Uint8Array(binary.length);
@@ -213,13 +235,12 @@ export const tauriPluginsBackend: PluginsBackend = {
     return chosen;
   },
   program: (id, program, scope) => call(commands.pluginProgram(id, program, scope)),
-  pickProgram: async () => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
-    const picked = await open({ directory: false, multiple: false, title: tx("Choose plugin executable") });
-    return (Array.isArray(picked) ? picked[0] : picked) ?? null;
-  },
+  pickProgram: () => choosePath({ directory: false, title: tx("Choose plugin executable") }),
   setCapability: (id, capability, granted) => call(commands.pluginSetCapability(id, capability, granted)),
   revokeNetHost: (id, host) => call(commands.pluginRevokeNetHost(id, host)),
+  netSettingHost: (id, setting, value) => call(commands.pluginNetSettingHost(id, setting, value)),
+  approveNetSetting: (id, setting, http, host) => call(commands.pluginApproveNetSetting(id, setting, http, host)),
+  forgetNetSetting: (id, setting, http) => call(commands.pluginForgetNetSetting(id, setting, http)),
   assets: (pluginId, prefix) => call(commands.pluginAssets(pluginId, prefix)),
   activationEvent: async (kind, value) => {
     await call(commands.pluginActivationEvent(kind, value));
@@ -229,10 +250,42 @@ export const tauriPluginsBackend: PluginsBackend = {
     await call(commands.pluginUninstall(id));
   },
   reload: (id) => call(commands.pluginReload(id)),
-  runCommand: (pluginId, commandId, arg, editor, paths, settingsScope, commandChain) =>
-    call(
-      commands.pluginRunCommand(pluginId, commandId, arg, editor, paths, settingsScope ?? null, commandChain ?? null),
-    ),
+  runAnythingSuggest: (pluginId, prefix, text) => call(commands.pluginRunAnythingSuggest(pluginId, prefix, text)),
+  runAnythingRun: (pluginId, prefix, line) => call(commands.pluginRunAnythingRun(pluginId, prefix, line)),
+  runCommand: async (pluginId, commandId, arg, editor, paths, settingsScope, commandChain, signal) => {
+    signal?.throwIfAborted();
+    const request = signal ? nextRequestId() : null;
+    const run = () =>
+      call(
+        commands.pluginRunCommand(
+          pluginId,
+          commandId,
+          arg,
+          editor,
+          paths,
+          settingsScope ?? null,
+          commandChain ?? null,
+          request,
+        ),
+      );
+    if (!signal) return run();
+    // An abort settles this call even while the backend keeps working: a plugin
+    // that ignores its cancellation must not hold the caller (or a serialized
+    // queue behind it) open forever.
+    let abort = () => {};
+    const aborted = new Promise<never>((_, reject) => {
+      abort = () => {
+        if (request !== null) void commands.cancelRequest(request).catch(() => {});
+        reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+      };
+      signal.addEventListener("abort", abort, { once: true });
+    });
+    try {
+      return await Promise.race([run(), aborted]);
+    } finally {
+      signal.removeEventListener("abort", abort);
+    }
+  },
   postEvents: async (events) => {
     await commands.pluginPostEvents(events, editorContext());
   },
@@ -264,6 +317,9 @@ export const tauriPluginsBackend: PluginsBackend = {
   answerCommit: async (requestId, answer) => {
     await commands.pluginAnswerCommit(requestId, answer);
   },
+  answerClipboard: async (requestId, answer) => {
+    await call(commands.pluginAnswerClipboard(requestId, answer));
+  },
   commitChecks: (selection, checks) => call(commands.pluginCommitChecks(selection, checks, nextRequestId())),
   market: (refresh) => call(commands.pluginMarket(refresh)),
   marketUrl: () => commands.pluginMarketUrl(),
@@ -274,7 +330,7 @@ export const tauriPluginsBackend: PluginsBackend = {
   unpackPackage: (path) => call(commands.pluginUnpackPackage(path)),
   rollBack: (id) => call(commands.pluginRollBack(id)),
   pickPackage: async () => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { open } = await import("@/platform/dialog");
     const picked = await open({
       multiple: false,
       title: tx("Install Plugin from Package File"),
@@ -283,7 +339,7 @@ export const tauriPluginsBackend: PluginsBackend = {
     return (Array.isArray(picked) ? picked[0] : picked) ?? null;
   },
   pickIntellijTheme: async () => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { open } = await import("@/platform/dialog");
     const picked = await open({
       multiple: false,
       title: tx("Import IntelliJ Theme"),
@@ -297,13 +353,15 @@ export const tauriPluginsBackend: PluginsBackend = {
   // A tool window's calls (no `doc`) carry the window's active editor.
   renderView: (pluginId, view, viewport, doc) =>
     call(commands.pluginViewRender(pluginId, view, viewport, doc, doc == null ? editorContext() : null)),
-  viewEvent: async (pluginId, view, event, doc) => {
-    await call(commands.pluginViewEvent(pluginId, view, event, doc, doc == null ? editorContext() : null));
+  viewEvent: async (pluginId, view, event, doc, editor) => {
+    await call(commands.pluginViewEvent(pluginId, view, event, doc, doc == null ? (editor ?? editorContext()) : null));
   },
   serviceDetail: (pluginId, view, key) => call(commands.pluginServiceDetail(pluginId, view, key)),
   runTargets: () => call(commands.pluginRunTargets()),
   answerRunTarget: (id, useTarget) => call(commands.pluginAnswerRunTarget(id, useTarget)),
   endpoints: (pluginId) => call(commands.pluginEndpoints(pluginId)),
+  search: (pluginId, category, query, limit, request) =>
+    call(commands.pluginSearch(pluginId, category, query, limit, request)),
   serviceLog: (pluginId, view, key, tab, on, onLine, onError, onExit) => {
     const request = nextRequestId();
     const channel = new Channel<PluginOutputLine>();
@@ -318,14 +376,14 @@ export const tauriPluginsBackend: PluginsBackend = {
     return webSchemeUrl(page.path);
   },
   saveWebFile: async (name, filters, bytes) => {
-    const { save } = await import("@tauri-apps/plugin-dialog");
+    const { save } = await import("@/platform/dialog");
     const path = await save({ defaultPath: name, filters });
     if (!path) return null;
     await call(commands.pluginWebSaveFile(path, toBase64(bytes)));
     return path;
   },
   openWebFile: async (filters) => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { open } = await import("@/platform/dialog");
     const picked = await open({ multiple: false, filters });
     const path = (Array.isArray(picked) ? picked[0] : picked) ?? null;
     if (!path) return null;
@@ -333,19 +391,24 @@ export const tauriPluginsBackend: PluginsBackend = {
     return { name: path.split(/[\\/]/).pop() ?? path, data };
   },
   readFileBytes: async (path) => fromBase64(await call(commands.pluginWebReadFile(path))),
+  readFileRange: async (path, offset, length) => {
+    const { total, data } = await call(commands.fsReadRange(path, offset, length));
+    return { total, data: fromBase64(data) };
+  },
   secrets: (pluginId) => call(commands.pluginSecrets(pluginId)),
   setSecret: async (pluginId, name, value) => {
     await call(commands.pluginSetSecret(pluginId, name, value));
   },
   setActiveFile: async (path) => {
-    await commands.pluginSetActiveFile(path);
+    const editor = editorContext();
+    await commands.pluginSetActiveFile(path, editor && editor.path === path ? editor : null);
   },
   setTheme: (pluginId, themeId) => call(commands.pluginSetTheme(pluginId, themeId)),
   setThemeFrame: async (color) => {
     await call(commands.pluginSetThemeFrame(color));
   },
   pickFolder: async () => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { open } = await import("@/platform/dialog");
     const picked = await open({ directory: true, multiple: false, title: "Install Plugin from Disk" });
     return (Array.isArray(picked) ? picked[0] : picked) ?? null;
   },
@@ -421,11 +484,13 @@ function samplePlugins(): PluginInfo[] {
     homepage: null,
     changeNotes: null,
     icon: null,
+    javaAgent: null,
     source: "installed" as const,
     enabled: true,
     error: null,
     capabilities: [],
     netHosts: [],
+    netSettings: [],
     contributions: [],
     activation: [],
     warnings: [],
@@ -608,6 +673,38 @@ export function createMemoryPluginsBackend(
       emit({ type: "commandsChanged" });
       return { ...p };
     },
+    netSettingHost: async (_id, _setting, value) => {
+      let host = value.trim();
+      if (host.includes("://"))
+        host = host
+          .replace(/^[a-z][a-z0-9+.-]*:\/\//i, "")
+          .replace(/[/?#].*$/, "")
+          .replace(/.*@/, "");
+      host = host.replace(/:\d+$/, "").replace(/\.$/, "").toLowerCase();
+      if (
+        !host ||
+        host.includes("*") ||
+        !/^[a-z0-9.-]+$/.test(host) ||
+        host.split(".").some((l) => !l || /[^a-z0-9-]/.test(l))
+      )
+        throw new IpcError({ kind: "invalidInput", message: `${value}: not a host (example.com) or a URL` });
+      return host;
+    },
+    approveNetSetting: async (id, setting, http, host) => {
+      const p = find(id);
+      p.netSettings = [
+        ...p.netSettings.filter((n) => n.setting !== setting || n.http !== http),
+        { setting, http, host, pending: null },
+      ];
+      emit({ type: "commandsChanged" });
+      return { ...p };
+    },
+    forgetNetSetting: async (id, setting, http) => {
+      const p = find(id);
+      p.netSettings = p.netSettings.filter((n) => n.setting !== setting || n.http !== http);
+      emit({ type: "commandsChanged" });
+      return { ...p };
+    },
     assets: async () => [],
     activationEvent: async () => {},
     catalog: async () => catalog.map((c) => ({ ...c })),
@@ -617,6 +714,8 @@ export function createMemoryPluginsBackend(
       emit({ type: "commandsChanged" });
     },
     reload: async (id) => find(id),
+    runAnythingSuggest: async () => [],
+    runAnythingRun: async () => false,
     runCommand: async (pluginId, commandId) => {
       const p = find(pluginId);
       if (p.status !== "active" && p.status !== "inactive")
@@ -677,6 +776,7 @@ export function createMemoryPluginsBackend(
     runTargets: async () => [],
     answerRunTarget: async () => useProject.getState().settings as import("@/bindings").Settings,
     endpoints: async () => [],
+    search: async () => ({ items: [], hasMore: false }),
     answerCommand: async () => {},
     finishOperation: async () => {},
     closeTerminalSession: async () => {},
@@ -687,6 +787,7 @@ export function createMemoryPluginsBackend(
     selectTests: async () => null,
     contentTabAction: async () => {},
     answerCommit: async () => {},
+    answerClipboard: async () => {},
     commitChecks: async () => [],
     serviceLog: (pluginId, view, key, _tab, _on, _onLine, onError) => {
       onError(`${pluginId} · ${view} · ${key}: logs need the desktop app`);
@@ -698,6 +799,9 @@ export function createMemoryPluginsBackend(
     saveWebFile: async () => null,
     openWebFile: async () => null,
     readFileBytes: async () => {
+      throw new IpcError({ kind: "unavailable", message: "reading the document needs the desktop app" });
+    },
+    readFileRange: async () => {
       throw new IpcError({ kind: "unavailable", message: "reading the document needs the desktop app" });
     },
     secrets: async (pluginId) =>

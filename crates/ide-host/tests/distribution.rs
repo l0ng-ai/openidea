@@ -177,6 +177,11 @@ fn signed(
         engine: "^1.0".into(),
         categories: vec!["tools".into()],
         icon: None,
+        homepage: None,
+        notes: None,
+        downloads: None,
+        featured: false,
+        suggest: vec![],
     };
     (out, entry)
 }
@@ -202,6 +207,54 @@ fn write_index(
     let path = dir.join("index.json");
     std::fs::write(&path, serde_json::to_string(&index).unwrap()).unwrap();
     path.to_string_lossy().into_owned()
+}
+
+/// The download sources setting with `mirror` as the GitHub proxy prefix (Tools › Download sources).
+fn download_sources(mirror: &str) -> ide_core::settings::ToolDownloadSettings {
+    ide_core::settings::ToolDownloadSettings { github_mirror: mirror.into(), ..Default::default() }
+}
+
+/// Security audit lead 5: an index entry's id and version name the download file,
+/// so an entry whose id or version would place it outside the downloads folder
+/// is not offered, and nothing is written for it.
+#[test]
+fn market_entry_ids_cannot_place_the_download_outside_the_downloads_folder() {
+    let f = fixture();
+    let market = f.work.join("market");
+    std::fs::create_dir_all(&market).unwrap();
+    let key = PublisherKey::from_seed([3; 32]);
+    let (_, hello) = signed_hello(&market, "1.0.0", &key, &f.host);
+    // Never read: an entry that is not offered is not downloaded.
+    std::fs::write(market.join("junk.bin"), b"attacker bytes").unwrap();
+    // The id leaves the folder on every platform (`.downloads` exists by then); the version
+    // only where `..` is resolved before the path is opened (Windows).
+    for (id, version) in [("../../escape", "1.0.0"), ("acme.hello", "1.0.0/../../../escape")] {
+        let entry = IndexEntry { id: id.into(), version: version.into(), download: "junk.bin".into(), ..hello.clone() };
+        let url = write_index(&market, &key, vec![entry], vec![], false);
+        f.host.set_market_url(Some(url));
+        f.host.refresh_market().unwrap();
+
+        assert!(f.host.market_plugins().is_empty(), "{id} {version} is offered");
+        let err = f.host.download_market_plugin(id).unwrap_err();
+        assert!(err.message.contains("is not in the marketplace"), "{id} {version}: {}", err.message);
+    }
+    let downloads = f.plugins_dir.join(".downloads");
+    let mut escaped = Vec::new();
+    let mut pending = vec![f._tmp.path().to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for e in std::fs::read_dir(&dir).unwrap().flatten() {
+            let path = e.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|x| x == "oiplugin")
+                && !path.starts_with(&downloads)
+                && !path.starts_with(&market)
+            {
+                escaped.push(path);
+            }
+        }
+    }
+    assert!(escaped.is_empty(), "the download was written outside {}: {escaped:?}", downloads.display());
 }
 
 /// First run: nothing cached yet, so listing the marketplace reads its index
@@ -359,6 +412,343 @@ fn a_moved_marketplace_is_read_where_it_moved_to() {
     std::fs::write(old.join("index.json"), r#"{"format": 1, "moved": "index.json"}"#).unwrap();
     let err = f.host.refresh_market().unwrap_err();
     assert!(err.message.contains("moved more than"), "{}", err.message);
+}
+
+/// A loopback HTTP server whose answer to every request `respond` writes; the URL of its index.
+fn serve_with(respond: impl Fn(&mut std::net::TcpStream) + Send + 'static) -> String {
+    use std::io::{BufRead, BufReader};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://127.0.0.1:{}/index.json", listener.local_addr().unwrap().port());
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap_or(0) > 0 && line != "\r\n" {
+                line.clear();
+            }
+            respond(&mut stream);
+        }
+    });
+    url
+}
+
+/// A loopback HTTP server answering every request with `body`; the URL of its index.
+fn serve(body: String) -> String {
+    use std::io::Write;
+    serve_with(move |stream| {
+        let _ = write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+    })
+}
+
+/// A loopback HTTP server that logs every request path it is asked for and answers with
+/// `bytes` (a package file); the base URL to put in front of the GitHub one.
+fn serve_bytes(bytes: Vec<u8>, paths: Arc<Mutex<Vec<String>>>) -> String {
+    use std::io::{BufRead, BufReader, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap_or(0) > 0 {
+                paths.lock().push(line.trim().to_owned());
+            }
+            while reader.read_line(&mut line).unwrap_or(0) > 0 && line != "\r\n" {
+                line.clear();
+            }
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                bytes.len()
+            );
+            let _ = stream.write_all(&bytes);
+        }
+    });
+    base
+}
+
+/// A configured mirror is tried before the official host, and its bytes must still pass the
+/// index's digest and the publisher's signature: a mirror only ever carries the download
+/// (Tools › Download sources), never the trust root.
+#[test]
+fn a_mirror_prefix_carries_plugin_packages_and_only_bytes_that_check() {
+    let f = fixture();
+    let market = f.work.join("market");
+    std::fs::create_dir_all(&market).unwrap();
+    let key = PublisherKey::from_seed([3; 32]);
+    let (package, mut entry) = signed_hello(&market, "1.0.0", &key, &f.host);
+    // The download is a GitHub one, which is the only kind a prefix may carry.
+    entry.download = format!(
+        "https://github.com/acme/openidea-hello/releases/download/v1.0.0/{}",
+        package.file_name().unwrap().to_string_lossy()
+    );
+    let url = write_index(&market, &key, vec![entry.clone()], vec![], false);
+    f.host.set_market_url(Some(url));
+    f.host.refresh_market().unwrap();
+
+    // The mirror answers with the real package.
+    let paths: Arc<Mutex<Vec<String>>> = Arc::default();
+    let base = serve_bytes(std::fs::read(&package).unwrap(), paths.clone());
+    f.host.set_downloads(download_sources(&base));
+    let dir = f.host.download_market_plugin("acme.hello").unwrap();
+    assert_eq!(f.host.preview_install(&dir).unwrap().version, "1.0.0");
+    let asked = paths.lock().clone();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert!(
+        asked[0].contains(entry.download.trim_start_matches("https://")),
+        "the official URL is appended to the prefix unchanged: {asked:?}"
+    );
+
+    // No mirror: the official URL is what is asked for, exactly as before.
+    f.host.set_downloads(download_sources(""));
+    assert_eq!(
+        ide_tools::mirror::candidates(&entry.download, &download_sources("")),
+        vec![ide_tools::mirror::Candidate { url: entry.download.clone(), mirror: None }]
+    );
+
+    // A download that is not on GitHub is not one a prefix may carry: it stays official.
+    let mut local = entry.clone();
+    local.download = package.to_string_lossy().into_owned();
+    assert_eq!(
+        ide_tools::mirror::candidates(&local.download, &download_sources(&base)),
+        vec![ide_tools::mirror::Candidate { url: local.download.clone(), mirror: None }]
+    );
+}
+
+/// A mirror serving a tampered package is a source that fails its checks — and the unpacked
+/// bytes it served must not be left behind where the install page reads from.
+///
+/// The index has no hash of the archive itself (only `package_digest` of the unpacked
+/// contents), so the bytes have to be unpacked before they can be checked; the test therefore
+/// watches the staging folders, not the archive.
+#[test]
+fn a_tampered_package_from_a_mirror_is_refused_and_leaves_nothing_behind() {
+    let f = fixture();
+    let market = f.work.join("market");
+    std::fs::create_dir_all(&market).unwrap();
+    let key = PublisherKey::from_seed([3; 32]);
+    let (package, mut entry) = signed_hello(&market, "1.0.0", &key, &f.host);
+    entry.download = format!(
+        "https://github.com/acme/openidea-hello/releases/download/v1.0.0/{}",
+        package.file_name().unwrap().to_string_lossy()
+    );
+    let url = write_index(&market, &key, vec![entry.clone()], vec![], false);
+    f.host.set_market_url(Some(url));
+    f.host.refresh_market().unwrap();
+
+    // A package whose manifest was changed after signing: its digest disagrees with the index,
+    // and it carries no signature at all.
+    let tampered = {
+        let dir = f.work.join("tampered-src");
+        std::fs::create_dir_all(&dir).unwrap();
+        let unpacked = f.host.unpack_package(&package).unwrap();
+        copy_dir(&unpacked, &dir.join("pkg"));
+        let manifest = std::fs::read_to_string(dir.join("pkg/plugin.toml")).unwrap();
+        std::fs::write(dir.join("pkg/plugin.toml"), manifest.replace("Sample plugin", "Totally safe plugin")).unwrap();
+        let files = f.host.package_files_of(&dir.join("pkg")).unwrap();
+        let out = dir.join("tampered.oiplugin");
+        package::pack(&dir.join("pkg"), &files, &out, None).unwrap();
+        out
+    };
+
+    let mirror_paths: Arc<Mutex<Vec<String>>> = Arc::default();
+    let mirror = serve_bytes(std::fs::read(&tampered).unwrap(), mirror_paths.clone());
+    let downloads = f.plugins_dir.join(".downloads");
+    // Browsing the package above went through `unpack_package`, which stages a folder of its
+    // own: clear what that left so the baseline is this attempt's alone.
+    for dir in staging_dirs(&downloads) {
+        let _ = std::fs::remove_dir_all(downloads.join(dir));
+    }
+    let staging_before = staging_dirs(&downloads);
+    assert!(staging_before.is_empty(), "{staging_before:?}");
+
+    // The mirror answers with the tampered package, and it is the only source configured: the
+    // download must fail rather than install what the mirror served.
+    f.host.set_downloads(download_sources(&mirror));
+    let err = f.host.download_market_plugin("acme.hello").unwrap_err();
+    assert!(err.message.contains("could not download"), "{}", err.message);
+    assert!(err.message.contains("does not match the marketplace's entry"), "{}", err.message);
+    assert_eq!(mirror_paths.lock().len(), 1, "the mirror was asked once");
+
+    // Nothing the mirror served stays where the install page reads from, and the staging folder
+    // of the refused attempt is gone.
+    assert_eq!(staging_dirs(&downloads), staging_before, "a refused package left its staging folder");
+    let leftovers: Vec<PathBuf> = std::fs::read_dir(&downloads)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.to_string_lossy().contains("acme.hello"))
+        .collect();
+    assert!(leftovers.is_empty(), "a refused package left files behind: {leftovers:?}");
+
+    // The official host, serving the real package, still installs.
+    let official_paths: Arc<Mutex<Vec<String>>> = Arc::default();
+    let official = serve_bytes(std::fs::read(&package).unwrap(), official_paths.clone());
+    f.host.set_downloads(download_sources(&official));
+    let dir = f.host.download_market_plugin("acme.hello").unwrap();
+    assert_eq!(f.host.preview_install(&dir).unwrap().version, "1.0.0");
+    assert_eq!(official_paths.lock().len(), 1);
+}
+
+/// The staging folders under `<plugins>/.downloads`: one per unpacked package, `<stem>-<pid>`.
+fn staging_dirs(downloads: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(downloads) else { return Vec::new() };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+/// An index is read up to the size an index may have, whatever its server says or sends:
+/// the marketplace is read again every day, with nobody asking.
+#[test]
+fn an_index_larger_than_an_index_may_be_is_not_read_to_its_end() {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let f = fixture();
+    // Announced: refused on its headers, before any of it is read.
+    f.host.set_market_url(Some(serve_with(|stream| {
+        let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1073741824\r\nConnection: close\r\n\r\n{");
+    })));
+    let err = f.host.refresh_market().unwrap_err();
+    assert!(err.message.contains("larger than 16 MiB"), "{}", err.message);
+
+    // Not announced: the read stops at the limit, and the server is left with the rest.
+    const BODY: usize = 96 << 20;
+    let sent = Arc::new(AtomicUsize::new(0));
+    f.host.set_market_url(Some(serve_with({
+        let sent = sent.clone();
+        move |stream| {
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n");
+            let chunk = [b' '; 64 << 10];
+            let mut written = 0;
+            while written < BODY && stream.write_all(&chunk).is_ok() {
+                written += chunk.len();
+            }
+            sent.store(written.max(1), Ordering::SeqCst);
+        }
+    })));
+    let err = f.host.refresh_market().unwrap_err();
+    assert!(err.message.contains("larger than 16 MiB"), "{}", err.message);
+    let waiting = std::time::Instant::now();
+    while sent.load(Ordering::SeqCst) == 0 && waiting.elapsed() < std::time::Duration::from_secs(30) {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let sent = sent.load(Ordering::SeqCst);
+    assert!(sent > 0 && sent < BODY, "the server sent {sent} of {BODY} bytes");
+}
+
+/// An index read over the network names downloads on the network: not a file of this
+/// machine, nor a share the machine would sign in to.
+#[test]
+fn an_index_read_over_the_network_cannot_name_a_local_download() {
+    let f = fixture();
+    let market = f.work.join("market");
+    std::fs::create_dir_all(&market).unwrap();
+    let key = PublisherKey::from_seed([3; 32]);
+    let (package, entry) = signed_hello(&market, "1.0.0", &key, &f.host);
+    let path = package.to_string_lossy().into_owned();
+    // A package that installs, so only where the index was read from can refuse it.
+    for download in [path.clone(), format!("file://{path}")] {
+        let entry = IndexEntry { download: download.clone(), ..entry.clone() };
+        let local = write_index(&market, &key, vec![entry], vec![], false);
+        f.host.set_market_url(Some(local.clone()));
+        f.host.refresh_market().unwrap();
+        let dir = f.host.download_market_plugin("acme.hello").unwrap();
+        assert_eq!(f.host.preview_install(&dir).unwrap().version, "1.0.0", "{download}");
+
+        f.host.set_market_url(Some(serve(std::fs::read_to_string(&local).unwrap())));
+        assert!(f.host.refresh_market().unwrap().is_empty(), "{download} is offered");
+        let err = f.host.download_market_plugin("acme.hello").unwrap_err();
+        assert!(err.message.contains("is not in the marketplace"), "{download}: {}", err.message);
+    }
+}
+
+/// Nor when an index on this machine is what sent the IDE to the one on the network.
+#[test]
+fn an_index_reached_through_a_local_one_cannot_name_a_local_download() {
+    let f = fixture();
+    let market = f.work.join("market");
+    std::fs::create_dir_all(&market).unwrap();
+    let key = PublisherKey::from_seed([3; 32]);
+    let (package, entry) = signed_hello(&market, "1.0.0", &key, &f.host);
+    let entry = IndexEntry { download: package.to_string_lossy().into_owned(), ..entry };
+    let served = serve(std::fs::read_to_string(write_index(&market, &key, vec![entry], vec![], false)).unwrap());
+    let old = f.work.join("old");
+    std::fs::create_dir_all(&old).unwrap();
+    let moved = serde_json::json!({ "format": package::INDEX_FORMAT, "moved": served }).to_string();
+    std::fs::write(old.join("index.json"), moved).unwrap();
+    f.host.set_market_url(Some(old.join("index.json").to_string_lossy().into_owned()));
+
+    assert!(f.host.refresh_market().unwrap().is_empty(), "the local download is offered");
+    let err = f.host.download_market_plugin("acme.hello").unwrap_err();
+    assert!(err.message.contains("is not in the marketplace"), "{}", err.message);
+}
+
+/// The index kept from the last read does not say where it was read from: what an earlier
+/// version kept is judged against the marketplace in use.
+#[test]
+fn a_kept_index_cannot_name_a_local_download_for_a_marketplace_on_the_network() {
+    let f = fixture();
+    let market = f.work.join("market");
+    std::fs::create_dir_all(&market).unwrap();
+    let key = PublisherKey::from_seed([3; 32]);
+    let (package, entry) = signed_hello(&market, "1.0.0", &key, &f.host);
+    let entry = IndexEntry { download: package.to_string_lossy().into_owned(), ..entry };
+    let kept = write_index(&market, &key, vec![entry], vec![], false);
+    std::fs::copy(kept, f.plugins_dir.join("market-index.json")).unwrap();
+    let again = PluginHost::new(f.plugins_dir.clone(), Arc::new(|_: Option<&str>, _| {}), Limits::default()).unwrap();
+    // Never read: the check comes before any request.
+    again.set_market_url(Some("https://market.invalid/index.json".into()));
+
+    assert_eq!(again.market_plugins()[0].entry.id, "acme.hello");
+    let err = again.download_market_plugin("acme.hello").unwrap_err();
+    assert!(err.message.contains("is not on the network"), "{}", err.message);
+}
+
+/// Nor may it send the IDE to an index on this machine.
+#[test]
+fn an_index_read_over_the_network_cannot_move_to_a_local_one() {
+    let f = fixture();
+    let market = f.work.join("market");
+    std::fs::create_dir_all(&market).unwrap();
+    let key = PublisherKey::from_seed([3; 32]);
+    let (_, entry) = signed_hello(&market, "1.0.0", &key, &f.host);
+    let local = write_index(&market, &key, vec![entry], vec![], false);
+    let moved = serde_json::json!({ "format": package::INDEX_FORMAT, "moved": local }).to_string();
+    f.host.set_market_url(Some(serve(moved)));
+
+    let err = f.host.refresh_market().unwrap_err();
+    assert!(err.message.contains("is not on the network"), "{}", err.message);
+    assert!(f.host.market_plugins().is_empty(), "the local index was read");
+}
+
+/// A download that turns out not to be a package is not kept.
+#[test]
+fn a_download_that_is_not_a_package_leaves_nothing_behind() {
+    let f = fixture();
+    let market = f.work.join("market");
+    std::fs::create_dir_all(&market).unwrap();
+    let key = PublisherKey::from_seed([3; 32]);
+    let (_, entry) = signed_hello(&market, "1.0.0", &key, &f.host);
+    std::fs::write(market.join("junk.bin"), b"not a package").unwrap();
+    let entry = IndexEntry { download: "junk.bin".into(), ..entry };
+    f.host.set_market_url(Some(write_index(&market, &key, vec![entry], vec![], false)));
+    f.host.refresh_market().unwrap();
+
+    let err = f.host.download_market_plugin("acme.hello").unwrap_err();
+    assert!(err.message.contains("not a plugin package"), "{}", err.message);
+    let left: Vec<_> = std::fs::read_dir(f.plugins_dir.join(".downloads"))
+        .map(|dir| dir.flatten().map(|e| e.file_name()).collect())
+        .unwrap_or_default();
+    assert!(left.is_empty(), "{left:?}");
 }
 
 /// `dir/index.json` listing `publishers` and `plugins`; its path.

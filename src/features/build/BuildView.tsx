@@ -5,7 +5,17 @@
  * its source (as IDEA: selection shows, navigation jumps).
  */
 import { copySelectionOnKeyDown } from "@/ui/selectableText";
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { hasPrimaryModifier } from "@/platform/keymap";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent,
+  type ReactNode,
+} from "react";
 import clsx from "clsx";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { basename, relativeDir, useProject } from "@/platform/project";
@@ -40,6 +50,8 @@ import { findOutputLinks, type OutputLink } from "@/features/run/links";
 import { openTarget, openUrl } from "@/features/run/navigate";
 import { navigateToMessage, rerunBuild, selectBuildNode, useBuildRun } from "./store";
 import styles from "./Build.module.css";
+import { WidestColumns } from "@/platform/consoleColumns";
+import { useConsoleFont } from "@/platform/consoleFont";
 import { tx } from "@/platform/i18n";
 
 const SEVERITY_ICON: Record<Severity, string> = { error: "error", warning: "warning", info: "info", hint: "info" };
@@ -56,13 +68,12 @@ function StatusIcon({ status }: { status: BuildStatus }) {
   return <Icon name={name} size={14} className={styles[`status-${status}`]} />;
 }
 
-function rootDetail(status: BuildStatus, durationMs: number | null, errors: number, warnings: number): string {
+function rootDetail(status: BuildStatus, errors: number, warnings: number): string {
   if (status === "running") return "running…";
   if (status === "cancelled") return "cancelled";
-  const summary = finishSummary({ success: status === "success", errors, warnings, durationMs });
-  return status === "success"
-    ? `finished ${formatDuration(durationMs ?? 0)}`
-    : summary.replace(/^Build failed:?\s*/, "") || "failed";
+  if (status === "success") return tx("Finished");
+  const summary = finishSummary({ success: false, errors, warnings, durationMs: null });
+  return summary.replace(/^Build failed:?\s*/, "") || "failed";
 }
 
 export function BuildHeaderActions() {
@@ -119,15 +130,19 @@ function BuildTree() {
 
   const renderNode = (n: BuildNode, state: TreeRowState) => {
     if (n.kind === "root") {
+      const detail = rootDetail(n.status, n.errors, n.warnings);
+      const elapsed = n.status !== "running" && durationMs != null ? formatDuration(durationMs) : null;
       return (
-        <span className={styles.row}>
+        <span className={styles.row} title={[n.title, detail, elapsed].filter(Boolean).join(" ")}>
           <StatusIcon status={n.status} />
           <span className={styles.strong}>{n.title}</span>
-          <span className={styles.muted}>{rootDetail(n.status, durationMs, n.errors, n.warnings)}</span>
+          <span className={clsx(styles.muted, styles.rootDetail)}>{detail}</span>
+          {elapsed && <span className={clsx(styles.muted, styles.duration)}>{elapsed}</span>}
         </span>
       );
     }
     if (n.kind === "file") {
+      const directory = relativeDir(root, n.path);
       const errors = n.messages.filter((m) => m.severity === "error").length;
       const warnings = n.messages.filter((m) => m.severity === "warning").length;
       const counts = [
@@ -137,13 +152,22 @@ function BuildTree() {
         .filter(Boolean)
         .join(", ");
       return (
-        <span className={styles.row}>
+        <span className={styles.row} title={n.path}>
           <Icon name={fileIconName(basename(n.path), n.path)} size={16} className={styles.fileIcon} />
-          <span className={clsx(styles.strong, errors > 0 && styles.fileError, state.selected && styles.selected)}>
-            {basename(n.path)}
+          <span className={styles.fileLabel}>
+            <span
+              className={clsx(
+                styles.strong,
+                styles.fileName,
+                errors > 0 && styles.fileError,
+                state.selected && styles.selected,
+              )}
+            >
+              {basename(n.path)}
+            </span>
+            {directory && <span className={clsx(styles.muted, styles.directory)}>{directory}</span>}
           </span>
-          <span className={styles.muted}>{relativeDir(root, n.path)}</span>
-          <span className={styles.muted}>{counts}</span>
+          {counts && <span className={styles.muted}>{counts}</span>}
         </span>
       );
     }
@@ -202,8 +226,6 @@ function BuildTree() {
   );
 }
 
-const LINE_HEIGHT = 20;
-
 /**
  * One console line: file locations and URLs (compiler diagnostics, stack
  * frames) are links, resolved against the directory of the step that printed
@@ -241,34 +263,91 @@ function ConsoleLineText({ line, root }: { line: ConsoleLine; root: string }) {
   return <>{out}</>;
 }
 
-function BuildConsole() {
+function BuildConsole({ rowHeight }: { rowHeight: number }) {
   const root = useProject((s) => s.project?.root ?? "/");
   const lines = useBuildRun((s) => s.lines);
   const ref = useRef<HTMLDivElement>(null);
+  const innerRef = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
+  const [widest] = useState(() => new WidestColumns());
+  const columns = useMemo(() => widest.measure(lines), [widest, lines]);
   const virtualizer = useVirtualizer({
     count: lines.length,
     getScrollElement: () => ref.current,
-    estimateSize: () => LINE_HEIGHT,
+    estimateSize: () => rowHeight,
     overscan: 20,
   });
+  useLayoutEffect(() => {
+    virtualizer.measure();
+  }, [rowHeight, virtualizer]);
   useEffect(() => {
     if (stick.current && lines.length) virtualizer.scrollToIndex(lines.length - 1, { align: "end" });
-  }, [lines.length, virtualizer]);
+  }, [lines.length, rowHeight, virtualizer]);
+
+  /** Rows are virtualized, so "everything" is a selection of the container, not of the mounted rows. */
+  const selectAll = () => {
+    const inner = innerRef.current;
+    if (inner) window.getSelection()?.selectAllChildren(inner);
+  };
+  const allSelected = () => {
+    const inner = innerRef.current;
+    const s = window.getSelection();
+    return (
+      !!inner &&
+      !!s &&
+      !s.isCollapsed &&
+      s.anchorNode === inner &&
+      s.focusNode === inner &&
+      s.anchorOffset === 0 &&
+      s.focusOffset === inner.childNodes.length
+    );
+  };
+  const allText = () => lines.map((l) => l.text).join("\n");
+  // macOS routes Cmd+A through the native Edit menu (no keydown reaches the webview); Select All
+  // asks the body with `selectstart` first, so with the output focused, select the output instead.
+  useEffect(() => {
+    const onSelectStart = (e: Event) => {
+      const el = ref.current;
+      if (e.target !== document.body || !el || !el.contains(document.activeElement)) return;
+      e.preventDefault();
+      const inner = innerRef.current;
+      if (inner) window.getSelection()?.selectAllChildren(inner);
+    };
+    document.addEventListener("selectstart", onSelectStart, true);
+    return () => document.removeEventListener("selectstart", onSelectStart, true);
+  }, []);
+
   return (
     <div
       ref={ref}
       className={styles.console}
       tabIndex={0}
       role="log"
-      onKeyDown={copySelectionOnKeyDown}
+      onKeyDown={(e) => {
+        if (hasPrimaryModifier(e) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "a") {
+          e.preventDefault();
+          selectAll();
+          return;
+        }
+        copySelectionOnKeyDown(e, (selection) => (allSelected() ? allText() : selection.toString()));
+      }}
+      onCopy={(e) => {
+        // Native copy (Edit menu, macOS) would take only the mounted rows.
+        if (!allSelected()) return;
+        e.preventDefault();
+        e.clipboardData.setData("text/plain", allText());
+      }}
       aria-label={tx("Build output")}
       onScroll={(e) => {
         const el = e.currentTarget;
-        stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < LINE_HEIGHT * 2;
+        stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < rowHeight * 2;
       }}
     >
-      <div className={styles.consoleInner} style={{ height: virtualizer.getTotalSize() }}>
+      <div
+        ref={innerRef}
+        className={styles.consoleInner}
+        style={{ height: virtualizer.getTotalSize(), minWidth: `calc(${columns}ch + 24px)` }}
+      >
         {virtualizer.getVirtualItems().map((v) => {
           const line = lines[v.index]!;
           return (
@@ -313,15 +392,25 @@ function MessageDetail({ message }: { message: BuildMessage }) {
   );
 }
 
-function BuildOutput() {
+function BuildOutput({ rowHeight }: { rowHeight: number }) {
   const selected = useBuildRun((s) => s.selected);
   const messages = useBuildRun((s) => s.messages);
   const node = useMemo(() => (selected ? findNode(messages, selected) : undefined), [selected, messages]);
-  return node?.kind === "message" ? <MessageDetail message={node.message} /> : <BuildConsole />;
+  const dropped = useBuildRun((s) => s.dropped);
+  if (node?.kind === "message") return <MessageDetail message={node.message} />;
+  return (
+    <>
+      {dropped > 0 && (
+        <div className={styles.notice}>{tx`${dropped.toLocaleString()} earlier lines were discarded`}</div>
+      )}
+      <BuildConsole rowHeight={rowHeight} />
+    </>
+  );
 }
 
 export function BuildView() {
   const hasBuild = useBuildRun((s) => s.status !== null);
+  const font = useConsoleFont();
   if (!hasBuild) {
     return (
       <div className={styles.view}>
@@ -333,13 +422,28 @@ export function BuildView() {
   }
   return (
     <div className={styles.view}>
-      <SplitGroup orientation="horizontal" className={styles.split} id="build-view-split">
-        <SplitPanel id="build-tree" defaultSize="38%" minSize="120px" className={styles.pane}>
+      <SplitGroup
+        orientation="horizontal"
+        className={styles.split}
+        id="build-view-split"
+        storageKey="openidea.build.split"
+      >
+        <SplitPanel id="build-tree" defaultSize="33%" minSize="120px" className={styles.pane}>
           <BuildTree />
         </SplitPanel>
         <SplitHandle />
-        <SplitPanel id="build-console" minSize="120px" className={styles.pane}>
-          <BuildOutput />
+        <SplitPanel
+          id="build-console"
+          minSize="120px"
+          className={styles.pane}
+          style={{
+            fontFamily: font.family,
+            fontSize: font.size,
+            fontWeight: font.weight,
+            lineHeight: `${font.rowHeight}px`,
+          }}
+        >
+          <BuildOutput rowHeight={font.rowHeight} />
         </SplitPanel>
       </SplitGroup>
     </div>

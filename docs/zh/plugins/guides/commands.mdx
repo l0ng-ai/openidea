@@ -119,6 +119,21 @@ mac = "Meta+Alt+C"        # 可选；缺省时 macOS 原样使用 `key`
 - 插件快捷键只是默认值，优先级低于 IDE：按键映射预设或用户已经占用该按键、或该动作已有绑定时，
   插件的快捷键会被丢弃。用户可以在 **设置 › 按键映射** 中重新绑定。
 
+### 编辑器中的 Escape
+
+API 1.10 起，命令可以响应焦点编辑器中单独按下的 <kbd>Escape</kbd>，用来清除插件在编辑器里显示的内容（高亮、某种模式）：
+
+```toml
+[[contributes.keymaps]]
+command = "clear-highlight"
+key = "Escape"
+when = "plugin.my-plugin.highlighting"   # 必填；有内容可清除时用 set-context 设置
+```
+
+- 只有 IDE 在编辑器里对 Escape 的处理都没有生效时才会执行：关闭弹窗、补全或重命名，收起选区或多余的光标，Vim。
+- 必须写 `when`，且 `key`（以及给出的 `mac`）必须是 `Escape`。Escape 是插件唯一能绑定的单独按键，`when` 也只用于这种绑定。
+- 多个插件的 `when` 同时成立时，执行最后加载的那个插件的命令。
+
 ## 菜单
 
 ```toml
@@ -128,18 +143,20 @@ command = "test-selection"
 when = "editorLangId == markdown"   # 可选
 ```
 
-| `menu`                  | 位置                                             | API |
-| ----------------------- | ------------------------------------------------ | --- |
-| `editor.context`        | 编辑器右键菜单                                   | 1.0 |
-| `projectView.context`   | 项目工具窗口右键菜单                             | 1.0 |
-| `editorTab.context`     | 编辑器标签页右键菜单                             | 1.0 |
-| `tools`                 | 主菜单中的 **工具**                              | 1.0 |
-| `viewItem.context`      | 插件自有视图中条目的右键菜单（需要 `view`）      | 1.2 |
-| `commit.message`        | 提交信息上方的工具栏（提交工具窗口和提交对话框） | 1.3 |
-| `editor.title`          | 编辑器标签栏的动作区                             | 1.4 |
-| `mainToolbar`           | 主工具栏                                         | 1.4 |
-| `problems.context`      | 问题工具窗口中问题条目的右键菜单                 | 1.4 |
-| `searchResults.context` | 搜索结果的右键菜单                               | 1.4 |
+| `menu`                  | 位置                                                 | API  |
+| ----------------------- | ---------------------------------------------------- | ---- |
+| `editor.context`        | 编辑器右键菜单                                       | 1.0  |
+| `projectView.context`   | 项目工具窗口右键菜单                                 | 1.0  |
+| `editorTab.context`     | 编辑器标签页右键菜单                                 | 1.0  |
+| `tools`                 | 主菜单中的 **工具**                                  | 1.0  |
+| `viewItem.context`      | 插件自有视图中条目的右键菜单（需要 `view`）          | 1.2  |
+| `commit.message`        | 提交信息上方的工具栏（提交工具窗口和提交对话框）     | 1.3  |
+| `editor.title`          | 编辑器标签栏的动作区                                 | 1.4  |
+| `mainToolbar`           | 主工具栏                                             | 1.4  |
+| `problems.context`      | 问题工具窗口中问题条目的右键菜单                     | 1.4  |
+| `searchResults.context` | 搜索结果的右键菜单                                   | 1.4  |
+| `services.context`      | IDE 自带 Services 节点（运行配置、Docker）的右键菜单 | 1.18 |
+| `services.toolbar`      | 选中 IDE 自带节点时的 Services 工具栏                | 1.18 |
 
 使用 1.0 之后加入的菜单，需要在 `engines.openidea` 中至少声明对应的 API 版本。每个条目都必须指向插件声明过的命令。
 菜单的 `when` 与命令自身的 `when` 同时生效。
@@ -170,6 +187,24 @@ command = "kube.logs"
 when = "viewItemKind == pod"
 ```
 
+**Services 菜单**（API 1.18）。`services.context` 和 `services.toolbar` 作用于 IDE 自己放进 Services 的节点：
+运行配置和 Docker 容器。`when` 可以对每个选中的服务使用 `serviceProvider`（`runConfigurations` 或 `docker`）、
+`serviceKind`（运行配置类型，例如 `spring-boot`；容器为 `docker-container`）、`serviceId`、`serviceName`、
+`serviceRunning`、`runConfigurationId`（容器为空）和 `serviceSelectionCount`。只有 `when` 对每个选中的服务都成立时
+才显示该条目。命令参数是 JSON 文本：`{"services": [{"provider", "id", "kind", "name", "running", "runConfigurationId"}]}`。
+工具栏条目显示命令的 `icon`，否则使用插件图标。
+
+```toml
+[[contributes.menus]]
+menu = "services.context"
+command = "hotreload.attach"
+submenu = "Hot Reload"
+when = "serviceKind == 'spring-boot' && serviceRunning"
+```
+
+要用插件的 Java 代理启动选中的配置，请把代理绑定到执行器（`[[contributes.javaAgents]]` 的 `executor`）：
+“使用 … 运行”和“使用 … 调试”会出现在运行和调试旁边，也会出现在这个菜单中。
+
 ## 状态栏项
 
 ```toml
@@ -188,6 +223,11 @@ priority = 100             # 0–1000
   （每个插件最多 8 个；插件空闲时仍保留）；`remove_status_item(id)` 移除。
 - `host::set_window_status_item(id, item)`（API 1.4）只在发起调用的窗口中覆盖它；
   `remove_window_status_item(id)` 恢复为全局项。只能在窗口的命令或事件中调用。
+- `host::set_status_item_menu(id, item, &menu)` 和 `set_window_status_item_menu`（API 1.14）
+  给状态栏项加一个菜单：点击时在状态栏项上方弹出菜单，而不是运行 `command`；选择其中的操作会在该窗口中
+  带参数运行对应命令。菜单项有 `StatusMenuEntry::action(label, command)`（可用 `.with_description(…)`
+  加 URL 等次要文字，用 `.with_argument(…)` 传参数）、`Separator` 和 `Header(text)`，最多 64 项。
+  操作引用了插件未声明的命令时调用失败。之后再调用 `set_status_item` 会去掉菜单。
 
 ## 在代码中设置上下文键
 
@@ -228,21 +268,25 @@ API 1.5 新增 `Project::notify(level, title, body, actions)`：只在该项目�
 或声明 `activation = ["on-event:file-saved"]` 让第一个事件唤醒插件，然后在
 `Plugin::handle_events(events, ctx)` 中批量处理（WIT `events.wit`，导出 `event-handler`）。
 
-| 类型                 | 权限           | 触发时机                                          |
-| -------------------- | -------------- | ------------------------------------------------- |
-| `file-opened`        | `events`       | 文件在编辑器中打开                                |
-| `file-saved`         | `events`       | 文件写入磁盘之后                                  |
-| `file-closed`        | `events`       | API 1.4：编辑器关闭（JSON 路径字符串）            |
-| `files-changed`      | `events`       | API 1.3：打开项目中防抖后的新建 / 修改 / 删除路径 |
-| `editor-focused`     | `events`       | 获得焦点的编辑器变化                              |
-| `vcs-changed`        | `events`       | 仓库状态变化（提交、检出、拉取等）                |
-| `settings-changed`   | `events`       | API 1.4：插件中发生变化的设置键                   |
-| `action-performed`   | `events.input` | 执行了 IDE 动作：id、标题、来源、快捷键           |
-| `input-mode-changed` | `events.input` | API 1.4：当前编辑器的 Vim 模式变化                |
-| `scheduled`          | 无             | `on-schedule:<secs>` 的周期到了                   |
+| 类型                    | 权限           | 触发时机                                          |
+| ----------------------- | -------------- | ------------------------------------------------- |
+| `file-opened`           | `events`       | 文件在编辑器中打开                                |
+| `file-saved`            | `events`       | 文件写入磁盘之后                                  |
+| `file-closed`           | `events`       | API 1.4：编辑器关闭（JSON 路径字符串）            |
+| `files-changed`         | `events`       | API 1.3：打开项目中防抖后的新建 / 修改 / 删除路径 |
+| `editor-focused`        | `events`       | 获得焦点的编辑器变化                              |
+| `vcs-changed`           | `events`       | 仓库状态变化（提交、检出、拉取等）                |
+| `settings-changed`      | `events`       | API 1.4：插件中发生变化的设置键                   |
+| `action-performed`      | `events.input` | 执行了 IDE 动作：id、标题、来源、快捷键           |
+| `input-mode-changed`    | `events.input` | API 1.4：当前编辑器的 Vim 模式变化                |
+| `watched-files-changed` | `events`       | API 1.18：用 `host::watch_paths` 监听的路径有变化 |
+| `scheduled`             | 无             | `on-schedule:<secs>` 的周期到了                   |
 
 事件按窗口分批送达，旧的在前。空闲的插件会先攒 2 秒再被唤醒。`host::subscribe_paths(kind, &["config/*.yaml"])`
-（API 1.3）可以按项目相对通配符过滤 `file-opened`、`file-saved` 和 `files-changed`。比 SDK 新的事件类型以
+（API 1.3）可以按项目相对通配符过滤 `file-opened`、`file-saved` 和 `files-changed`。
+`host::watch_paths(&paths)`（API 1.18）监听窗口项目之外、`fs.read` 授权覆盖的文件和目录（目录只看自身条目，
+不递归，最多 32 个路径），以绝对路径发送 `watched-files-changed`；项目、窗口关闭或授权撤销时监听随之结束，
+不监听任何远程内容。比 SDK 新的事件类型以
 `Event::Other { kind, data }` 送达；这个枚举标记了 `#[non_exhaustive]`，匹配时要加 `_` 分支。
 可运行的示例见 [Key Promoter](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/key-promoter)
 （`action-performed`）和 [Git Toolbox](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/git-toolbox)

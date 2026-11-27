@@ -1,6 +1,6 @@
 //! JVM frames (`com/x/App$Inner.work`, `com.x.App.work`) → source files of the project.
 
-use crate::Profile;
+use crate::{Profile, ProfileFrameKind};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -72,6 +72,19 @@ fn class_key(frame: &str) -> Option<String> {
     Some(class.replace('.', "/"))
 }
 
+/// `com.x.App$Inner[]` → `com/x/App`; primitive arrays (`byte[]` → `byte`) match no source.
+fn type_key(name: &str) -> Option<String> {
+    let mut class = name;
+    while let Some(inner) = class.strip_suffix("[]") {
+        class = inner;
+    }
+    let class = class.split('$').next().unwrap_or(class);
+    if class.is_empty() || class.contains(['(', ' ', ':']) {
+        return None;
+    }
+    Some(class.replace('.', "/"))
+}
+
 pub(crate) fn resolve_sources(profile: &mut Profile, root: &Path) {
     if profile.frames.iter().all(|f| f.file.is_some()) {
         return;
@@ -81,7 +94,11 @@ pub(crate) fn resolve_sources(profile: &mut Profile, root: &Path) {
         return;
     }
     for f in profile.frames.iter_mut().filter(|f| f.file.is_none()) {
-        if let Some(path) = class_key(&f.name).and_then(|k| index.get(&k)) {
+        let key = match f.kind {
+            ProfileFrameKind::Code => class_key(&f.name),
+            ProfileFrameKind::AllocatedType => type_key(&f.name),
+        };
+        if let Some(path) = key.and_then(|k| index.get(&k)) {
             f.file = Some(path.clone().into());
         }
     }
@@ -90,6 +107,7 @@ pub(crate) fn resolve_sources(profile: &mut Profile, root: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ProfileMode;
     use crate::tree::{FrameKey, TreeBuilder};
 
     #[test]
@@ -101,11 +119,37 @@ mod tests {
         let mut b = TreeBuilder::new();
         b.add_stack([FrameKey::named("java/lang/Thread.run"), FrameKey::named("com/x/App$Worker.work")], 1.0);
         b.add_stack([FrameKey::named("com.x.App.main")], 1.0);
-        let mut p = b.finish("async-profiler", "samples");
+        let mut p = b.finish("async-profiler", "samples", ProfileMode::Cpu);
         resolve_sources(&mut p, dir.path());
         let file = |name: &str| p.frames.iter().find(|f| f.name == name).unwrap().file.clone();
         assert_eq!(file("com/x/App$Worker.work").as_deref(), Some(src.join("App.java").as_path()));
         assert_eq!(file("com.x.App.main").as_deref(), Some(src.join("App.java").as_path()));
         assert_eq!(file("java/lang/Thread.run"), None);
+    }
+
+    #[test]
+    fn allocated_types_map_to_outer_class_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let pkg = dir.path().join("app/src/main/java/com/x");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(pkg.join("App.java"), "").unwrap();
+        let default_pkg = dir.path().join("app/src/main/java");
+        std::fs::write(default_pkg.join("Alloc.java"), "").unwrap();
+        let mut b = TreeBuilder::new();
+        b.add_stack([FrameKey::named("com.x.App.work"), FrameKey::allocated("com.x.App$Inner[]")], 1.0);
+        b.add_stack([FrameKey::named("com.x.App.work"), FrameKey::allocated("com.x.App")], 1.0);
+        b.add_stack([FrameKey::allocated("Alloc")], 1.0);
+        b.add_stack([FrameKey::allocated("byte[]")], 1.0);
+        b.add_stack([FrameKey::allocated("java.lang.String")], 1.0);
+        let mut p = b.finish("async-profiler", "bytes", ProfileMode::Allocations);
+        resolve_sources(&mut p, dir.path());
+        let file = |name: &str| p.frames.iter().find(|f| f.name == name).unwrap().file.clone();
+        let app = pkg.join("App.java");
+        assert_eq!(file("com.x.App$Inner[]").as_deref(), Some(app.as_path()));
+        assert_eq!(file("com.x.App").as_deref(), Some(app.as_path()));
+        assert_eq!(file("Alloc").as_deref(), Some(default_pkg.join("Alloc.java").as_path()));
+        assert_eq!(file("byte[]"), None);
+        assert_eq!(file("java.lang.String"), None);
+        assert_eq!(file("com.x.App.work").as_deref(), Some(app.as_path()), "code frames map as before");
     }
 }

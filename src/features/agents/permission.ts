@@ -3,8 +3,16 @@ import { tx } from "@/platform/i18n";
 
 export type PermissionEntry = Extract<AgentEntry, { type: "permission" }>;
 
+/** Questions and forms are answered in a card above the composer, not with the request's options. */
+export const asksInCard = (entry: PermissionEntry) => !!entry.questions?.length || !!entry.form;
+
 export function permissionDetails(entry: PermissionEntry, provider = "Codex") {
-  const command = entry.title.match(/^Run ([\s\S]+)/)?.[1] ?? entry.title.match(/^[^\n]+?: Run ([\s\S]+)/)?.[1];
+  if (entry.options.some((option) => option.id === "codex-trust-project")) {
+    return { title: tx("Trust Project in Codex"), command: undefined, detail: entry.title };
+  }
+  // The backend names the command from the request's structured input; the title is the
+  // agent's own words and never makes a request a command.
+  const command = entry.command ?? undefined;
   return {
     command,
     title: command ? tx`${provider} wants to run a command` : tx("Allow tool call?"),
@@ -16,7 +24,9 @@ export function permissionDetails(entry: PermissionEntry, provider = "Codex") {
 export function permissionOption(option: AgentPermissionOption, command: boolean) {
   const stop = option.id === "cancel" || /decline and stop/i.test(option.name);
   let label = option.name;
-  if (stop) label = tx("Decline and Stop");
+  if (option.id === "codex-trust-project") label = tx("Trust Project in Codex");
+  else if (option.id === "codex-keep-untrusted") label = tx("Keep Untrusted");
+  else if (stop) label = tx("Decline and Stop");
   else if (option.kind === "allow_always") {
     label = /for (this |the )?session/i.test(option.name) ? tx("Allow for This Session") : tx("Always Allow");
   } else if (option.kind === "reject_always") label = tx("Always Decline");

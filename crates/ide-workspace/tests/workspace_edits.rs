@@ -1,4 +1,4 @@
-use ide_core::{ChangeSet, FileEdit, LanguageId, NullSink, Pos, Range, TextChange, TextEdit, WorkspaceEdit};
+use ide_core::{ChangeSet, FileEdit, FileMove, LanguageId, NullSink, Pos, Range, TextChange, TextEdit, WorkspaceEdit};
 use ide_core::{IdeEvent, error::ErrorKind};
 use ide_workspace::Documents;
 use parking_lot::Mutex;
@@ -127,6 +127,31 @@ fn later_failure_preserves_disk_and_unsaved_buffer() {
     assert!(after.dirty);
 }
 
+/// Undoing a workspace edit keeps the warning about a file changed on disk under unsaved
+/// edits: autosave still leaves the external change alone.
+#[test]
+fn rollback_keeps_a_disk_conflict_of_an_unsaved_buffer() {
+    let tmp = tempfile::tempdir().unwrap();
+    let first = tmp.path().join("first.txt");
+    std::fs::write(&first, "old\n").unwrap();
+    let (docs, events) = recorded_documents();
+    let info = docs.open(&first).unwrap();
+    docs.edit(info.id, info.version, ChangeSet { changes: vec![TextChange { from: 0, to: 3, insert: "own".into() }] })
+        .unwrap();
+    // An external write under the unsaved buffer, warned about before the refactoring.
+    let mtime = std::fs::metadata(&first).unwrap().modified().unwrap() + std::time::Duration::from_secs(2);
+    std::fs::write(&first, "ext\n").unwrap();
+    std::fs::File::options().write(true).open(&first).unwrap().set_modified(mtime).unwrap();
+    docs.on_disk_changed(std::slice::from_ref(&first));
+    docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&first, "new")], ..Default::default() }).unwrap();
+    docs.undo_workspace_edit(undo_id(&events)).unwrap();
+    let snap = docs.snapshot(info.id).unwrap();
+    assert_eq!(snap.text, "own\n");
+    assert!(snap.dirty);
+    assert!(!docs.autosave(info.id).unwrap(), "autosave must not overwrite the external change");
+    assert_eq!(std::fs::read_to_string(&first).unwrap(), "ext\n");
+}
+
 #[test]
 fn create_conflict_does_not_modify_earlier_files() {
     let tmp = tempfile::tempdir().unwrap();
@@ -160,6 +185,75 @@ fn undo_id(events: &Mutex<Vec<IdeEvent>>) -> u32 {
             _ => None,
         })
         .expect("successful transaction has one undo record")
+}
+
+#[test]
+fn applied_event_lists_the_files_the_edit_renamed() {
+    for by_agent in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        let from = tmp.path().join("ListPrice.java");
+        let to = tmp.path().join("BasePrice.java");
+        let user = tmp.path().join("BulkDiscount.java");
+        std::fs::write(&from, "old").unwrap();
+        std::fs::write(&user, "old\n").unwrap();
+        let (docs, events) = recorded_documents();
+        let edit = WorkspaceEdit {
+            files: vec![edit(&user, "new"), FileEdit::Rename { from: from.clone().into(), to: to.clone().into() }],
+            ..Default::default()
+        };
+        if by_agent { docs.apply_agent_workspace_edit(&edit) } else { docs.apply_workspace_edit(&edit) }.unwrap();
+        let moves = events
+            .lock()
+            .iter()
+            .find_map(|event| match event {
+                IdeEvent::WorkspaceEditApplied { moves, .. } => Some(moves.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(moves, vec![FileMove { from: from.into(), to: to.into() }], "by_agent: {by_agent}");
+    }
+}
+
+#[test]
+fn applied_event_lists_no_moves_for_text_edits() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("a.txt");
+    std::fs::write(&path, "old\n").unwrap();
+    let (docs, events) = recorded_documents();
+    docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&path, "new")], ..Default::default() }).unwrap();
+    assert!(
+        events.lock().iter().any(|e| matches!(e, IdeEvent::WorkspaceEditApplied { moves, .. } if moves.is_empty()))
+    );
+}
+
+#[test]
+fn undo_keeps_the_encoding_chosen_for_a_file_opened_after_the_edit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("legacy.txt");
+    std::fs::write(&path, b"abc\xC3\xA9").unwrap();
+    let (docs, events) = recorded_documents();
+    docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&path, "new")], ..Default::default() }).unwrap();
+    let info = docs.open(&path).unwrap();
+    docs.set_encoding(info.id, "windows-1252", true).unwrap();
+    assert_eq!(docs.snapshot(info.id).unwrap().text, "newÃ©");
+    docs.undo_workspace_edit(undo_id(&events)).unwrap();
+    let snapshot = docs.snapshot(info.id).unwrap();
+    assert_eq!((snapshot.text.as_str(), snapshot.encoding.as_str()), ("abcÃ©", "windows-1252"));
+}
+
+#[test]
+fn undo_keeps_the_editorconfig_charset_of_a_file_opened_after_the_edit() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join(".editorconfig"), "root = true\n[*.txt]\ncharset = iso-8859-15\n").unwrap();
+    let path = tmp.path().join("legacy.txt");
+    std::fs::write(&path, b"abc\xA4").unwrap();
+    let (docs, events) = recorded_documents();
+    docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&path, "new")], ..Default::default() }).unwrap();
+    let info = docs.open(&path).unwrap();
+    assert_eq!((info.text.as_str(), info.encoding.as_str()), ("new€", "iso-8859-15"));
+    docs.undo_workspace_edit(undo_id(&events)).unwrap();
+    let snapshot = docs.snapshot(info.id).unwrap();
+    assert_eq!((snapshot.text.as_str(), snapshot.encoding.as_str()), ("abc€", "iso-8859-15"));
 }
 
 #[test]
@@ -347,6 +441,80 @@ fn undo_refuses_later_changes_and_retains_the_record() {
     assert_eq!(std::fs::read_to_string(a).unwrap(), "old\n");
 }
 
+/// An open file with unsaved typing, refactored: its buffer holds `new`, the disk still `old`.
+fn refactored_unsaved(path: &Path) -> (Documents, Arc<Mutex<Vec<IdeEvent>>>, ide_core::DocId) {
+    std::fs::write(path, "old\n").unwrap();
+    let (docs, events) = recorded_documents();
+    let info = docs.open(path).unwrap();
+    docs.edit(info.id, info.version, ChangeSet { changes: vec![TextChange { from: 0, to: 3, insert: "own".into() }] })
+        .unwrap();
+    docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(path, "new")], ..Default::default() }).unwrap();
+    assert_eq!(docs.snapshot(info.id).unwrap().text, "new\n");
+    (docs, events, info.id)
+}
+
+fn type_text(docs: &Documents, id: ide_core::DocId, text: &str) {
+    let snapshot = docs.snapshot(id).unwrap();
+    let to = snapshot.text.encode_utf16().count() as u32;
+    docs.edit(id, snapshot.version, ChangeSet { changes: vec![TextChange { from: 0, to, insert: text.into() }] })
+        .unwrap();
+}
+
+#[test]
+fn undo_keeps_an_external_write_under_an_unsaved_buffer() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("a.txt");
+    let (docs, events, id) = refactored_unsaved(&path);
+    // Not reported by a watcher: undo itself notices the write.
+    std::fs::write(&path, "external\n").unwrap();
+    assert_eq!(docs.undo_workspace_edit(undo_id(&events)).unwrap_err().kind, ErrorKind::OutOfSync);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "external\n");
+    assert_eq!(docs.snapshot(id).unwrap().text, "new\n");
+}
+
+#[test]
+fn undo_after_saving_and_undoing_the_typing_is_allowed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("a.txt");
+    let (docs, events, id) = refactored_unsaved(&path);
+    type_text(&docs, id, "typed later\n");
+    docs.save(id).unwrap();
+    // The typing undone: the buffer is back to the refactoring's text, the IDE's own save on disk.
+    type_text(&docs, id, "new\n");
+    docs.undo_workspace_edit(undo_id(&events)).unwrap();
+    assert_eq!(docs.snapshot(id).unwrap().text, "own\n");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "old\n");
+}
+
+#[test]
+fn undo_allows_a_disk_conflict_from_before_the_refactoring() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("a.txt");
+    std::fs::write(&path, "old\n").unwrap();
+    let (docs, events) = recorded_documents();
+    let info = docs.open(&path).unwrap();
+    type_text(&docs, info.id, "own\n");
+    std::fs::write(&path, "external\n").unwrap();
+    assert!(!docs.autosave(info.id).unwrap(), "the external write is a disk conflict");
+    docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&path, "new")], ..Default::default() }).unwrap();
+    docs.undo_workspace_edit(undo_id(&events)).unwrap();
+    assert_eq!(docs.snapshot(info.id).unwrap().text, "own\n");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "external\n");
+}
+
+#[test]
+fn redo_keeps_an_external_write_made_after_the_undo() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("a.txt");
+    let (docs, events, id) = refactored_unsaved(&path);
+    let undo = undo_id(&events);
+    docs.undo_workspace_edit(undo).unwrap();
+    std::fs::write(&path, "external\n").unwrap();
+    assert_eq!(docs.redo_workspace_edit(undo).unwrap_err().kind, ErrorKind::OutOfSync);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "external\n");
+    assert_eq!(docs.snapshot(id).unwrap().text, "own\n");
+}
+
 #[test]
 fn ordered_resource_operations_and_binary_deletion_are_undoable() {
     let tmp = tempfile::tempdir().unwrap();
@@ -466,7 +634,8 @@ fn rename_after_restoring_inplace_typing_saves_but_real_unsaved_work_stays_dirty
         docs.edit(info.id, version, ChangeSet { changes: vec![TextChange { from: 0, to: 3, insert: text.into() }] })
             .unwrap();
     }
-    assert!(docs.snapshot(info.id).unwrap().dirty);
+    // Typing reverted to the text on disk leaves the document clean.
+    assert!(!docs.snapshot(info.id).unwrap().dirty);
     docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&path, "new")], ..Default::default() }).unwrap();
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
     assert!(!docs.snapshot(info.id).unwrap().dirty);
@@ -516,6 +685,18 @@ fn duplicate_edits_keep_versions_and_apply_one_replacement() {
 }
 
 #[test]
+fn repeated_inserts_at_one_position_all_apply_once_per_entry() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("main.ts");
+    std::fs::write(&path, "f(").unwrap();
+    let docs = documents();
+    let close = TextEdit { range: Range::new(Pos::new(0, 2), Pos::new(0, 2)), new_text: ")".into() };
+    let entry = FileEdit::Edit { path: path.clone().into(), version: None, edits: vec![close.clone(), close] };
+    docs.apply_workspace_edit(&WorkspaceEdit { files: vec![entry.clone(), entry], ..Default::default() }).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "f())");
+}
+
+#[test]
 fn undo_accepts_typing_that_was_reverted_to_the_saved_refactoring() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("main.ts");
@@ -532,7 +713,8 @@ fn undo_accepts_typing_that_was_reverted_to_the_saved_refactoring() {
         )
         .unwrap();
     }
-    assert!(docs.snapshot(info.id).unwrap().dirty);
+    // Typing reverted to the saved refactoring leaves the document clean.
+    assert!(!docs.snapshot(info.id).unwrap().dirty);
     docs.undo_workspace_edit(id).unwrap();
     assert_eq!(std::fs::read_to_string(path).unwrap(), "old");
     assert_eq!(docs.snapshot(info.id).unwrap().text, "old");
@@ -612,4 +794,26 @@ fn replacing_a_directory_symlink_does_not_resolve_later_child_paths_through_its_
         assert_eq!(std::fs::read_to_string(target.join("file.txt")).unwrap(), "old target\n");
         assert_eq!(std::fs::read_to_string(link.join("file.txt")).unwrap(), "new file\n");
     }
+}
+
+#[test]
+fn an_overwritten_open_file_keeps_the_editorconfig_charset() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join(".editorconfig"), "root = true\n[*.java]\ncharset = utf-8\n").unwrap();
+    let path = tmp.path().join("A.java");
+    std::fs::write(&path, "class A {}\n").unwrap();
+    let docs = documents();
+    let mut defaults = docs.file_defaults();
+    defaults.project_fallback = "iso-8859-15".into();
+    docs.set_file_defaults(defaults);
+    let doc = docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "utf-8");
+
+    docs.apply_workspace_edit(&WorkspaceEdit {
+        files: vec![FileEdit::Create { path: path.clone().into(), overwrite: true }],
+        ..Default::default()
+    })
+    .unwrap();
+
+    assert_eq!(docs.snapshot(doc.id).unwrap().encoding, "utf-8");
 }

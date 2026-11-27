@@ -5,13 +5,22 @@
  * the repository, `#N` tabs and "New Pull Request at {repo}" — in the header.
  */
 import { useEffect, useRef, useState, type RefObject } from "react";
+import type { GhProjectAccountStatus } from "@/bindings";
 import type { GhAvailability } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
+import { GH_MANUAL_INSTALL_URL, installGhTool } from "@/platform/ghTool";
+import { isCancelled } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { Button, EmptyState, IconButton, Select, Spinner, Tabs, T, showContextMenu, type MenuItem } from "@/ui";
 import { CreatePanel } from "../create/CreatePanel";
 import { DetailsPanel } from "../details/DetailsPanel";
 import { ListPanel } from "../list/ListPanel";
+import {
+  loadProjectGithubAccount,
+  projectAccountOptions,
+  setProjectGithubAccount,
+  useGhProjectAccount,
+} from "../data/account";
 import { reloadList, useGhPrList } from "../data/list";
 import { cancelBusy, openInBrowser, useGhBusy } from "../data/local";
 import { repositoryDisplayName } from "../data/model";
@@ -27,7 +36,58 @@ import {
 import { closeTab, selectTab, tabId, useGhTabs, type GhTabId } from "./store";
 import styles from "./ToolWindow.module.css";
 
+function ProjectAccountInline() {
+  const status = useGhProjectAccount((s) => s.status);
+  const saving = useGhProjectAccount((s) => s.saving);
+  if (!status || status.accounts.length === 0) return null;
+  const suggested = !status.configuredAccount ? status.suggestedAccount : null;
+  return (
+    <div className={styles.accountInline}>
+      {suggested && (
+        <Button
+          size="small"
+          variant="primary"
+          disabled={saving}
+          onClick={() => void setProjectGithubAccount(suggested)}
+        >
+          {tx`Use ${suggested} for this project`}
+        </Button>
+      )}
+      <Select
+        aria-label="GitHub account"
+        value={status.configuredAccount}
+        disabled={saving}
+        options={projectAccountOptions(status)}
+        onChange={(next) => void setProjectGithubAccount(next)}
+      />
+      {status.configuredAccount && (
+        <div className={styles.hint}>
+          <T>
+            Passes this account&apos;s GH_TOKEN to processes started in this project (terminals, agents, Git, and run
+            configurations).
+          </T>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Unavailable({ availability }: { availability: GhAvailability }) {
+  const [installingGh, setInstallingGh] = useState(false);
+  const [installError, setInstallError] = useState<string | null>(null);
+  const installGh = () => {
+    if (installingGh) return;
+    setInstallingGh(true);
+    setInstallError(null);
+    void installGhTool()
+      .promise.then((installed) => {
+        if (installed) void refreshConnection();
+      })
+      .catch((e: unknown) => {
+        if (!isCancelled(e)) setInstallError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => setInstallingGh(false));
+  };
   const retry = (
     <Button size="small" onClick={() => void refreshConnection()}>
       <T>Retry</T>
@@ -40,15 +100,24 @@ function Unavailable({ availability }: { availability: GhAvailability }) {
           title="GitHub CLI is not installed"
           actions={
             <>
-              <Button size="small" onClick={() => void openInBrowser("https://cli.github.com")}>
-                <T>Install gh…</T>
+              <Button size="small" variant="primary" disabled={installingGh} onClick={installGh}>
+                {installingGh ? (
+                  <>
+                    <Spinner size={12} /> <T>Installing…</T>
+                  </>
+                ) : (
+                  <T>Install GitHub CLI</T>
+                )}
+              </Button>
+              <Button size="small" onClick={() => void openInBrowser(GH_MANUAL_INSTALL_URL)}>
+                <T>Download manually…</T>
               </Button>
               {retry}
             </>
           }
         >
           <T>Pull requests use the</T> <code>gh</code> <T>command line tool. Install it, then run</T>{" "}
-          <code>gh auth login</code>.
+          <code>gh auth login</code>.{installError && <div className={styles.hint}>{installError}</div>}
         </EmptyState>
       );
     case "notLoggedIn":
@@ -75,6 +144,7 @@ function Unavailable({ availability }: { availability: GhAvailability }) {
           }
         >
           <T>Run</T> <code>gh auth login</code> <T>in a terminal, then retry.</T>
+          <ProjectAccountInline />
         </EmptyState>
       );
     case "notGitHub":
@@ -89,7 +159,8 @@ function Unavailable({ availability }: { availability: GhAvailability }) {
     case "error":
       return (
         <EmptyState title="Could not reach GitHub" actions={retry}>
-          {availability.message}
+          <div>{availability.message}</div>
+          <ProjectAccountInline />
         </EmptyState>
       );
     default:
@@ -97,12 +168,14 @@ function Unavailable({ availability }: { availability: GhAvailability }) {
   }
 }
 
-/** IntelliJ's repository selector: the repositories (owner always shown) and "View Pull Requests". */
+/** IntelliJ's repository selector: the repositories (owner always shown), project account, and "View Pull Requests". */
 function RepositorySelector() {
   const remotes = useGhRepository((s) => s.remotes);
   const defaultRemote = useGhRepository((s) => s.defaultRemote);
   const connecting = useGhRepository((s) => s.connecting);
   const error = useGhRepository((s) => s.connectionError);
+  const status = useGhProjectAccount((s) => s.status);
+  const savingAccount = useGhProjectAccount((s) => s.saving);
   const [chosen, setChosen] = useState<string | null>(null);
   const value =
     chosen ??
@@ -110,10 +183,44 @@ function RepositorySelector() {
   const target = remotes.find((r) => nameWithOwner(r) === value);
   return (
     <div className={styles.selector}>
+      {status && status.accounts.length > 0 && (
+        <>
+          <div className={styles.selectorRow}>
+            <Select
+              aria-label="GitHub account"
+              value={status.configuredAccount}
+              disabled={savingAccount}
+              options={projectAccountOptions(status)}
+              onChange={(next) => void setProjectGithubAccount(next)}
+            />
+            {!status.configuredAccount && status.suggestedAccount && (
+              <Button
+                size="small"
+                disabled={savingAccount}
+                onClick={() => void setProjectGithubAccount(status.suggestedAccount!)}
+              >
+                {tx`Use ${status.suggestedAccount} for this project`}
+              </Button>
+            )}
+          </div>
+          {status.configuredAccount && (
+            <div className={styles.hint}>
+              <T>
+                Passes this account&apos;s GH_TOKEN to processes started in this project (terminals, agents, Git, and
+                run configurations).
+              </T>
+            </div>
+          )}
+        </>
+      )}
       <div className={styles.selectorRow}>
         <Select
           value={value}
-          options={remotes.map((r) => ({ value: nameWithOwner(r), label: repositoryDisplayName(remotes, r, true) }))}
+          options={remotes.map((r) => ({
+            value: nameWithOwner(r),
+            verbatim: true,
+            label: repositoryDisplayName(remotes, r, true),
+          }))}
           onChange={setChosen}
           aria-label="Repository"
         />
@@ -201,6 +308,7 @@ export function PullRequestsToolWindow() {
   const connected = useGhRepository((s) => !!s.connection);
   const connecting = useGhRepository((s) => s.connecting);
   useEffect(() => {
+    if (!useGhProjectAccount.getState().status) void loadProjectGithubAccount();
     if (!useGhRepository.getState().availability) void refreshConnection();
   }, []);
   if (!availability)
@@ -251,7 +359,7 @@ export function PullRequestsTabs() {
       onClose={(id) => closeTab(id as GhTabId)}
       onContextMenu={(id, e) => showContextMenu(e, tabMenu(id as GhTabId, ids))}
       items={[
-        { id: "list", label: repo, tooltip: nameWithOwner(connection.coordinates), closable: false },
+        { id: "list", label: repo, verbatim: true, tooltip: nameWithOwner(connection.coordinates), closable: false },
         ...tabs.map((t) =>
           t.kind === "pr"
             ? {
@@ -267,21 +375,82 @@ export function PullRequestsTabs() {
   );
 }
 
-/** Title actions: Create Pull Request… (+) and Select Opened Pull Request, while connected. */
+/** Title actions: account switcher (when multi-account), Create Pull Request… (+) and Select Opened Pull Request. */
 export function PullRequestsHeaderActions() {
-  const connected = useGhRepository((s) => !!s.connection);
-  if (!connected) return null;
+  const connection = useGhRepository((s) => s.connection);
+  const status = useGhProjectAccount((s) => s.status);
+  if (!connection) return null;
+  const showAccount = (status?.accounts.length ?? 0) > 1 || !!status?.configuredAccount;
+  const activeLogin = connection.currentUser.login || status?.effectiveAccount || "";
+  const suggested = !status?.configuredAccount ? (status?.suggestedAccount ?? null) : null;
   return (
     <>
+      {showAccount && status && activeLogin && (
+        <button
+          type="button"
+          className={styles.accountBadge}
+          title={suggested ? tx`Use ${suggested} for this project` : tx`GitHub account: @${activeLogin}`}
+          onClick={(e) => {
+            const configured = status.configuredAccount;
+            const defaultLogin = status.accounts.find((a) => a.active)?.login ?? null;
+            const autoLabel = defaultLogin ? tx`Automatic (${defaultLogin})` : tx("Automatic");
+            const items: MenuItem[] = [
+              ...(suggested
+                ? [
+                    {
+                      label: tx`Use ${suggested} for this project`,
+                      verbatim: true,
+                      run: () => void setProjectGithubAccount(suggested),
+                    },
+                    { kind: "separator" as const },
+                  ]
+                : []),
+              {
+                label: autoLabel,
+                verbatim: true,
+                checked: configured === "",
+                run: () => void setProjectGithubAccount(""),
+              },
+              ...status.accounts.map((a) => ({
+                label: `@${a.login}`,
+                verbatim: true,
+                checked: configured === a.login,
+                run: () => void setProjectGithubAccount(a.login),
+              })),
+            ];
+            showContextMenu(e, items);
+          }}
+        >
+          @{activeLogin}
+        </button>
+      )}
       <IconButton icon="plus" size="small" iconSize={16} action="github.createPullRequest" />
       <IconButton icon="locate" size="small" iconSize={16} action="github.selectOpenedPullRequest" />
     </>
   );
 }
 
-/** The "⋮" menu's own items: Change Repository or Account… (connected, several GitHub remotes). */
-export function headerMenu(s: Pick<ReturnType<typeof useGhRepository.getState>, "connection" | "remotes">): MenuItem[] {
-  return s.connection && s.remotes.length > 1 ? CHANGE_REPOSITORY : NONE;
+/** The "⋮" menu's own items: suggested account (if any) and Change Repository or Account…. */
+export function headerMenu(
+  s: Pick<ReturnType<typeof useGhRepository.getState>, "connection" | "remotes">,
+  acct?: GhProjectAccountStatus | null,
+): MenuItem[] {
+  if (!s.connection) return NONE;
+  const suggested = !acct?.configuredAccount ? (acct?.suggestedAccount ?? null) : null;
+  const multipleAccounts = (acct?.accounts.length ?? 0) > 1 || !!acct?.configuredAccount;
+  if (!suggested && s.remotes.length <= 1 && !multipleAccounts) return NONE;
+  return [
+    ...(suggested
+      ? [
+          {
+            label: tx`Use ${suggested} for this project`,
+            verbatim: true,
+            run: () => void setProjectGithubAccount(suggested),
+          },
+        ]
+      : []),
+    ...CHANGE_REPOSITORY,
+  ];
 }
 
 const NONE: MenuItem[] = [];

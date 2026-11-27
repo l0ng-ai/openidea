@@ -10,6 +10,10 @@
 </p>
 
 <p align="center">
+  English · <a href="README.zh-CN.md">简体中文</a> · <a href="README.tr.md">Türkçe</a>
+</p>
+
+<p align="center">
   <a href="https://github.com/l0ng-ai/openidea/releases/latest"><b>Download</b></a>
   &nbsp;·&nbsp;
   <a href="https://openidea.sh">Docs</a>
@@ -28,6 +32,12 @@ its search-everything habits — to a native app with a Rust core.
 
 Editor, code insight, debugger, Git, terminal, database and HTTP clients,
 for 60+ languages. Builds for macOS, Windows and Linux.
+
+On macOS you can also install it with Homebrew:
+
+```bash
+brew install --cask l0ng-ai/tap/openidea
+```
 
 ## Benchmark
 
@@ -64,7 +74,7 @@ the [official plugins](plugins/official). The plugin API is still a preview.
 - [Discord](https://discord.gg/2Zy4yn7gP) — questions, feedback and release news.
 - WeChat group — scan to join:
 
-  <img src=".github/assets/wechat-group.png" alt="WeChat group QR code" width="200">
+  <img src=".github/assets/wechat-group-4.png" alt="WeChat group QR code" width="200">
 
 - Contributing: see [CONTRIBUTING.md](CONTRIBUTING.md) and the [contributor docs](https://openidea.sh/en/contribute/setup).
 

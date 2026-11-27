@@ -53,6 +53,12 @@ struct JavaProbe {
 
 static JAVA_PROBES: Mutex<BTreeMap<PathBuf, JavaProbe>> = Mutex::new(BTreeMap::new());
 
+/// How long `java -version` may take before the JDK counts as unable to run. The first
+/// run of a JDK can be slow: Rosetta translates an x86_64 JDK on Apple silicon, and
+/// malware scans check a freshly downloaded one. Excluded, a project's JDK 8 leaves its
+/// `JavaSE-1.8` to a newer JDK, and APIs JDK 8 has (`jdk.nashorn`) stop resolving.
+const JAVA_PROBE_TIMEOUT: Duration = if cfg!(test) { Duration::from_secs(8) } else { Duration::from_secs(30) };
+
 /// Metadata can describe a JDK built for another architecture. Probe the executable
 /// before giving it to JDT, with a short cache shared by server and project selection.
 pub(crate) fn java_runs(java: &Path) -> bool {
@@ -64,17 +70,25 @@ pub(crate) fn java_runs(java: &Path) -> bool {
             && probe.modified == modified
             && probe.len == metadata.len()
             && probe.permissions == metadata.permissions()
-            && probe.at.elapsed() < RESCAN_AFTER
+            // An executable that ran keeps running while it is unchanged; probing it again
+            // on a busy machine (jdtls indexing, an antivirus scan) can time out and turn
+            // a working JDK into "cannot run" until the next probe.
+            && (probe.runnable || probe.at.elapsed() < RESCAN_AFTER)
         {
             return probe.runnable;
         }
     }
-    let runnable = crate::exec::query(java, &["-version"], Duration::from_secs(5)).is_some();
+    let runnable = crate::exec::query(java, &["-version"], JAVA_PROBE_TIMEOUT).is_some();
     JAVA_PROBES.lock().unwrap_or_else(|e| e.into_inner()).insert(
         java.to_path_buf(),
         JavaProbe { modified, len: metadata.len(), permissions: metadata.permissions(), at: Instant::now(), runnable },
     );
     runnable
+}
+
+/// First runnable Java installation in discovery order, including standalone JREs.
+pub fn java_runtime(jdks: &[Jdk], min_java: u32) -> Option<&Jdk> {
+    jdks.iter().find(|j| j.major >= min_java && java_runs(&java_executable(&j.home)))
 }
 
 fn project_jdk_is_usable(jdk: &Jdk) -> bool {
@@ -135,6 +149,26 @@ pub fn add_jdk_root(dir: &Path) {
     }
 }
 
+/// JDK homes added by hand (Settings › SDKs › Add JDK from Disk…).
+static ADDED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// Sets the JDK homes added by hand; the next scan lists them (a change drops the cached scan).
+pub fn set_added_jdks(homes: impl IntoIterator<Item = PathBuf>) {
+    let homes: Vec<PathBuf> = homes.into_iter().filter(|h| !h.as_os_str().is_empty()).collect();
+    let mut added = ADDED.lock().unwrap_or_else(|e| e.into_inner());
+    if *added != homes {
+        *added = homes;
+        drop(added);
+        *JDKS.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
+
+/// Whether `home` is a JDK added by hand.
+pub fn is_added(home: &Path) -> bool {
+    let added = ADDED.lock().unwrap_or_else(|e| e.into_inner());
+    added.iter().any(|h| jdk_at(h).is_some_and(|j| j.home == home))
+}
+
 /// Whether `home` lies in a folder registered with [`add_jdk_root`].
 pub fn is_downloaded(home: &Path) -> bool {
     let roots = EXTRA_ROOTS.lock().unwrap_or_else(|e| e.into_inner());
@@ -187,6 +221,7 @@ fn scan() -> Vec<Jdk> {
     for (dir, _) in ide_core::version_managers::installs(ide_core::version_managers::Tool::Java) {
         homes.extend([dir.join("Contents/Home"), dir]);
     }
+    homes.extend(ADDED.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned());
     let mut out: Vec<Jdk> = Vec::new();
     for h in homes {
         if let Some(jdk) = jdk_at(&h)
@@ -279,10 +314,16 @@ pub fn jdtls_runtime(jdks: &[Jdk], min_java: u32) -> Option<&Jdk> {
 /// for 21, but the Eclipse platform it ships moves on (1.63 needs 25), and on
 /// an older JDK the server dies resolving its bundles.
 pub fn jdtls_min_java(cfg: &LanguageServerConfig) -> u32 {
-    let required = crate::jdtls::script_for(cfg)
+    jdtls_required_java(cfg).unwrap_or(JDTLS_MIN_JAVA)
+}
+
+/// [`jdtls_min_java`] when the installed jdtls tells; `None` when none is
+/// installed or its bundles can't be read.
+pub fn jdtls_required_java(cfg: &LanguageServerConfig) -> Option<u32> {
+    crate::jdtls::script_for(cfg)
         .and_then(|script| Some(script.parent()?.parent()?.to_path_buf()))
-        .and_then(|home| bundles_min_java(&home));
-    required.map_or(JDTLS_MIN_JAVA, |v| v.max(JDTLS_MIN_JAVA))
+        .and_then(|home| bundles_min_java(&home))
+        .map(|v| v.max(JDTLS_MIN_JAVA))
 }
 
 /// Per install: (plugins directory mtime, its requirement).
@@ -712,6 +753,16 @@ pub(crate) fn write_test_java(home: &Path) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn java_runtime_accepts_a_jre_without_a_compiler() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jre = test_jdk(tmp.path(), 17, "jre");
+        std::fs::remove_file(jre.home.join("bin").join(crate::exe("javac"))).unwrap();
+        let jdks = [test_jdk(tmp.path(), 11, "old"), jre.clone()];
+        assert_eq!(java_runtime(&jdks, 17), Some(&jre));
+        assert_eq!(java_runtime(&jdks, 21), None);
+    }
+
     fn test_jdk(root: &Path, major: u32, name: &str) -> Jdk {
         let home = root.join(name.trim_start_matches('/'));
         std::fs::create_dir_all(home.join("bin")).unwrap();
@@ -921,6 +972,53 @@ mod tests {
         cfg.launch_error = Some("invalid selected JDK /outside/scan".into());
         configure_jdtls(&mut cfg, tmp.path(), tmp.path(), &[], None, None, 25, &[], None);
         assert_eq!(cfg.launch_error.as_deref(), Some("invalid selected JDK /outside/scan"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_java_that_ran_is_not_probed_again_while_unchanged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jdk = test_jdk(tmp.path(), 25, "busy25");
+        let java = java_executable(&jdk.home);
+        let busy = tmp.path().join("busy");
+        let probes = tmp.path().join("probes");
+        // Times out once `busy` exists, as `java -version` can on a loaded machine.
+        std::fs::write(
+            &java,
+            format!(
+                "#!/bin/sh\necho >> '{}'\n[ -f '{}' ] && exec /bin/sleep 10\nexit 0\n",
+                probes.display(),
+                busy.display()
+            ),
+        )
+        .unwrap();
+        assert!(java_runs(&java));
+        std::fs::write(&busy, "").unwrap();
+        let long_ago = Instant::now().checked_sub(RESCAN_AFTER * 2).unwrap();
+        JAVA_PROBES.lock().unwrap().get_mut(&java).unwrap().at = long_ago;
+        assert!(java_runs(&java), "a JDK that ran stays usable");
+        assert!(java_execution_error(&java).is_none());
+        assert_eq!(std::fs::read_to_string(&probes).unwrap().lines().count(), 1, "probed once");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_jdk_8_slow_on_its_first_run_stays_the_java_8_runtime() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jdk8 = test_jdk(tmp.path(), 8, "rosetta8");
+        let jdk25 = test_jdk(tmp.path(), 25, "native25");
+        // Longer than the 5 seconds a first run under Rosetta used to be allowed.
+        std::fs::write(
+            java_executable(&jdk8.home),
+            "#!/bin/sh
+/bin/sleep 6
+echo 'openjdk version 1.8'
+",
+        )
+        .unwrap();
+        let rt = runtimes(&[jdk8.clone(), jdk25.clone()]);
+        assert_eq!(rt[0], json!({ "name": "JavaSE-1.8", "path": jdk8.home }));
+        assert_eq!(rt[1]["name"], "JavaSE-25");
     }
 
     #[cfg(unix)]
@@ -1329,6 +1427,26 @@ mod tests {
     }
 
     #[test]
+    fn jdks_added_by_hand_are_listed_until_removed() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A macOS bundle picked as its folder: listed by its `Contents/Home`.
+        let bundle = tmp.path().join("odd place/my-jdk.jdk");
+        let home = bundle.join("Contents/Home");
+        std::fs::create_dir_all(home.join("bin")).unwrap();
+        std::fs::write(home.join("release"), "JAVA_VERSION=\"17.0.9\"\nIMPLEMENTOR=\"Acme\"\n").unwrap();
+        std::fs::write(home.join("bin").join(crate::exe("java")), "").unwrap();
+        let home = dunce::canonicalize(&home).unwrap();
+        set_added_jdks([bundle.clone()]);
+        assert!(installed_jdks().iter().any(|j| j.home == home && j.major == 17));
+        assert!(is_added(&home));
+        let sdk = crate::jdk_sdk(&jdk_at(&bundle).unwrap());
+        assert_eq!((sdk.name.as_str(), sdk.source.as_str()), ("Acme 17.0.9", "added"));
+        set_added_jdks(Vec::new());
+        assert!(!installed_jdks().iter().any(|j| j.home == home));
+        assert!(!is_added(&home));
+    }
+
+    #[test]
     fn jdtls_runs_on_the_chosen_server_jdk() {
         let fixtures = tempfile::tempdir().unwrap();
         let jdtls = || -> LanguageServerConfig { toml::from_str("name = \"jdtls\"\ncommand = \"jdtls\"").unwrap() };
@@ -1508,41 +1626,179 @@ mod kotlin_bridge_bundle_tests {
 
 /// Installs the app-owned JDT LS command bundle, falling back to ordinary LSP on IO failure.
 pub fn usages_bundle(data_dir: &Path) -> Option<PathBuf> {
-    let extension = data_dir.join("java-usages-1.12.0.jar");
-    let bytes = include_bytes!("../../../java/java-usages/openidea-java-usages.jar");
+    install_bundle(
+        data_dir,
+        "java-usages",
+        "1.19.0",
+        include_bytes!("../../../java/java-usages/openidea-java-usages.jar"),
+    )
+}
+
+/// Extracts the JDBC bridge into the application's data directory.
+pub fn jdbc_bridge_jar(data_dir: &Path) -> Option<PathBuf> {
+    install_bundle(
+        data_dir,
+        "jdbc-bridge",
+        "1.0.0",
+        include_bytes!("../../../java/jdbc-bridge/openidea-jdbc-bridge.jar"),
+    )
+}
+
+/// Extracts the JUnit test runner (`java/junit-runner`; JUnit Platform and JUnit 4) into the application's data directory.
+pub fn junit_runner_jar(data_dir: &Path) -> Option<PathBuf> {
+    install_bundle(
+        data_dir,
+        "junit-runner",
+        "1.0.0",
+        include_bytes!("../../../java/junit-runner/openidea-junit-runner.jar"),
+    )
+}
+
+/// The IDE's Java build (`java/java-build`): the resident javac server and the Maven
+/// extension that records the build model.
+const JAVA_BUILD: &[u8] = include_bytes!("../../../java/java-build/openidea-java-build.jar");
+
+/// Extracts the Java build jar into the application's data directory.
+pub fn java_build_jar(data_dir: &Path) -> Option<PathBuf> {
+    install_bundle(data_dir, "java-build", "1.0.0", JAVA_BUILD)
+}
+
+/// Changes whenever the embedded Java build jar does (FNV-1a of its bytes), so build models
+/// recorded by an older extension are prepared again.
+pub fn java_build_version() -> String {
+    let hash =
+        JAVA_BUILD.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x100_0000_01b3));
+    format!("{hash:016x}")
+}
+
+/// The JUnit Platform launcher a test classpath needs to start the runner.
+#[derive(Debug, PartialEq)]
+pub enum JunitLauncher {
+    /// The classpath has `junit-platform-launcher` already.
+    OnClasspath,
+    /// `junit-platform-launcher` of the engine's version, next to the engine jar in its repository.
+    Found(PathBuf),
+    /// Not found locally: the engine's version, to download.
+    Missing(String),
+    /// No `junit-platform-engine`, but JUnit 4: the runner uses JUnit 4's own `JUnitCore`.
+    Junit4,
+    /// Neither the JUnit Platform nor JUnit 4 on the classpath (TestNG alone).
+    NoPlatform,
+}
+
+/// Like IDEA, the launcher must match the engine's version: a project usually depends on
+/// `junit-jupiter` only, which brings the engine but no launcher. The Maven local repository
+/// (`…/junit-platform-engine/<v>/…jar`) and the Gradle cache (`…/junit-platform-engine/<v>/<sha1>/…jar`)
+/// keep the launcher in a sibling folder.
+pub fn junit_launcher(class_paths: &[String]) -> JunitLauncher {
+    let name = |p: &str| Path::new(p).file_name().and_then(|n| n.to_str()).unwrap_or_default().to_owned();
+    if class_paths.iter().any(|p| name(p).starts_with("junit-platform-launcher-")) {
+        return JunitLauncher::OnClasspath;
+    }
+    let Some((engine, version)) = class_paths.iter().find_map(|p| {
+        let version = name(p).strip_prefix("junit-platform-engine-")?.strip_suffix(".jar")?.to_owned();
+        Some((PathBuf::from(p), version))
+    }) else {
+        let junit4 = class_paths.iter().any(|p| {
+            let name = name(p);
+            (name.starts_with("junit-4.") || name.starts_with("junit-dep-4.")) && name.ends_with(".jar")
+        });
+        return if junit4 { JunitLauncher::Junit4 } else { JunitLauncher::NoPlatform };
+    };
+    let jar = format!("junit-platform-launcher-{version}.jar");
+    let artifact = engine.ancestors().find(|a| a.file_name().is_some_and(|n| n == "junit-platform-engine"));
+    let launcher_dir = artifact.and_then(Path::parent).map(|d| d.join("junit-platform-launcher").join(&version));
+    let found = launcher_dir.and_then(|dir| {
+        let direct = dir.join(&jar);
+        if direct.is_file() {
+            return Some(direct);
+        }
+        std::fs::read_dir(&dir).ok()?.flatten().map(|e| e.path().join(&jar)).find(|p| p.is_file())
+    });
+    match found {
+        Some(path) => JunitLauncher::Found(path),
+        None => JunitLauncher::Missing(version),
+    }
+}
+
+#[cfg(test)]
+mod junit_launcher_tests {
+    use super::{JunitLauncher, junit_launcher};
+
+    #[test]
+    fn finds_the_launcher_of_the_engine_version_in_maven_and_gradle_repositories() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = |p: &std::path::Path| p.to_string_lossy().into_owned();
+        let maven = dir.path().join("m2/org/junit/platform");
+        let maven_engine = maven.join("junit-platform-engine/1.11.3/junit-platform-engine-1.11.3.jar");
+        let maven_launcher = maven.join("junit-platform-launcher/1.11.3/junit-platform-launcher-1.11.3.jar");
+        let gradle = dir.path().join("gradle/files-2.1/org.junit.platform");
+        let gradle_engine = gradle.join("junit-platform-engine/1.10.2/aaa/junit-platform-engine-1.10.2.jar");
+        let gradle_launcher = gradle.join("junit-platform-launcher/1.10.2/bbb/junit-platform-launcher-1.10.2.jar");
+        for jar in [&maven_engine, &maven_launcher, &gradle_engine, &gradle_launcher] {
+            std::fs::create_dir_all(jar.parent().unwrap()).unwrap();
+            std::fs::write(jar, "").unwrap();
+        }
+        assert_eq!(junit_launcher(&["classes".into(), s(&maven_engine)]), JunitLauncher::Found(maven_launcher));
+        assert_eq!(junit_launcher(&[s(&gradle_engine)]), JunitLauncher::Found(gradle_launcher));
+        let other = dir.path().join("lib/junit-platform-engine-1.9.0.jar");
+        assert_eq!(junit_launcher(&[s(&other)]), JunitLauncher::Missing("1.9.0".into()));
+        assert_eq!(
+            junit_launcher(&[s(&other), "/x/junit-platform-launcher-1.9.0.jar".into()]),
+            JunitLauncher::OnClasspath
+        );
+        assert_eq!(junit_launcher(&["/x/junit-4.13.2.jar".into()]), JunitLauncher::Junit4);
+        assert_eq!(junit_launcher(&["/x/testng-7.10.2.jar".into()]), JunitLauncher::NoPlatform);
+    }
+}
+
+/// Installs the app-owned JDT LS bundle that inspects java-debug's JVMs.
+pub fn jvm_inspect_bundle(data_dir: &Path) -> Option<PathBuf> {
+    install_bundle(
+        data_dir,
+        "jvm-inspect",
+        "1.2.0",
+        include_bytes!("../../../java/jvm-inspect/openidea-jvm-inspect.jar"),
+    )
+}
+
+/// `version` must match the jar's `Bundle-Version`: jdtls (OSGi) caches bundles by it.
+fn install_bundle(data_dir: &Path, stem: &str, version: &str, bytes: &'static [u8]) -> Option<PathBuf> {
+    let extension = data_dir.join(format!("{stem}-{version}.jar"));
     if std::fs::read(&extension).is_ok_and(|old| old == bytes) {
-        clean_usages_bundles(data_dir, &extension);
+        clean_bundles(data_dir, stem, &extension);
         return Some(extension);
     }
     // Write then rename: another window must never read a partially written jar.
     let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
-    let temporary = data_dir.join(format!("java-usages-{}-{nonce}.tmp", std::process::id()));
+    let temporary = data_dir.join(format!("{stem}-{}-{nonce}.tmp", std::process::id()));
     let result = std::fs::create_dir_all(data_dir)
         .and_then(|_| std::fs::write(&temporary, bytes))
         .and_then(|_| std::fs::rename(&temporary, &extension));
     match result {
         Ok(()) => {
-            clean_usages_bundles(data_dir, &extension);
+            clean_bundles(data_dir, stem, &extension);
             Some(extension)
         }
         Err(e) => {
             let _ = std::fs::remove_file(&temporary);
             if std::fs::read(&extension).is_ok_and(|old| old == bytes) {
-                clean_usages_bundles(data_dir, &extension);
+                clean_bundles(data_dir, stem, &extension);
                 return Some(extension);
             }
-            tracing::warn!("Java usages extension unavailable; using standard references: {e}");
+            tracing::warn!("JDT LS extension {stem} unavailable: {e}");
             None
         }
     }
 }
 
-fn clean_usages_bundles(data_dir: &Path, current: &Path) {
+fn clean_bundles(data_dir: &Path, stem: &str, current: &Path) {
     let Ok(entries) = std::fs::read_dir(data_dir) else { return };
+    let prefix = format!("{stem}-");
     for entry in entries.flatten() {
         let path = entry.path();
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
-        let Some(suffix) = name.strip_prefix("java-usages-") else { continue };
+        let Some(suffix) = name.strip_prefix(prefix.as_str()) else { continue };
         let numeric = |s: &str| !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit());
         let old_jar = suffix.strip_suffix(".jar").is_some_and(|v| {
             let parts: Vec<_> = v.split('.').collect();
@@ -1588,6 +1844,19 @@ mod usages_bundle_tests {
             assert!(!stale.exists(), "reuse={reuse}");
             assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 5);
         }
+    }
+
+    #[test]
+    fn jvm_inspect_bundle_installs_and_cleans_old_versions() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["jvm-inspect-0.9.0.jar", "java-usages-1.7.0.jar"] {
+            std::fs::write(dir.path().join(name), b"old").unwrap();
+        }
+        let jar = super::jvm_inspect_bundle(dir.path()).unwrap();
+        assert_eq!(jar, dir.path().join("jvm-inspect-1.2.0.jar"));
+        assert_eq!(std::fs::read(&jar).unwrap(), include_bytes!("../../../java/jvm-inspect/openidea-jvm-inspect.jar"));
+        assert!(!dir.path().join("jvm-inspect-0.9.0.jar").exists());
+        assert_eq!(std::fs::read(dir.path().join("java-usages-1.7.0.jar")).unwrap(), b"old");
     }
 
     #[test]

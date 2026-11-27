@@ -3,7 +3,7 @@ use crate::RunConfig;
 use ide_core::{IdeError, IdeResult};
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -97,16 +97,6 @@ pub fn plan(root: &Path, config: &RunConfig) -> IdeResult<Option<Plan>> {
 
 /// Uses Go's own build-file selection, including platform suffixes, cgo and build tags.
 /// `-find` avoids dependency traversal and package downloads for this local directory.
-pub fn package_sources(command: Command, dir: &Path, flags: &[String]) -> IdeResult<Vec<PathBuf>> {
-    let package = package_info(command, dir, flags)?;
-    Ok(["GoFiles", "CgoFiles"]
-        .iter()
-        .flat_map(|key| package[key].as_array().into_iter().flatten())
-        .filter_map(|p| p.as_str())
-        .map(|p| dir.join(p))
-        .collect())
-}
-
 fn package_info(mut command: Command, dir: &Path, flags: &[String]) -> IdeResult<serde_json::Value> {
     command.args(["list", "-find", "-e", "-json"]);
     let mut it = flags.iter();
@@ -124,6 +114,11 @@ fn package_info(mut command: Command, dir: &Path, flags: &[String]) -> IdeResult
         }
     }
     command.arg(".").current_dir(dir).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(ide_core::process::CREATE_NO_WINDOW);
+    }
     let mut child = command.spawn()?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -267,6 +262,7 @@ pub fn prepare_test_file(root: &Path, config: &mut RunConfig) -> IdeResult<()> {
     let file = root.join(p.get("module").map(String::as_str).unwrap_or(".")).join(target);
     let dir = file.parent().ok_or_else(|| IdeError::invalid("Go test file has no directory"))?;
     let mut command = Command::new(&config.command);
+    command.current_dir(dir);
     crate::process::configure_environment(&mut command, root, config)?;
     let exclusions = file_test_exclusions(command, &file, &config.args)?;
     let at = config
@@ -278,8 +274,6 @@ pub fn prepare_test_file(root: &Path, config: &mut RunConfig) -> IdeResult<()> {
     exclude_tests(&mut config.args, &exclusions, false);
     Ok(())
 }
-
-pub use ide_core::go::work_modules;
 
 #[cfg(test)]
 mod test_scope_tests {

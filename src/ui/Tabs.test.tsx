@@ -11,8 +11,12 @@ import {
   type TabStripHandle,
   type TabsDnd,
 } from "./Tabs";
+import { useI18n } from "@/platform/i18n";
 import { setDragRequiresAlt } from "./pointerDrag";
 import styles from "./Tabs.module.css";
+
+const handles: TabStripHandle[] = [];
+const register = (h: TabStripHandle) => (handles.push(h), () => void handles.splice(handles.indexOf(h), 1));
 
 describe("dropIndex", () => {
   it("finds the insertion index from tab midpoints", () => {
@@ -121,18 +125,61 @@ describe("Tabs interactions", () => {
     const onClose = vi.fn();
     const onSelect = vi.fn();
     render(<Tabs items={items} activeId="a" onSelect={onSelect} onClose={onClose} />);
-    fireEvent.mouseDown(screen.getByRole("tab", { name: "B" }), { button: 1 });
+    const tab = screen.getByRole("tab", { name: "B" });
+    expect(fireEvent.mouseDown(tab, { button: 1 })).toBe(false);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(fireEvent.mouseUp(tab, { button: 1 })).toBe(false);
+    expect(onClose).toHaveBeenCalledTimes(1);
     expect(onClose).toHaveBeenCalledWith("b");
     expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("does not close a tab when the middle button is released after leaving the pressed tab", () => {
+    const onClose = vi.fn();
+    render(<Tabs items={items} activeId="a" onSelect={() => {}} onClose={onClose} />);
+    const pressed = screen.getByRole("tab", { name: "B" });
+    fireEvent.mouseDown(pressed, { button: 1 });
+    fireEvent.mouseLeave(pressed);
+    fireEvent.mouseEnter(pressed);
+    fireEvent.mouseUp(pressed, { button: 1 });
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it("middle click ignores tabs that cannot close", () => {
     const onClose = vi.fn();
     const onSelect = vi.fn();
     render(<Tabs items={items} activeId="a" onSelect={onSelect} onClose={onClose} />);
-    fireEvent.mouseDown(screen.getByRole("tab", { name: "C" }), { button: 1 });
+    const tab = screen.getByRole("tab", { name: "C" });
+    expect(fireEvent.mouseDown(tab, { button: 1 })).toBe(true);
+    expect(fireEvent.mouseUp(tab, { button: 1 })).toBe(true);
     expect(onClose).not.toHaveBeenCalled();
     expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  // Regression: "Close button position: None" hides the × but must not disable
+  // middle click (or the other close gestures). closable used to be bound to
+  // showCloseButton, so hiding the button made the tab unclosable.
+  it("a hidden close button keeps the middle-click gesture", () => {
+    const onClose = vi.fn();
+    const hidden = items.map((it) => ({ ...it, showCloseButton: false }));
+    render(<Tabs items={hidden} activeId="a" onSelect={() => {}} onClose={onClose} />);
+    expect(screen.queryByRole("button", { name: "Close Tab" })).toBeNull();
+    const tab = screen.getByRole("tab", { name: "B" });
+    fireEvent.mouseDown(tab, { button: 1 });
+    fireEvent.mouseUp(tab, { button: 1 });
+    expect(onClose).toHaveBeenCalledWith("b");
+  });
+
+  it("leaves focus where it was on click only when the strip asks to", () => {
+    const { rerender } = render(<Tabs items={items} activeId="b" onSelect={() => {}} keepFocusOnClick />);
+    const down = () => {
+      const event = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+      screen.getByRole("tab", { name: "C" }).dispatchEvent(event);
+      return event.defaultPrevented;
+    };
+    expect(down()).toBe(true);
+    rerender(<Tabs items={items} activeId="b" onSelect={() => {}} />);
+    expect(down()).toBe(false);
   });
 
   it("keeps Shift+click selection where the strip does not opt in", () => {
@@ -154,8 +201,7 @@ describe("Tabs interactions", () => {
   });
 
   it("lets a container close the selected tab when it is closable", () => {
-    const handles: TabStripHandle[] = [];
-    const register = (h: TabStripHandle) => (handles.push(h), () => void handles.splice(handles.indexOf(h), 1));
+    handles.length = 0;
     const onClose = vi.fn();
     const ui = (activeId: string) => (
       <TabStripRegistry.Provider value={register}>
@@ -169,6 +215,40 @@ describe("Tabs interactions", () => {
     expect(handles[0]!.closeSelected()).toBe(false);
     unmount();
     expect(handles).toHaveLength(0);
+  });
+
+  it("lets a container pin the selected tab when the strip supports pinning", () => {
+    handles.length = 0;
+    const onTogglePin = vi.fn();
+    const ui = (pin?: (id: string) => void) => (
+      <TabStripRegistry.Provider value={register}>
+        <Tabs items={items} activeId="b" onSelect={() => {}} onTogglePin={pin} />
+      </TabStripRegistry.Provider>
+    );
+    const { rerender } = render(ui(onTogglePin));
+    expect(handles[0]!.togglePinSelected()).toBe(true);
+    expect(onTogglePin).toHaveBeenCalledWith("b");
+    rerender(ui());
+    expect(handles[0]!.togglePinSelected()).toBe(false);
+  });
+
+  it("shows the modified marker in a pinned editor tab's action slot", () => {
+    const onTogglePin = vi.fn();
+    render(
+      <Tabs
+        variant="editor"
+        items={[{ id: "b", label: "B", text: "B", pinned: true, modified: true }]}
+        activeId="b"
+        onSelect={() => {}}
+        onClose={() => {}}
+        onTogglePin={onTogglePin}
+      />,
+    );
+    const unpin = screen.getByRole("button", { name: "Unpin Tab" });
+    expect(within(unpin.parentElement!).getByLabelText("Modified")).toBeVisible();
+    expect(screen.getByRole("tab", { name: "B Pinned" })).toBeVisible();
+    fireEvent.click(unpin);
+    expect(onTogglePin).toHaveBeenCalledWith("b");
   });
 
   it("a vertical strip moves with ↑/↓, shows actions above the tabs and has no overflow dropdown", () => {
@@ -330,7 +410,10 @@ describe("Tabs drag & drop", () => {
     hit = strip("Terminal sessions");
     pointer(window, "pointermove", 60);
     expect(dragged).toHaveClass(styles.dragging!);
-    const ghost = document.body.lastElementChild as HTMLElement;
+    // The ghost sits in a copy of the strip's classes, so the strip's tab rules still lay it out.
+    const context = document.body.lastElementChild as HTMLElement;
+    expect(context.className).toBe(strip("Terminal sessions").parentElement!.className);
+    const ghost = context.firstElementChild as HTMLElement;
     expect(ghost).toHaveAttribute("aria-hidden", "true");
     expect(ghost.style.position).toBe("fixed");
     expect(shown("Terminal sessions")).toEqual(["Local", "Local (2)", "Local (3)"]);
@@ -350,7 +433,7 @@ describe("Tabs drag & drop", () => {
         .map((b) => b.textContent),
     ).toEqual(["Local (2)", "Local", "Local (3)"]);
     expect(tab("Terminal sessions", "Local")).not.toHaveClass(styles.dragging!);
-    expect(document.body.lastElementChild).not.toBe(ghost);
+    expect(context.isConnected).toBe(false);
   });
 
   it("puts the slot back when the pointer leaves the strip and drops nothing on Escape", () => {
@@ -390,4 +473,57 @@ describe("Tabs drag & drop", () => {
     pointer(window, "pointerup", 180);
     expect(onDrop).toHaveBeenCalledWith("a", 2);
   });
+
+  it("accepts external drag types with an insertion marker and routes them to onExternalDrop", () => {
+    const onExternalDrop = vi.fn();
+    render(
+      <>
+        <Strip label="Source" initial={["term-1"]} />
+        <Tabs
+          aria-label="Editor"
+          items={[
+            { id: "c", label: "c" },
+            { id: "d", label: "d" },
+          ]}
+          activeId="c"
+          onSelect={() => {}}
+          dnd={{
+            type: "application/x-other",
+            payload: (id) => id,
+            onDrop: () => {},
+            accepts: (data) => data.type === TYPE && data.payload === "term-1",
+            onExternalDrop,
+          }}
+        />
+      </>,
+    );
+    pointer(within(tab("Source", "term-1")).getByRole("tab"), "pointerdown", 50);
+    hit = strip("Editor");
+    pointer(window, "pointermove", 120);
+    expect(tab("Editor", "d")).toHaveClass(styles.dropBefore!);
+    pointer(window, "pointerup", 120);
+    expect(onExternalDrop).toHaveBeenCalledWith({ type: TYPE, payload: "term-1" }, 1);
+  });
+});
+
+it("shows a verbatim tab label as written and translates the others", () => {
+  const previous = useI18n.getState().texts;
+  useI18n.setState({ texts: { ...previous, test: "测试", Console: "控制台" } });
+  try {
+    render(
+      <Tabs
+        items={[
+          { id: "a", label: "test", verbatim: true },
+          { id: "b", label: "Console" },
+        ]}
+        activeId="a"
+        onSelect={() => {}}
+      />,
+    );
+    expect(screen.getByRole("tab", { name: /^test/ })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /控制台/ })).toBeInTheDocument();
+    expect(screen.queryByText("测试")).not.toBeInTheDocument();
+  } finally {
+    useI18n.setState({ texts: previous });
+  }
 });

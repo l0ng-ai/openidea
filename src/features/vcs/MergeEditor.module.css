@@ -1,21 +1,27 @@
 .root {
+  --merge-band-width: 30px;
+  container: merge-editor / inline-size;
   flex: 1;
   height: 100%;
+  min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--bg-app);
+  outline: none;
 }
 .toolbar {
   flex: none;
-  height: var(--h-header);
+  min-height: var(--h-header);
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
-  padding: 0 6px;
+  gap: var(--space-1);
+  padding: var(--space-0-5) var(--space-1-5);
   border-bottom: 1px solid var(--border);
 }
 .sep {
+  flex: none;
   width: 1px;
   height: 14px;
   margin: 0 4px;
@@ -23,47 +29,144 @@
 }
 .status {
   margin-left: auto;
-  padding: 0 8px;
+  padding: 0 var(--space-2);
+  max-width: 100%;
   color: var(--vcs-conflict);
   font-size: var(--fs-small);
+  text-align: end;
 }
 .statusDone {
   color: var(--fg-muted);
 }
-.labels {
+/* All changes have been processed: a notice under the toolbar with the way to finish. */
+.processed {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-4);
+  padding: var(--space-1-5) var(--space-3);
+  background: var(--bg-feedback-success);
+  border-bottom: 1px solid var(--border-feedback-success);
+  font-size: var(--fs-ui);
+  color: var(--fg-strong);
+}
+.processedText {
+  min-width: 0;
+}
+.processedLink {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--link);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+.processedLink:hover {
+  color: var(--link-hover);
+  text-decoration: underline;
+}
+.paneTitle,
+.resultTitle {
   flex: none;
   height: var(--h-row);
-  display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  padding: 0 var(--space-2);
   border-bottom: 1px solid var(--border);
   color: var(--fg-secondary);
   font-size: var(--fs-small);
+  line-height: var(--h-row);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.labels > span {
-  display: flex;
-  align-items: center;
-  padding: 0 12px;
+.resultTitle {
+  color: var(--fg-strong);
+  font-weight: 500;
+  text-align: center;
 }
-.labels > span + span {
-  border-left: 1px solid var(--border);
+.sideColumn {
+  container: merge-side / inline-size;
+}
+.sideTitle {
+  display: none;
+}
+@container merge-side (max-width: 180px) {
+  .branchTitle {
+    display: none;
+  }
+  .sideTitle {
+    display: inline;
+  }
 }
 .panes {
   flex: 1;
   min-height: 0;
-  display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  display: flex;
 }
 .panes[hidden] {
   display: none;
 }
+.paneGroup {
+  flex: 1;
+}
 .pane {
+  flex: 1;
   min-width: 0;
   min-height: 0;
   display: flex;
   overflow: hidden;
 }
-.pane + .pane {
+.divider[data-separator] {
+  width: var(--merge-band-width);
+  background: var(--bg-app);
+}
+.divider[data-separator]:is([data-separator="hover"], [data-separator="active"]) {
+  background: var(--bg-toolbar-hover);
+}
+.divider[data-separator]:focus-visible {
+  outline: 1px solid var(--focus-ring);
+  outline-offset: -1px;
+}
+.divider::before {
+  content: "";
+  position: absolute;
+  inset-block-start: calc((var(--h-row) - 12px) / 2);
+  inset-inline-start: calc(50% - 1px);
+  height: 12px;
+  width: 2px;
+  border-radius: var(--radius-small);
+  background: var(--border-strong);
+}
+/* The headings share the splitter geometry. The curves start below them. */
+.band {
+  position: absolute;
+  inset: var(--h-row) 0 0;
+  overflow: hidden;
+  pointer-events: none;
   border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+}
+.band > svg {
+  position: absolute;
+  inset: 0;
+}
+.divider :global(.cm-mergeBand-conflict) {
+  --band: color-mix(in srgb, var(--vcs-conflict) 14%, transparent);
+  --band-line: var(--vcs-conflict);
+}
+.divider :global(.cm-mergeBand-change) {
+  --band: color-mix(in srgb, var(--vcs-modified) 14%, transparent);
+  --band-line: var(--vcs-modified);
+}
+.divider :global(.cm-mergeBand) {
+  fill: var(--band);
+}
+.divider :global(.cm-mergeBandLine) {
+  fill: none;
+  stroke: var(--band-line);
+  stroke-width: 1px;
 }
 .pane > :global(.cm-editor) {
   flex: 1;
@@ -72,23 +175,57 @@
 .footer {
   flex: none;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 8px 12px;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
   border-top: 1px solid var(--border);
 }
 .footerGroup {
   display: flex;
-  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+  gap: var(--space-2);
+}
+.footerGroup:last-child {
+  margin-inline-start: auto;
+  justify-content: flex-end;
+}
+@container merge-editor (max-width: 680px) {
+  .divider[data-separator] {
+    width: 20px;
+  }
+}
+@container merge-editor (max-width: 440px) {
+  .divider[data-separator] {
+    width: 14px;
+  }
+  .toolbar > .sep {
+    display: none;
+  }
+  .status {
+    flex-basis: 100%;
+    order: 1;
+    padding: 0;
+    text-align: start;
+  }
 }
 .message {
   flex: 1;
+  outline: none;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 12px;
+  gap: var(--space-3);
   padding: 24px;
   color: var(--fg-subtle);
+}
+
+.binaryActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-2);
 }

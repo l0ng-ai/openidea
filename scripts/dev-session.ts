@@ -59,6 +59,7 @@ export async function claimSession(
       socket.end(JSON.stringify(session));
     });
     try {
+      // oxlint-disable-next-line no-await-in-loop -- ports are probed in order; the next one is tried only if this is busy
       await new Promise<void>((resolve, reject) => {
         server.once("error", reject);
         server.listen(port, "127.0.0.1", () => {
@@ -70,6 +71,7 @@ export async function claimSession(
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "EADDRINUSE" && code !== "EACCES") throw error;
+      // oxlint-disable-next-line no-await-in-loop -- read the occupant before deciding whether to try the next port
       const existing = await readSession(port);
       if (existing?.worktree === session.worktree && existing.identifier === session.identifier) {
         return { existing };
@@ -79,9 +81,20 @@ export async function claimSession(
   throw new Error("No available development session port");
 }
 
+/** `tauri dev` options that take a value as the next argument. */
+const VALUE_OPTIONS = new Set(["-c", "--config", "-t", "--target", "-f", "--features", "-r", "--runner", "--port"]);
+
+/**
+ * `args` with the session's Vite URL as the last `--config`, placed before the first
+ * positional argument: `tauri dev` passes everything from there on to the app, so a config
+ * after `pnpm dev:app <project path>` would be ignored.
+ */
 export function withDevConfig(args: string[], devUrl: string): string[] {
-  const separator = args.indexOf("--");
-  const index = separator < 0 ? args.length : separator;
+  let index = 1;
+  while (index < args.length && args[index] !== "--" && args[index]!.startsWith("-")) {
+    index += VALUE_OPTIONS.has(args[index]!) ? 2 : 1;
+  }
+  index = Math.min(index, args.length);
   return [
     ...args.slice(0, index),
     "--config",

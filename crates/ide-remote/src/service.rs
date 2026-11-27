@@ -1,13 +1,14 @@
-//! Deployment over SFTP or local folders, and SSH run targets.
+//! Deployment over SFTP, FTP or local folders, and SSH run targets.
 //! Shared by IPC commands and project save/delete hooks.
 
-use crate::deploy::{Deployment, SyncEntry, SyncStep, TransferReport};
-use crate::mapping::{Excludes, Mappings, ResolvedMapping};
-use crate::target::{RemoteRuns, RemoteStart, SyncFn};
+use crate::deploy::{Deployment, FileStamp, SyncEntry, SyncStatus, SyncStep, TransferError, TransferReport, status};
+use crate::mapping::{Excludes, Mappings, ResolvedMapping, posix};
+use crate::target::{RemoteRuns, RemoteStart, SyncFn, rewrite_external_classpath};
 use ide_core::remote_settings::{AutoUpload, DeploymentServer, DeploymentType, RunTarget};
 use ide_core::settings::Settings;
 use ide_core::{CancellationToken, IdeError, IdeResult, SharedSink};
 use ide_run::{OutputChunk, RunConfig, RunInfo};
+use ide_ssh::sftp::{join, mtime_of};
 use ide_ssh::{FsConnection, RemoteEntry, RemoteFs, SshManager};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -64,6 +65,39 @@ pub fn server(settings: &Settings, id: Option<&str>) -> IdeResult<DeploymentServ
         .ok_or_else(|| IdeError::not_found(format!("no deployment server {id}")))
 }
 
+/// The servers automatic upload goes to: the default server, or each server of the default group.
+pub fn default_targets(settings: &Settings) -> Vec<String> {
+    let d = &settings.deployment;
+    match d.groups.iter().find(|g| g.id == d.default_server) {
+        Some(group) => group.servers.iter().filter(|id| d.servers.iter().any(|s| &s.id == *id)).cloned().collect(),
+        None if d.default_server.is_empty() => Vec::new(),
+        None => vec![d.default_server.clone()],
+    }
+}
+
+/// One report for transfers to several servers, failures named after their server.
+fn merge_reports(reports: Vec<(String, IdeResult<TransferReport>)>) -> IdeResult<TransferReport> {
+    if let [(_, _)] = reports.as_slice() {
+        return reports.into_iter().next().map(|(_, r)| r).unwrap_or_else(|| Ok(TransferReport::default()));
+    }
+    let mut out = TransferReport::default();
+    for (server, report) in reports {
+        match report {
+            Ok(r) => {
+                out.files += r.files;
+                out.skipped += r.skipped;
+                out.errors.extend(
+                    r.errors.into_iter().map(|e| TransferError { message: format!("{server}: {}", e.message), ..e }),
+                );
+            }
+            Err(e) => {
+                out.errors.push(TransferError { path: String::new(), message: format!("{server}: {}", e.message) })
+            }
+        }
+    }
+    Ok(out)
+}
+
 pub fn run_target(settings: &Settings, id: &str) -> IdeResult<RunTarget> {
     settings
         .run_targets
@@ -79,6 +113,11 @@ impl RemoteService {
     }
 
     async fn fs(&self, connection: &FsConnection) -> IdeResult<RemoteFs> {
+        self.fs_with(connection, None).await
+    }
+
+    /// Like [`Self::fs`], with an FTP password typed but not saved yet (`None`: the saved one).
+    async fn fs_with(&self, connection: &FsConnection, password: Option<String>) -> IdeResult<RemoteFs> {
         match connection {
             FsConnection::Local => Ok(RemoteFs::Local),
             FsConnection::Sftp { ssh } => {
@@ -86,13 +125,27 @@ impl RemoteService {
                     return Err(IdeError::invalid("the deployment server has no SSH configuration"));
                 }
                 let session = self.ssh.session(ssh).await?;
-                Ok(RemoteFs::new(session.sftp().await?))
+                Ok(RemoteFs::new(session.sftp().await?).with_shell(session))
+            }
+            FsConnection::Ftp { server, secure, ftp } => {
+                let password = password.or_else(|| self.ssh.password(&ide_ssh::ftp::secret_key(server)));
+                Ok(RemoteFs::Ftp(ide_ssh::ftp::FtpFs::connect(ftp, *secure, password).await?))
             }
         }
     }
 
     pub async fn test_connection(&self, connection: &FsConnection, path: &str) -> IdeResult<()> {
-        let fs = self.fs(connection).await?;
+        self.test_connection_with(connection, path, None).await
+    }
+
+    /// Tests `connection` with an FTP password the settings have not saved yet.
+    pub async fn test_connection_with(
+        &self,
+        connection: &FsConnection,
+        path: &str,
+        password: Option<String>,
+    ) -> IdeResult<()> {
+        let fs = self.fs_with(connection, password).await?;
         let result = fs.test(path).await;
         fs.close().await;
         result
@@ -285,6 +338,38 @@ impl RemoteService {
         r
     }
 
+    /// Remote Host › Download to…: `remotes` (folders recursively) into the local folder `dir`,
+    /// each under its own name, without the server path above it. Existing files are replaced.
+    pub async fn download_into(
+        &self,
+        connection: &FsConnection,
+        remotes: &[String],
+        dir: &Path,
+        cancel: &CancellationToken,
+        progress: &mut (dyn FnMut(&str, usize, usize) + Send),
+    ) -> IdeResult<TransferReport> {
+        let fs = self.fs(connection).await?;
+        let r = download_into(&fs, remotes, dir, cancel, progress).await;
+        fs.close().await;
+        r
+    }
+
+    /// Remote Host uploads into a chosen folder, without deployment mappings.
+    pub async fn upload_into(
+        &self,
+        connection: &FsConnection,
+        paths: &[PathBuf],
+        directory: &str,
+        replace: bool,
+        cancel: &CancellationToken,
+        progress: Progress<'_>,
+    ) -> IdeResult<TransferReport> {
+        let fs = self.fs(connection).await?;
+        let result = crate::upload::upload_into(&fs, paths, directory, replace, cancel, progress).await;
+        fs.close().await;
+        result
+    }
+
     // --- save hook -----------------------------------------------------------------
 
     /// After a document save: uploads a remote file's copy, or (automatic upload)
@@ -300,15 +385,17 @@ impl RemoteService {
             .await;
             return Some(r);
         }
-        if settings.deployment.auto_upload == AutoUpload::Never
-            || settings.deployment.default_server.is_empty()
-            || !path.starts_with(root)
-        {
+        let targets = default_targets(settings);
+        if settings.deployment.auto_upload == AutoUpload::Never || targets.is_empty() || !path.starts_with(root) {
             return None;
         }
-        Some(
-            self.upload(settings, root, None, &[path.to_path_buf()], CancellationToken::new(), &mut |_, _, _| {}).await,
-        )
+        let mut reports = Vec::new();
+        for id in targets {
+            let paths = [path.to_path_buf()];
+            let r = self.upload(settings, root, Some(&id), &paths, CancellationToken::new(), &mut |_, _, _| {}).await;
+            reports.push((id, r));
+        }
+        Some(merge_reports(reports))
     }
 
     /// After files were deleted locally: their remote copies too (automatic upload + Delete remote files).
@@ -319,10 +406,16 @@ impl RemoteService {
         paths: &[PathBuf],
     ) -> Option<IdeResult<TransferReport>> {
         let d = &settings.deployment;
-        if d.auto_upload == AutoUpload::Never || !d.delete_remote || d.default_server.is_empty() {
+        let targets = default_targets(settings);
+        if d.auto_upload == AutoUpload::Never || !d.delete_remote || targets.is_empty() {
             return None;
         }
-        Some(self.delete_remote(settings, root, None, paths).await)
+        let mut reports = Vec::new();
+        for id in targets {
+            let r = self.delete_remote(settings, root, Some(&id), paths).await;
+            reports.push((id, r));
+        }
+        Some(merge_reports(reports))
     }
 
     // --- run targets ---------------------------------------------------------------
@@ -342,7 +435,7 @@ impl RemoteService {
             return Err(IdeError::internal("container run targets start as local runs of the docker CLI"));
         }
         let session = self.ssh.session(&target.ssh_config).await?;
-        let fs = RemoteFs::new(session.sftp().await?);
+        let fs = RemoteFs::new(session.sftp().await?).with_shell(session.clone());
         let folder = if target.project_root.trim().is_empty() {
             format!(
                 "~/{}",
@@ -359,10 +452,29 @@ impl RemoteService {
                 return Err(e);
             }
         };
+        // #2641: the resolved `-cp` may reference jars outside the project root
+        // (`~/.m2`), which deployment sync never uploads. Mirror them under the
+        // deployment and rewrite the command onto the remote copies. Entries inside
+        // the project root are untouched: `target_command` maps those already.
+        let (args, libraries) = rewrite_external_classpath(&config.args, root, &remote_root);
+        let mut config = config.clone();
+        config.args = args;
+        for (local, _) in &libraries {
+            if !local.exists() {
+                fs.close().await;
+                return Err(IdeError::invalid(format!(
+                    "cannot run on '{}': classpath entry {} does not exist on this machine; \
+                     package the application (for example `mvn package`) or fix the launch classpath",
+                    target.name,
+                    local.display()
+                )));
+            }
+        }
         let sync: Option<SyncFn> = if target.sync_before_run {
             let deployment = settings.deployment.clone();
             let root = root.to_path_buf();
             let remote_root = remote_root.clone();
+            let preserve_time = settings.deployment.preserve_timestamps;
             Some(Box::new(move |out| {
                 Box::pin(async move {
                     let server = DeploymentServer { root_path: remote_root.clone(), ..Default::default() };
@@ -375,19 +487,44 @@ impl RemoteService {
                         preserve_time: true,
                         cancel: CancellationToken::new(),
                     };
+                    let started = std::time::Instant::now();
+                    out(OutputChunk::System { text: format!("Comparing project files with {remote_root}...\n") });
                     let mut progress = |_: &str, _: usize, _: usize| {};
                     let report = d.push_changes(&root, &mut progress).await;
+                    if report.is_ok() && !libraries.is_empty() {
+                        out(OutputChunk::System {
+                            text: format!("Checking {} external classpath entries...\n", libraries.len()),
+                        });
+                    }
+                    let synced = match &report {
+                        Ok(_) => sync_external_libraries(&fs, &libraries, preserve_time).await,
+                        Err(_) => Ok(0),
+                    };
                     fs.close().await;
                     let report = report?;
                     out(OutputChunk::System {
-                        text: format!("Uploaded {} changed file(s) to {remote_root}\n", report.files),
+                        text: format!(
+                            "Uploaded {} changed file(s) to {remote_root} in {:.1}s\n",
+                            report.files,
+                            started.elapsed().as_secs_f64()
+                        ),
                     });
                     match report.errors.first() {
                         Some(e) => Err(IdeError::new(
                             ide_core::error::ErrorKind::Io,
                             format!("upload of {} failed: {}", e.path, e.message),
                         )),
-                        None => Ok(()),
+                        None => {
+                            let synced = synced?;
+                            if synced > 0 {
+                                out(OutputChunk::System {
+                                    text: format!(
+                                        "Synced {synced} external classpath file(s) to {remote_root}/.remote-libs\n"
+                                    ),
+                                });
+                            }
+                            Ok(())
+                        }
                     }
                 })
             }))
@@ -396,8 +533,62 @@ impl RemoteService {
             None
         };
         let start = RemoteStart { session, target, root: root.to_path_buf(), remote_root, sync };
-        Ok(self.runs.start(start, config, sink, on_output))
+        Ok(self.runs.start(start, &config, sink, on_output))
     }
+}
+
+/// Uploads outside-root classpath entries to their mirrored remote copies,
+/// skipping files the remote already has (same size and time). Returns the
+/// uploaded count. Missing locals are rejected in `run` before the sync starts.
+async fn sync_external_libraries(
+    fs: &RemoteFs,
+    libraries: &[(PathBuf, String)],
+    preserve_time: bool,
+) -> IdeResult<usize> {
+    fn fail(path: &str, e: IdeError) -> IdeError {
+        IdeError::new(ide_core::error::ErrorKind::Io, format!("sync of {path} failed: {}", e.message))
+    }
+    let mut files = Vec::new();
+    for (local, remote_base) in libraries {
+        if local.is_dir() {
+            let walk = ignore::WalkBuilder::new(local).standard_filters(false).follow_links(false).build();
+            for entry in walk.flatten() {
+                let path = entry.path();
+                // `is_file` (not the entry type): symlinked jars count.
+                if !path.is_file() {
+                    continue;
+                }
+                let Ok(rel) = path.strip_prefix(local) else { continue };
+                files.push((path.to_path_buf(), join(remote_base, &posix(rel))));
+            }
+        } else {
+            files.push((local.clone(), remote_base.clone()));
+        }
+    }
+    // The remote copies are checked several at a time (one round trip each); uploads follow.
+    use futures::stream::{self, StreamExt, TryStreamExt};
+    let stale: Vec<(PathBuf, String)> = stream::iter(files)
+        .map(|(file, remote)| async move {
+            let size = std::fs::metadata(&file).map_err(|e| fail(&remote, e.into()))?.len();
+            let local_stamp = FileStamp { size, mtime: mtime_of(&file) };
+            let remote_stamp = match fs.stat(&remote).await.map_err(|e| fail(&remote, e))? {
+                Some(e) if e.is_dir => {
+                    return Err(IdeError::invalid(format!("cannot sync onto the folder {remote}")));
+                }
+                Some(e) => Some(FileStamp { size: e.size, mtime: e.mtime }),
+                None => None,
+            };
+            let same = matches!(status(Some(local_stamp), remote_stamp), SyncStatus::Same);
+            Ok((!same).then_some((file, remote)))
+        })
+        .buffered(crate::deploy::LIST_CONCURRENCY)
+        .try_filter_map(|x| async move { Ok(x) })
+        .try_collect()
+        .await?;
+    for (file, remote) in &stale {
+        fs.upload(file, remote, preserve_time).await.map_err(|e| fail(remote, e))?;
+    }
+    Ok(stale.len())
 }
 
 fn sanitize(s: &str) -> String {
@@ -409,6 +600,11 @@ pub fn connection(server: &DeploymentServer) -> FsConnection {
     match server.kind {
         DeploymentType::Local => FsConnection::Local,
         DeploymentType::Sftp => FsConnection::Sftp { ssh: server.ssh_config.clone() },
+        DeploymentType::Ftp | DeploymentType::Ftps => FsConnection::Ftp {
+            server: server.id.clone(),
+            secure: server.kind == DeploymentType::Ftps,
+            ftp: server.ftp.clone(),
+        },
     }
 }
 
@@ -416,5 +612,165 @@ fn cache_key(connection: &FsConnection) -> String {
     match connection {
         FsConnection::Local => "local".to_owned(),
         FsConnection::Sftp { ssh } => format!("sftp-{ssh}"),
+        FsConnection::Ftp { server, .. } => format!("ftp-{server}"),
+    }
+}
+
+/// Files and folders under remote folder `dir` (symlinked folders are not followed).
+/// `remotes` (folders recursively) into the local folder `dir`, each under its own name, without
+/// the remote path above it; existing files are replaced. Remote Host › Download to…, and the
+/// project view's Download to… in a remote project.
+pub async fn download_into(
+    fs: &RemoteFs,
+    remotes: &[String],
+    dir: &Path,
+    cancel: &CancellationToken,
+    progress: &mut (dyn FnMut(&str, usize, usize) + Send),
+) -> IdeResult<TransferReport> {
+    let mut report = TransferReport::default();
+    let mut folders = Vec::new();
+    let mut jobs = Vec::new();
+    for remote in remotes {
+        let Some(top) = download_target(dir, remote, remote) else {
+            report.skipped += 1;
+            continue;
+        };
+        match fs.stat(remote).await {
+            Ok(Some(e)) if e.is_dir => {
+                folders.push(top);
+                let mut entries = Vec::new();
+                if let Err(e) = remote_tree(fs, remote, cancel, &mut entries).await {
+                    report.fail(remote.clone(), e);
+                }
+                for entry in entries {
+                    match download_target(dir, remote, &entry.path) {
+                        Some(local) if entry.is_dir => folders.push(local),
+                        Some(local) => jobs.push((entry.path, local)),
+                        None => report.skipped += 1,
+                    }
+                }
+            }
+            Ok(Some(_)) => jobs.push((remote.clone(), top)),
+            Ok(None) => report.fail(remote.clone(), IdeError::not_found(format!("{remote} does not exist"))),
+            Err(e) => report.fail(remote.clone(), e),
+        }
+    }
+    let root = tokio::fs::canonicalize(dir).await?;
+    for folder in &folders {
+        if !stays_inside(&root, folder).await {
+            report.fail(folder.display().to_string(), outside(folder));
+        } else if let Err(e) = tokio::fs::create_dir_all(folder).await {
+            report.fail(folder.display().to_string(), e.into());
+        }
+    }
+    for (i, (remote, local)) in jobs.iter().enumerate() {
+        if cancel.is_cancelled() {
+            break;
+        }
+        progress(remote, i, jobs.len());
+        if !stays_inside(&root, local).await {
+            report.fail(remote.clone(), outside(local));
+            continue;
+        }
+        if let Some(parent) = local.parent()
+            && let Err(e) = tokio::fs::create_dir_all(parent).await
+        {
+            report.fail(remote.clone(), e.into());
+            continue;
+        }
+        match fs.download(remote, local).await {
+            Ok(()) => report.files += 1,
+            Err(e) => report.fail(remote.clone(), e),
+        }
+    }
+    Ok(report)
+}
+
+async fn remote_tree(
+    fs: &RemoteFs,
+    dir: &str,
+    cancel: &CancellationToken,
+    out: &mut Vec<RemoteEntry>,
+) -> IdeResult<()> {
+    for e in fs.list(dir).await? {
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        let descend = e.is_dir && !e.is_symlink;
+        let path = e.path.clone();
+        out.push(e);
+        if descend {
+            Box::pin(remote_tree(fs, &path, cancel, out)).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Where remote `path`, inside the downloaded `selected` file or folder, lands under local `dir`:
+/// `dir/<name of selected>/<rest>`. `None` for a name that would leave `dir`.
+/// Whether writing `path` stays in the download folder `root` (canonical): its closest
+/// existing ancestor resolves inside it, and `path` itself is not a symbolic link, so a link
+/// already in the folder can't send a download elsewhere.
+pub(crate) async fn stays_inside(root: &Path, path: &Path) -> bool {
+    if tokio::fs::symlink_metadata(path).await.is_ok_and(|m| m.file_type().is_symlink()) {
+        return false;
+    }
+    let mut existing = path;
+    loop {
+        match tokio::fs::canonicalize(existing).await {
+            Ok(real) => return real.starts_with(root),
+            Err(_) => match existing.parent() {
+                Some(parent) => existing = parent,
+                None => return false,
+            },
+        }
+    }
+}
+
+fn outside(path: &Path) -> IdeError {
+    IdeError::invalid(format!("{} leads outside the download folder through a symbolic link", path.display()))
+}
+
+fn download_target(dir: &Path, selected: &str, path: &str) -> Option<PathBuf> {
+    let selected = selected.trim_end_matches('/');
+    let name = selected.rsplit('/').next()?;
+    let rest = path.trim_end_matches('/').strip_prefix(selected)?;
+    if !rest.is_empty() && !rest.starts_with('/') {
+        return None;
+    }
+    let mut local = dir.to_path_buf();
+    for part in std::iter::once(name).chain(rest.split('/').filter(|p| !p.is_empty())) {
+        if matches!(part, "" | "." | "..") || part.contains('\\') || (cfg!(windows) && part.contains(':')) {
+            return None;
+        }
+        local.push(part);
+    }
+    Some(local)
+}
+
+#[cfg(test)]
+mod download_into_tests {
+    use super::*;
+
+    #[test]
+    fn downloads_keep_only_the_selected_name() {
+        let dir = Path::new("/p/project");
+        let selected = "/home/u/www/site/current/drush";
+        assert_eq!(download_target(dir, selected, selected), Some(dir.join("drush")));
+        assert_eq!(download_target(dir, "/home/u/www/site/current/drush/", selected), Some(dir.join("drush")));
+        assert_eq!(
+            download_target(dir, selected, "/home/u/www/site/current/drush/src/a.php"),
+            Some(dir.join("drush").join("src").join("a.php"))
+        );
+        assert_eq!(download_target(dir, "/srv/app.log", "/srv/app.log"), Some(dir.join("app.log")));
+    }
+
+    #[test]
+    fn names_that_would_leave_the_folder_are_refused() {
+        let dir = Path::new("/p/project");
+        assert_eq!(download_target(dir, "/srv/a", "/srv/a/../../etc/passwd"), None);
+        assert_eq!(download_target(dir, "/srv/a", "/srv/ab/x"), None, "a sibling with the same prefix");
+        assert_eq!(download_target(dir, "/", "/etc"), None, "the root has no name");
+        assert_eq!(download_target(dir, "/srv/..", "/srv/.."), None);
     }
 }

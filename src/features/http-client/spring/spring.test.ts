@@ -198,6 +198,32 @@ describe("Spring mappings (Kotlin)", () => {
   });
 });
 
+describe("mapping conditions", () => {
+  it("keeps a value that has its own '='", () => {
+    const [controller] = springControllers(`package demo;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+public class ReportController {
+    @GetMapping(path = "/report", headers = "Accept=text/plain;charset=UTF-8", params = "range=a=b")
+    public String report() { return ""; }
+
+    @PostMapping(path = "/upload", headers = {"Content-Type=multipart/form-data; boundary=xyz", "X-Token=YWJj=="})
+    public void upload() {}
+}
+`);
+    const [report, upload] = controller!.endpoints;
+    expect(report).toMatchObject({
+      query: [{ name: "range", value: "a=b" }],
+      headers: [{ name: "Accept", value: "text/plain;charset=UTF-8" }],
+    });
+    expect(upload!.headers).toEqual([
+      { name: "Content-Type", value: "multipart/form-data; boundary=xyz" },
+      { name: "X-Token", value: "YWJj==" },
+    ]);
+  });
+});
+
 describe("non-controllers", () => {
   it("ignores classes that are not controllers and files without any", () => {
     expect(springControllers('@Service class A { @GetMapping("/x") void a() {} }')).toEqual([]);
@@ -243,6 +269,19 @@ describe("server address", () => {
     expect(hostFromConfig([parseYaml("spring:\n  webflux:\n    base-path: /rx\n")])).toBe("http://localhost:8080/rx");
   });
 
+  it("uses https for a key store unless server.ssl.enabled is false", () => {
+    const keyStore = "server.port=8443\nserver.ssl.key-store=classpath:keystore.p12\n";
+    expect(hostFromConfig([parseProperties(keyStore)])).toBe("https://localhost:8443");
+    expect(hostFromConfig([parseProperties(`${keyStore}server.ssl.enabled=false\n`)])).toBe("http://localhost:8443");
+    expect(
+      hostFromConfig([parseYaml("server:\n  ssl:\n    enabled: false\n    key-store: classpath:keystore.p12\n")]),
+    ).toBe("http://localhost:8080");
+    // A profile that turns TLS off over a base file that configures it.
+    expect(hostFromConfig([parseProperties("server.ssl.enabled=false\n"), parseProperties(keyStore)])).toBe(
+      "http://localhost:8443",
+    );
+  });
+
   it("looks in the module's src/main/resources", async () => {
     const files: Record<string, string> = {
       "/ws/api/src/main/resources/application.yml": "server:\n  port: 8001\n",
@@ -251,6 +290,19 @@ describe("server address", () => {
     const fs: SourceReader = { read: async (p) => files[p] ?? null };
     expect(await findHost("/ws/api/src/main/java/a/A.java", "/ws", fs)).toBe("http://localhost:8001");
     expect(await findHost("/ws/other/A.java", "/ws", fs)).toBe("http://localhost:9000");
+  });
+
+  it("reads the active profiles' files over the base ones", async () => {
+    const files: Record<string, string> = {
+      "/ws/api/src/main/resources/application.yml":
+        "server:\n  port: 8001\n  servlet:\n    context-path: /api\nspring:\n  profiles:\n    active: ${PROFILE:local}, dev\n",
+      "/ws/api/src/main/resources/application-local.properties": "server.port=7000\n",
+      "/ws/api/src/main/resources/application-dev.yml": "server:\n  port: 9100\n",
+    };
+    const fs: SourceReader = { read: async (p) => files[p] ?? null };
+    expect(await findHost("/ws/api/src/main/java/a/A.java", "/ws", fs)).toBe("http://localhost:9100/api");
+    delete files["/ws/api/src/main/resources/application-dev.yml"];
+    expect(await findHost("/ws/api/src/main/java/a/A.java", "/ws", fs)).toBe("http://localhost:7000/api");
   });
 });
 
@@ -270,6 +322,41 @@ describe("body types from other files", () => {
     expect(skeleton("Mono<CreateUser>", lookup)).toMatchObject({ name: "" });
     expect(skeleton("List<CreateUser>", lookup)).toEqual([]);
     expect(skeleton("Unknown", lookup)).toEqual({});
+  });
+
+  it("finds a DTO in another module through the index, with its superclass fields", async () => {
+    const files: Record<string, string> = {
+      "/ws/common/src/main/java/com/example/demo/dto/CreateUser.java":
+        "package com.example.demo.dto;\nimport com.example.base.BaseEntity;\n@Data\npublic class CreateUser extends BaseEntity<Long> implements Serializable {\n  private String name;\n  private Address address;\n}\n",
+      "/ws/common/src/main/java/com/example/demo/dto/Address.java":
+        "package com.example.demo.dto;\npublic class Address { private String city; }\n",
+      "/ws/base/src/main/java/com/example/base/BaseEntity.java":
+        "package com.example.base;\npublic abstract class BaseEntity<ID> { private ID id; private LocalDateTime createdAt; }\n",
+      // Same name, other package: not the imported class.
+      "/ws/legacy/src/main/java/com/legacy/CreateUser.java":
+        "package com.legacy;\npublic class CreateUser { int old; }\n",
+    };
+    const fs: SourceReader = {
+      read: async (p) => files[p] ?? null,
+      filesNamed: async (name) => Object.keys(files).filter((p) => p.endsWith(`/${name}`)),
+    };
+    const eps = springControllers(JAVA)[0]!.endpoints;
+    const lookup = await bodyLookup(
+      "/ws/web/src/main/java/com/example/demo/web/UserController.java",
+      parseSource(JAVA),
+      eps,
+      fs,
+    );
+    expect(skeleton("CreateUser", lookup)).toEqual({ id: {}, createdAt: "", name: "", address: { city: "" } });
+  });
+
+  it("reads Java and Kotlin superclasses", () => {
+    const java = parseSource("class A extends com.x.Base<T> implements I { }\ninterface J extends K {}");
+    expect(java.classes.map((c) => c.superclass)).toEqual(["com.x.Base<T>", "K"]);
+    const kotlin = parseSource(
+      "class A(val a: Int) : Base(a), Serializable\nclass B : Serializable, Other()\nclass C : I",
+    );
+    expect(kotlin.classes.map((c) => c.superclass)).toEqual(["Base", "Other", undefined]);
   });
 });
 

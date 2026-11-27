@@ -235,6 +235,7 @@ async function fetchTimelinePages(number: number, from: string | null, all: bool
   let cursor = from;
   let hasMore = true;
   do {
+    // oxlint-disable-next-line no-await-in-loop -- cursor pagination: the next page's cursor comes from this response.
     const page = await api.pullRequestTimelinePage(number, cursor);
     if (!page) throw new Error(`Pull request #${number} not found`);
     items.push(...page.nodes);

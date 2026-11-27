@@ -6,7 +6,6 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-ide-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 specta.workspace = true

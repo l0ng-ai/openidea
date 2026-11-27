@@ -1,0 +1,10 @@
+{
+  "name": "openidea-fixture-inventory",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OpenIDEA QA fixture: node:test tests for a small inventory module (no dependencies)",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  }
+}

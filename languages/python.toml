@@ -59,6 +59,39 @@ root-markers = ["ruff.toml", ".ruff.toml", "pyproject.toml#tool.ruff"]
 require-root-marker = true
 install-hint = "pip install ruff (or: uv tool install ruff)"
 
+# Refactorings only (Extract Method / Variable, Inline, Introduce Parameter) from rope,
+# next to the type checker: pylsp's own completion, hover, linting and formatting
+# stay off, and its other code actions (quick fixes on every line) are dropped.
+[[language-servers]]
+name = "pylsp"
+command = "pylsp"
+features = ["code-action"]
+code-action-kinds = ["refactor"]
+root-markers = ["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile"]
+install-hint = "pip install pylsp-rope (or: uv tool install python-lsp-server --with pylsp-rope)"
+
+[language-servers.initialization-options.pylsp.plugins]
+autopep8 = { enabled = false }
+flake8 = { enabled = false }
+folding = { enabled = false }
+jedi_completion = { enabled = false }
+jedi_definition = { enabled = false }
+jedi_highlight = { enabled = false }
+jedi_hover = { enabled = false }
+jedi_references = { enabled = false }
+jedi_rename = { enabled = false }
+jedi_signature_help = { enabled = false }
+jedi_symbols = { enabled = false }
+mccabe = { enabled = false }
+preload = { enabled = false }
+pycodestyle = { enabled = false }
+pydocstyle = { enabled = false }
+pyflakes = { enabled = false }
+pylint = { enabled = false }
+rope_autoimport = { enabled = false }
+rope_completion = { enabled = false }
+yapf = { enabled = false }
+
 [debugger]
 adapter = "debugpy"
 command = "python3"

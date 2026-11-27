@@ -1,13 +1,13 @@
 //! Protocol tests against in-memory mock language servers.
 
-use ide_core::event::ServerStatus;
+use ide_core::event::{LspRefreshKind, ServerStatus};
 use ide_core::{
-    CancellationToken, DocId, FileEdit, IdeEvent, LanguageId, Pos, Range, ServerId, Severity, WorkspaceEdit,
+    CancellationToken, DocId, FileEdit, IdeEvent, LanguageId, Pos, Range, ServerId, Severity, TaskId, WorkspaceEdit,
 };
 use ide_jsonrpc::{Handler, NoopHandler, Peer};
 use ide_language::{LanguageConfig, LanguageRegistry, LanguageServerConfig};
 use ide_lsp::types::*;
-use ide_lsp::{LaunchError, Launcher, LspManager};
+use ide_lsp::{KotlinDebugServer, KotlinDebugUnavailable, LaunchError, Launcher, LspManager};
 use ide_text::AppliedChange;
 use parking_lot::Mutex;
 use serde_json::{Value, json};
@@ -23,6 +23,7 @@ use std::time::Duration;
 struct MockState {
     caps: Mutex<Value>,
     missing: std::sync::atomic::AtomicBool,
+    omit_server_info: std::sync::atomic::AtomicBool,
     binary: Mutex<Option<PathBuf>>,
     launches: AtomicUsize,
     notifications: Mutex<Vec<(String, Value)>>,
@@ -146,7 +147,14 @@ impl Handler for MockHandler {
                 if let Some(gate) = gate {
                     gate.hold();
                 }
-                Ok(json!({ "capabilities": s.caps.lock().clone(), "serverInfo": { "name": "mock" } }))
+                if let Some(error) = s.errors.lock().get("initialize").cloned() {
+                    return Err(error);
+                }
+                let mut result = json!({ "capabilities": s.caps.lock().clone() });
+                if !s.omit_server_info.load(Ordering::SeqCst) {
+                    result["serverInfo"] = json!({ "name": "mock" });
+                }
+                Ok(result)
             }
             "shutdown" => Ok(Value::Null),
             _ => {
@@ -253,6 +261,7 @@ fn server_cfg(name: &str) -> LanguageServerConfig {
         command: name.into(),
         args: vec![],
         env: Default::default(),
+        requires_env: Vec::new(),
         root_markers: vec!["mock.toml".into()],
         require_root_marker: false,
         initialization_options: Some(toml::Value::Table(toml::toml! { flag = true nested = { deep = 1 } })),
@@ -260,6 +269,7 @@ fn server_cfg(name: &str) -> LanguageServerConfig {
         install_hint: Some(format!("install {name}")),
         connect: None,
         fallback: false,
+        replaces: Vec::new(),
         features: Vec::new(),
         code_action_kinds: Vec::new(),
         max_java: None,
@@ -267,6 +277,7 @@ fn server_cfg(name: &str) -> LanguageServerConfig {
         tsserver_project: false,
         tsserver_project_extras: Default::default(),
         resync_on_configuration: false,
+        display_name: None,
         pinned: None,
     }
 }
@@ -291,36 +302,49 @@ fn harness_configured(
     servers: &[(&str, Value)],
     adjust: impl Fn(&mut LanguageServerConfig),
 ) -> Harness {
+    harness_languages(&[(lang_id, ext, servers)], adjust)
+}
+
+/// A language as `(id, extension, servers)`.
+type MockLanguage<'a> = (&'a str, &'a str, &'a [(&'a str, Value)]);
+
+/// Several languages; documents open as the first.
+fn harness_languages(languages: &[MockLanguage<'_>], adjust: impl Fn(&mut LanguageServerConfig)) -> Harness {
     let dir = tempfile::tempdir().unwrap();
     // Edits and references report canonical paths.
     let root = dunce::canonicalize(dir.path()).unwrap();
-    let lang = LanguageConfig {
-        id: LanguageId::new(lang_id),
-        name: "Mock".into(),
-        extensions: vec![ext.into()],
-        filenames: vec![],
-        first_line: None,
-        line_comment: None,
-        block_comment: None,
-        indent: None,
-        ui_mode: None,
-        framework_ui_modes: Vec::new(),
-        formatter: None,
-        scratch_template: None,
-        tree_sitter: None,
-        language_servers: servers
-            .iter()
-            .map(|(n, _)| {
-                let mut cfg = server_cfg(n);
-                adjust(&mut cfg);
-                cfg
-            })
-            .collect(),
-        debugger: None,
-    };
-    let registry = Arc::new(LanguageRegistry::from_configs(vec![lang]));
+    let configs = languages
+        .iter()
+        .map(|(lang_id, ext, servers)| LanguageConfig {
+            id: LanguageId::new(*lang_id),
+            name: "Mock".into(),
+            extensions: vec![ext.to_string()],
+            filenames: vec![],
+            first_line: None,
+            line_comment: None,
+            block_comment: None,
+            indent: None,
+            ui_mode: None,
+            framework_ui_modes: Vec::new(),
+            framework_files: Vec::new(),
+            formatter: None,
+            scratch_template: None,
+            rainbow_brackets: Default::default(),
+            tree_sitter: None,
+            language_servers: servers
+                .iter()
+                .map(|(n, _)| {
+                    let mut cfg = server_cfg(n);
+                    adjust(&mut cfg);
+                    cfg
+                })
+                .collect(),
+            debugger: None,
+        })
+        .collect();
+    let registry = Arc::new(LanguageRegistry::from_configs(configs));
     let launcher = Arc::new(MockLauncher::default());
-    for (name, caps) in servers {
+    for (name, caps) in languages.iter().flat_map(|(_, _, servers)| servers.iter()) {
         *launcher.state(name).caps.lock() = caps.clone();
     }
     let events = Arc::new(Mutex::new(Vec::new()));
@@ -329,7 +353,7 @@ fn harness_configured(
         Arc::new(move |e: IdeEvent| events.lock().push(e))
     };
     let mgr = LspManager::with_launcher(root.clone(), registry, sink, launcher.clone());
-    Harness { _dir: dir, root, mgr, launcher, events, lang: LanguageId::new(lang_id) }
+    Harness { _dir: dir, root, mgr, launcher, events, lang: LanguageId::new(languages[0].0) }
 }
 
 impl Harness {
@@ -458,6 +482,23 @@ async fn dart_file_watching_requires_an_explicit_registration() {
 }
 
 // ------------------------------------------------------------------ tests
+
+#[tokio::test(flavor = "multi_thread")]
+async fn servers_start_once_the_project_environment_has_loaded() {
+    let h = harness(&[("mock", incremental_caps())]);
+    // The project's direnv environment (a Nix devshell) is still being read.
+    ide_core::project_env::begin_loading(&h.root);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Starting).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let server = h.launcher.state("mock");
+    assert_eq!(server.launches.load(Ordering::SeqCst), 0);
+    ide_core::project_env::set(&h.root, vec![("OPENIDEA_TEST_DEVSHELL".into(), Some("1".into()))]);
+    h.wait_status("mock", ServerStatus::Ready).await;
+    assert_eq!(server.launches.load(Ordering::SeqCst), 1);
+    ide_core::project_env::remove(&h.root);
+    h.mgr.shutdown_all().await;
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn linked_projects_initialize_separate_language_server_roots() {
@@ -594,11 +635,12 @@ async fn java_sharing_cancels_a_retiring_initialize_before_starting_its_replacem
     let old = state.peer();
     shared.store(true, Ordering::SeqCst);
     let switched = tokio::time::timeout(Duration::from_secs(2), h.mgr.reconfigure()).await;
-    let closed_before_response = old.is_closed();
-    gate.open();
     switched.expect("initialize cancellation must not wait for its response");
+    // The retiring transport closes asynchronously; wait for it before releasing
+    // the initialize response so the ordering check does not race the close.
+    eventually(|| old.is_closed()).await;
+    gate.open();
     eventually(|| state.requested("initialize").len() == 2).await;
-    assert!(closed_before_response, "the old transport must close before its initialize response is released");
     assert_eq!(h.mgr.servers().len(), 1);
     assert_eq!(h.mgr.servers()[0].root.as_ref(), h.root.as_path());
     h.mgr.shutdown_all().await;
@@ -685,6 +727,8 @@ async fn java_classpath_waits_for_a_config_restart_that_is_reaping_startup() {
             assert!(result.unwrap_err().message.contains("restart configuration error"));
         } else {
             assert!(result.is_ok(), "a configuration restart is transient: {result:?}");
+            // The module folder resolves to the instance serving its files, not a second one.
+            assert_eq!(h.mgr.servers().len(), 1);
             assert_eq!(state.launches.load(Ordering::SeqCst), 2);
             assert_eq!(h.mgr.servers()[0].id != old, shared);
         }
@@ -753,6 +797,40 @@ async fn java_classpath_does_not_retry_permanently_unavailable_servers() {
         assert!(error.message.contains(if missing { "not installed" } else { "permanent mock configuration error" }));
         h.mgr.shutdown_all().await;
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn external_maven_import_joins_the_opened_root_without_replacing_discovery() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let external = tempfile::tempdir().unwrap();
+    let external = dunce::canonicalize(external.path()).unwrap();
+    std::fs::write(external.join("pom.xml"), "<project><artifactId>b</artifactId></project>").unwrap();
+    let outside = external.join("src/Main.java");
+    std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
+    std::fs::write(&outside, "class External {}").unwrap();
+    let inside = h.root.join("src/App.java");
+    std::fs::create_dir_all(inside.parent().unwrap()).unwrap();
+    std::fs::write(&inside, "class App {}").unwrap();
+    // An in-root build with its own marker keeps a separate server.
+    let nested = h.root.join("nested");
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::write(nested.join("mock.toml"), "").unwrap();
+    let nested_file = nested.join("Nested.java");
+    std::fs::write(&nested_file, "class Nested {}").unwrap();
+
+    h.mgr.set_jdtls_import_roots(vec![external.clone()]);
+    h.mgr.did_open(DocId::next(), &inside, &h.lang, 1, "class App {}");
+    h.mgr.did_open(DocId::next(), &outside, &h.lang, 1, "class External {}");
+    h.mgr.did_open(DocId::next(), &nested_file, &h.lang, 1, "class Nested {}");
+    let state = h.launcher.state("jdtls");
+    eventually(|| state.requested("initialize").len() == 2).await;
+    let inits = state.requested("initialize");
+    let project = inits.iter().find(|init| init["rootUri"] == uri_of(&h.root)).unwrap();
+    assert_eq!(project["initializationOptions"]["workspaceFolders"], json!([uri_of(&h.root), uri_of(&external)]));
+    assert!(project["initializationOptions"].get("projectConfigurations").is_none());
+    assert!(state.requested("initialize").iter().any(|init| init["rootUri"] == uri_of(&nested)));
+    assert_eq!(h.mgr.servers().len(), 2);
+    h.mgr.shutdown_all().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -911,6 +989,33 @@ async fn files_changed_on_disk_reach_the_servers_of_their_language() {
     h.mgr.watched_files_changed(&[h.root.join("b.txt")], &[], &[], &[]);
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     assert_eq!(s.notified("workspace/didChangeWatchedFiles").len(), 1);
+    h.mgr.shutdown_all().await;
+}
+
+/// jdtls runs the annotation processors itself and writes their output; a Maven build's
+/// copy of those files must not reach it as an edit, or jdtls recompiles javac's copy and
+/// overwrites its classes with broken ones (#4128).
+#[tokio::test(flavor = "multi_thread")]
+async fn jdtls_does_not_hear_of_annotation_processor_output() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let (doc, _) = h.open("Open.java", "class Open {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    let source = h.root.join("m/src/main/java/com/x/FooMapping.java");
+    let generated = h.root.join("m/target/generated-sources/annotations/com/x/FooMappingImpl.java");
+    let test_generated = h.root.join("m/target/generated-test-sources/test-annotations/com/x/T.java");
+    h.mgr.watched_files_changed(
+        &[test_generated],
+        &[generated.clone(), source.clone()],
+        std::slice::from_ref(&generated),
+        &[h.root.join("m/target/generated-sources/annotations")],
+    );
+    eventually(|| !s.notified("workspace/didChangeWatchedFiles").is_empty()).await;
+    h.mgr.hover(doc, Pos::new(0, 0), Default::default()).await.unwrap();
+    assert_eq!(
+        s.notified("workspace/didChangeWatchedFiles"),
+        vec![json!({ "changes": [{ "uri": uri_of(&source), "type": 2 }] })]
+    );
     h.mgr.shutdown_all().await;
 }
 
@@ -1220,6 +1325,36 @@ async fn initialize_and_incremental_sync() {
     assert_eq!(infos[0].status, ServerStatus::Ready);
 }
 
+/// Pyright, told the client has workspace folders, asks for its configuration and loads the
+/// workspace only after a `workspace/didChangeConfiguration`: every server gets one at startup.
+#[tokio::test(flavor = "multi_thread")]
+async fn every_server_hears_its_configuration_once_initialized() {
+    let cases = [
+        (None, None, json!({})),
+        (Some(json!({ "flag": true })), None, json!({ "flag": true })),
+        (
+            None,
+            Some(json!({ "python": { "pythonPath": "/venv/bin/python" } })),
+            json!({ "python": { "pythonPath": "/venv/bin/python" } }),
+        ),
+        (Some(json!({ "flag": true })), Some(json!({ "other": 2 })), json!({ "flag": true, "other": 2 })),
+    ];
+    for (init, settings, expected) in cases {
+        let h = harness_configured("mock", "mk", &[("pyright", incremental_caps())], |cfg| {
+            cfg.initialization_options = init.clone().map(|v| toml::Value::try_from(v).unwrap());
+            cfg.settings = settings.clone();
+        });
+        h.open("a.mk", "x");
+        h.wait_status("pyright", ServerStatus::Ready).await;
+        let s = h.launcher.state("pyright");
+        eventually(|| !s.notified("workspace/didChangeConfiguration").is_empty()).await;
+        assert_eq!(s.notified("workspace/didChangeConfiguration"), vec![json!({ "settings": expected })]);
+        let order: Vec<String> = s.notifications.lock().iter().map(|(m, _)| m.clone()).collect();
+        let at = |m: &str| order.iter().position(|n| n == m).unwrap();
+        assert!(at("initialized") < at("workspace/didChangeConfiguration"));
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn full_sync_and_desync_recovery() {
     let h = harness(&[("full", json!({ "textDocumentSync": 1 })), ("inc", json!({ "textDocumentSync": 2 }))]);
@@ -1353,6 +1488,178 @@ async fn unsupported_feature_names_the_running_servers_that_lack_it() {
     assert_eq!(e.message, "plain, other doesn't support inline completion");
     let e = h.mgr.type_hierarchy(doc, Pos::new(0, 4), HierarchyDirection::Incoming).await.unwrap_err();
     assert_eq!(e.message, "plain, other doesn't support type hierarchy");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn flutter_outline_follows_the_document_and_the_server_instance() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let (doc, path) = h.open("a.mk", "Text('x')\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let refreshes = || {
+        h.events
+            .lock()
+            .iter()
+            .filter(|e| matches!(e, IdeEvent::LspRefresh { kind: LspRefreshKind::FlutterOutline, .. }))
+            .count()
+    };
+    let at = json!({"start":{"line":0,"character":0},"end":{"line":0,"character":9}});
+    let unit = |children: Value| {
+        json!({ "uri": uri_of(&path), "outline": {
+            "kind": "DART_ELEMENT", "range": at, "codeRange": at,
+            "dartElement": { "kind": "COMPILATION_UNIT", "name": "<unit>" },
+            "children": children,
+        }})
+    };
+    let widgets = json!([{ "kind": "NEW_INSTANCE", "className": "Text", "range": at, "codeRange": at }]);
+    let peer = h.launcher.state("mock").peer();
+    assert!(h.mgr.flutter_outline(doc).is_none());
+
+    peer.notify("dart/textDocument/publishFlutterOutline", unit(widgets.clone())).unwrap();
+    eventually(|| refreshes() == 1).await;
+    assert_eq!(h.mgr.flutter_outline(doc).unwrap()[0].name, "Text");
+
+    // The widgets are gone from the file: the ordinary structure applies again.
+    peer.notify("dart/textDocument/publishFlutterOutline", unit(json!([]))).unwrap();
+    eventually(|| refreshes() == 2).await;
+    assert!(h.mgr.flutter_outline(doc).is_none());
+
+    peer.notify("dart/textDocument/publishFlutterOutline", unit(widgets.clone())).unwrap();
+    eventually(|| refreshes() == 3).await;
+
+    // Reopening starts without the closed document's tree.
+    h.mgr.did_close(doc);
+    assert!(h.mgr.flutter_outline(doc).is_none());
+    let (reopened, _) = h.open("a.mk", "Text('x')\n");
+    assert!(h.mgr.flutter_outline(reopened).is_none());
+    peer.notify("dart/textDocument/publishFlutterOutline", unit(widgets)).unwrap();
+    eventually(|| refreshes() == 4).await;
+    assert!(h.mgr.flutter_outline(reopened).is_some());
+
+    // A restarted server has analysed nothing yet.
+    let server = h
+        .events
+        .lock()
+        .iter()
+        .find_map(|e| match e {
+            IdeEvent::LanguageServer { server, name, .. } if name == "mock" => Some(*server),
+            _ => None,
+        })
+        .unwrap();
+    h.mgr.restart(server).await.unwrap();
+    assert!(h.mgr.flutter_outline(reopened).is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn property_editor_lists_the_dart_servers_arguments_and_applies_its_edit() {
+    let h = harness(&[("dart", incremental_caps())]);
+    let (doc, path) = h.open("a.mk", "Text('x')\n");
+    h.wait_status("dart", ServerStatus::Ready).await;
+    let s = h.launcher.state("dart");
+    let arg = |name: &str, extra: Value| {
+        let mut a = json!({ "name": name, "hasArgument": false, "isRequired": false, "isNullable": true,
+            "isDeprecated": false, "isEditable": true });
+        a.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        a
+    };
+    let at = json!({"start":{"line":0,"character":0},"end":{"line":0,"character":9}});
+    s.respond(
+        "dart/textDocument/editableArguments",
+        json!({ "textDocument": { "uri": uri_of(&path), "version": 1 }, "name": "Text", "range": at, "arguments": [
+            arg("data", json!({ "type": "string", "value": "x", "hasArgument": true, "isRequired": true, "isNullable": false })),
+            arg("textAlign", json!({ "type": "enum", "options": ["TextAlign.left", "TextAlign.center"] })),
+            arg("maxLines", json!({ "type": "int", "value": 2, "hasArgument": true })),
+            // An older SDK leaves out flags it doesn't know yet.
+            json!({ "name": "softWrap", "type": "bool", "hasArgument": false }),
+        ]}),
+    );
+    let args = h.mgr.editable_arguments(doc, Pos::new(0, 2)).await.unwrap().unwrap();
+    assert_eq!(args.name.as_deref(), Some("Text"));
+    assert_eq!(
+        (args.arguments[0].kind.as_str(), args.arguments[0].value.clone()),
+        ("string", Some(ArgumentValue::Text("x".into())))
+    );
+    assert_eq!(args.arguments[1].options.as_ref().unwrap()[1], "TextAlign.center");
+    assert_eq!(args.arguments[1].value, None);
+    assert!(args.arguments[3].is_editable && !args.arguments[3].is_deprecated && !args.arguments[3].is_required);
+    assert_eq!(args.arguments[2].value, Some(ArgumentValue::Int(2)));
+    let asked = s.requested("dart/textDocument/editableArguments");
+    assert_eq!(asked[0]["position"], json!({"line":0,"character":2}));
+
+    // The server answers editArgument with null and sends the edit as workspace/applyEdit.
+    let applied: Arc<Mutex<Vec<WorkspaceEdit>>> = Arc::default();
+    let received = applied.clone();
+    h.mgr.set_apply_edit_hook(Box::new(move |e| {
+        received.lock().push(e);
+        true
+    }));
+    let uri = uri_of(&path);
+    *s.responder.lock() = Some(Arc::new(move |s, method, _| {
+        (method == "dart/textDocument/editArgument").then(|| {
+            let edit = json!({ "changes": { uri.clone(): [{ "range":
+                {"start":{"line":0,"character":5},"end":{"line":0,"character":8}}, "newText": "'y'" }] } });
+            let reply: Value = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(s.peer().request(
+                    "workspace/applyEdit",
+                    json!({ "edit": edit }),
+                    None,
+                ))
+            })
+            .unwrap();
+            assert_eq!(reply, json!({"applied": true}));
+            Value::Null
+        })
+    }));
+    h.mgr.edit_argument(doc, Pos::new(0, 2), "data".into(), Some(ArgumentValue::Text("y".into()))).await.unwrap();
+    let sent = s.requested("dart/textDocument/editArgument");
+    assert_eq!(sent[0]["edit"], json!({ "name": "data", "newValue": "y" }));
+    assert_eq!(sent[0]["position"], json!({"line":0,"character":2}));
+    let edits = applied.lock().clone();
+    assert!(
+        matches!(&edits[..], [e] if matches!(&e.files[0], FileEdit::Edit { edits, .. } if edits[0].new_text == "'y'"))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn property_editor_has_nothing_without_a_dart_server() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let (doc, _) = h.open("a.mk", "Text('x')\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    assert!(h.mgr.editable_arguments(doc, Pos::new(0, 2)).await.unwrap().is_none());
+    assert!(h.launcher.state("mock").requested("dart/textDocument/editableArguments").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn closing_labels_join_the_inlay_hints_until_the_next_edit() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let (doc, path) = h.open("a.mk", "Center(\n  child: Text('x'))\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    s.respond("textDocument/inlayHint", json!([]));
+    let refreshes = || {
+        h.events
+            .lock()
+            .iter()
+            .filter(|e| matches!(e, IdeEvent::LspRefresh { kind: LspRefreshKind::InlayHints, .. }))
+            .count()
+    };
+    let at = |l0: u32, c0: u32, c1: u32| json!({"start":{"line":l0,"character":c0},"end":{"line":1,"character":c1}});
+    let labels = json!({ "uri": uri_of(&path), "labels": [
+        { "range": at(1, 9, 18), "label": "Text" },
+        { "range": at(0, 0, 19), "label": "Center" },
+    ]});
+    s.peer().notify("dart/textDocument/publishClosingLabels", labels).unwrap();
+    eventually(|| refreshes() == 1).await;
+    let whole = Range::new(Pos::new(0, 0), Pos::new(2, 0));
+    let hints = h.mgr.inlay_hints(doc, whole).await.unwrap();
+    assert_eq!(hints.len(), 1);
+    assert_eq!(hints[0].label, "// Text // Center");
+    assert_eq!(hints[0].position, Pos::new(1, 19));
+    assert_eq!(hints[0].kind, InlayKind::ClosingLabel);
+    assert!(h.mgr.inlay_hints(doc, Range::new(Pos::new(0, 0), Pos::new(0, 7))).await.unwrap().is_empty());
+
+    // Edited text: the labels wait for the next analysis.
+    h.mgr.did_change(doc, 2, &[change(rng(0, 0, 0, 0), " ")], &|| unreachable!());
+    assert!(h.mgr.inlay_hints(doc, whole).await.unwrap().is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1553,6 +1860,36 @@ async fn a_cancelled_pull_is_retried_and_a_refresh_pulls_again() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn show_message_request_unknown_action_replies_null() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("dismiss.mk", "abc\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let peer = h.launcher.state("mock").peer();
+    let request = peer.request(
+        "window/showMessageRequest",
+        json!({ "type": 2, "message": "Continue?", "actions": [{ "title": "Yes" }] }),
+        None,
+    );
+    tokio::pin!(request);
+    let id = loop {
+        if let Some(id) = h.events.lock().iter().find_map(|event| match event {
+            IdeEvent::LspMessageRequest { id, message, .. } if message == "Continue?" => Some(*id),
+            _ => None,
+        }) {
+            break id;
+        }
+        tokio::select! {
+            _ = &mut request => panic!("showMessageRequest finished before the UI event"),
+            _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+        }
+    };
+    // An action that was not offered must not be sent back as a choice.
+    assert!(ide_lsp::answer_message_request(id, Some("No".into())));
+    let reply: Value = request.await.unwrap();
+    assert_eq!(reply, Value::Null);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn apply_edit_hook_and_server_requests() {
     let h = harness(&[("mock", incremental_caps())]);
     let (_doc, path) = h.open("a.mk", "abc\n");
@@ -1602,15 +1939,34 @@ async fn apply_edit_hook_and_server_requests() {
     assert_eq!(folders[0]["uri"], json!(uri_of(&h.root)));
     let v: Value = peer.request("window/workDoneProgress/create", json!({ "token": "t" }), None).await.unwrap();
     assert_eq!(v, Value::Null);
-    let v: Value = peer
-        .request(
-            "window/showMessageRequest",
-            json!({ "type": 1, "message": "boom", "actions": [{ "title": "OK" }] }),
-            None,
-        )
-        .await
-        .unwrap();
-    assert_eq!(v, Value::Null);
+    let request = peer.request(
+        "window/showMessageRequest",
+        json!({ "type": 1, "message": "Rename Anyway?", "actions": [{ "title": "Rename Anyway" }, { "title": "Cancel" }] }),
+        None,
+    );
+    tokio::pin!(request);
+    let id = loop {
+        if let Some(id) = h.events.lock().iter().find_map(|event| match event {
+            IdeEvent::LspMessageRequest { id, message, actions, .. } if message == "Rename Anyway?" => {
+                assert_eq!(actions, &["Rename Anyway".to_owned(), "Cancel".to_owned()]);
+                Some(*id)
+            }
+            _ => None,
+        }) {
+            break id;
+        }
+        tokio::select! {
+            _ = &mut request => panic!("showMessageRequest finished before the UI event"),
+            _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+        }
+    };
+    assert!(ide_lsp::answer_message_request(id, Some("Rename Anyway".into())));
+    let v: Value = request.await.unwrap();
+    assert_eq!(v, json!({ "title": "Rename Anyway" }));
+    eventually(|| {
+        h.events.lock().iter().any(|event| matches!(event, IdeEvent::LspMessageRequestDone { id: done } if *done == id))
+    })
+    .await;
     let v: Value = peer
         .request(
             "client/registerCapability",
@@ -1636,8 +1992,8 @@ async fn apply_edit_hook_and_server_requests() {
     .await;
     let notifies = h.events.lock().iter().filter(|e| matches!(e, IdeEvent::Notify { .. })).count();
     assert_eq!(
-        notifies, 2,
-        "showMessageRequest error + showMessage warning; info and rust-analyzer's developer notices are not surfaced"
+        notifies, 1,
+        "showMessageRequest is now a question with actions, not a notification; info and developer notices are not surfaced"
     );
 
     // Dynamically registered capability is now usable.
@@ -1683,6 +2039,59 @@ async fn progress_tasks_and_busy_status() {
     assert_eq!(tasks[0], ("Indexing".into(), None, Some(0.0), false));
     assert_eq!(tasks[1], ("Indexing".into(), Some("3/10".into()), Some(0.3), false));
     assert!(tasks[2].3);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_progress_task_that_stops_reporting_is_marked_but_stays_open() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let peer = h.launcher.state("mock").peer();
+    peer.notify(
+        "$/progress",
+        json!({ "token": "mvn", "value": {
+            "kind": "begin",
+            "title": "Initialize Workspace",
+            "message": "Importing Maven project(s) - https://maven.example/",
+            "percentage": 44,
+        } }),
+    )
+    .unwrap();
+    h.wait_status("mock", ServerStatus::Busy).await;
+    // The import is blocked on a repository that never answers: nothing reports again.
+    tokio::time::advance(Duration::from_secs(200)).await;
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let marked = h.events.lock().iter().rev().find_map(|e| match e {
+        IdeEvent::Task { title, message, fraction, done, .. } if title == "Initialize Workspace" && !done => {
+            Some((message.clone(), *fraction))
+        }
+        _ => None,
+    });
+    let (message, fraction) = marked.expect("the task stays open");
+    let message = message.expect("the last message is kept");
+    assert!(message.contains("no progress for 180 s"), "{message}");
+    assert_eq!(fraction, Some(0.44), "the bar keeps its last value");
+    assert!(
+        !h.events
+            .lock()
+            .iter()
+            .any(|e| matches!(e, IdeEvent::Task { title, done: true, .. } if title == "Initialize Workspace")),
+        "a stalled task must not be closed"
+    );
+
+    // A late report brings it back to Busy and finishes in the same task.
+    peer.notify(
+        "$/progress",
+        json!({ "token": "mvn", "value": { "kind": "report", "message": "halfway", "percentage": 60 } }),
+    )
+    .unwrap();
+    h.wait_status("mock", ServerStatus::Busy).await;
+    peer.notify("$/progress", json!({ "token": "mvn", "value": { "kind": "end" } })).unwrap();
+    h.wait_status("mock", ServerStatus::Ready).await;
+    assert!(
+        h.events.lock().iter().any(|e| matches!(e, IdeEvent::Task { title, message: Some(m), done: true, .. } if title == "Initialize Workspace" && m == "halfway")),
+        "the same task ends with the final message"
+    );
 }
 
 /// While a server says it is loading the project (rust-analyzer: `serverStatus`
@@ -1834,7 +2243,9 @@ async fn replacing_progress_keeps_cancellation_reports_and_indexing_on_the_new_t
     h.wait_status("mock", ServerStatus::Busy).await;
     let old = task_of("Old work").unwrap();
     let mgr = h.mgr.clone();
-    let search = tokio::spawn(async move { mgr.references(doc, Pos::new(0, 1), true, true, Default::default()).await });
+    let search = tokio::spawn(async move {
+        mgr.references_streaming(doc, Pos::new(0, 1), true, true, true, Default::default(), None).await
+    });
     eventually(|| !s.requested("textDocument/references").is_empty()).await;
 
     peer.notify("$/progress", begin("New work")).unwrap();
@@ -1855,22 +2266,24 @@ async fn replacing_progress_keeps_cancellation_reports_and_indexing_on_the_new_t
     assert_eq!(s.notified("window/workDoneProgress/cancel"), [json!({ "token": 7 })]);
     assert_eq!(h.statuses("mock").last(), Some(&ServerStatus::Busy));
     assert!(!search.is_finished(), "replacement must not release a search waiting for idle");
-    let refs = h.mgr.references(doc, Pos::new(0, 1), true, false, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 1), true, false, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.incomplete, Some(ReferencesIncomplete::Indexing));
 
     for _ in 0..2 {
         peer.notify("$/progress", json!({ "token": 7, "value": { "kind": "end" } })).unwrap();
     }
-    // A later task is a barrier for both end notifications.
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let refs = tokio::time::timeout(Duration::from_secs(5), search).await.unwrap().unwrap().unwrap();
+    assert_eq!(refs.incomplete, None);
+    // A later task is a barrier for both end notifications. It starts only after the search
+    // finished: one that is still running would see the barrier as indexing.
     peer.notify("$/progress", json!({ "token": "barrier", "value": { "kind": "begin", "title": "Barrier" } })).unwrap();
     peer.notify("$/progress", json!({ "token": "barrier", "value": { "kind": "end" } })).unwrap();
     eventually(|| {
         h.events.lock().iter().any(|e| matches!(e, IdeEvent::Task { title, done: true, .. } if title == "Barrier"))
     })
     .await;
-    h.wait_status("mock", ServerStatus::Ready).await;
-    let refs = tokio::time::timeout(Duration::from_secs(5), search).await.unwrap().unwrap().unwrap();
-    assert_eq!(refs.incomplete, None);
     assert!(!ide_core::task::cancel(new));
     let events = h.events.lock();
     for id in [old, new] {
@@ -1884,6 +2297,51 @@ async fn replacing_progress_keeps_cancellation_reports_and_indexing_on_the_new_t
             .iter()
             .any(|e| matches!(e, IdeEvent::Task { id, message: Some(m), .. } if *id == old && m == "Halfway"))
     );
+}
+
+/// A server that ignores `window/workDoneProgress/cancel` (Pyright waiting on a workspace
+/// that never loads) does not keep the task "Cancelling…": it ends after a grace period,
+/// once, and later reports on the token change nothing. A server that ends it in time ends it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cancelled_progress_the_server_never_ends_ends_on_its_own() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    let peer = s.peer();
+    let begin = |token: &str, title: &str| json!({ "token": token, "value": { "kind": "begin", "title": title, "cancellable": true } });
+    let task_of = |title: &str| {
+        h.events.lock().iter().find_map(|e| match e {
+            IdeEvent::Task { id, title: t, done: false, .. } if t == title => Some(*id),
+            _ => None,
+        })
+    };
+    let ends = |task: TaskId| {
+        h.events.lock().iter().filter(|e| matches!(e, IdeEvent::Task { id, done: true, .. } if *id == task)).count()
+    };
+    peer.notify("$/progress", begin("ignored", "Finding references")).unwrap();
+    peer.notify("$/progress", begin("honoured", "Indexing")).unwrap();
+    eventually(|| task_of("Finding references").is_some() && task_of("Indexing").is_some()).await;
+    h.wait_status("mock", ServerStatus::Busy).await;
+    let (ignored, honoured) = (task_of("Finding references").unwrap(), task_of("Indexing").unwrap());
+
+    assert!(ide_core::task::cancel(ignored));
+    assert!(ide_core::task::cancel(honoured));
+    eventually(|| s.notified("window/workDoneProgress/cancel").len() == 2).await;
+    peer.notify("$/progress", json!({ "token": "honoured", "value": { "kind": "end" } })).unwrap();
+    eventually(|| ends(honoured) == 1).await;
+    assert_eq!(ends(ignored), 0, "the server still has its grace period");
+
+    eventually(|| ends(ignored) == 1).await;
+    h.wait_status("mock", ServerStatus::Ready).await;
+    // Late reports on the token reach no task.
+    peer.notify("$/progress", json!({ "token": "ignored", "value": { "kind": "report", "message": "late" } })).unwrap();
+    peer.notify("$/progress", json!({ "token": "ignored", "value": { "kind": "end" } })).unwrap();
+    peer.notify("$/progress", begin("after", "After")).unwrap();
+    eventually(|| task_of("After").is_some()).await;
+    assert_eq!(ends(ignored), 1);
+    assert_eq!(ends(honoured), 1);
+    assert!(!h.events.lock().iter().any(|e| matches!(e, IdeEvent::Task { message: Some(m), .. } if m == "late")));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1980,6 +2438,29 @@ async fn crash_restarts_and_reopens_documents() {
     assert_eq!(hover.contents.value, "hi");
 }
 
+/// A restart during a long start (a project import) returns when the instance is up and
+/// running, and does not hold up `reconfigure` and `shutdown_all` meanwhile.
+#[tokio::test(flavor = "multi_thread")]
+async fn restart_does_not_hold_the_reconfigure_lock_while_the_server_starts() {
+    let h = harness(&[("mock", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    let gate = Arc::new(Gate::default());
+    *s.initialize_gate.lock() = Some(gate.clone());
+    let id = h.mgr.servers()[0].id;
+    let restart = tokio::spawn({
+        let mgr = h.mgr.clone();
+        async move { mgr.restart(id).await }
+    });
+    eventually(|| gate.entered()).await;
+    let reconfigured = tokio::time::timeout(Duration::from_secs(2), h.mgr.reconfigure()).await;
+    gate.open();
+    reconfigured.expect("a restart still waiting for the server to start must not block reconfigure");
+    restart.await.unwrap().unwrap();
+    assert_eq!(h.mgr.servers()[0].status, ServerStatus::Ready);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn gives_up_after_repeated_crashes_and_manual_restart_works() {
     let h = harness(&[("mock", incremental_caps())]);
@@ -2005,6 +2486,118 @@ async fn gives_up_after_repeated_crashes_and_manual_restart_works() {
     h.mgr.restart(id).await.unwrap();
     assert_eq!(s.launches.load(Ordering::SeqCst), 5);
     assert_eq!(h.mgr.servers()[0].status, ServerStatus::Ready);
+}
+
+/// One malformed diagnostic costs only itself, not the file's other problems.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_malformed_diagnostic_does_not_drop_the_others() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let (_, path) = h.open("a.mk", "one");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let uri = uri_of(&path);
+    let range = json!({"start":{"line":0,"character":0},"end":{"line":0,"character":1}});
+    h.launcher
+        .state("mock")
+        .peer()
+        .notify(
+            "textDocument/publishDiagnostics",
+            json!({ "uri": uri, "diagnostics": [
+                { "range": range, "message": "first" },
+                { "message": "no range" },
+                { "range": range, "message": 7 },
+                { "range": range, "message": "last" }] }),
+        )
+        .unwrap();
+    eventually(|| {
+        h.events.lock().iter().any(|e| match e {
+            IdeEvent::Diagnostics { items, .. } => {
+                items.iter().map(|d| d.message.as_str()).collect::<Vec<_>>() == ["first", "last"]
+            }
+            _ => false,
+        })
+    })
+    .await;
+}
+
+/// The `initialize` error is the crash report's reason, not "terminated unexpectedly", and
+/// a server that never gets past `initialize` gives up like any other crash loop.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_initialize_is_reported_with_its_reason_and_gives_up() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let s = h.launcher.state("mock");
+    s.errors.lock().insert("initialize".into(), (-32603, "no workspace".into()));
+    h.open("a.mk", "x");
+    let count = |status| h.statuses("mock").iter().filter(|s| **s == status).count();
+    eventually(|| count(ServerStatus::Crashed) == 4).await;
+    let messages: Vec<String> = h
+        .events
+        .lock()
+        .iter()
+        .filter_map(|e| match e {
+            IdeEvent::LanguageServer { status: ServerStatus::Crashed, message, .. } => message.clone(),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        messages[0].contains("failed to start: initialize failed (server error -32603: no workspace)"),
+        "{messages:?}"
+    );
+    assert!(messages[0].ends_with("Restarting…"));
+    assert!(messages[3].ends_with("restart it manually."), "{messages:?}");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(s.launches.load(Ordering::SeqCst), 4, "initial start + 3 restarts");
+}
+
+/// The client tells servers it retries semantic tokens, inlay hints and code lens that they
+/// withdrew with `ContentModified` (`staleRequestSupport`), so it must.
+#[tokio::test(flavor = "multi_thread")]
+async fn withdrawn_editor_decoration_requests_are_asked_again() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let (doc, _) = h.open("a.mk", "let x = 1");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    let range = json!({"start":{"line":0,"character":0},"end":{"line":0,"character":1}});
+    let cases = [
+        ("textDocument/semanticTokens/full", json!({ "data": [0, 0, 1, 0, 0] })),
+        ("textDocument/inlayHint", json!([{ "position": {"line":0,"character":0}, "label": "x" }])),
+        ("textDocument/codeLens", json!([{ "range": range, "command": { "title": "t", "command": "c" } }])),
+    ];
+    for (method, answer) in cases {
+        s.errors.lock().insert(method.into(), (-32801, "content modified".into()));
+        let mgr = h.mgr.clone();
+        let request = tokio::spawn(async move {
+            match method {
+                "textDocument/semanticTokens/full" => mgr.semantic_tokens(doc).await.map(|r| r.is_some()),
+                "textDocument/inlayHint" => {
+                    mgr.inlay_hints(doc, Range::new(Pos::new(0, 0), Pos::new(0, 9))).await.map(|v| v.len() == 1)
+                }
+                _ => mgr.code_lens(doc).await.map(|v| v.len() == 1),
+            }
+        });
+        eventually(|| !s.requested(method).is_empty()).await;
+        s.errors.lock().remove(method);
+        s.respond(method, answer);
+        let answered = tokio::time::timeout(Duration::from_secs(5), request).await.unwrap().unwrap();
+        assert!(answered.unwrap_or(false), "{method} was not asked again");
+        assert_eq!(s.requested(method).len(), 2, "{method}");
+    }
+}
+
+/// A server disabled in settings while its crash backoff is still sleeping stays gone: the
+/// pending restart must not bring it back as a process nothing lists or stops.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_disabled_during_its_crash_backoff_does_not_restart() {
+    let h = harness(&[("mock", incremental_caps()), ("other", incremental_caps())]);
+    h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    s.peer().kill();
+    eventually(|| h.statuses("mock").contains(&ServerStatus::Crashed)).await;
+    h.mgr.set_servers_hook(Box::new(|_, configs| configs.iter().filter(|c| c.name == "other").cloned().collect()));
+    h.mgr.reconfigure().await;
+    eventually(|| h.removed("mock")).await;
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    assert_eq!(s.launches.load(Ordering::SeqCst), 1, "no restart after the server was dropped");
 }
 
 /// The whole workspace root deleted: the server can never start again
@@ -2084,6 +2677,76 @@ async fn missing_server_reports_once() {
     assert_eq!(err.kind, ide_core::error::ErrorKind::Unavailable);
     assert_eq!(h.mgr.document_symbols(doc).await.unwrap(), None);
     assert!(h.mgr.semantic_tokens(doc).await.unwrap().is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn checking_a_document_saves_it_and_waits_for_fresh_diagnostics() {
+    let h = harness(&[("mock", incremental_caps())]);
+    let s = h.launcher.state("mock");
+    let (doc, path) = h.open("a.mk", "bad\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    // The server answers the save with a publish, as an on-save check (`cargo check`) does.
+    let (server, uri) = (s.clone(), uri_of(&path));
+    let publisher = tokio::spawn(async move {
+        eventually(|| !server.notified("textDocument/didSave").is_empty()).await;
+        let diag = json!({ "range": {"start":{"line":0,"character":0},"end":{"line":0,"character":3}},
+                           "severity": 1, "message": "on save" });
+        server.peer().notify("textDocument/publishDiagnostics", json!({ "uri": uri, "diagnostics": [diag] })).unwrap();
+    });
+    let cancel = CancellationToken::new();
+    let changed = Some(std::time::Instant::now());
+    let check = h.mgr.check_document(doc, changed, Duration::from_secs(20), &cancel).await.unwrap();
+    publisher.await.unwrap();
+    assert_eq!(check.diagnostics.iter().map(|d| d.message.as_str()).collect::<Vec<_>>(), ["on save"]);
+    assert!(check.servers[0].checked && !check.servers[0].incomplete, "{:?}", check.servers);
+
+    // A change the server never answered: what it has is reported as not fresh.
+    let changed = Some(std::time::Instant::now());
+    let stale = h.mgr.check_document(doc, changed, Duration::from_millis(800), &cancel).await.unwrap();
+    assert!(stale.servers[0].checked && stale.servers[0].incomplete, "{:?}", stale.servers);
+    assert_eq!(stale.diagnostics.len(), 1);
+
+    // The text changed before the call (the file watcher reloaded it), so the caller saw no
+    // change of its own: the old publication is still not fresh.
+    h.mgr.did_change(doc, 2, &[change(rng(0, 0, 0, 3), "good")], &|| "good\n".to_owned());
+    let reloaded = h.mgr.check_document(doc, None, Duration::from_millis(800), &cancel).await.unwrap();
+    assert!(reloaded.servers[0].incomplete, "{:?}", reloaded.servers);
+
+    // A late publication tagged with the old version is no answer for the current text.
+    s.peer()
+        .notify("textDocument/publishDiagnostics", json!({ "uri": uri_of(&path), "version": 1, "diagnostics": [] }))
+        .unwrap();
+    let late = h.mgr.check_document(doc, None, Duration::from_millis(800), &cancel).await.unwrap();
+    assert!(late.servers[0].incomplete, "{:?}", late.servers);
+    // One for the current version is.
+    s.peer()
+        .notify("textDocument/publishDiagnostics", json!({ "uri": uri_of(&path), "version": 2, "diagnostics": [] }))
+        .unwrap();
+    let fresh = h.mgr.check_document(doc, None, Duration::from_secs(5), &cancel).await.unwrap();
+    assert!(fresh.servers[0].checked && !fresh.servers[0].incomplete, "{:?}", fresh.servers);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn checking_a_document_reports_servers_that_cannot_check() {
+    let cancel = CancellationToken::new();
+    let h = harness(&[("ghost", json!({}))]);
+    h.launcher.state("ghost").missing.store(true, Ordering::SeqCst);
+    let (doc, _) = h.open("a.mk", "x");
+    h.wait_status("ghost", ServerStatus::Missing).await;
+    let check = h.mgr.check_document(doc, None, Duration::from_secs(5), &cancel).await.unwrap();
+    assert!(check.diagnostics.is_empty());
+    let s = &check.servers[0];
+    assert_eq!((s.name.as_str(), s.status, s.checked), ("ghost", ServerStatus::Missing, false));
+    assert_eq!(s.message.as_deref(), Some("install ghost"));
+
+    let h = harness(&[("mock", incremental_caps())]);
+    h.mgr.set_config_hook(Box::new(|cfg, _| cfg.launch_error = Some("needs JDK 21".into())));
+    let (doc, _) = h.open("a.mk", "x");
+    h.wait_status("mock", ServerStatus::Misconfigured).await;
+    let check = h.mgr.check_document(doc, None, Duration::from_secs(5), &cancel).await.unwrap();
+    assert_eq!(check.servers[0].status, ServerStatus::Misconfigured);
+    assert!(check.servers[0].message.as_deref().is_some_and(|m| m.contains("needs JDK 21")), "{:?}", check.servers);
+    assert!(!check.servers[0].checked);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2179,8 +2842,46 @@ async fn configuration_answer_resyncs_open_documents_of_opted_in_servers() {
         .await;
     assert_eq!(s.notified("textDocument/didChange").len(), 2, "one re-sync per answer");
     let methods: Vec<String> = extra.notifications.lock().iter().map(|(m, _)| m.clone()).collect();
-    assert_eq!(methods, ["initialized", "textDocument/didOpen", "textDocument/didChange", "textDocument/didSave"]);
+    assert_eq!(
+        methods,
+        [
+            "initialized",
+            "workspace/didChangeConfiguration",
+            "textDocument/didOpen",
+            "textDocument/didChange",
+            "textDocument/didSave"
+        ]
+    );
     assert_eq!(s.launches.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn eslint_configuration_includes_workspace_folder() {
+    let h = harness_configured("mock", "mk", &[("eslint", incremental_caps()), ("mock", incremental_caps())], |cfg| {
+        if cfg.name == "eslint" {
+            cfg.settings = Some(json!({ "workingDirectory": { "mode": "auto" } }));
+        }
+    });
+    h.open("a.mk", "x");
+    h.wait_status("eslint", ServerStatus::Ready).await;
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let items = json!({ "items": [{ "section": "" }] });
+    let eslint: Value =
+        h.launcher.state("eslint").peer().request("workspace/configuration", items.clone(), None).await.unwrap();
+    assert_eq!(
+        eslint,
+        json!([{
+            "flag": true,
+            "nested": { "deep": 1 },
+            "workingDirectory": { "mode": "auto" },
+            "workspaceFolder": {
+                "uri": uri_of(&h.root),
+                "name": h.root.file_name().unwrap().to_string_lossy(),
+            },
+        }])
+    );
+    let other: Value = h.launcher.state("mock").peer().request("workspace/configuration", items, None).await.unwrap();
+    assert_eq!(other, json!([{ "flag": true, "nested": { "deep": 1 } }]));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2206,9 +2907,9 @@ async fn settings_changes_reach_servers_without_restarts() {
     let s = h.launcher.state("mock");
     *settings.lock() = Some(json!({ "nested": { "other": 2 } }));
     h.mgr.reconfigure().await;
-    eventually(|| !s.notified("workspace/didChangeConfiguration").is_empty()).await;
+    eventually(|| s.notified("workspace/didChangeConfiguration").len() == 2).await;
     assert_eq!(
-        s.notified("workspace/didChangeConfiguration")[0],
+        s.notified("workspace/didChangeConfiguration")[1],
         json!({ "settings": { "flag": true, "nested": { "deep": 1, "other": 2 } } })
     );
     assert_eq!(s.launches.load(Ordering::SeqCst), 1);
@@ -2581,6 +3282,85 @@ async fn open_java_files_are_checked_again_after_a_project_update() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_project_update_refreshes_java_tokens_and_inheritance() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let _ = h.open("A.java", "class A { private String name; }");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let state = h.launcher.state("jdtls");
+    let refreshes = || {
+        h.events
+            .lock()
+            .iter()
+            .filter_map(|e| match e {
+                IdeEvent::LspRefresh { kind, .. } => Some(*kind),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    state
+        .peer()
+        .notify("language/status", json!({ "type": "Message", "message": "Updating project configurations..." }))
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(refreshes().is_empty());
+
+    // A later import may add tokens and implementation targets to open editors.
+    state.peer().notify("language/status", json!({ "type": "ProjectStatus", "message": "OK" })).unwrap();
+    eventually(|| refreshes() == [LspRefreshKind::SemanticTokens, LspRefreshKind::Inheritance]).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_project_update_attaches_maven_generated_sources_before_rechecking() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"]["commands"].as_array_mut().unwrap().push(json!("openidea.java.generatedSources"));
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let (_, _) = h.open("App.java", "package com.example;\nclass App {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let write = |rel: &str, text: &str| {
+        let path = h.root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    };
+    write("pom.xml", "<project><artifactId>app</artifactId></project>");
+    write(
+        "target/generated-sources/protobuf/java/com/example/hello/Hello.java",
+        "package com.example.hello;\npublic class Hello {}",
+    );
+    write(
+        "target/generated-sources/protobuf/grpc-java/com/example/hello/HelloGrpc.java",
+        "package com.example.hello;\npublic class HelloGrpc {}",
+    );
+    write(
+        "target/generated-sources/annotations/com/example/hello/HelloMapperImpl.java",
+        "package com.example.hello;\nclass HelloMapperImpl {}",
+    );
+    let state = h.launcher.state("jdtls");
+    state.peer().notify("language/status", json!({ "type": "ProjectStatus", "message": "OK" })).unwrap();
+    eventually(|| {
+        let requests = state.requested("workspace/executeCommand");
+        let generated = requests.iter().position(|p| p["command"] == "openidea.java.generatedSources");
+        let refresh = requests.iter().position(|p| p["command"] == "java.project.refreshDiagnostics");
+        matches!((generated, refresh), (Some(generated), Some(refresh)) if generated < refresh)
+    })
+    .await;
+    let requests = state.requested("workspace/executeCommand");
+    let generated = requests.iter().find(|p| p["command"] == "openidea.java.generatedSources").unwrap();
+    let paths: Vec<_> = generated["arguments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|arg| (PathBuf::from(arg["path"].as_str().unwrap()), arg["test"].as_bool().unwrap()))
+        .collect();
+    assert_eq!(
+        paths,
+        vec![
+            (h.root.join("target/generated-sources/protobuf/grpc-java"), false),
+            (h.root.join("target/generated-sources/protobuf/java"), false),
+        ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn library_classes_in_jars_open_as_their_source_or_decompiled() {
     use std::io::Write;
     let jar = |path: &Path, entries: &[(&str, &str)]| {
@@ -2646,6 +3426,64 @@ async fn library_classes_in_jars_open_as_their_source_or_decompiled() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn library_classes_without_sources_open_decompiled_by_a_running_jdtls() {
+    use std::io::Write;
+    let repo = tempfile::tempdir().unwrap();
+    let jar = dunce::canonicalize(repo.path()).unwrap().join("acme/lib/1.0/lib-1.0.jar");
+    std::fs::create_dir_all(jar.parent().unwrap()).unwrap();
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&jar).unwrap());
+    zip.start_file("acme/Thing.class", zip::write::SimpleFileOptions::default()).unwrap();
+    zip.write_all(b"\0").unwrap();
+    zip.finish().unwrap();
+    let class = format!("jar://{}!/acme/Thing.class", uri_of(&jar).trim_start_matches("file://"));
+    // jdtls writes the portable path (forward slashes on Windows too), each `/` escaped.
+    let escaped = jar.to_string_lossy().replace('\\', "/").replace('/', "%5C/");
+    let jdt = format!("jdt://contents/lib-1.0.jar/acme/Thing.class?=app/{escaped}%3Cacme%28Thing.class");
+    let decompiled =
+        "package acme;\n\npublic class Thing {\n   public void run() {\n      System.out.println();\n   }\n}\n";
+
+    let mut kotlin = incremental_caps();
+    kotlin["executeCommandProvider"] = json!({ "commands": ["decompile"] });
+    let mut java = incremental_caps();
+    java["workspaceSymbolProvider"] = json!(true);
+    let h =
+        harness_languages(&[("kotlin", "kt", &[("kotlin-lsp", kotlin)]), ("java", "java", &[("jdtls", java)])], |_| {});
+    let (doc, _) = h.open("Main.kt", "val thing = Thing()\n");
+    h.wait_status("kotlin-lsp", ServerStatus::Ready).await;
+    let k = h.launcher.state("kotlin-lsp");
+    k.respond(
+        "textDocument/definition",
+        json!({ "uri": class, "range": {"start":{"line":0,"character":6},"end":{"line":0,"character":11}} }),
+    );
+    let r = json!({"start":{"line":2,"character":13},"end":{"line":2,"character":18}});
+
+    // jdtls not running: the Kotlin server's own target and decompiler.
+    let defs = h.mgr.goto(doc, Pos::new(0, 14), GotoKind::Definition).await.unwrap();
+    assert_eq!(defs[0].uri.as_deref(), Some(class.as_str()));
+
+    let path = h.root.join("Sample.java");
+    std::fs::write(&path, "class Sample {}").unwrap();
+    h.mgr.did_open(DocId::next(), &path, &LanguageId::new("java"), 1, "class Sample {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let j = h.launcher.state("jdtls");
+    j.respond(
+        "workspace/symbol",
+        json!([{ "name": "Thing", "kind": 5, "containerName": "acme", "location": { "uri": jdt, "range": r } }]),
+    );
+    j.respond("java/classFileContents", json!(decompiled));
+
+    let defs = h.mgr.goto(doc, Pos::new(0, 14), GotoKind::Definition).await.unwrap();
+    assert_eq!(
+        defs,
+        vec![ide_core::Location { path: jdt.clone().into(), range: rng(2, 13, 2, 18), uri: Some(jdt.clone()) }]
+    );
+    assert_eq!(j.requested("workspace/symbol")[0]["query"], "acme.Thing");
+    let vd = h.mgr.virtual_document(&jdt).await.unwrap();
+    assert_eq!(vd.text, decompiled);
+    assert!(k.requested("workspace/executeCommand").is_empty(), "the Kotlin stub is not asked for");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn alternative_java_server_uses_lsp_without_jdt_commands() {
     let h = harness_for("java", "java", &[("kmp-lsp", incremental_caps())], &[]);
     let (doc, path) = h.open("Sample.java", "class Sample {}");
@@ -2655,6 +3493,468 @@ async fn alternative_java_server_uses_lsp_without_jdt_commands() {
     assert_eq!(error.kind, ide_core::error::ErrorKind::Unavailable);
     assert!(error.message.contains("jdtls"));
     assert!(h.launcher.state("kmp-lsp").requested("workspace/executeCommand").is_empty());
+}
+
+async fn jvm_inspect_harness() -> (Harness, Arc<MockState>, ide_lsp::JdtJvmInspector) {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let (_, path) = h.open("Sample.java", "class Sample {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let inspector = ide_lsp::JdtJvmInspector::new(h.mgr.clone(), path);
+    let state = h.launcher.state("jdtls");
+    (h, state, inspector)
+}
+
+fn attach_target(generation: u64) -> ide_jvm_inspect::VmTarget {
+    ide_jvm_inspect::VmTarget { pid: None, attach_host: Some("localhost".into()), attach_port: Some(5005), generation }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jvm_inspect_instances_round_trip() {
+    use ide_jvm_inspect::{JvmInspector, JvmValue};
+    let (_h, s, inspector) = jvm_inspect_harness().await;
+    s.respond("workspace/executeCommand", json!({"ok": [{"kind": "object", "id": 7, "typeName": "Foo"}]}));
+    let found = inspector.instances(&attach_target(3), "com.acme.Foo", 25).await.unwrap();
+    assert_eq!(found, vec![JvmValue::Object { id: 7, type_name: "Foo".into() }]);
+    let asked = s.requested("workspace/executeCommand");
+    assert_eq!(asked[0]["command"], "openidea.jvm.instances");
+    assert_eq!(
+        asked[0]["arguments"],
+        json!([{"pid": null, "host": "localhost", "port": 5005, "generation": 3}, "com.acme.Foo", 25])
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jvm_inspect_commands_carry_their_arguments_and_decode_their_replies() {
+    use ide_jvm_inspect::{ClassCount, JvmField, JvmInspector, JvmReferrer, JvmValue, VmTarget};
+    let (_h, s, inspector) = jvm_inspect_harness().await;
+    let launch = VmTarget { pid: Some(4242), attach_host: None, attach_port: None, generation: 9 };
+    let target = json!({"pid": 4242, "host": null, "port": null, "generation": 9});
+
+    s.respond("workspace/executeCommand", json!({"ok": [{"name": "int[]", "instances": 12}]}));
+    let counts = inspector.class_counts(&launch).await.unwrap();
+    assert_eq!(counts, vec![ClassCount { name: "int[]".into(), instances: 12 }]);
+
+    // gson leaves out null members: a long string has no `text`.
+    s.respond(
+        "workspace/executeCommand",
+        json!({"ok": [{"name": "[0]", "value": {"kind": "string", "id": 9, "length": 50000000}}]}),
+    );
+    let fields = inspector.fields(&launch, 5).await.unwrap();
+    assert_eq!(
+        fields,
+        vec![JvmField { name: "[0]".into(), value: JvmValue::Str { id: 9, text: None, length: 50_000_000 } }]
+    );
+
+    s.respond(
+        "workspace/executeCommand",
+        json!({"ok": [{"value": {"kind": "array", "id": 3, "typeName": "Object[]", "length": 2}, "via": ["[1]"]}]}),
+    );
+    let referrers = inspector.referrers(&launch, 5, 50).await.unwrap();
+    assert_eq!(
+        referrers,
+        vec![JvmReferrer {
+            value: JvmValue::Array { id: 3, type_name: "Object[]".into(), length: 2 },
+            via: vec!["[1]".into()]
+        }]
+    );
+
+    let asked = s.requested("workspace/executeCommand");
+    let seen: Vec<_> = asked.iter().map(|p| (p["command"].clone(), p["arguments"].clone())).collect();
+    assert_eq!(
+        seen,
+        vec![
+            (json!("openidea.jvm.classes"), json!([target])),
+            (json!("openidea.jvm.fields"), json!([target, 5])),
+            (json!("openidea.jvm.referrers"), json!([target, 5, 50])),
+        ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jvm_inspect_error_maps_to_inspect_error() {
+    use ide_jvm_inspect::{InspectError, JvmInspector};
+    let (_h, s, inspector) = jvm_inspect_harness().await;
+    let target = attach_target(1);
+    let cases = [
+        (json!({"error": "stale"}), InspectError::Stale),
+        (json!({"error": "collected", "detail": "gone"}), InspectError::Collected),
+        (json!({"error": "classNotLoaded"}), InspectError::ClassNotLoaded),
+        (json!({"error": "notSuspended"}), InspectError::NotSuspended),
+        (json!({"error": "vmNotFound"}), InspectError::VmNotFound),
+        (json!({"error": "timedOut"}), InspectError::TimedOut),
+        (json!({"error": "unsupported", "detail": "x"}), InspectError::Unsupported("x".into())),
+    ];
+    for (reply, expected) in cases {
+        s.respond("workspace/executeCommand", reply.clone());
+        assert_eq!(inspector.fields(&target, 1).await.unwrap_err(), expected, "{reply}");
+    }
+    s.respond("workspace/executeCommand", json!({"error": "surprise", "detail": "d"}));
+    assert!(
+        matches!(inspector.fields(&target, 1).await.unwrap_err(), InspectError::Failed(m) if m.contains("surprise"))
+    );
+    s.respond("workspace/executeCommand", json!("neither"));
+    assert!(matches!(inspector.fields(&target, 1).await.unwrap_err(), InspectError::Failed(_)));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jvm_inspect_missing_bundle_is_unsupported() {
+    use ide_jvm_inspect::{InspectError, JvmInspector};
+    let (_h, s, inspector) = jvm_inspect_harness().await;
+    s.errors.lock().insert(
+        "workspace/executeCommand".into(),
+        (-32603, "No delegateCommandHandler for openidea.jvm.classes".into()),
+    );
+    assert_eq!(
+        inspector.class_counts(&attach_target(1)).await.unwrap_err(),
+        InspectError::Unsupported("the JVM inspector bundle is not loaded".into())
+    );
+}
+
+/// The bundle waits without bound on the JDT LS thread pool, so the client never has two commands
+/// in flight.
+#[tokio::test(flavor = "multi_thread")]
+async fn jvm_inspect_sends_one_command_at_a_time() {
+    use ide_jvm_inspect::JvmInspector;
+    let (_h, s, inspector) = jvm_inspect_harness().await;
+    let in_flight = Arc::new(AtomicUsize::new(0));
+    let most = Arc::new(AtomicUsize::new(0));
+    *s.responder.lock() = Some(Arc::new({
+        let (in_flight, most) = (in_flight.clone(), most.clone());
+        move |_, method, _| {
+            (method == "workspace/executeCommand").then(|| {
+                most.fetch_max(in_flight.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(80));
+                in_flight.fetch_sub(1, Ordering::SeqCst);
+                json!({"ok": []})
+            })
+        }
+    }));
+    let target = attach_target(1);
+    let (a, b, c) =
+        tokio::join!(inspector.fields(&target, 1), inspector.fields(&target, 2), inspector.fields(&target, 3));
+    assert!(a.is_ok() && b.is_ok() && c.is_ok());
+    assert_eq!(s.requested("workspace/executeCommand").len(), 3);
+    assert_eq!(most.load(Ordering::SeqCst), 1);
+}
+
+async fn stream_harness() -> (Harness, Arc<MockState>, ide_lsp::JdtStreamTracer) {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let (_, path) = h.open("Sample.java", "class Sample {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let tracer = ide_lsp::JdtStreamTracer::new(h.mgr.clone(), path);
+    let state = h.launcher.state("jdtls");
+    (h, state, tracer)
+}
+
+fn stream_launch_target() -> ide_jvm_inspect::VmTarget {
+    ide_jvm_inspect::VmTarget { pid: Some(42), attach_host: None, attach_port: None, generation: 3 }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stream_commands_send_target_then_named_fields() {
+    use ide_jvm_inspect::StreamTracer;
+    let (_h, s, tracer) = stream_harness().await;
+    let target = stream_launch_target();
+    let target_json = json!({"pid": 42, "host": null, "port": null, "generation": 3});
+    let plan = json!({"root": {"line": 14}});
+
+    s.respond("workspace/executeCommand", json!({"ok": {"traceId": 3}}));
+    assert_eq!(tracer.arm(&target, 7, &plan, 500, "t1").await.unwrap(), 3);
+    s.respond(
+        "workspace/executeCommand",
+        json!({"ok": {"state": "running", "records": 1, "dropped": 0, "elapsedMs": 2}}),
+    );
+    tracer.wait(&target, 3, 250).await.unwrap();
+    s.respond("workspace/executeCommand", json!({"ok": {"records": 9}}));
+    assert_eq!(tracer.stop(&target, 3).await.unwrap(), 9);
+    s.respond("workspace/executeCommand", json!({"ok": {"state": "stopped"}}));
+    tracer.abort(&target, 3).await.unwrap();
+    s.respond(
+        "workspace/executeCommand",
+        json!({"ok": {"records": [], "dropped": 0, "terminal": {"kind": "void"}, "skippedBreakpoints": 0,
+                      "sequentialized": false}}),
+    );
+    tracer.collect(&target, 3, 2).await.unwrap();
+    s.respond("workspace/executeCommand", json!({"ok": {}}));
+    tracer.release(&target, 3).await.unwrap();
+    s.respond("workspace/executeCommand", json!({"ok": {}}));
+    tracer.release_armed(&target, "t1").await.unwrap();
+
+    let asked = s.requested("workspace/executeCommand");
+    let seen: Vec<_> = asked.iter().map(|p| (p["command"].clone(), p["arguments"].clone())).collect();
+    assert_eq!(
+        seen,
+        vec![
+            (
+                json!("openidea.jvm.stream.arm"),
+                json!([target_json, {"threadId": 7, "plan": plan, "budget": 500, "token": "t1"}])
+            ),
+            (json!("openidea.jvm.stream.wait"), json!([target_json, {"traceId": 3, "ms": 250}])),
+            (json!("openidea.jvm.stream.stop"), json!([target_json, {"traceId": 3}])),
+            (json!("openidea.jvm.stream.abort"), json!([target_json, {"traceId": 3}])),
+            (json!("openidea.jvm.stream.collect"), json!([target_json, {"traceId": 3}])),
+            (json!("openidea.jvm.stream.release"), json!([target_json, {"traceId": 3}])),
+            (json!("openidea.jvm.stream.release"), json!([target_json, {"token": "t1"}])),
+        ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stream_wait_decodes_states() {
+    use ide_jvm_inspect::{StreamTracer, TraceState};
+    let (_h, s, tracer) = stream_harness().await;
+    let target = stream_launch_target();
+    let cases = [
+        (
+            json!({"state": "running", "records": 10, "dropped": 0, "elapsedMs": 5}),
+            TraceState::Running { records: 10, dropped: 0, elapsed_ms: 5 },
+        ),
+        (
+            json!({"state": "parked", "records": 50000, "dropped": 950000, "elapsedMs": 96}),
+            TraceState::Parked { records: 50000, dropped: 950000 },
+        ),
+        (
+            json!({"state": "failed", "records": 4, "dropped": 0, "elapsedMs": 12, "detail": "missed map"}),
+            TraceState::Failed { detail: "missed map".into() },
+        ),
+        (
+            json!({"state": "cancelled", "records": 0, "dropped": 0, "elapsedMs": 12,
+                   "detail": "cancelled before the terminal ran"}),
+            TraceState::Cancelled { detail: "cancelled before the terminal ran".into() },
+        ),
+    ];
+    for (ok, expected) in cases {
+        s.respond("workspace/executeCommand", json!({"ok": ok}));
+        assert_eq!(tracer.wait(&target, 1, 10).await.unwrap(), expected, "{ok}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stream_abort_decodes_every_state() {
+    use ide_jvm_inspect::{AbortState, StreamTracer};
+    let (_h, s, tracer) = stream_harness().await;
+    let target = stream_launch_target();
+    let cases = [
+        (json!({"state": "interrupted"}), AbortState::Interrupted),
+        (json!({"state": "stopped"}), AbortState::Stopped),
+        (
+            json!({"state": "stuck", "holders": [{"threadId": 42, "name": "worker-1"}]}),
+            AbortState::Stuck { holders: vec![(42, "worker-1".into())] },
+        ),
+        (json!({"state": "cancelled"}), AbortState::Cancelled),
+        (json!({"state": "finished"}), AbortState::Finished),
+    ];
+    for (ok, expected) in cases {
+        s.respond("workspace/executeCommand", json!({"ok": ok}));
+        assert_eq!(tracer.abort(&target, 1).await.unwrap(), expected, "{ok}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stream_errors_map() {
+    use ide_jvm_inspect::{InspectError, StreamTracer};
+    let (_h, s, tracer) = stream_harness().await;
+    let target = stream_launch_target();
+    let cases = [
+        (
+            json!({"error": "notAtChainStart", "detail": "line 14 is not where the statement starts"}),
+            InspectError::NotAtChainStart("line 14 is not where the statement starts".into()),
+        ),
+        (json!({"error": "busy", "detail": "trace 2 is running"}), InspectError::Busy),
+        (json!({"error": "noTrace", "detail": "no trace 9 on this VM"}), InspectError::NoTrace),
+        (json!({"error": "noSession", "detail": "x"}), InspectError::NoSession),
+        (json!({"error": "stale", "detail": "no thread 77"}), InspectError::Stale),
+        (json!({"error": "notSuspended", "detail": "thread 1 is running"}), InspectError::NotSuspended),
+        (json!({"error": "unsupported", "detail": "xs is a List"}), InspectError::Unsupported("xs is a List".into())),
+        (
+            json!({"error": "badArgument", "detail": "budget must be 1 or more"}),
+            InspectError::Failed("budget must be 1 or more".into()),
+        ),
+        (json!({"error": "failed", "detail": "missed filter"}), InspectError::Failed("missed filter".into())),
+        (json!({"error": "surprise", "detail": "d"}), InspectError::Failed("surprise: d".into())),
+    ];
+    for (reply, expected) in cases {
+        s.respond("workspace/executeCommand", reply.clone());
+        assert_eq!(tracer.arm(&target, 1, &json!({}), 10, "t").await.unwrap_err(), expected, "{reply}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stream_missing_bundle_is_unsupported() {
+    use ide_jvm_inspect::{InspectError, StreamTracer};
+    let (_h, s, tracer) = stream_harness().await;
+    s.errors.lock().insert(
+        "workspace/executeCommand".into(),
+        (-32603, "No delegateCommandHandler for openidea.jvm.stream.wait".into()),
+    );
+    assert_eq!(
+        tracer.wait(&stream_launch_target(), 1, 10).await.unwrap_err(),
+        InspectError::Unsupported("the JVM inspector bundle is not loaded".into())
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stream_collect_decodes() {
+    use ide_jvm_inspect::{CollectedTerminal, JvmValue, StreamTracer};
+    let (_h, s, tracer) = stream_harness().await;
+    let target = stream_launch_target();
+    s.respond(
+        "workspace/executeCommand",
+        json!({"ok": {
+            "records": [
+                {"step": 0, "value": {"kind": "boxed", "id": 1, "typeName": "java.lang.Integer", "text": "5"}},
+                {"step": 1, "value": {"kind": "string", "id": 2, "text": "5", "length": 1}},
+            ],
+            "dropped": 4,
+            "terminal": {"kind": "threw",
+                         "exception": {"kind": "object", "id": 9, "typeName": "java.lang.ArithmeticException"}},
+            "skippedBreakpoints": 1,
+            "sequentialized": true,
+        }}),
+    );
+    let collected = tracer.collect(&target, 3, 2).await.unwrap();
+    assert_eq!(
+        collected.records,
+        vec![
+            (0, JvmValue::Boxed { id: 1, type_name: "java.lang.Integer".into(), text: "5".into() }),
+            (1, JvmValue::Str { id: 2, text: Some("5".into()), length: 1 }),
+        ]
+    );
+    assert_eq!(collected.dropped, 4);
+    assert_eq!(
+        collected.terminal,
+        CollectedTerminal::Threw(JvmValue::Object { id: 9, type_name: "java.lang.ArithmeticException".into() })
+    );
+    assert_eq!(collected.skipped_breakpoints, 1);
+    assert!(collected.sequentialized);
+
+    s.respond(
+        "workspace/executeCommand",
+        json!({"ok": {"records": [], "dropped": 0,
+                      "terminal": {"kind": "value", "value": {"kind": "object", "id": 19, "typeName": "java.util.ArrayList"}},
+                      "skippedBreakpoints": 0, "sequentialized": false}}),
+    );
+    assert_eq!(
+        tracer.collect(&target, 3, 2).await.unwrap().terminal,
+        CollectedTerminal::Value(JvmValue::Object { id: 19, type_name: "java.util.ArrayList".into() })
+    );
+    s.respond(
+        "workspace/executeCommand",
+        json!({"ok": {"records": [], "dropped": 0, "terminal": {"kind": "void"},
+                      "skippedBreakpoints": 0, "sequentialized": false}}),
+    );
+    assert_eq!(tracer.collect(&target, 3, 2).await.unwrap().terminal, CollectedTerminal::Void);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stream_collect_fails_cleanly_on_a_step_beyond_u16() {
+    use ide_jvm_inspect::{InspectError, StreamTracer};
+    let (_h, s, tracer) = stream_harness().await;
+    s.respond(
+        "workspace/executeCommand",
+        json!({"ok": {"records": [{"step": 70000, "value": {"kind": "null"}}], "dropped": 0,
+                      "terminal": {"kind": "void"}, "skippedBreakpoints": 0, "sequentialized": false}}),
+    );
+    let error = tracer.collect(&stream_launch_target(), 3, 2).await.unwrap_err();
+    assert!(matches!(error, InspectError::Failed(ref m) if m.contains("malformed")), "{error:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn exception_breakpoints_send_the_whole_list_and_decode_states() {
+    use ide_jvm_inspect::{ExceptionArmState, ExceptionClassBreakpoints, ExceptionClassSpec};
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let (_, path) = h.open("Sample.java", "class Sample {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    let client = ide_lsp::JdtExceptionBreakpoints::new(h.mgr.clone(), path);
+    let specs = [
+        ExceptionClassSpec {
+            id: "a".into(),
+            class_name: "com.acme.Boom".into(),
+            caught: true,
+            uncaught: false,
+            enabled: true,
+            class_filters: vec!["com.acme.*".into()],
+            class_exclusion_filters: vec![],
+        },
+        ExceptionClassSpec {
+            id: "b".into(),
+            class_name: "java.lang.IllegalStateException".into(),
+            caught: true,
+            uncaught: true,
+            enabled: false,
+            class_filters: vec![],
+            class_exclusion_filters: vec!["*Test".into()],
+        },
+    ];
+    s.respond(
+        "workspace/executeCommand",
+        json!({"ok": [{"id": "a", "state": "pending"}, {"id": "b", "state": "disabled"}]}),
+    );
+    let states = client.set(&stream_launch_target(), &specs).await.unwrap();
+    assert_eq!(states, vec![("a".into(), ExceptionArmState::Pending), ("b".into(), ExceptionArmState::Disabled)]);
+    let asked = s.requested("workspace/executeCommand");
+    assert_eq!(asked[0]["command"], "openidea.jvm.exceptions.set");
+    assert_eq!(
+        asked[0]["arguments"],
+        json!([
+            {"pid": 42, "host": null, "port": null, "generation": 3},
+            {"breakpoints": [
+                {"id": "a", "className": "com.acme.Boom", "caught": true, "uncaught": false, "enabled": true,
+                 "classFilters": ["com.acme.*"], "classExclusionFilters": []},
+                {"id": "b", "className": "java.lang.IllegalStateException", "caught": true, "uncaught": true,
+                 "enabled": false, "classFilters": [], "classExclusionFilters": ["*Test"]},
+            ]},
+        ])
+    );
+
+    s.respond("workspace/executeCommand", json!({"error": "noSession", "detail": "hotCodeReplace is never?"}));
+    assert_eq!(
+        client.set(&stream_launch_target(), &specs).await.unwrap_err(),
+        ide_jvm_inspect::InspectError::NoSession
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn exception_class_at_asks_the_extension_and_is_none_without_it() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.exceptionType"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let (doc, path) = h.open("Main.java", "class Main {\n  void f() { throw new Failure(); }\n}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    s.respond("workspace/executeCommand", json!({"qualifiedName": "app.Main$Failure", "displayName": "Failure"}));
+    let found = h.mgr.exception_class_at(doc, Pos::new(1, 23), Default::default()).await.unwrap();
+    assert_eq!(
+        found,
+        Some(ide_lsp::types::ExceptionClassRef {
+            qualified_name: "app.Main$Failure".into(),
+            display_name: "Failure".into()
+        })
+    );
+    let asked = s.requested("workspace/executeCommand");
+    assert_eq!(asked[0]["command"], "openidea.java.exceptionType");
+    assert_eq!(asked[0]["arguments"], json!([uri_of(&path), 1, 23]));
+    s.respond("workspace/executeCommand", json!(null));
+    assert_eq!(h.mgr.exception_class_at(doc, Pos::new(0, 1), Default::default()).await.unwrap(), None);
+
+    let plain = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let (doc, _) = plain.open("Main.java", "class Main {}");
+    plain.wait_status("jdtls", ServerStatus::Ready).await;
+    assert_eq!(plain.mgr.exception_class_at(doc, Pos::new(0, 7), Default::default()).await.unwrap(), None);
+    assert!(plain.launcher.state("jdtls").requested("workspace/executeCommand").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn debug_server_port_maps_to_module() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let (_, path) = h.open("Sample.java", "class Sample {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    h.launcher.state("jdtls").respond("workspace/executeCommand", json!(4711));
+    assert_eq!(h.mgr.java_debug_server_module(4711), None);
+    assert_eq!(h.mgr.java_debug_server(&path).await.unwrap(), 4711);
+    assert_eq!(h.mgr.java_debug_server_module(4711), Some(path));
+    assert_eq!(h.mgr.java_debug_server_module(4712), None);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2678,6 +3978,49 @@ async fn fallback_servers_only_run_when_the_preferred_one_is_missing() {
     let (_, other) = h.open("b.mk", "y");
     let other = uri_of(&other);
     eventually(|| h.launcher.state("alt").docs.lock().contains_key(&other)).await;
+    assert!(h.mgr.hover(doc, Pos::new(0, 0), Default::default()).await.is_ok());
+}
+
+/// A server that is installed but cannot run (crashed for good, or its configuration
+/// can't launch it) hides its fallbacks no longer than one that is missing.
+#[tokio::test(flavor = "multi_thread")]
+async fn fallback_servers_take_over_from_a_preferred_one_that_crashed_for_good() {
+    let h = harness_with_fallbacks(&[("main", incremental_caps()), ("alt", incremental_caps())], &["alt"]);
+    let (doc, path) = h.open("a.mk", "x");
+    let main = h.launcher.state("main");
+    let count = |status| h.statuses("main").iter().filter(|s| **s == status).count();
+    for n in 1..=4 {
+        eventually(|| count(ServerStatus::Ready) == n).await;
+        // Restarting after a crash is not giving up: the fallback stays away.
+        assert!(h.statuses("alt").is_empty(), "alt started after crash {}", n - 1);
+        main.peer().kill();
+        eventually(|| count(ServerStatus::Crashed) == n).await;
+    }
+    h.wait_status("alt", ServerStatus::Ready).await;
+    let uri = uri_of(&path);
+    eventually(|| h.launcher.state("alt").docs.lock().contains_key(&uri)).await;
+    assert!(h.mgr.hover(doc, Pos::new(0, 0), Default::default()).await.is_ok());
+
+    // Restarting the preferred one by hand gives the documents back to it.
+    let id = h.mgr.servers().into_iter().find(|s| s.name == "main").unwrap().id;
+    h.mgr.restart(id).await.unwrap();
+    eventually(|| h.removed("alt")).await;
+    assert_eq!(h.mgr.servers().iter().filter(|s| s.name == "alt").count(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fallback_servers_take_over_from_a_preferred_one_that_cannot_be_launched() {
+    let h = harness_with_fallbacks(&[("main", incremental_caps()), ("alt", incremental_caps())], &["alt"]);
+    h.mgr.set_config_hook(Box::new(|cfg, _| {
+        if cfg.name == "main" {
+            cfg.launch_error = Some("needs JDK 21".into());
+        }
+    }));
+    let (doc, path) = h.open("a.mk", "x");
+    h.wait_status("main", ServerStatus::Misconfigured).await;
+    h.wait_status("alt", ServerStatus::Ready).await;
+    let uri = uri_of(&path);
+    eventually(|| h.launcher.state("alt").docs.lock().contains_key(&uri)).await;
     assert!(h.mgr.hover(doc, Pos::new(0, 0), Default::default()).await.is_ok());
 }
 
@@ -2718,6 +4061,113 @@ async fn a_server_requiring_a_root_marker_serves_only_files_below_one() {
     h.open("a.mk", "x");
     h.wait_status("framework", ServerStatus::Ready).await;
     h.wait_status("alt", ServerStatus::Ready).await;
+}
+
+/// #4061: an Angular template opened under another spelling of the project's
+/// (canonical) path, other letter case on macOS or a symlinked folder, still
+/// gets the Angular server, which answers hover and Go to Declaration there.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_framework_server_serves_files_spelt_differently_from_the_project() {
+    let h = harness_configured("mock", "html", &[("framework", incremental_caps())], |cfg| {
+        cfg.root_markers = vec!["angular.json".into()];
+        cfg.require_root_marker = true;
+    });
+    std::fs::write(h.root.join("angular.json"), "{}").unwrap();
+    let app = h.root.join("apps/myapp/src/app");
+    std::fs::create_dir_all(&app).unwrap();
+    let (template, component) = (app.join("example.component.html"), app.join("example.component.ts"));
+    std::fs::write(&template, "<button (click)=\"onConfirm()\">Confirm</button>\n").unwrap();
+    std::fs::write(&component, "export class ExampleComponent {\n  onConfirm() {}\n}\n").unwrap();
+    let framework = h.launcher.state("framework");
+    framework.respond("textDocument/hover", json!({ "contents": "(method) ExampleComponent.onConfirm(): void" }));
+    let target = Range::new(Pos::new(1, 2), Pos::new(1, 11));
+    let range = json!({ "start": { "line": 1, "character": 2 }, "end": { "line": 1, "character": 11 } });
+    framework.respond("textDocument/definition", json!([{ "uri": uri_of(&component), "range": range }]));
+
+    #[cfg(unix)]
+    let links = tempfile::tempdir().unwrap();
+    let mut spellings = Vec::new();
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&h.root, links.path().join("linked")).unwrap();
+        spellings.push(links.path().join("linked").join(template.strip_prefix(&h.root).unwrap()));
+    }
+    // Only on a case-insensitive disk (macOS, Windows).
+    let upper = PathBuf::from(template.to_string_lossy().to_uppercase());
+    if upper.exists() {
+        spellings.push(upper);
+    }
+    for path in spellings {
+        let doc = DocId::next();
+        h.mgr.did_open(doc, &path, &h.lang, 1, "<button (click)=\"onConfirm()\">Confirm</button>\n");
+        eventually(|| framework.docs.lock().contains_key(&uri_of(&path))).await;
+        let hover = h.mgr.hover(doc, Pos::new(0, 20), Default::default()).await.unwrap();
+        assert!(hover.is_some_and(|h| h.contents.value.contains("onConfirm")), "{}", path.display());
+        let defs = h.mgr.goto(doc, Pos::new(0, 20), GotoKind::Definition).await.unwrap();
+        assert_eq!((&*defs[0].path, defs[0].range), (component.as_path(), target), "{}", path.display());
+    }
+    assert_eq!(h.statuses("framework").iter().filter(|s| **s == ServerStatus::Starting).count(), 1);
+}
+
+/// A server that `replaces` another (a PHP server with its own Laravel support and
+/// `laravel-lsp`) keeps it away while it serves, and only then.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_replaced_server_stays_away_while_its_replacement_serves() {
+    let servers = [("main", incremental_caps()), ("alt", incremental_caps()), ("framework", incremental_caps())];
+    let configure = |cfg: &mut LanguageServerConfig| match cfg.name.as_str() {
+        "alt" => {
+            cfg.fallback = true;
+            cfg.replaces = vec!["framework".into()];
+        }
+        "framework" => cfg.require_root_marker = true,
+        _ => {}
+    };
+    let h = harness_configured("mock", "mk", &servers, configure);
+    let disabled: Arc<Mutex<Vec<String>>> = Default::default();
+    {
+        let disabled = disabled.clone();
+        h.mgr.set_servers_hook(Box::new(move |_, defined| {
+            defined.iter().filter(|c| !disabled.lock().contains(&c.name)).cloned().collect()
+        }));
+    }
+    std::fs::write(h.root.join("mock.toml"), "").unwrap();
+    let (_, path) = h.open("a.mk", "x");
+    let uri = uri_of(&path);
+
+    // The preferred server serves: the framework's server joins it, the alternative stays away.
+    h.wait_status("main", ServerStatus::Ready).await;
+    h.wait_status("framework", ServerStatus::Ready).await;
+    eventually(|| h.launcher.state("framework").docs.lock().contains_key(&uri)).await;
+    assert!(h.statuses("alt").is_empty());
+
+    // The alternative takes over: the server it replaces closes the document and stops.
+    disabled.lock().push("main".into());
+    h.mgr.reconfigure().await;
+    h.wait_status("alt", ServerStatus::Ready).await;
+    eventually(|| h.launcher.state("alt").docs.lock().contains_key(&uri)).await;
+    assert!(!h.launcher.state("framework").notified("textDocument/didClose").is_empty());
+    assert_eq!(h.statuses("framework").last(), Some(&ServerStatus::Stopped));
+    assert_eq!(h.mgr.servers().iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["alt"]);
+
+    // The preferred server again: the framework's server comes back with it.
+    disabled.lock().clear();
+    h.mgr.reconfigure().await;
+    h.wait_status("main", ServerStatus::Ready).await;
+    eventually(|| h.statuses("framework").last() == Some(&ServerStatus::Ready)).await;
+    assert_eq!(h.statuses("alt").last(), Some(&ServerStatus::Stopped));
+
+    // A preferred server that is not installed: the alternative replaces the framework's
+    // server although that one attached first.
+    let servers = [("ghost", json!({})), ("alt", incremental_caps()), ("framework", incremental_caps())];
+    let h = harness_configured("mock", "mk", &servers, configure);
+    h.launcher.state("ghost").missing.store(true, Ordering::SeqCst);
+    std::fs::write(h.root.join("mock.toml"), "").unwrap();
+    let (_, path) = h.open("a.mk", "x");
+    let uri = uri_of(&path);
+    h.wait_status("ghost", ServerStatus::Missing).await;
+    h.wait_status("alt", ServerStatus::Ready).await;
+    eventually(|| h.launcher.state("alt").docs.lock().contains_key(&uri)).await;
+    eventually(|| !h.mgr.servers().iter().any(|s| s.name == "framework")).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2855,6 +4305,202 @@ async fn java_implementations_come_from_sources_first() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn java_dependency_implementations_point_at_the_method() {
+    let caps = json!({
+        "textDocumentSync": 1,
+        "implementationProvider": true,
+        "executeCommandProvider": { "commands": ["openidea.java.implementations", "openidea.java.implementationLocations"] },
+    });
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let (doc, _) = h.open("Repo.java", "interface Repo {\n    void save(String item);\n}\n");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    let class_uri = "jdt://contents/lib.jar/zoo/RepoImpl.java?=p/lib.jar%3Czoo%28RepoImpl.class";
+    let method = json!({
+        "uri": class_uri,
+        "range": {"start":{"line":4,"character":4},"end":{"line":6,"character":5}},
+    });
+    let at_zero = json!({
+        "uri": class_uri,
+        "range": {"start":{"line":0,"character":0},"end":{"line":0,"character":0}},
+    });
+    let refined = method.clone();
+    *s.responder.lock() = Some(Arc::new(move |_, method, params| match method {
+        "workspace/executeCommand" if params["command"] == "openidea.java.implementations" => {
+            Some(json!({ "locations": [], "complete": false }))
+        }
+        "workspace/executeCommand" if params["command"] == "openidea.java.implementationLocations" => {
+            assert_eq!(params["arguments"][3], json!([class_uri]));
+            Some(json!({ "locations": [refined] }))
+        }
+        "textDocument/implementation" => Some(json!([at_zero])),
+        _ => None,
+    }));
+    let partial = Mutex::new(Vec::new());
+    let found = h
+        .mgr
+        .goto_implementation(doc, Pos::new(1, 9), Default::default(), &|locs| partial.lock().push(locs.to_vec()))
+        .await
+        .unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].uri.as_deref(), Some(class_uri));
+    assert_eq!(found[0].range.start.line, 4);
+    assert_eq!(s.requested("textDocument/implementation").len(), 1);
+    let commands = s.requested("workspace/executeCommand");
+    assert!(commands.iter().any(|r| r["command"] == "openidea.java.implementationLocations"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn formatting_a_snapshot_never_changes_an_open_document() {
+    let caps = json!({
+        "positionEncoding": "utf-8",
+        "textDocumentSync": { "openClose": true, "change": 2 },
+        "documentFormattingProvider": true,
+    });
+    let h = harness(&[("mock", caps)]);
+    let (_, path) = h.open("a.mk", "different working text\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    s.respond(
+        "textDocument/formatting",
+        json!([{ "range": { "start": { "line": 0, "character": 4 }, "end": { "line": 0, "character": 5 } }, "newText": "X" }]),
+    );
+    let options = FormatOptions { tab_size: 2, insert_spaces: true, on_save: false, tool: None };
+    let edits = h.mgr.format_text(&path, &LanguageId("mock".into()), "🙂b\n", options).await.unwrap();
+    assert_eq!(edits, vec![ide_core::TextEdit { range: rng(0, 2, 0, 3), new_text: "X".into() }]);
+
+    let uri = uri_of(&path);
+    let requests = s.requested("textDocument/formatting");
+    let shadow = requests[0]["textDocument"]["uri"].as_str().unwrap();
+    assert_ne!(shadow, uri);
+    let opens = s.notified("textDocument/didOpen");
+    let snapshot = opens.iter().find(|n| n["textDocument"]["uri"] == shadow).unwrap();
+    assert_eq!(snapshot["textDocument"]["text"], "🙂b\n");
+    assert!(s.notified("textDocument/didChange").is_empty());
+    eventually(|| uris(&s.notified("textDocument/didClose")) == vec![shadow.to_owned()]).await;
+    assert!(s.docs.lock().contains_key(&uri));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn snapshot_diagnostics_collect_pull_and_push_without_publishing_problems() {
+    let mut pull_caps = incremental_caps();
+    pull_caps["diagnosticProvider"] = json!({ "interFileDependencies": false, "workspaceDiagnostics": false });
+    let mut push_caps = incremental_caps();
+    push_caps["positionEncoding"] = json!("utf-8");
+    let h = harness(&[("mock", pull_caps), ("push", push_caps)]);
+    let pull = h.launcher.state("mock");
+    *pull.responder.lock() = Some(pull_responder());
+    let (_, path) = h.open("a.mk", "clean editor\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    h.wait_status("push", ServerStatus::Ready).await;
+    let push = h.launcher.state("push");
+    let live = uri_of(&path);
+    let shadow = || {
+        push.notified("textDocument/didOpen")
+            .into_iter()
+            .find(|n| n["textDocument"]["text"] == "🙂bad\n")
+            .and_then(|n| n["textDocument"]["uri"].as_str().map(str::to_owned))
+    };
+    let send = async {
+        eventually(|| shadow().is_some()).await;
+        let uri = shadow().unwrap();
+        for (version, message) in [(1, "wrong version"), (0, "snapshot only")] {
+            push.peer()
+                .notify(
+                    "textDocument/publishDiagnostics",
+                    json!({
+                        "uri": uri, "version": version, "diagnostics": [{
+                            "range": {"start": {"line":0,"character":4}, "end": {"line":0,"character":7}},
+                            "severity": 2, "message": message
+                        }]
+                    }),
+                )
+                .unwrap();
+        }
+        uri
+    };
+    let language = LanguageId("mock".into());
+    let cancel = Default::default();
+    let (result, shadow) = tokio::join!(h.mgr.snapshot_diagnostics(&path, &language, "🙂bad\n", &cancel), send);
+    assert_ne!(shadow, live);
+    let mut items = result.unwrap();
+    items.sort_by(|a, b| a.message.cmp(&b.message));
+    assert_eq!(items.iter().map(|d| d.message.as_str()).collect::<Vec<_>>(), ["bad", "snapshot only"]);
+    assert_eq!(items[1].range, rng(0, 2, 0, 5));
+    eventually(|| uris(&push.notified("textDocument/didClose")) == vec![shadow.clone()]).await;
+    assert!(uris(&push.notified("textDocument/didChange")).is_empty());
+    assert!(push.docs.lock().contains_key(&live));
+    assert!(!h.events.lock().iter().any(|event| matches!(
+        event,
+        IdeEvent::Diagnostics { items, .. } if !items.is_empty()
+    )));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn source_actions_use_snapshot_text_and_accept_only_its_passive_edits() {
+    let caps = json!({
+        "positionEncoding": "utf-8",
+        "textDocumentSync": { "openClose": true, "change": 2 },
+        "codeActionProvider": { "resolveProvider": true },
+    });
+    let h = harness(&[("mock", caps)]);
+    let (_, path) = h.open("a.mk", "the live editor\n");
+    h.wait_status("mock", ServerStatus::Ready).await;
+    let s = h.launcher.state("mock");
+    let uri = uri_of(&path);
+    let original = uri.clone();
+    *s.responder.lock() = Some(Arc::new(move |_, method, params| {
+        let edit = json!({ "range": {
+            "start": { "line": 0, "character": 4 }, "end": { "line": 0, "character": 5 }
+        }, "newText": "X" });
+        match method {
+            "textDocument/codeAction" => {
+                let shadow = params["textDocument"]["uri"].as_str().unwrap();
+                assert_ne!(shadow, original);
+                assert_eq!(params["range"]["end"], json!({ "line": 0, "character": 5 }));
+                assert_eq!(params["context"]["diagnostics"], json!([]));
+                let kind = params["context"]["only"][0].as_str().unwrap();
+                if kind == "source.fixAll" {
+                    return Some(json!([{ "title": "Cleanup", "kind": kind, "edit": { "documentChanges": [{
+                        "textDocument": { "uri": shadow, "version": 0 }, "edits": [edit]
+                    }] }}]));
+                }
+                assert_eq!(kind, "source.organizeImports");
+                Some(json!([
+                    { "title": "Cross-file edit", "kind": kind, "isPreferred": true,
+                      "edit": { "changes": { shadow: [edit.clone()], original.clone(): [edit.clone()] } } },
+                    { "title": "Command", "kind": kind, "isPreferred": true,
+                      "command": { "title": "Command", "command": "mock.organize" },
+                      "edit": { "changes": { shadow: [edit] } } },
+                    { "title": "Organize", "kind": kind, "data": { "snapshot": shadow } }
+                ]))
+            }
+            "codeAction/resolve" => {
+                let shadow = params["data"]["snapshot"].as_str().unwrap();
+                Some(json!({ "title": "Organize", "edit": { "changes": { shadow: [edit] } } }))
+            }
+            _ => None,
+        }
+    }));
+    for kind in ["source.organizeImports", "source.fixAll"] {
+        let edits = h
+            .mgr
+            .source_action_text(&path, &LanguageId("mock".into()), "🙂b", kind, &Default::default())
+            .await
+            .unwrap();
+        assert_eq!(edits, vec![ide_core::TextEdit { range: rng(0, 2, 0, 3), new_text: "X".into() }]);
+    }
+    assert!(s.requested("workspace/executeCommand").is_empty());
+    assert!(s.notified("textDocument/didChange").is_empty());
+    eventually(|| s.notified("textDocument/didClose").len() == 2).await;
+    let snapshots: Vec<_> =
+        s.notified("textDocument/didOpen").into_iter().filter(|notice| notice["textDocument"]["uri"] != uri).collect();
+    assert_eq!(snapshots.len(), 2);
+    assert!(snapshots.iter().all(|notice| notice["textDocument"]["text"] == "🙂b"));
+    assert!(s.docs.lock().contains_key(&uri));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn navigation_rename_format_and_decorations() {
     let h = harness(&[("mock", incremental_caps())]);
     let (doc, path) = h.open("a.mk", "fn foo() {}\nfoo();\n");
@@ -2873,7 +4519,12 @@ async fn navigation_rename_format_and_decorations() {
     assert_eq!(err.kind, ide_core::error::ErrorKind::Unavailable);
 
     s.respond("textDocument/references", json!([{ "uri": uri, "range": r(0,3,0,6) }, { "uri": uri, "range": r(1,0,1,3) }, { "uri": uri, "range": r(1,0,1,3) }]));
-    let refs = h.mgr.references(doc, Pos::new(1, 1), true, true, Default::default()).await.unwrap().locations;
+    let refs = h
+        .mgr
+        .references_streaming(doc, Pos::new(1, 1), true, true, true, Default::default(), None)
+        .await
+        .unwrap()
+        .locations;
     assert_eq!(refs.len(), 2);
     assert_eq!(s.requested("textDocument/references")[0]["context"]["includeDeclaration"], true);
 
@@ -2936,16 +4587,31 @@ async fn navigation_rename_format_and_decorations() {
     let item = json!({ "name": "foo", "kind": 12, "uri": uri, "range": r(0,0,0,11), "selectionRange": r(0,3,0,6), "data": "id" });
     s.respond("textDocument/prepareCallHierarchy", json!([item]));
     s.respond("callHierarchy/incomingCalls", json!([{ "from": { "name": "main", "kind": 12, "uri": uri, "range": r(1,0,1,6), "selectionRange": r(1,0,1,3) }, "fromRanges": [r(1,0,1,3)] }]));
-    let calls = h
-        .mgr
-        .call_hierarchy(doc, Pos::new(0, 4), HierarchyDirection::Incoming, Default::default())
-        .await
-        .unwrap()
-        .items;
+    let hierarchy =
+        h.mgr.call_hierarchy(doc, Pos::new(0, 4), HierarchyDirection::Incoming, Default::default()).await.unwrap();
+    let root = hierarchy.root.expect("the prepared item");
+    assert_eq!((root.name.as_str(), root.selection_range), ("foo", rng(0, 3, 0, 6)));
+    assert_eq!(root.path.to_path_buf(), path);
+    let calls = hierarchy.items;
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].name, "main");
     assert_eq!(calls[0].from_ranges, vec![rng(1, 0, 1, 3)]);
     assert_eq!(s.requested("callHierarchy/incomingCalls")[0]["item"]["data"], "id");
+
+    // Outgoing calls of each prepared item are in that item's file.
+    let other = path.with_file_name("b.mk");
+    let second =
+        json!({ "name": "foo", "kind": 12, "uri": uri_of(&other), "range": r(4,0,4,11), "selectionRange": r(4,3,4,6) });
+    s.respond("textDocument/prepareCallHierarchy", json!([item, second]));
+    s.respond("callHierarchy/outgoingCalls", json!([{ "to": { "name": "bar", "kind": 12, "uri": uri, "range": r(2,0,2,6), "selectionRange": r(2,0,2,3) }, "fromRanges": [r(0,8,0,11)] }]));
+    let callees = h
+        .mgr
+        .call_hierarchy(doc, Pos::new(0, 4), HierarchyDirection::Outgoing, Default::default())
+        .await
+        .unwrap()
+        .items;
+    let from: Vec<_> = callees.iter().map(|c| c.from_path.clone().map(|p| p.into_path_buf())).collect();
+    assert_eq!(from, [Some(path.clone()), Some(other)]);
 
     // No documentSymbolProvider → None so callers fall back to tree-sitter.
     assert_eq!(h.mgr.document_symbols(doc).await.unwrap(), None);
@@ -3001,6 +4667,33 @@ async fn rename_merges_the_servers_that_can_rename_there() {
     let edit = h.mgr.rename(doc, Pos::new(1, 2), "heading".into(), Default::default()).await.unwrap().edit;
     assert_eq!(edits_in(&edit, &path), [(rng(0, 14, 0, 19), "heading".into()), (rng(1, 0, 1, 5), "heading: x".into())]);
     assert_eq!(edits_in(&edit, &html), [(rng(0, 3, 0, 8), "heading".into())]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rename_the_server_withdraws_while_analysing_is_asked_again_then_explained() {
+    let h = harness(&[("dart", incremental_caps())]);
+    let (doc, path) = h.open("a.mk", "count = 1\n");
+    h.wait_status("dart", ServerStatus::Ready).await;
+    let dart = h.launcher.state("dart");
+    let r = json!({"start":{"line":0,"character":0},"end":{"line":0,"character":5}});
+    dart.respond("textDocument/rename", json!({ "changes": { uri_of(&path): [{ "range": r, "newText": "total" }] } }));
+    // Withdrawn while the server analyses an edit, then answered.
+    dart.errors.lock().insert("textDocument/rename".into(), (-32801, "Document was modified".into()));
+    let renaming = {
+        let mgr = h.mgr.clone();
+        tokio::spawn(async move { mgr.rename(doc, Pos::new(0, 1), "total".into(), Default::default()).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    dart.errors.lock().clear();
+    let edit = renaming.await.unwrap().unwrap().edit;
+    assert_eq!(edits_in(&edit, &path), [(rng(0, 0, 0, 5), "total".into())]);
+    assert!(dart.requested("textDocument/rename").len() >= 2);
+
+    // Withdrawn every time: an error that says so, not a silent cancellation.
+    dart.errors.lock().insert("textDocument/rename".into(), (-32801, "Document was modified".into()));
+    let err = h.mgr.rename(doc, Pos::new(0, 1), "total".into(), Default::default()).await.unwrap_err();
+    assert_ne!(err.kind, ide_core::error::ErrorKind::Cancelled);
+    assert!(err.message.contains("try again"), "{}", err.message);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -3062,7 +4755,9 @@ async fn angular_references_leave_out_the_declaration_unless_asked() {
 
     let mgr = &h.mgr;
     let found = |include_declaration: bool| async move {
-        let refs = mgr.references(doc, Pos::new(0, 11), include_declaration, false, Default::default()).await;
+        let refs = mgr
+            .references_streaming(doc, Pos::new(0, 11), include_declaration, false, true, Default::default(), None)
+            .await;
         let mut v: Vec<(PathBuf, Range)> =
             refs.unwrap().locations.iter().map(|l| (l.path.to_path_buf(), l.range)).collect();
         v.sort();
@@ -3357,7 +5052,12 @@ async fn virtual_locations_and_text_document_content() {
         "textDocument/references",
         json!([{ "uri": uri_of(&path), "range": r(0, 4, 0, 9) }, { "uri": lib, "range": r(2, 4, 2, 9) }]),
     );
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap().locations;
+    let refs = h
+        .mgr
+        .references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None)
+        .await
+        .unwrap()
+        .locations;
     assert_eq!(refs.iter().map(|l| l.uri.is_some()).collect::<Vec<_>>(), vec![false, true]);
     s.respond(
         "textDocument/prepareTypeHierarchy",
@@ -3431,6 +5131,340 @@ async fn jdt_class_file_contents() {
     let source = h.mgr.virtual_document(&source_uri).await.unwrap();
     assert!(!source.decompiled);
     assert_eq!(source.title, "WithSources.java");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jdt_library_sources_reload_with_the_attachment_encoding() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    h.open("App.java", "import example.encoding.EncodingSample;\n");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    let jdt = "jdt://contents/encoding-sample-1.0.jar/example.encoding/EncodingSample.class?=demo/%5C/m2%5C/encoding-sample-1.0.jar%3Cexample.encoding%28EncodingSample.class";
+
+    // The mock jdtls decodes the GBK attachment with the configured charset:
+    // until the encoding is updated, the text arrives garbled (U+FFFD).
+    let source = "package example.encoding;\n\n/** 中文编码测试。 */\npublic final class EncodingSample {}";
+    let garbled =
+        "package example.encoding;\n\n/** \u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD} */\npublic final class EncodingSample {}";
+    let attachment_encoding: Arc<Mutex<Option<String>>> = Arc::default();
+    *s.responder.lock() = Some(Arc::new({
+        let encoding = attachment_encoding.clone();
+        move |_, method, params| match method {
+            "java/classFileContents" => {
+                let text = if encoding.lock().as_deref() == Some("gbk") { source } else { garbled };
+                Some(json!(text))
+            }
+            "workspace/executeCommand" => match params["command"].as_str()? {
+                "java.project.resolveSourceAttachment" => Some(json!({
+                    "errorMessage": null,
+                    "attributes": {
+                        "jarPath": "/m2/encoding-sample-1.0.jar",
+                        "sourceAttachmentPath": "/m2/encoding-sample-1.0-sources.jar",
+                        "sourceAttachmentEncoding": encoding.lock().clone(),
+                        "canEditEncoding": true,
+                    }
+                })),
+                "java.project.updateSourceAttachment" => {
+                    let attrs = &params["arguments"][0]["attributes"];
+                    *encoding.lock() = attrs["sourceAttachmentEncoding"].as_str().map(str::to_owned);
+                    Some(json!({ "errorMessage": null, "attributes": null }))
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }));
+
+    let vd = h.mgr.virtual_document(jdt).await.unwrap();
+    assert_eq!(vd.text, garbled);
+    assert_eq!(vd.encoding, "utf-8", "no attachment encoding configured yet");
+    assert!(vd.can_reload_encoding);
+
+    let reloaded = h.mgr.reload_virtual(jdt, "gbk").await.unwrap();
+    assert_eq!(reloaded.text, source);
+    assert_eq!(reloaded.encoding, "gbk");
+    assert!(reloaded.can_reload_encoding);
+    // The update kept the attachment path (omitting it would drop the sources)
+    // and set the encoding; the contents were fetched again.
+    let updates: Vec<Value> = s
+        .requested("workspace/executeCommand")
+        .into_iter()
+        .filter(|p| p["command"] == "java.project.updateSourceAttachment")
+        .collect();
+    assert_eq!(updates.len(), 1);
+    assert_eq!(updates[0]["arguments"][0]["classFileUri"], jdt);
+    assert_eq!(updates[0]["arguments"][0]["attributes"]["sourceAttachmentPath"], "/m2/encoding-sample-1.0-sources.jar");
+    assert_eq!(updates[0]["arguments"][0]["attributes"]["sourceAttachmentEncoding"], "gbk");
+    assert!(s.requested("java/classFileContents").len() >= 2);
+    // The cache serves the re-decoded text without another round trip.
+    assert_eq!(h.mgr.virtual_document(jdt).await.unwrap().text, source);
+    // Round trip back to UTF-8.
+    let back = h.mgr.reload_virtual(jdt, "utf-8").await.unwrap();
+    assert_eq!(back.text, garbled);
+    assert_eq!(back.encoding, "utf-8");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jdt_reload_waits_for_the_maven_container_refresh() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    h.open("App.java", "class App {}\n");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    let jdt = "jdt://contents/lib.jar/p/Lib.class?=demo/%5C/m2%5C/lib.jar%3Cp%28Lib.class";
+    // m2e persists and refreshes the container in a background job: resolve
+    // keeps reporting the old encoding for a few calls after the update.
+    let state: Arc<Mutex<(Option<String>, usize)>> = Arc::default();
+    *s.responder.lock() = Some(Arc::new({
+        let state = state.clone();
+        move |_, method, params| match method {
+            "java/classFileContents" => {
+                let enc = state.lock().0.clone();
+                Some(json!(if enc.as_deref() == Some("gbk") {
+                    "package p; /** 中文 */ class Lib {}"
+                } else {
+                    "package p; /** \u{FFFD} */ class Lib {}"
+                }))
+            }
+            "workspace/executeCommand" => match params["command"].as_str()? {
+                "java.project.resolveSourceAttachment" => {
+                    let mut st = state.lock();
+                    st.1 += 1;
+                    let reported = if st.1 > 2 { st.0.clone() } else { None };
+                    Some(json!({
+                        "attributes": {
+                            "sourceAttachmentPath": "/m2/lib-sources.jar",
+                            "sourceAttachmentEncoding": reported,
+                            "canEditEncoding": true,
+                        }
+                    }))
+                }
+                "java.project.updateSourceAttachment" => {
+                    let mut st = state.lock();
+                    st.0 = params["arguments"][0]["attributes"]["sourceAttachmentEncoding"].as_str().map(str::to_owned);
+                    st.1 = 0;
+                    Some(json!({ "errorMessage": null }))
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }));
+    let vd = h.mgr.virtual_document(jdt).await.unwrap();
+    assert!(vd.text.contains('\u{FFFD}'));
+    let reloaded = h.mgr.reload_virtual(jdt, "gbk").await.unwrap();
+    assert_eq!(reloaded.text, "package p; /** 中文 */ class Lib {}");
+    assert_eq!(reloaded.encoding, "gbk");
+    assert!(state.lock().1 >= 3, "polled until the container reported the new encoding");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jdt_reload_retries_when_a_restored_container_ignores_the_update() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    h.open("App.java", "class App {}\n");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    let jdt = "jdt://contents/lib.jar/p/Lib.class?=demo/%5C/m2%5C/lib.jar%3Cp%28Lib.class";
+    // jdtls replaces the encoding attribute by reference equality: an entry
+    // restored from the saved container state keeps the old value on the first
+    // update (a duplicate attribute is appended); only a second update, after
+    // the container was refreshed, applies the new one.
+    let state: Arc<Mutex<(Option<String>, usize)>> = Arc::default();
+    *s.responder.lock() = Some(Arc::new({
+        let state = state.clone();
+        move |_, method, params| match method {
+            "java/classFileContents" => {
+                let enc = state.lock().0.clone();
+                Some(json!(if enc.as_deref() == Some("gbk") {
+                    "package p; /** 中文 */ class Lib {}"
+                } else {
+                    "package p; /** \u{FFFD} */ class Lib {}"
+                }))
+            }
+            "workspace/executeCommand" => match params["command"].as_str()? {
+                "java.project.resolveSourceAttachment" => Some(json!({
+                    "attributes": {
+                        "sourceAttachmentPath": "/m2/lib-sources.jar",
+                        "sourceAttachmentEncoding": state.lock().0.clone(),
+                        "canEditEncoding": true,
+                    }
+                })),
+                "java.project.updateSourceAttachment" => {
+                    let mut st = state.lock();
+                    st.1 += 1;
+                    if st.1 > 1 {
+                        st.0 = params["arguments"][0]["attributes"]["sourceAttachmentEncoding"]
+                            .as_str()
+                            .map(str::to_owned);
+                    }
+                    Some(json!({ "errorMessage": null }))
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }));
+    let vd = h.mgr.virtual_document(jdt).await.unwrap();
+    assert!(vd.text.contains('\u{FFFD}'));
+    let reloaded = h.mgr.reload_virtual(jdt, "gbk").await.unwrap();
+    assert_eq!(reloaded.text, "package p; /** 中文 */ class Lib {}");
+    assert_eq!(reloaded.encoding, "gbk");
+    let updates: Vec<Value> = s
+        .requested("workspace/executeCommand")
+        .into_iter()
+        .filter(|p| p["command"] == "java.project.updateSourceAttachment")
+        .collect();
+    assert_eq!(updates.len(), 2, "the ignored first update was retried once");
+    assert!(updates.iter().all(|u| u["arguments"][0]["attributes"]["sourceAttachmentPath"] == "/m2/lib-sources.jar"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jdt_reload_reads_the_attachment_when_the_server_buffer_is_stale() {
+    use std::io::Write;
+    let tmp = tempfile::tempdir().unwrap();
+    let sources = tmp.path().join("lib-sources.jar");
+    let source = "package p; /** 中文 */ class Lib {}";
+    let gbk = encoding_rs::GBK.encode(source).0.into_owned();
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&sources).unwrap());
+    zip.start_file("p/Lib.java", zip::write::SimpleFileOptions::default()).unwrap();
+    zip.write_all(&gbk).unwrap();
+    zip.finish().unwrap();
+
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    h.open("App.java", "class App {}\n");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    let jdt = "jdt://contents/lib.jar/p/Lib.class?=demo/%5C/m2%5C/lib.jar%3Cp%28Lib.class";
+    // JDT caches the decoded buffer of a class file: even after the attachment
+    // encoding is updated, classFileContents keeps returning the old decoding.
+    let encoding: Arc<Mutex<Option<String>>> = Arc::default();
+    *s.responder.lock() = Some(Arc::new({
+        let encoding = encoding.clone();
+        let sources = sources.clone();
+        move |_, method, params| match method {
+            "java/classFileContents" => Some(json!("package p; /** \u{FFFD} */ class Lib {}")),
+            "workspace/executeCommand" => match params["command"].as_str()? {
+                "java.project.resolveSourceAttachment" => Some(json!({
+                    "attributes": {
+                        "sourceAttachmentPath": sources.to_string_lossy(),
+                        "sourceAttachmentEncoding": encoding.lock().clone(),
+                        "canEditEncoding": true,
+                    }
+                })),
+                "java.project.updateSourceAttachment" => {
+                    *encoding.lock() =
+                        params["arguments"][0]["attributes"]["sourceAttachmentEncoding"].as_str().map(str::to_owned);
+                    Some(json!({ "errorMessage": null }))
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }));
+    let vd = h.mgr.virtual_document(jdt).await.unwrap();
+    assert!(vd.text.contains('\u{FFFD}'));
+    let reloaded = h.mgr.reload_virtual(jdt, "gbk").await.unwrap();
+    assert_eq!(reloaded.text, source, "read from the attachment, not the stale server buffer");
+    assert_eq!(reloaded.encoding, "gbk");
+    assert!(reloaded.can_reload_encoding);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jdt_reload_is_refused_when_the_sources_cannot_be_re_decoded() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    h.open("App.java", "class App {}\n");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let s = h.launcher.state("jdtls");
+    let class =
+        |name: &str| format!("jdt://contents/lib.jar/p/{name}.class?=demo/%5C/m2%5C/lib.jar%3Cp%28{name}.class");
+    s.respond("java/classFileContents", json!("package p;\npublic class Lib {}"));
+
+    // A container that does not allow editing the attachment encoding.
+    *s.responder.lock() = Some(Arc::new(|_, method, params| match method {
+        "workspace/executeCommand" if params["command"] == "java.project.resolveSourceAttachment" => Some(json!({
+            "attributes": { "sourceAttachmentPath": "/m2/lib-sources.jar", "canEditEncoding": false }
+        })),
+        _ => None,
+    }));
+    let vd = h.mgr.virtual_document(&class("ReadOnly")).await.unwrap();
+    assert!(!vd.can_reload_encoding);
+    let err = h.mgr.reload_virtual(&class("ReadOnly"), "gbk").await.unwrap_err();
+    assert!(err.message.contains("cannot be changed"), "{err}");
+
+    // Decompiled content has no attached sources to re-decode.
+    *s.responder.lock() = Some(Arc::new(|_, method, params| match method {
+        "workspace/executeCommand" if params["command"] == "java.project.resolveSourceAttachment" => Some(json!({
+            "attributes": { "sourceAttachmentPath": null, "canEditEncoding": true }
+        })),
+        _ => None,
+    }));
+    s.respond(
+        "java/classFileContents",
+        json!("// Source code is decompiled from a .class file using FernFlower decompiler (from Intellij IDEA).\npackage p;\npublic class Lib {}"),
+    );
+    let decompiled = h.mgr.virtual_document(&class("Decompiled")).await.unwrap();
+    assert!(decompiled.decompiled && !decompiled.can_reload_encoding);
+    let err = h.mgr.reload_virtual(&class("Decompiled"), "gbk").await.unwrap_err();
+    assert!(err.message.contains("no attached sources"), "{err}");
+
+    // The resolve command fails (unqueryable container): no reload offered.
+    s.errors.lock().insert("workspace/executeCommand".into(), (-32603, "unsupported".into()));
+    let unresolved = h.mgr.virtual_document(&class("Unresolved")).await.unwrap();
+    assert_eq!(unresolved.encoding, "utf-8");
+    assert!(!unresolved.can_reload_encoding);
+    let err = h.mgr.reload_virtual(&class("Unresolved"), "gbk").await.unwrap_err();
+    assert!(err.message.contains("cannot resolve"), "{err}");
+
+    // Server-generated content of other schemes cannot be re-decoded at all.
+    let err = h.mgr.reload_virtual("csharp:/p/App.csproj/decompiled/Lib.cs", "gbk").await.unwrap_err();
+    assert!(err.message.contains("generated by a language server"), "{err}");
+    // Unknown encodings are refused before any server round trip.
+    assert!(h.mgr.reload_virtual(&class("ReadOnly"), "not-an-encoding").await.is_err());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn jar_library_sources_reload_with_another_encoding() {
+    use std::io::Write;
+    let repo = tempfile::tempdir().unwrap();
+    let dir = repo.path().join("com/example/encoding-sample/1.0.0");
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = "package example.encoding\n\n/** 中文编码测试。 */\nfun message() = \"中文编码测试：是否启用\"\n";
+    let gbk = encoding_rs::GBK.encode(source).0.into_owned();
+    let jar_bytes = |path: &Path, entries: &[(&str, &[u8])]| {
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+        for (name, bytes) in entries {
+            zip.start_file(*name, zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+    };
+    jar_bytes(&dir.join("encoding-sample-1.0.jar"), &[("example/encoding/EncodingSampleKt.class", b"\0")]);
+    jar_bytes(&dir.join("encoding-sample-1.0-sources.jar"), &[("example/encoding/EncodingSample.kt", &gbk)]);
+    let jar_uri = |jar: &Path, entry: &str| format!("jar://{}!/{entry}", uri_of(jar).trim_start_matches("file://"));
+
+    let h = harness_for("kotlin", "kt", &[("kotlin-lsp", incremental_caps())], &[]);
+    h.open("Main.kt", "fun main() {}\n");
+    h.wait_status("kotlin-lsp", ServerStatus::Ready).await;
+    let class = jar_uri(&dir.join("encoding-sample-1.0.jar"), "example/encoding/EncodingSampleKt.class");
+    let entry = jar_uri(&dir.join("encoding-sample-1.0-sources.jar"), "example/encoding/EncodingSample.kt");
+
+    let vd = h.mgr.virtual_document(&class).await.unwrap();
+    assert_eq!(vd.text, source);
+    assert_eq!(vd.encoding, "gbk");
+    assert!(vd.can_reload_encoding);
+    // An explicit encoding wins over detection, even when it garbles the text.
+    let forced = h.mgr.reload_virtual(&class, "utf-8").await.unwrap();
+    assert!(forced.text.contains('\u{FFFD}'));
+    assert_eq!(forced.encoding, "utf-8");
+    let back = h.mgr.reload_virtual(&class, "gbk").await.unwrap();
+    assert_eq!((back.text.as_str(), back.encoding.as_str()), (source, "gbk"));
+    // Non-class entries reload the same way.
+    let entry_vd = h.mgr.virtual_document(&entry).await.unwrap();
+    assert_eq!((entry_vd.text.as_str(), entry_vd.encoding.as_str()), (source, "gbk"));
+    let entry_reload = h.mgr.reload_virtual(&entry, "gbk").await.unwrap();
+    assert_eq!(entry_reload.text, source);
+    // Missing sources fail cleanly.
+    let missing = jar_uri(&dir.join("encoding-sample-1.0.jar"), "example/encoding/Missing.class");
+    assert!(h.mgr.reload_virtual(&missing, "gbk").await.is_err());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -3980,7 +6014,8 @@ async fn covered_candidates_do_not_count_toward_the_open_limit() {
         let seen = grep_candidates(&h);
         let (doc, _) = h.open("a.mk", "def target\n");
         h.wait_status("mock", ServerStatus::Ready).await;
-        let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+        let refs =
+            h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
         assert!(seen.lock().iter().all(|q| q.limit > ide_lsp::MAX_CANDIDATES));
         let opened = s.notified("textDocument/didOpen").len() - 1;
         if covers_all {
@@ -4021,7 +6056,7 @@ async fn candidates_skip_the_directories_the_server_covers() {
         let seen = grep_candidates(&h);
         let (doc, _) = h.open("a.mk", "def target\n");
         h.wait_status("mock", ServerStatus::Ready).await;
-        h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
         let skipped: Vec<Vec<PathBuf>> = seen.lock().iter().map(|q| q.skip.clone()).collect();
         let expected = if commands.as_array().unwrap().len() == 2 && reported.is_array() { vec![src] } else { vec![] };
         assert_eq!(skipped, vec![expected], "{commands} {reported}");
@@ -4041,7 +6076,8 @@ async fn references_open_unopened_files_that_mention_the_name() {
     h.wait_status("mock", ServerStatus::Ready).await;
     eventually(|| s.docs.lock().len() == 2).await;
 
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
     let mut paths: Vec<PathBuf> = refs.locations.iter().map(|l| l.path.to_path_buf()).collect();
     paths.sort();
     assert_eq!(paths, vec![a.clone(), b.clone(), d.clone()]);
@@ -4065,12 +6101,13 @@ async fn references_open_unopened_files_that_mention_the_name() {
 
     // When every candidate file is already in the answer, no second request is made.
     std::fs::remove_file(&b).unwrap();
-    h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
     assert_eq!(s.requested("textDocument/references").len(), 3);
 
     // Without project_wide only the server's scope counts: no project search.
     std::fs::write(&b, "call target\n").unwrap();
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, false, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.locations.len(), 2);
     assert_eq!(seen.lock().len(), 2);
 }
@@ -4227,7 +6264,8 @@ async fn go_searches_open_nothing_when_no_other_module_uses_the_declaration() {
     h.wait_status("gopls", ServerStatus::Ready).await;
     eventually(|| s.docs.lock().len() == 1).await;
 
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.locations.len(), 2);
     assert_eq!(uris(&s.notified("textDocument/didOpen")).len(), 1, "only a.go");
     assert!(s.requested("textDocument/definition").len() <= 1);
@@ -4246,7 +6284,8 @@ async fn references_never_reopen_or_close_the_users_files() {
     h.wait_status("mock", ServerStatus::Ready).await;
     eventually(|| s.docs.lock().len() == 2).await;
 
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.locations.len(), 1);
     assert_eq!(uris(&s.notified("textDocument/didOpen")).iter().filter(|u| **u == uri_of(&d)).count(), 1);
     assert!(s.notified("textDocument/didClose").is_empty());
@@ -4265,7 +6304,8 @@ async fn references_report_a_capped_candidate_search() {
     let (doc, _) = h.open("a.mk", "def target\n");
     h.wait_status("mock", ServerStatus::Ready).await;
     eventually(|| s.docs.lock().len() == 1).await;
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.locations.len(), 2);
     assert_eq!(refs.incomplete, Some(ReferencesIncomplete::TooManyFiles));
 }
@@ -4298,10 +6338,12 @@ async fn classified_java_references_widen_without_losing_metadata() {
     h.wait_status("jdtls", ServerStatus::Ready).await;
     eventually(|| s.docs.lock().len() == 1).await;
     let seen = grep_candidates(&h);
-    let scoped = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap();
+    let scoped =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, false, true, Default::default(), None).await.unwrap();
     assert_eq!(scoped.locations.len(), 1);
     assert!(seen.lock().is_empty());
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.locations.len(), 2);
     assert_eq!(refs.classified.len(), 2);
     assert!(refs.classified.iter().all(|r| matches!(r.access, Some(ReferenceAccess::ReadWrite))));
@@ -4318,7 +6360,8 @@ async fn classified_java_references_widen_without_losing_metadata() {
             files: vec![skipped.clone()],
             limit_hit,
         }));
-        let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+        let refs =
+            h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
         assert_eq!(
             refs.incomplete,
             Some(if limit_hit { ReferencesIncomplete::TooManyFiles } else { ReferencesIncomplete::FilesSkipped })
@@ -4350,6 +6393,42 @@ async fn scoped_java_usages_search_the_sources_unless_libraries_are_asked_for() 
         assert_eq!(arguments.len(), if libraries { 4 } else { 5 });
     }
     assert!(seen.lock().is_empty());
+}
+
+/// jdtls' searches wait for its index themselves, and it reports background work (builds,
+/// validation) for long stretches: a method nothing calls is answered at once meanwhile.
+#[tokio::test(flavor = "multi_thread")]
+async fn java_usages_of_an_unused_method_do_not_wait_for_background_work() {
+    let mut caps = incremental_caps();
+    caps["executeCommandProvider"] = json!({"commands": ["openidea.java.usages"]});
+    let h = harness_for("java", "java", &[("jdtls", caps)], &[]);
+    let s = h.launcher.state("jdtls");
+    s.respond("workspace/executeCommand", json!([]));
+    let (doc, _) = h.open("a.java", "void unused() {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    s.peer()
+        .notify("$/progress", json!({ "token": "build", "value": { "kind": "begin", "title": "Building" } }))
+        .unwrap();
+    h.wait_status("jdtls", ServerStatus::Busy).await;
+    // Until the project is imported, finding nothing may only mean it is not indexed yet.
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 6), true, false, true, Default::default(), None).await.unwrap();
+    assert_eq!(refs.incomplete, Some(ReferencesIncomplete::Indexing));
+    s.peer().notify("language/status", json!({"type": "ServiceReady", "message": "ServiceReady"})).unwrap();
+    for _ in 0..200 {
+        let refs =
+            h.mgr.references_streaming(doc, Pos::new(0, 6), true, false, true, Default::default(), None).await.unwrap();
+        if refs.incomplete.is_none() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let started = std::time::Instant::now();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 6), true, true, true, Default::default(), None).await.unwrap();
+    assert!(started.elapsed() < Duration::from_secs(2), "waited {:?}", started.elapsed());
+    assert!(refs.locations.is_empty());
+    assert_eq!(refs.incomplete, None);
 }
 
 /// A library method's usages in the sources are shown before the dependencies and the JDK
@@ -4439,7 +6518,8 @@ async fn java_usages_in_the_sources_arrive_before_the_dependencies() {
         s.requested("workspace/executeCommand")[3..].iter().map(|p| p["arguments"].get(4).cloned()).collect();
     assert_eq!(scopes, [Some(json!("sources")), Some(json!("sources"))]);
     // Scoped probes (code lenses) search everything at once.
-    let scoped = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap();
+    let scoped =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, false, true, Default::default(), None).await.unwrap();
     assert_eq!(scoped.locations.len(), 2);
 }
 
@@ -4455,7 +6535,11 @@ async fn failed_java_command_falls_back_to_unclassified_native_references() {
         let (doc, path) = h.open("a.java", "int target;");
         h.wait_status("jdtls", ServerStatus::Ready).await;
         eventually(|| s.docs.lock().len() == 1).await;
-        let refs = h.mgr.references(doc, Pos::new(0, 5), true, project_wide, Default::default()).await.unwrap();
+        let refs = h
+            .mgr
+            .references_streaming(doc, Pos::new(0, 5), true, project_wide, true, Default::default(), None)
+            .await
+            .unwrap();
         assert_eq!(refs.locations.len(), 1);
         assert_eq!(refs.locations[0].path, path);
         assert!(refs.classified.is_empty());
@@ -4494,7 +6578,8 @@ async fn failed_widened_java_command_retries_with_native_references() {
     let (doc, _) = h.open("a.java", "int target;");
     h.wait_status("jdtls", ServerStatus::Ready).await;
     eventually(|| s.docs.lock().len() == 1).await;
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.locations.len(), 2);
     assert!(refs.classified.is_empty());
     assert_eq!(s.requested("workspace/executeCommand").len(), 2);
@@ -4518,7 +6603,8 @@ async fn superseded_java_command_does_not_fall_back() {
         // Invalid extension response after the source version changed.
         Some(json!({"failed": true}))
     }));
-    let err = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap_err();
+    let err =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, false, true, Default::default(), None).await.unwrap_err();
     assert_eq!(err.kind, ide_core::error::ErrorKind::Cancelled);
     assert!(s.requested("textDocument/references").is_empty());
 }
@@ -4532,7 +6618,8 @@ async fn cancelled_java_command_does_not_fall_back() {
     s.errors.lock().insert("workspace/executeCommand".into(), (-32800, "cancelled".into()));
     let (doc, _) = h.open("a.java", "int target;");
     h.wait_status("jdtls", ServerStatus::Ready).await;
-    let err = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap_err();
+    let err =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, false, true, Default::default(), None).await.unwrap_err();
     assert_eq!(err.kind, ide_core::error::ErrorKind::Cancelled);
     assert!(s.requested("textDocument/references").is_empty());
 }
@@ -4542,7 +6629,7 @@ async fn incomplete_reports(h: &Harness, doc: DocId) -> Vec<(&'static str, Optio
     let at = Pos::new(0, 5);
     let cancel = ide_core::CancellationToken::new;
     vec![
-        ("references", h.mgr.references(doc, at, true, true, cancel()).await.unwrap().incomplete),
+        ("references", h.mgr.references_streaming(doc, at, true, true, true, cancel(), None).await.unwrap().incomplete),
         ("rename", h.mgr.rename(doc, at, "renamed".into(), cancel()).await.unwrap().incomplete),
         ("callers", h.mgr.call_hierarchy(doc, at, HierarchyDirection::Incoming, cancel()).await.unwrap().incomplete),
     ]
@@ -4661,7 +6748,7 @@ async fn cancelling_a_references_search_stops_the_candidate_search_and_closes_fi
         tokio::time::sleep(Duration::from_millis(100)).await;
         later.cancel();
     });
-    let err = h.mgr.references(doc, Pos::new(0, 5), true, true, cancel).await.unwrap_err();
+    let err = h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, cancel, None).await.unwrap_err();
     assert_eq!(err.kind, ide_core::error::ErrorKind::Cancelled);
 
     // Cancelled while the server answers with a file opened for the search.
@@ -4682,7 +6769,7 @@ async fn cancelling_a_references_search_stops_the_candidate_search_and_closes_fi
     let mgr = h.mgr.clone();
     let search = tokio::spawn({
         let cancel = cancel.clone();
-        async move { mgr.references(doc, Pos::new(0, 5), true, true, cancel).await }
+        async move { mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, cancel, None).await }
     });
     eventually(|| gate.entered()).await;
     cancel.cancel();
@@ -4715,7 +6802,8 @@ async fn diagnostics_of_files_opened_for_a_search_stay_out_of_problems() {
     h.wait_status("mock", ServerStatus::Ready).await;
     eventually(|| s.docs.lock().len() == 1).await;
 
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.locations.len(), 2);
     // Published right after the didClose (analysis still running): dropped too.
     s.peer().notify("textDocument/publishDiagnostics", json!({ "uri": uri_of(&b), "diagnostics": diag })).unwrap();
@@ -4746,7 +6834,9 @@ async fn opening_a_file_during_a_search_takes_it_over() {
     eventually(|| s.docs.lock().len() == 1).await;
 
     let mgr = h.mgr.clone();
-    let search = tokio::spawn(async move { mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await });
+    let search = tokio::spawn(async move {
+        mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await
+    });
     // The server answers with the copy opened for the search.
     eventually(|| gate.entered()).await;
     let user_doc = DocId::next();
@@ -4797,7 +6887,8 @@ async fn an_empty_answer_while_indexing_is_retried_when_indexing_ends() {
         eventually(|| answered.load(Ordering::SeqCst)).await;
         peer.notify("$/progress", json!({ "token": "idx", "value": { "kind": "end" } })).unwrap();
     });
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.locations.len(), 1);
     assert_eq!(refs.incomplete, None);
     assert_eq!(s.requested("textDocument/references").len(), 2);
@@ -4807,10 +6898,12 @@ async fn an_empty_answer_while_indexing_is_retried_when_indexing_ends() {
         .notify("$/progress", json!({ "token": "again", "value": { "kind": "begin", "title": "Indexing" } }))
         .unwrap();
     h.wait_status("mock", ServerStatus::Busy).await;
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, true, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, true, true, Default::default(), None).await.unwrap();
     assert_eq!((refs.locations.len(), refs.incomplete), (1, None));
     s.respond("textDocument/references", json!([]));
-    let refs = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 5), true, false, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.locations.len(), 0);
     assert_eq!(refs.incomplete, Some(ReferencesIncomplete::Indexing));
 }
@@ -4934,11 +7027,13 @@ async fn external_projects_carry_plugin_files_and_module_aliases() {
     let geterr = s.requested("workspace/executeCommand").into_iter().find(|r| r["arguments"][0] == "geterr").unwrap();
     assert_eq!(geterr["arguments"][1]["files"], json!([app]), "an open file has a project in tsserver");
     assert_eq!(geterr["arguments"][2]["isAsync"], true);
-    let refs = h.mgr.references(doc, Pos::new(0, 18), false, false, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 18), false, false, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.incomplete, Some(ReferencesIncomplete::Indexing));
     diagnostics.open();
     h.wait_status("vtsls", ServerStatus::Ready).await;
-    let refs = h.mgr.references(doc, Pos::new(0, 18), false, false, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 18), false, false, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.incomplete, None);
     let requests = s.requested("workspace/executeCommand");
     let args = &requests[0]["arguments"][1];
@@ -5242,10 +7337,12 @@ async fn configuration_usages_merge_native_and_unsaved_profiles_without_sibling_
         1,
         "app:\n  time-out: still-wrong\n",
     );
-    let scoped = h.mgr.references(doc, Pos::new(0, 6), false, false, Default::default()).await.unwrap();
+    let scoped =
+        h.mgr.references_streaming(doc, Pos::new(0, 6), false, false, true, Default::default(), None).await.unwrap();
     assert_eq!(scoped.locations.len(), 1);
     assert!(s.requested("workspace/executeCommand").is_empty());
-    let refs = h.mgr.references(doc, Pos::new(0, 6), false, true, Default::default()).await.unwrap();
+    let refs =
+        h.mgr.references_streaming(doc, Pos::new(0, 6), false, true, true, Default::default(), None).await.unwrap();
     assert_eq!(refs.locations.len(), 4, "{refs:?}");
     assert!(refs.locations.iter().all(|l| !l.path.to_path_buf().starts_with(&sibling)));
     assert!(refs.locations.iter().any(|l| l.path.to_path_buf() == overlay));
@@ -5668,6 +7765,58 @@ async fn gradle_incompatible_jdk_log_is_surfaced_once_across_message_channels() 
     assert_eq!(messages, vec![failure, "after"]);
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_gradle_sync_is_surfaced_once_unless_an_incompatible_jdk_explains_it() {
+    let h = harness_for("java", "java", &[("jdtls", incremental_caps())], &[]);
+    let s = h.launcher.state("jdtls");
+    h.open("A.java", "class A {}");
+    h.wait_status("jdtls", ServerStatus::Ready).await;
+    let sync = |project: &str, cause: &str| {
+        format!(
+            "Nov 25, 2026, 2:00:14 PM Synchronize project {project} failed due to an error connecting to the Gradle build.\n\
+             org.gradle.tooling.BuildActionFailureException: The supplied phased action failed with an exception.\n\
+             \tat org.gradle.tooling.internal.consumer.DefaultPhasedBuildActionExecuter.run(DefaultPhasedBuildActionExecuter.java:68)\n\
+             Caused by: java.lang.IllegalArgumentException: {cause}\n\
+             \tat org.gradle.groovy.scripts.DefaultScript.apply(DefaultScript.java:133)"
+        )
+    };
+    // jdtls logs it below error level, and again on every sync.
+    for _ in 0..2 {
+        let message = sync("repro", "Unable to determine constructor argument #2");
+        s.peer().notify("window/logMessage", json!({ "type": 3, "message": message })).unwrap();
+    }
+    // An incompatible JDK fails the sync too, and jdtls then says so with its own fix.
+    s.peer()
+        .notify(
+            "window/logMessage",
+            json!({ "type": 3, "message": sync("old", "Unsupported class file major version 71") }),
+        )
+        .unwrap();
+    let jdk = "Can't use Java 27.0.1 and Gradle 7.5.1 to import Gradle project old.";
+    s.peer()
+        .notify("window/logMessage", json!({ "type": 1, "message": format!("{jdk}\njava.lang.Exception: details") }))
+        .unwrap();
+    let notes = || -> Vec<(String, String)> {
+        h.events
+            .lock()
+            .iter()
+            .filter_map(|e| match e {
+                IdeEvent::Notify { title, body: Some(b), .. } => Some((title.clone(), b.clone())),
+                _ => None,
+            })
+            .collect()
+    };
+    eventually(|| notes().iter().any(|(t, _)| t == "Gradle project sync failed")).await;
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let notes = notes();
+    let synced: Vec<_> =
+        notes.iter().filter(|(t, _)| t == "Gradle project sync failed").map(|(_, b)| b.as_str()).collect();
+    assert_eq!(synced.len(), 1, "{notes:?}");
+    assert!(synced[0].starts_with("Gradle could not sync repro. "), "{notes:?}");
+    assert!(synced[0].ends_with(" Cause: Unable to determine constructor argument #2"), "{notes:?}");
+    assert!(notes.iter().any(|(_, b)| b == jdk), "{notes:?}");
+}
+
 /// Pull Members Up / Push Members Down: the extension's answers, refusals and edits.
 #[tokio::test(flavor = "multi_thread")]
 async fn java_hierarchy_refactorings_use_the_extension_commands() {
@@ -5753,6 +7902,208 @@ async fn hierarchy_refactorings_name_the_servers_without_them() {
         .unwrap_err();
     assert_eq!(e.kind, ide_core::error::ErrorKind::Unavailable);
     assert_eq!(e.message, "plain doesn't support Pull Members Up");
+}
+
+// ------------------------------------------------------------------ kotlin-lsp debug server
+
+type KotlinDebug = Result<KotlinDebugServer, KotlinDebugUnavailable>;
+
+fn kotlin_lsp_harness() -> (Harness, Arc<MockState>) {
+    let h = harness_for("kotlin", "kt", &[("kotlin-lsp", incremental_caps())], &[]);
+    let s = h.launcher.state("kotlin-lsp");
+    s.respond("workspace/executeCommand", json!(4711));
+    (h, s)
+}
+
+fn spawn_kotlin_debug_server(
+    h: &Harness,
+    path: &Path,
+    import_wait: Duration,
+    cancel: &CancellationToken,
+) -> tokio::task::JoinHandle<KotlinDebug> {
+    let (mgr, path, cancel) = (h.mgr.clone(), path.to_owned(), cancel.clone());
+    tokio::spawn(async move { mgr.kotlin_debug_server(&path, import_wait, &cancel).await })
+}
+
+async fn joined(debug: tokio::task::JoinHandle<KotlinDebug>) -> KotlinDebug {
+    tokio::time::timeout(Duration::from_secs(10), debug).await.expect("kotlin_debug_server returned").unwrap()
+}
+
+fn import_progress(s: &MockState, value: Value) {
+    s.peer().notify("$/progress", json!({ "token": "import", "value": value })).unwrap();
+}
+
+fn import_finished(s: &MockState, folders: &[(&Path, &str)]) {
+    let folders: Vec<Value> = folders
+        .iter()
+        .map(|(dir, status)| json!({ "folderUri": format!("{}/", uri_of(dir)), "tool": "gradle", "status": status }))
+        .collect();
+    s.peer().notify("intellij/workspaceImportState", json!({ "phase": "FINISHED", "folders": folders })).unwrap();
+}
+
+fn debug_server_requests(s: &MockState) -> Vec<Value> {
+    s.requested("workspace/executeCommand")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn waits_for_the_import_before_starting_the_debug_server() {
+    // kotlin-lsp sends the progress end and FINISHED within the same millisecond, in either order.
+    for finished_first in [false, true] {
+        let (h, s) = kotlin_lsp_harness();
+        let main = h.root.join("Main.kt");
+        std::fs::write(&main, "fun main() {}").unwrap();
+        let debug = spawn_kotlin_debug_server(&h, &main, Duration::from_secs(10), &CancellationToken::new());
+        h.wait_status("kotlin-lsp", ServerStatus::Ready).await;
+        // Repeats every few seconds while the project stays usable: never waited for.
+        s.peer()
+            .notify("$/progress", json!({ "token": "index", "value": { "kind": "begin", "title": "Indexing" } }))
+            .unwrap();
+        import_progress(&s, json!({ "kind": "begin", "title": "Importing" }));
+        h.wait_status("kotlin-lsp", ServerStatus::Busy).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(debug_server_requests(&s).is_empty(), "started while importing");
+
+        if finished_first {
+            import_finished(&s, &[(&h.root, "SUCCESS")]);
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert!(debug_server_requests(&s).is_empty(), "started while the Importing task runs");
+            import_progress(&s, json!({ "kind": "end" }));
+        } else {
+            import_progress(&s, json!({ "kind": "end" }));
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert!(debug_server_requests(&s).is_empty(), "started before FINISHED");
+            import_finished(&s, &[(&h.root, "SUCCESS")]);
+        }
+
+        assert_eq!(joined(debug).await, Ok(KotlinDebugServer { port: 4711, root: h.root.clone() }));
+        assert_eq!(
+            debug_server_requests(&s),
+            vec![json!({ "command": "start_debug_server", "arguments": [uri_of(&h.root)] })],
+            "finished_first: {finished_first}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn still_importing_after_the_wait_is_reported() {
+    let (h, s) = kotlin_lsp_harness();
+    let r = h.mgr.kotlin_debug_server(&h.root, Duration::from_millis(200), &CancellationToken::new()).await;
+    assert_eq!(r, Err(KotlinDebugUnavailable::StillImporting));
+    assert!(debug_server_requests(&s).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelling_the_import_wait_reports_still_importing() {
+    let (h, s) = kotlin_lsp_harness();
+    let cancel = CancellationToken::new();
+    let debug = spawn_kotlin_debug_server(&h, &h.root, Duration::from_secs(60), &cancel);
+    h.wait_status("kotlin-lsp", ServerStatus::Ready).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!debug.is_finished());
+    cancel.cancel();
+    assert_eq!(joined(debug).await, Err(KotlinDebugUnavailable::StillImporting));
+    assert!(debug_server_requests(&s).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_import_of_the_module_is_reported() {
+    // Another module that failed does not keep this one from debugging.
+    for other_module_failed in [false, true] {
+        let (h, s) = kotlin_lsp_harness();
+        let main = h.root.join("app/Main.kt");
+        let debug = spawn_kotlin_debug_server(&h, &main, Duration::from_secs(10), &CancellationToken::new());
+        h.wait_status("kotlin-lsp", ServerStatus::Ready).await;
+        let lib = h.root.join("lib");
+        let (folders, expected) = if other_module_failed {
+            (
+                vec![(h.root.as_path(), "SUCCESS"), (lib.as_path(), "FAILED")],
+                Ok(KotlinDebugServer { port: 4711, root: h.root.clone() }),
+            )
+        } else {
+            (vec![(h.root.as_path(), "FAILED")], Err(KotlinDebugUnavailable::ImportFailed))
+        };
+        import_finished(&s, &folders);
+        assert_eq!(joined(debug).await, expected, "other_module_failed: {other_module_failed}");
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_import_is_reported_through_a_symlinked_root() {
+    // The debugged path names the root through a symlink, the folder URI names its target,
+    // and the file does not exist yet.
+    let (h, s) = kotlin_lsp_harness();
+    let links = tempfile::tempdir().unwrap();
+    let link = links.path().join("project");
+    std::os::unix::fs::symlink(&h.root, &link).unwrap();
+    let debug =
+        spawn_kotlin_debug_server(&h, &link.join("app/Main.kt"), Duration::from_secs(10), &CancellationToken::new());
+    h.wait_status("kotlin-lsp", ServerStatus::Ready).await;
+    import_finished(&s, &[(&h.root, "FAILED")]);
+    assert_eq!(joined(debug).await, Err(KotlinDebugUnavailable::ImportFailed));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_older_finished_import_does_not_count_after_a_restart() {
+    let (h, s) = kotlin_lsp_harness();
+    let debug = spawn_kotlin_debug_server(&h, &h.root, Duration::from_secs(10), &CancellationToken::new());
+    h.wait_status("kotlin-lsp", ServerStatus::Ready).await;
+    import_finished(&s, &[(&h.root, "SUCCESS")]);
+    assert!(joined(debug).await.is_ok());
+
+    let id = h.mgr.servers()[0].id;
+    h.mgr.restart(id).await.unwrap();
+    let r = h.mgr.kotlin_debug_server(&h.root, Duration::from_millis(300), &CancellationToken::new()).await;
+    assert_eq!(r, Err(KotlinDebugUnavailable::StillImporting));
+    assert_eq!(debug_server_requests(&s).len(), 1);
+
+    let debug = spawn_kotlin_debug_server(&h, &h.root, Duration::from_secs(10), &CancellationToken::new());
+    import_finished(&s, &[(&h.root, "SUCCESS")]);
+    assert_eq!(joined(debug).await, Ok(KotlinDebugServer { port: 4711, root: h.root.clone() }));
+    assert_eq!(debug_server_requests(&s).len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_kotlin_lsp_the_reason_is_not_configured() {
+    let wait = Duration::from_secs(1);
+    let cancel = CancellationToken::new();
+    let h = harness_for("kotlin", "kt", &[("kotlin-language-server", incremental_caps())], &[]);
+    assert_eq!(h.mgr.kotlin_debug_server(&h.root, wait, &cancel).await, Err(KotlinDebugUnavailable::NotConfigured));
+
+    let (h, s) = kotlin_lsp_harness();
+    s.missing.store(true, Ordering::SeqCst);
+    assert_eq!(h.mgr.kotlin_debug_server(&h.root, wait, &cancel).await, Err(KotlinDebugUnavailable::NotInstalled));
+
+    let (h, _) = kotlin_lsp_harness();
+    h.mgr.set_config_hook(Box::new(|cfg, _| cfg.launch_error = Some("needs JDK 21".into())));
+    assert_eq!(
+        h.mgr.kotlin_debug_server(&h.root, wait, &cancel).await,
+        Err(KotlinDebugUnavailable::NotStarted("needs JDK 21".into()))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_debug_server_error_is_reported() {
+    let (h, s) = kotlin_lsp_harness();
+    s.errors.lock().insert("workspace/executeCommand".into(), (-32603, "boom".into()));
+    let debug = spawn_kotlin_debug_server(&h, &h.root, Duration::from_secs(10), &CancellationToken::new());
+    h.wait_status("kotlin-lsp", ServerStatus::Ready).await;
+    import_finished(&s, &[(&h.root, "SUCCESS")]);
+    match joined(debug).await {
+        Err(KotlinDebugUnavailable::Failed(m)) => assert!(m.contains("boom"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+
+    s.errors.lock().clear();
+    for port in [json!(0), json!(65536), json!("4711"), Value::Null] {
+        s.respond("workspace/executeCommand", port.clone());
+        match h.mgr.kotlin_debug_server(&h.root, Duration::from_secs(1), &CancellationToken::new()).await {
+            Err(KotlinDebugUnavailable::Failed(m)) => {
+                assert_eq!(m, format!("unexpected debug server port: {port}"))
+            }
+            other => panic!("{port}: {other:?}"),
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -5858,7 +8209,8 @@ async fn injected_documents_route_and_resolve_without_exposing_virtual_files() {
             assert_eq!(locations[0].path.0, path);
             assert_eq!(locations[0].range, rng(0, 4, 0, 7));
         }
-        let refs = h.mgr.references(doc, Pos::new(0, 5), true, false, Default::default()).await.unwrap();
+        let refs =
+            h.mgr.references_streaming(doc, Pos::new(0, 5), true, false, true, Default::default(), None).await.unwrap();
         assert_eq!(refs.locations[0].path.0, path);
         let highlights = h.mgr.document_highlights(doc, Pos::new(0, 5)).await.unwrap();
         assert_eq!(highlights[0].range, rng(0, 4, 0, 7));
@@ -5942,4 +8294,386 @@ async fn missing_injected_server_uses_the_normal_single_install_notification() {
     assert_eq!(h.statuses("embedded").iter().filter(|s| **s == ServerStatus::Missing).count(), 1);
     h.mgr.did_close(host);
     h.mgr.shutdown_all().await;
+}
+
+/// #2248: `go.mod` files are served by gopls with the language id it
+/// understands, and its pushed diagnostics reach the Problems view.
+#[tokio::test(flavor = "multi_thread")]
+async fn gomod_files_are_served_by_gopls() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dunce::canonicalize(dir.path()).unwrap();
+    let registry = Arc::new(LanguageRegistry::load(None).unwrap());
+    // The bundled configs route Go files of every kind to gopls.
+    for lang in ["go", "go.mod", "go.work"] {
+        let cfg = registry.get(&LanguageId::new(lang)).unwrap_or_else(|| panic!("{lang} has no language definition"));
+        assert!(cfg.language_servers.iter().any(|s| s.name == "gopls"), "{lang} is not served by gopls");
+    }
+    let launcher = Arc::new(MockLauncher::default());
+    *launcher.state("gopls").caps.lock() = incremental_caps();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = {
+        let events = events.clone();
+        Arc::new(move |e: IdeEvent| events.lock().push(e))
+    };
+    let mgr = LspManager::with_launcher(root.clone(), registry, sink, launcher.clone());
+    let text = "module example.com/app\n\ngo 1.22\n";
+    let path = root.join("go.mod");
+    std::fs::write(&path, text).unwrap();
+    assert!(mgr.serves_path(&path));
+    mgr.did_open(DocId::next(), &path, &LanguageId::new("go.mod"), 1, text);
+    let gopls = launcher.state("gopls");
+    eventually(|| !gopls.notified("textDocument/didOpen").is_empty()).await;
+    // gopls only treats the file as a module file for the `go.mod` id.
+    let opened = &gopls.notified("textDocument/didOpen")[0]["textDocument"];
+    assert_eq!(opened["languageId"], json!("go.mod"));
+    // The module root (the go.mod itself is the marker) scopes the server.
+    let init = &gopls.requested("initialize")[0];
+    assert_eq!(init["rootUri"], json!(uri_of(&root)));
+    // Same startup options as when a `.go` file launches the server first.
+    assert_eq!(init["initializationOptions"]["semanticTokens"], json!(true));
+    // Pushed go.mod diagnostics surface with gopls as their source.
+    gopls
+        .peer()
+        .notify(
+            "textDocument/publishDiagnostics",
+            json!({ "uri": uri_of(&path), "diagnostics": [{
+                "range": {"start": {"line": 2, "character": 3}, "end": {"line": 2, "character": 7}},
+                "severity": 1, "message": "missing requirement", "source": "gopls" }] }),
+        )
+        .unwrap();
+    eventually(|| {
+        events
+            .lock()
+            .iter()
+            .any(|e| matches!(e, IdeEvent::Diagnostics { path: p, source, .. } if p.0 == path && source == "gopls"))
+    })
+    .await;
+    let items = events
+        .lock()
+        .iter()
+        .filter_map(|e| match e {
+            IdeEvent::Diagnostics { path: p, items, .. } if p.0 == path => Some(items.clone()),
+            _ => None,
+        })
+        .next_back()
+        .unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].message, "missing requirement");
+    mgr.shutdown_all().await;
+}
+
+// ------------------------------------------------------------------ notebooks
+
+fn notebook_caps() -> Value {
+    let mut caps = incremental_caps();
+    caps["notebookDocumentSync"] = json!({
+        "notebookSelector": [{
+            "notebook": { "scheme": "file", "notebookType": "jupyter-notebook" },
+            "cells": [{ "language": "python" }]
+        }]
+    });
+    caps
+}
+
+fn cells(cells: &[(&str, &str)]) -> Vec<ide_lsp::NotebookCell> {
+    cells.iter().map(|(id, source)| ide_lsp::NotebookCell { id: (*id).into(), source: (*source).into() }).collect()
+}
+
+fn cell_texts(open: &Value) -> Vec<(String, String)> {
+    open["cellTextDocuments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| (c["uri"].as_str().unwrap().to_owned(), c["text"].as_str().unwrap().to_owned()))
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn notebook_cells_are_documents_of_the_servers_that_sync_notebooks() {
+    let h = harness_for("python", "py", &[("nb", notebook_caps()), ("plain", incremental_caps())], &[]);
+    let path = h.root.join("analysis.ipynb");
+    let python = LanguageId::new("python");
+    h.mgr.sync_notebook(&path, &python, &cells(&[("a", "import os\n"), ("b", "os.pa")]));
+    h.wait_status("nb", ServerStatus::Ready).await;
+    h.wait_status("plain", ServerStatus::Ready).await;
+    let (nb, plain) = (h.launcher.state("nb"), h.launcher.state("plain"));
+    eventually(|| !nb.notified("notebookDocument/didOpen").is_empty()).await;
+
+    let docs = h.mgr.notebook_cells(&path);
+    assert_eq!(docs.iter().map(|d| d.cell.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+    assert_eq!(docs[0].uri, ide_lsp::cell_uri(&path, "a"));
+    let open = &nb.notified("notebookDocument/didOpen")[0];
+    assert_eq!(open["notebookDocument"]["uri"], uri_of(&path));
+    assert_eq!(open["notebookDocument"]["notebookType"], "jupyter-notebook");
+    assert_eq!(open["notebookDocument"]["cells"][1], json!({ "kind": 2, "document": docs[1].uri }));
+    assert_eq!(
+        cell_texts(open),
+        [(docs[0].uri.clone(), "import os\n".to_owned()), (docs[1].uri.clone(), "os.pa".to_owned())]
+    );
+    assert!(plain.notified("notebookDocument/didOpen").is_empty() && plain.notified("textDocument/didOpen").is_empty());
+
+    // Requests address a cell like a file, and go only to the server it is open on.
+    nb.respond("textDocument/completion", json!({ "isIncomplete": false, "items": [{ "label": "path" }] }));
+    plain.respond("textDocument/completion", json!({ "isIncomplete": false, "items": [{ "label": "wrong" }] }));
+    let list = h.mgr.completion(docs[1].doc, Pos::new(0, 5), None, Default::default()).await.unwrap();
+    assert_eq!(list.items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(), ["path"]);
+    assert_eq!(nb.requested("textDocument/completion")[0]["textDocument"]["uri"], docs[1].uri);
+    assert!(plain.requested("textDocument/completion").is_empty());
+
+    // Its diagnostics are reported under the cell's URI.
+    nb.peer()
+        .notify(
+            "textDocument/publishDiagnostics",
+            json!({ "uri": docs[1].uri, "diagnostics": [{
+                "range": {"start":{"line":0,"character":3},"end":{"line":0,"character":5}}, "message": "no attribute pa"
+            }] }),
+        )
+        .unwrap();
+    let cell_path = PathBuf::from(&docs[1].uri);
+    eventually(|| {
+        h.events
+            .lock()
+            .iter()
+            .any(|e| matches!(e, IdeEvent::Diagnostics { path, items, .. } if path.0 == cell_path && items.len() == 1))
+    })
+    .await;
+
+    h.mgr.close_notebook(&path);
+    eventually(|| !nb.notified("notebookDocument/didClose").is_empty()).await;
+    assert_eq!(nb.notified("notebookDocument/didClose")[0]["cellTextDocuments"].as_array().unwrap().len(), 2);
+    assert!(h.mgr.notebook_cells(&path).is_empty());
+    assert!(h.mgr.completion(docs[1].doc, Pos::new(0, 5), None, Default::default()).await.is_err());
+    let last = h
+        .events
+        .lock()
+        .iter()
+        .filter_map(|e| match e {
+            IdeEvent::Diagnostics { path, items, source } if path.0 == cell_path && source == "nb" => Some(items.len()),
+            _ => None,
+        })
+        .next_back();
+    assert_eq!(last, Some(0), "a closed notebook's diagnostics are cleared");
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn notebook_edits_change_cell_text_and_reorders_reopen_it() {
+    let h = harness_for("python", "py", &[("nb", notebook_caps())], &[]);
+    let path = h.root.join("n.ipynb");
+    let python = LanguageId::new("python");
+    h.mgr.sync_notebook(&path, &python, &cells(&[("a", "x = 1\n"), ("b", "print(x)\n")]));
+    h.wait_status("nb", ServerStatus::Ready).await;
+    let nb = h.launcher.state("nb");
+    eventually(|| nb.notified("notebookDocument/didOpen").len() == 1).await;
+    let before = h.mgr.notebook_cells(&path);
+
+    // Typing in one cell sends only that cell's text.
+    h.mgr.sync_notebook(&path, &python, &cells(&[("a", "x = 1\n"), ("b", "print(x + 1)\n")]));
+    h.mgr.sync_notebook(&path, &python, &cells(&[("a", "x = 1\n"), ("b", "print(x + 1)\n")]));
+    eventually(|| !nb.notified("notebookDocument/didChange").is_empty()).await;
+    let changes = nb.notified("notebookDocument/didChange");
+    assert_eq!(changes.len(), 1, "an unchanged notebook sends nothing");
+    let content = &changes[0]["change"]["cells"]["textContent"];
+    assert_eq!(content.as_array().unwrap().len(), 1);
+    assert_eq!(content[0]["document"]["uri"], before[1].uri);
+    assert_eq!(content[0]["changes"], json!([{ "text": "print(x + 1)\n" }]));
+    assert_eq!(changes[0]["notebookDocument"]["version"], 2);
+
+    // Inserting and moving cells reopens the notebook; kept cells keep their documents.
+    h.mgr.sync_notebook(&path, &python, &cells(&[("c", "import math\n"), ("b", "print(x + 1)\n"), ("a", "x = 1\n")]));
+    eventually(|| nb.notified("notebookDocument/didOpen").len() == 2).await;
+    assert_eq!(nb.notified("notebookDocument/didClose").len(), 1);
+    let after = h.mgr.notebook_cells(&path);
+    assert_eq!(after.iter().map(|d| d.cell.as_str()).collect::<Vec<_>>(), ["c", "b", "a"]);
+    assert_eq!((after[1].doc, after[2].doc), (before[1].doc, before[0].doc));
+    let reopened = &nb.notified("notebookDocument/didOpen")[1];
+    assert_eq!(
+        cell_texts(reopened).into_iter().map(|(_, t)| t).collect::<Vec<_>>(),
+        ["import math\n", "print(x + 1)\n", "x = 1\n"]
+    );
+
+    // A restarted server gets the notebook again.
+    let launches = nb.launches.load(Ordering::SeqCst);
+    let server = h.mgr.servers()[0].id;
+    h.mgr.restart(server).await.unwrap();
+    eventually(|| nb.launches.load(Ordering::SeqCst) > launches && nb.notified("notebookDocument/didOpen").len() == 3)
+        .await;
+    h.mgr.shutdown_all().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn external_go_file_reuses_module_and_reopens_after_restart() {
+    let h = harness_configured("go", "go", &[("gopls", incremental_caps())], |cfg| {
+        cfg.root_markers = vec!["go.work".into(), "go.mod".into()];
+    });
+    h.launcher.state("gopls").omit_server_info.store(true, Ordering::SeqCst);
+    let module = h.root.join("service");
+    std::fs::create_dir_all(&module).unwrap();
+    std::fs::write(module.join("go.mod"), "module example.test/service\n").unwrap();
+    h.open("service/main.go", "package service\n");
+    h.wait_status("gopls", ServerStatus::Ready).await;
+    let cache = tempfile::tempdir().unwrap();
+    let external = cache.path().join("dependency.go");
+    std::fs::write(&external, "package dependency\n").unwrap();
+    let doc = DocId::next();
+    h.mgr.did_open(doc, &external, &h.lang, 1, "package dependency\n");
+    let state = h.launcher.state("gopls");
+    let opened_external = || {
+        state.notified("textDocument/didOpen").iter().filter(|p| p["textDocument"]["uri"] == uri_of(&external)).count()
+    };
+    eventually(|| opened_external() == 1).await;
+    assert_eq!(state.launches.load(Ordering::SeqCst), 1);
+    let id = h.mgr.servers()[0].id;
+    h.mgr.restart(id).await.unwrap();
+    eventually(|| opened_external() == 2).await;
+    assert_eq!(state.launches.load(Ordering::SeqCst), 2);
+    assert_eq!(h.mgr.servers().len(), 1);
+    let inits = state.requested("initialize");
+    assert_eq!(inits.len(), 2);
+    assert!(inits.iter().all(|p| p["rootUri"] == uri_of(&module)));
+    h.mgr.shutdown_all().await;
+}
+
+/// A plugin's request (`language-servers` in the plugin API) reaches the running server
+/// named in the language definition: only the server's own methods, and never a start.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plugin_request_reaches_only_a_running_servers_own_methods() {
+    let servers = [("main", incremental_caps()), ("alt", incremental_caps())];
+    let h = harness_for("mock", "mk", &servers, &["alt"]);
+    let _ = h.open("a.mk", "x");
+    h.wait_status("main", ServerStatus::Ready).await;
+    let s = h.launcher.state("main");
+    s.respond("mock/routes", json!([{ "uri": "/users", "name": "users.index" }]));
+    let cancel = CancellationToken::new();
+    let timeout = Duration::from_secs(5);
+
+    // A request: the params arrive, the result comes back.
+    let routes = h
+        .mgr
+        .server_request(&h.root, "main", "mock/routes", Some(json!({ "method": "GET" })), &cancel, timeout)
+        .await
+        .unwrap();
+    assert_eq!(routes, json!([{ "uri": "/users", "name": "users.index" }]));
+    assert_eq!(s.requested("mock/routes"), [json!({ "method": "GET" })]);
+
+    // A notification.
+    h.mgr.server_notify(&h.root, "main", "mock/changed", Some(json!({ "what": "routes" }))).unwrap();
+    eventually(|| s.notified("mock/changed") == [json!({ "what": "routes" })]).await;
+
+    // LSP's own methods are refused before anything is sent.
+    for method in ["textDocument/hover", "workspace/executeCommand", "$/cancelRequest", "shutdown", "initialize"] {
+        let before = (s.requested(method).len(), s.notified(method).len());
+        let e = h.mgr.server_request(&h.root, "main", method, None, &cancel, timeout).await.unwrap_err();
+        assert_eq!(e.kind, ide_core::error::ErrorKind::InvalidInput, "{method}");
+        assert_eq!(
+            h.mgr.server_notify(&h.root, "main", method, None).unwrap_err().kind,
+            ide_core::error::ErrorKind::InvalidInput
+        );
+        assert_eq!((s.requested(method).len(), s.notified(method).len()), before, "{method}");
+    }
+
+    // A server that is defined but not running is not started; an unknown name is the same.
+    for server in ["alt", "nobody"] {
+        let e = h.mgr.server_request(&h.root, server, "mock/routes", None, &cancel, timeout).await.unwrap_err();
+        assert_eq!(e.kind, ide_core::error::ErrorKind::NotFound, "{server}");
+        assert_eq!(
+            h.mgr.server_notify(&h.root, server, "mock/changed", None).unwrap_err().kind,
+            ide_core::error::ErrorKind::NotFound
+        );
+    }
+    assert_eq!(h.launcher.state("alt").launches.load(Ordering::SeqCst), 0);
+    assert!(h.statuses("alt").is_empty());
+
+    // A cancelled invocation ends the request.
+    cancel.cancel();
+    let e = h.mgr.server_request(&h.root, "main", "mock/routes", None, &cancel, timeout).await.unwrap_err();
+    assert_eq!(e.kind, ide_core::error::ErrorKind::Cancelled);
+}
+
+/// A server that advertises `experimental.phoxite.refactor` gets Pull Members Up / Push
+/// Members Down as its own `phoxite/refactor/*` requests, whatever its name.
+#[tokio::test(flavor = "multi_thread")]
+async fn hierarchy_refactorings_use_phoxites_requests_when_the_server_advertises_them() {
+    let mut caps = incremental_caps();
+    caps["experimental"] = json!({ "phoxite": { "laravel": true, "refactor": true } });
+    let h = harness_for("php", "php", &[("any-name", caps)], &[]);
+    let s = h.launcher.state("any-name");
+    *s.responder.lock() = Some(Arc::new(|_, method, params| {
+        let uri = params["uri"].clone();
+        match (method, params["position"]["line"].as_u64()) {
+            ("phoxite/refactor/hierarchyMembers", Some(0)) => Some(json!({
+                "className": "Dog",
+                "targets": [{ "id": "App\\Animal", "name": "Animal", "qualifiedName": "App\\Animal", "interface": false }],
+                "members": [
+                    { "id": "method:bark", "label": "bark(): string", "kind": "method", "selected": true, "abstractable": true },
+                    { "id": "constant:LEGS", "label": "LEGS", "kind": "field", "selected": false, "abstractable": false },
+                ],
+            })),
+            ("phoxite/refactor/hierarchy", _) => Some(json!({
+                "problems": [{ "severity": "warning", "message": "bark() uses $tail, which stays in Dog" }],
+                "edit": { "changes": { uri.as_str().unwrap(): [
+                    { "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 5 } }, "newText": "<?php" }
+                ] } },
+            })),
+            _ => None,
+        }
+    }));
+    let text =
+        format!("<?php class Dog extends Animal {{ function bark(): string {{ return ''; }} }}{}", "\n".repeat(9));
+    let (doc, path) = h.open("Dog.php", &text);
+    h.wait_status("any-name", ServerStatus::Ready).await;
+    eventually(|| s.docs.lock().len() == 1).await;
+
+    let info =
+        h.mgr.hierarchy_members(doc, Pos::new(0, 40), HierarchyRefactoring::PullUp, Default::default()).await.unwrap();
+    assert_eq!((info.class_name.as_str(), info.targets[0].qualified_name.as_str()), ("Dog", "App\\Animal"));
+    assert!(info.members[0].selected && info.members[0].abstractable);
+    assert_eq!(
+        info.members.iter().map(|m| m.kind).collect::<Vec<_>>(),
+        [HierarchyMemberKind::Method, HierarchyMemberKind::Field]
+    );
+    assert_eq!(
+        s.requested("phoxite/refactor/hierarchyMembers"),
+        [json!({ "uri": uri_of(&path), "position": { "line": 0, "character": 40 }, "kind": "pullUp" })]
+    );
+
+    let choices = vec![HierarchyChoice { id: "method:bark".into(), make_abstract: true }];
+    let done = h
+        .mgr
+        .hierarchy_refactor(
+            doc,
+            Pos::new(0, 40),
+            HierarchyRefactoring::PullUp,
+            Some("App\\Animal".into()),
+            choices,
+            Default::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(done.problems[0].severity, ProblemSeverity::Warning);
+    let edit = done.edit.unwrap();
+    assert!(matches!(&edit.files[..], [FileEdit::Edit { path: p, edits, .. }] if p == &path && edits.len() == 1));
+    assert_eq!(
+        s.requested("phoxite/refactor/hierarchy"),
+        [json!({
+            "uri": uri_of(&path), "position": { "line": 0, "character": 40 }, "kind": "pullUp",
+            "target": "App\\Animal", "choices": [{ "id": "method:bark", "makeAbstract": true }],
+        })]
+    );
+    assert!(s.requested("workspace/executeCommand").is_empty(), "not the JDT extension's commands");
+
+    // The server refuses a position with `RequestFailed` and a message for the user.
+    let refusal = (-32803, "'Dog' has no parent class or interface in the project".to_owned());
+    s.errors.lock().insert("phoxite/refactor/hierarchyMembers".into(), refusal);
+    let refused = h.mgr.hierarchy_members(doc, Pos::new(9, 0), HierarchyRefactoring::PullUp, Default::default()).await;
+    let e = refused.unwrap_err();
+    assert_eq!(e.kind, ide_core::error::ErrorKind::InvalidInput);
+    assert_eq!(e.message, "'Dog' has no parent class or interface in the project");
+
+    // Any other error is the server failing, not a reason to show as the user's mistake.
+    s.errors.lock().insert("phoxite/refactor/hierarchyMembers".into(), (-32603, "index out of bounds".to_owned()));
+    let failed = h.mgr.hierarchy_members(doc, Pos::new(9, 0), HierarchyRefactoring::PullUp, Default::default()).await;
+    let e = failed.unwrap_err();
+    assert_eq!(e.kind, ide_core::error::ErrorKind::Protocol);
+    assert_eq!(e.message, "any-name: index out of bounds");
 }

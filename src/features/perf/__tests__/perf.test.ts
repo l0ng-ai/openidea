@@ -141,7 +141,15 @@ describe("polling", () => {
 });
 
 const row = (category: ProcessMemory["category"], label: string, mb: number | null, detail: string | null = null) =>
-  ({ category, label, detail, processes: 1, bytes: mb == null ? null : mb * MB }) satisfies ProcessMemory;
+  ({
+    category,
+    label,
+    detail,
+    pid: 1,
+    processes: 1,
+    bytes: mb == null ? null : mb * MB,
+    cpuPercent: null,
+  }) satisfies ProcessMemory;
 
 describe("memory breakdown", () => {
   const rows: ProcessMemory[] = [
@@ -150,7 +158,7 @@ describe("memory breakdown", () => {
     row("app", "GPU", 40),
     row("app", "Networking", 20),
     row("languageServer", "jdtls", 900, "idea"),
-    { ...row("languageServer", "rust-analyzer", 226, "idea"), processes: 2 },
+    { ...row("languageServer", "rust-analyzer", 226, "idea"), pid: 300, processes: 2, cpuPercent: 12.4 },
     row("process", "zsh", null, "Terminal"),
   ];
 
@@ -179,8 +187,14 @@ describe("memory breakdown", () => {
       label: "rust-analyzer",
       detail: "idea",
       value: "226 MB",
+      cpu: "12%",
+      pid: 300,
       processes: 2,
+      endable: true,
     });
+    expect(sections[1]!.cpu).toBe("12%");
+    expect(sections[0]!.cpu).toBe("–");
+    expect(sections[0]!.rows.every((r) => !r.endable)).toBe(true);
     expect(memorySections([])).toEqual([]);
   });
 });

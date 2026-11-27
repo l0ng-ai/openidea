@@ -1,9 +1,10 @@
-import { useMemo } from "react";
+import { useMemo, type ReactNode } from "react";
 import { Icon, T } from "@/ui";
-import { useEditorBanners, type EditorBannerContribution } from "@/workbench/contributions";
+import { useEditorBanners, type EditorBanner, type EditorBannerContribution } from "@/workbench/contributions";
 import { useDocMeta } from "../model/document";
 import styles from "./EditorArea.module.css";
 import { classFileBreakpointReason } from "@/platform/classFiles";
+import { gitRevisionOf } from "@/platform/virtualDocs";
 import { tx } from "@/platform/i18n";
 import { executeAction } from "@/platform/actions";
 import { useLibrarySources } from "../librarySources";
@@ -42,77 +43,82 @@ export function VirtualBanner({
 }) {
   const reason = classFileBreakpointReason(path);
   const sources = useLibrarySources(path, decompiled);
+  const message = decompiled
+    ? path.startsWith("csharp:")
+      ? "Decompiled assembly (read-only)."
+      : "Decompiled .class file: sources are not available."
+    : gitRevisionOf(path)
+      ? "File at a Git revision (read-only)."
+      : "Library source (read-only).";
+  const actions: NonNullable<EditorBanner["actions"]> = [];
+  if (sources.busy) {
+    actions.push({ label: "Cancel", run: () => void executeAction("editor.cancelSourceDownload", path) });
+  } else {
+    if (sources.download)
+      actions.push({ label: "Download Sources", run: () => void executeAction("editor.downloadSources", path) });
+    if (sources.choose)
+      actions.push({ label: "Choose Sources…", run: () => void executeAction("editor.chooseSources", path) });
+  }
   return (
-    <div className={`${styles.banner} ${styles.libraryBanner}`} role="status">
-      <Icon name={decompiled ? "info" : "lock"} size={14} className={styles.bannerIcon} />
-      <span className={styles.virtualBannerText}>
-        {decompiled
-          ? path.startsWith("csharp:")
-            ? tx("Decompiled assembly (read-only).")
-            : tx("Decompiled .class file: sources are not available.")
-          : tx("Library source (read-only).")}
+    <Banner icon={decompiled ? "info" : "lock"} level="warning" actions={actions}>
+      <span>
+        <T>{message}</T>
         {reason && ` ${tx(reason)}`}
       </span>
-      {sources.message && <span>{tx(sources.message)}</span>}
-      {sources.busy ? (
+      {sources.message && (
         <>
-          <span>{tx("Loading library sources…")}</span>
-          <button
-            type="button"
-            className={styles.bannerLink}
-            onClick={() => void executeAction("editor.cancelSourceDownload", path)}
-          >
-            <T>Cancel</T>
-          </button>
+          {" "}
+          <span>{tx(sources.message)}</span>
         </>
-      ) : (
+      )}
+      {sources.busy && (
         <>
-          {sources.download && (
-            <button
-              type="button"
-              className={styles.bannerLink}
-              onClick={() => void executeAction("editor.downloadSources", path)}
-            >
-              <T>Download Sources</T>
-            </button>
-          )}
-          {sources.choose && (
-            <button
-              type="button"
-              className={styles.bannerLink}
-              onClick={() => void executeAction("editor.chooseSources", path)}
-            >
-              <T>Choose Sources…</T>
-            </button>
-          )}
+          {" "}
+          <span>
+            <T>Loading library sources…</T>
+          </span>
         </>
       )}
       {description && (
-        <span className={styles.bannerDetail} title={description}>
-          {description}
-        </span>
+        <>
+          {" "}
+          <span className={styles.bannerDetail} title={description}>
+            {description}
+          </span>
+        </>
+      )}
+    </Banner>
+  );
+}
+
+function Banner({ icon, level, actions, children }: Omit<EditorBanner, "text"> & { children: ReactNode }) {
+  const warning = level === "warning";
+  return (
+    <div className={`${styles.banner} ${warning ? styles.warningBanner : ""}`} role="status">
+      <span className={styles.bannerMessage}>
+        <Icon name={icon ?? (warning ? "warning" : "info")} size={16} className={styles.bannerIcon} />
+        <span className={styles.bannerText}>{children}</span>
+      </span>
+      {!!actions?.length && (
+        <div className={styles.bannerActions}>
+          {actions.map(({ label, run }) => (
+            <button key={label} type="button" className={styles.bannerLink} onClick={run}>
+              <T>{label}</T>
+            </button>
+          ))}
+        </div>
       )}
     </div>
   );
 }
 
 function ContributedBanner({ banner, path }: { banner: EditorBannerContribution; path: string }) {
-  const b = banner.useBanner(path);
-  if (!b) return null;
-  return (
-    <div className={`${styles.banner} ${b.level === "warning" ? styles.libraryBanner : ""}`} role="status">
-      <Icon name={b.icon ?? (b.level === "warning" ? "warning" : "info")} size={14} className={styles.bannerIcon} />
-      <span className={styles.bannerText}>
-        <T>{b.text}</T>
-      </span>
-      <span className={styles.bannerSpacer} />
-      {b.actions?.map((a) => (
-        <button key={a.label} type="button" className={styles.bannerLink} onClick={a.run}>
-          <T>{a.label}</T>
-        </button>
-      ))}
-    </div>
-  );
+  const notice = banner.useBanner(path);
+  return notice ? (
+    <Banner icon={notice.icon} level={notice.level} actions={notice.actions}>
+      <T>{notice.text}</T>
+    </Banner>
+  ) : null;
 }
 
 /** Banners features contribute for `path` (`registerEditorBanner`), in order. */

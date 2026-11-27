@@ -1,12 +1,14 @@
 /**
  * Synchronized scrolling of the merge editor's three panes. Each side pane lines up with
  * the result through the changes between them (the diff viewer's SyncScrollSupport
- * mapping), and one side follows the other through the result.
+ * mapping), and one side follows the other through the result. Horizontally they all keep
+ * the same offset.
  */
 import { Chunk } from "@codemirror/merge";
 import type { Text } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { bandAt, docOffset, extent, transferY } from "./diffScroll";
+import { ideaDiffConfig } from "./diffOptions";
 
 export type MergePane = "ours" | "result" | "theirs";
 const PANES: readonly MergePane[] = ["ours", "result", "theirs"];
@@ -32,6 +34,10 @@ export class ScrollEchoes<K> {
   }
 }
 
+// Lined up by IDEA's line comparison. `Chunk.build` with no config runs an unbounded
+// character diff, which takes minutes on a long file such as a lockfile.
+const LINES = ideaDiffConfig("none", "lines");
+
 /** Starts scrolling `views` together; returns the function that stops it. */
 export function syncMergeScroll(views: Record<MergePane, EditorView>): () => void {
   const built = new Map<MergePane, { a: Text; b: Text; chunks: readonly Chunk[] }>();
@@ -40,7 +46,7 @@ export function syncMergeScroll(views: Record<MergePane, EditorView>): () => voi
     const b = views.result.state.doc;
     const hit = built.get(side);
     if (hit && hit.a === a && hit.b === b) return hit.chunks;
-    const fresh = Chunk.build(a, b);
+    const fresh = Chunk.build(a, b, LINES);
     built.set(side, { a, b, chunks: fresh });
     return fresh;
   };
@@ -86,10 +92,30 @@ export function syncMergeScroll(views: Record<MergePane, EditorView>): () => voi
     }
   };
 
+  const lefts = new ScrollEchoes<MergePane>();
+  /** Gives the other panes `from`'s horizontal offset. */
+  const followLeft = (from: MergePane) => {
+    const left = views[from].scrollDOM.scrollLeft;
+    for (const to of PANES) {
+      if (to === from) continue;
+      const el = views[to].scrollDOM;
+      if (Math.abs(el.scrollLeft - left) < 1) continue;
+      const before = el.scrollLeft;
+      el.scrollLeft = left;
+      if (el.scrollLeft !== before) lefts.mark(to, el.scrollLeft);
+    }
+  };
+
   const offs = PANES.map((pane) => {
     const el = views[pane].scrollDOM;
+    // A scroll event doesn't say which way it went: compare with the last one.
+    let last = { top: el.scrollTop, left: el.scrollLeft };
     const onScroll = () => {
-      if (!echoes.take(pane, el.scrollTop)) follow(pane);
+      const { scrollTop: top, scrollLeft: left } = el;
+      const moved = { top: top !== last.top, left: left !== last.left };
+      last = { top, left };
+      if (moved.left && !lefts.take(pane, left)) followLeft(pane);
+      if (moved.top && !echoes.take(pane, top)) follow(pane);
     };
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => el.removeEventListener("scroll", onScroll);

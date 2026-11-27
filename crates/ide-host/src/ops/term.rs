@@ -1,13 +1,15 @@
-use super::Emit;
+use super::{Channel, Emit};
 use crate::Host;
-use ide_core::{IdeResult, TerminalId};
-use ide_terminal::{TerminalInfo, TerminalOptions};
+use ide_command::command;
+use ide_core::{IdeResult, IpcBytes, TerminalId};
+use ide_terminal::{TerminalAttach, TerminalInfo, TerminalOptions, TerminalSessionInfo};
 
 mod images;
 
 const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
 
-pub async fn store_image(host: &Host, id: TerminalId, data: Vec<u8>, mime: String) -> IdeResult<String> {
+#[command(trust = always)]
+pub async fn term_store_image(host: &Host, id: TerminalId, data: IpcBytes, mime: String) -> IdeResult<String> {
     if data.len() > MAX_IMAGE_BYTES {
         return Err(ide_core::IdeError::invalid("image is too large to paste (limit 20 MB)"));
     }
@@ -18,12 +20,16 @@ pub async fn store_image(host: &Host, id: TerminalId, data: Vec<u8>, mime: Strin
     host.blocking(move || images::store(&data_dir, &data, &mime)).await
 }
 
-pub fn spawn(
+/// Async to stay off the main thread: forking the IDE (its whole address space)
+/// to start the shell takes tens of milliseconds, a frozen UI if run there.
+#[command(trust = always)]
+pub async fn term_spawn(
     host: &Host,
     window: &str,
     mut options: TerminalOptions,
-    on_output: Emit<String>,
+    on_output: Channel<String>,
 ) -> IdeResult<TerminalInfo> {
+    apply_output_rate(host, window);
     if !host.project(window).is_ok_and(|p| p.is_trusted()) {
         // Project terminal settings can otherwise start a command as soon as a tab restores.
         let global = host.global_settings.effective().terminal;
@@ -41,56 +47,212 @@ pub fn spawn(
         .filter(|p| p.is_trusted())
         .and_then(|p| ide_sdk::apply::terminal_activation(&p.root, &p.settings.effective(), &shell));
     let key = host.owner_window(window).to_owned();
-    let info = host.terminals.spawn(options, key, host.window_sink(window), Box::new(move |chunk| on_output(chunk)))?;
+    let info = host.terminals.spawn(
+        options,
+        key,
+        host.window_sink(window),
+        Box::new(move |chunk| {
+            let _ = on_output.send(chunk);
+        }),
+        None,
+    )?;
     if let Some(line) = activation {
         let _ = host.terminals.write(info.id, &format!(" {line}\r"));
     }
     Ok(info)
 }
 
-pub fn write(host: &Host, id: TerminalId, data: &str) -> IdeResult<()> {
-    host.terminals.write(id, data)
+/// Settings › Tools › Terminal › Max FPS also paces the terminal and Run console output
+/// pumps (#5897): applied from the window's effective settings when a session starts and
+/// when the setting changes. The rate is process-wide; the last window to apply it wins.
+pub(crate) fn apply_output_rate(host: &Host, window: &str) {
+    let terminal = match host.project(window) {
+        Ok(project) => project.settings.effective().terminal,
+        Err(_) => host.global_settings.effective().terminal,
+    };
+    ide_core::output_rate::set_max_fps(&terminal.max_fps);
 }
 
-pub fn resize(host: &Host, id: TerminalId, cols: u16, rows: u16) -> IdeResult<()> {
+/// Tools › Start SSH Session: a login shell on SSH configuration `id`, opened by the
+/// built-in client with the configuration's saved password, key or agent.
+pub async fn spawn_ssh(
+    host: &Host,
+    window: &str,
+    id: &str,
+    cols: u16,
+    rows: u16,
+    on_output: Emit<String>,
+) -> IdeResult<TerminalInfo> {
+    let config = host.ssh.config(id)?;
+    if config.host.trim().is_empty() {
+        return Err(ide_core::IdeError::invalid(format!("SSH configuration {} has no host", config.name)));
+    }
+    let size = (if cols == 0 { 80 } else { cols }, if rows == 0 { 24 } else { rows });
+    let session = host.ssh.session(id).await?;
+    let (feed, output) = ide_terminal::feed();
+    let out = feed.clone();
+    let process = session
+        .spawn(
+            "",
+            Some(size),
+            Box::new(move |chunk| match chunk {
+                ide_ssh::Output::Stdout(data) | ide_ssh::Output::Stderr(data) => out.output(data),
+            }),
+        )
+        .await?;
+    let exit = process.exit_status();
+    let (input, mut inputs) = tokio::sync::mpsc::unbounded_channel();
+    host.runtime.spawn(async move {
+        let p = process;
+        while let Some(op) = inputs.recv().await {
+            let result = match op {
+                SshInput::Data(data) => p.write(&data).await,
+                SshInput::Resize(cols, rows) => p.resize(cols, rows).await,
+                SshInput::Close => {
+                    p.close().await;
+                    break;
+                }
+            };
+            if let Err(e) = result {
+                tracing::debug!("ssh terminal: {e}");
+            }
+        }
+    });
+    host.runtime.spawn(async move {
+        let code = exit.await;
+        feed.exited(code.and_then(|c| i32::try_from(c).ok()));
+    });
+    let title = if config.name.trim().is_empty() { config.label() } else { config.name.clone() };
+    host.terminals.attach(
+        title,
+        size,
+        Box::new(SshTerminal(input)),
+        output,
+        host.owner_window(window).to_owned(),
+        host.window_sink(window),
+        Box::new(move |chunk| on_output(chunk)),
+    )
+}
+
+enum SshInput {
+    Data(Vec<u8>),
+    Resize(u16, u16),
+    Close,
+}
+
+/// Input of an SSH shell, sent in order by one task.
+struct SshTerminal(tokio::sync::mpsc::UnboundedSender<SshInput>);
+
+impl ide_terminal::TerminalChannel for SshTerminal {
+    fn write(&self, data: &[u8]) -> IdeResult<()> {
+        self.0.send(SshInput::Data(data.to_vec())).map_err(|_| ide_core::IdeError::invalid("the SSH session has ended"))
+    }
+
+    fn resize(&self, cols: u16, rows: u16) -> IdeResult<()> {
+        let _ = self.0.send(SshInput::Resize(cols, rows));
+        Ok(())
+    }
+
+    fn close(&self) {
+        let _ = self.0.send(SshInput::Close);
+    }
+}
+
+#[command(trust = always)]
+pub fn term_write(host: &Host, id: TerminalId, data: String) -> IdeResult<()> {
+    host.terminals.write(id, &data)
+}
+
+#[command(trust = always)]
+pub fn term_resize(host: &Host, id: TerminalId, cols: u16, rows: u16) -> IdeResult<()> {
     host.terminals.resize(id, cols, rows)
 }
 
-pub fn kill(host: &Host, id: TerminalId) -> IdeResult<()> {
+#[command(trust = always)]
+pub fn term_kill(host: &Host, id: TerminalId) -> IdeResult<()> {
     host.terminals.kill(id)
 }
 
-pub fn is_busy(host: &Host, id: TerminalId) -> IdeResult<bool> {
+/// Live terminal sessions of this window, for reattaching after a reconnect.
+#[command(trust = always)]
+pub async fn term_list(host: &Host, window: &str) -> Vec<TerminalSessionInfo> {
+    host.terminals.list_key(host.owner_window(window))
+}
+
+/// Reattaches to an existing terminal session `id`, returning its buffered output
+/// and streaming subsequent chunks to `on_output`.
+#[command(trust = always)]
+pub async fn term_attach(
+    host: &Host,
+    window: &str,
+    id: TerminalId,
+    cols: u16,
+    rows: u16,
+    on_output: Channel<String>,
+) -> IdeResult<TerminalAttach> {
+    let key = host.owner_window(window);
+    host.terminals.reattach(
+        id,
+        key,
+        cols,
+        rows,
+        host.window_sink(window),
+        Box::new(move |chunk| {
+            let _ = on_output.send(chunk);
+        }),
+    )
+}
+
+/// Whether the session is running a command (closing its tab asks first). A
+/// `tcgetpgrp` or one process snapshot: async only to stay off the main thread.
+#[command(trust = always)]
+pub async fn term_is_busy(host: &Host, id: TerminalId) -> IdeResult<bool> {
     host.terminals.is_busy(id)
+}
+
+/// Shell used when Settings › Terminal › Shell path is empty.
+#[command(trust = always)]
+pub fn term_default_shell() -> String {
+    ide_terminal::default_shell_path()
+}
+
+/// Installed shells for the Terminal's "New Predefined Session" menu.
+#[command(trust = always)]
+pub fn term_available_shells() -> Vec<String> {
+    ide_terminal::available_shells()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::HostConfig;
-    use ide_core::{NullSink, error::ErrorKind};
-    use std::sync::Arc;
+    use ide_core::error::ErrorKind;
 
     #[tokio::test]
     async fn image_size_limit_is_checked_before_storage() {
         let root = tempfile::tempdir().unwrap();
-        let host = Host::new(HostConfig {
-            config_dir: root.path().join("config"),
-            data_dir: root.path().join("data"),
-            local_data_dir: root.path().join("data"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
-            sink_for: Box::new(|_| Arc::new(NullSink)),
-            owner: |window| window,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
-        });
+        let host = Host::new(HostConfig::for_test(root.path()));
         let id = TerminalId::next();
-        let error = store_image(&host, id, vec![0; MAX_IMAGE_BYTES + 1], "image/png".into()).await.unwrap_err();
+        let error =
+            term_store_image(&host, id, vec![0; MAX_IMAGE_BYTES + 1].into(), "image/png".into()).await.unwrap_err();
         assert_eq!(error.kind, ErrorKind::InvalidInput);
         assert_eq!(error.message, "image is too large to paste (limit 20 MB)");
-        let error = store_image(&host, id, vec![0; MAX_IMAGE_BYTES], "image/png".into()).await.unwrap_err();
+        let error = term_store_image(&host, id, vec![0; MAX_IMAGE_BYTES].into(), "image/png".into()).await.unwrap_err();
         assert_eq!(error.message, "terminal session not found");
         assert!(!host.data_dir.join("terminal-images").exists());
     }
 }
+
+ide_command::domain!(
+    term:
+    term_attach,
+    term_available_shells,
+    term_default_shell,
+    term_is_busy,
+    term_kill,
+    term_list,
+    term_resize,
+    term_spawn,
+    term_store_image,
+    term_write,
+);

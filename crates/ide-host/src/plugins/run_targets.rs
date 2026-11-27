@@ -1,9 +1,12 @@
 //! Project-owned registrations, retained across idle instance reclamation.
 use super::api::{PluginApi, Shared};
 use super::{PluginEvent, PluginHost};
+use crate::Host;
+use ide_command::command;
 use ide_core::{IdeError, IdeResult};
 use ide_plugin::{HostError, PluginRunTarget};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -36,7 +39,12 @@ impl Shared {
     }
 }
 impl PluginApi {
-    pub(super) fn register_target(&self, root: &Path, target: PluginRunTarget) -> Result<(), HostError> {
+    pub(super) fn register_target(
+        &self,
+        root: &Path,
+        target: PluginRunTarget,
+        generation: Option<u64>,
+    ) -> Result<(), HostError> {
         ide_remote::plugin_target::validate(&target).map_err(|e| HostError::Invalid(e.to_string()))?;
         let workspace = self.shared.workspace().ok_or(HostError::Cancelled)?;
         if !workspace.projects().iter().any(|r| r == root) {
@@ -44,6 +52,12 @@ impl PluginApi {
         }
         if !workspace.trusted(root) {
             return Err(HostError::Denied("project is not trusted".into()));
+        }
+        if let Some(expected) = generation {
+            let current = self.shared.project_generation(root)?;
+            if expected < current {
+                return Err(HostError::Stale);
+            }
         }
         self.approved_program_in_project(&target.program, Some(root))?;
         let blocked = self.shared.prompts_blocked.lock();
@@ -151,6 +165,27 @@ impl PluginHost {
     }
 }
 
+#[command(trust = trusted)]
+pub async fn plugin_run_targets(
+    host: &Host,
+    plugins: &Arc<PluginHost>,
+    window: &str,
+) -> IdeResult<Vec<RegisteredRunTarget>> {
+    list(host, plugins, window)
+}
+
+#[command(trust = trusted)]
+pub async fn plugin_answer_run_target(
+    host: &Arc<Host>,
+    plugins: &Arc<PluginHost>,
+    window: &str,
+    id: String,
+    use_target: bool,
+) -> IdeResult<ide_core::settings::Settings> {
+    let (shared, plugins, window) = (host.clone(), plugins.clone(), window.to_owned());
+    host.blocking(move || answer(&shared, &plugins, &window, &id, use_target)).await
+}
+
 pub fn list(host: &crate::Host, plugins: &PluginHost, window: &str) -> IdeResult<Vec<RegisteredRunTarget>> {
     Ok(plugins.run_targets(&host.project(window)?.root))
 }
@@ -194,3 +229,5 @@ pub fn answer(
     plugins.shared.sink.emit(None, PluginEvent::RunTargetsChanged);
     Ok(project.settings.effective())
 }
+
+ide_command::domain!(plugins_run_targets: plugin_answer_run_target, plugin_run_targets);

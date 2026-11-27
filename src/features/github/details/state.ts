@@ -2,8 +2,7 @@
  * Client state of the details tab: the changes of single commits (REST `commits/{sha}`,
  * cached per commit), the changes tree's grouping (`GithubPullRequestsProjectUISettings
  * .changesGrouping`, kept in local storage) and the Submit Review popup's text, kept per
- * pull request until the review is submitted (IntelliJ keeps it as the pending review's
- * comment).
+ * pull request, repository and account until the review is submitted.
  */
 import { useEffect } from "react";
 import { create } from "zustand";
@@ -11,7 +10,7 @@ import { errorMessage } from "../api/client";
 import { commitChangedFiles } from "../api/requests";
 import type { GHCommitFile } from "../api/types";
 import type { Loadable } from "../data/pullRequest";
-import { useGhRepository } from "../data/repository";
+import { useGhRepository, type GHConnection } from "../data/repository";
 
 const useCommitFiles = create<{ bySha: Record<string, Loadable<GHCommitFile[]>> }>(() => ({ bySha: {} }));
 
@@ -71,9 +70,13 @@ export function setGroupByDirectory(on: boolean) {
 
 // ---------------------------------------------------------------------------
 
-/** The Submit Review popup's text per pull request. */
-export const useReviewText = create<{ text: Record<number, string> }>(() => ({ text: {} }));
+/** The Submit Review popup's text by GitHub account, repository and pull request. */
+export const useReviewText = create<{ text: Record<string, string> }>(() => ({ text: {} }));
 
-export function setReviewText(number: number, text: string) {
-  useReviewText.setState((s) => ({ text: { ...s.text, [number]: text } }));
+export function reviewDraftKey(connection: GHConnection | null, number: number): string | null {
+  return connection ? JSON.stringify([connection.currentUser.id, connection.repository.id, number]) : null;
+}
+
+export function setReviewText(key: string, text: string) {
+  useReviewText.setState((s) => ({ text: { ...s.text, [key]: text } }));
 }

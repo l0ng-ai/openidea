@@ -10,6 +10,8 @@
 //! - `process:<program>` grants record the program's absolute path and file
 //!   hash at grant time. Calls use that path, never a `PATH` lookup, and fail
 //!   when the file changed (re-confirmation needed).
+//! - `java.agent` grants record the agent jar's path and hash the same way;
+//!   a launch adds the agent only while the jar still has that hash.
 
 use crate::capability::{Capability, Risk};
 use serde::{Deserialize, Serialize};
@@ -56,6 +58,10 @@ pub struct Grant {
     /// Exact hosts approved through `net:ask`, separate from manifest grants.
     #[serde(default)]
     pub net_hosts: BTreeSet<String>,
+    /// Hosts approved for `net:setting:<key>` / `net.http:setting:<key>`
+    /// grants, keyed by the grant: the user approved the value in Settings.
+    #[serde(default)]
+    pub setting_hosts: BTreeMap<String, String>,
     /// Optional capabilities the user declined (not asked again until re-confirmed).
     #[serde(default)]
     pub declined: BTreeSet<String>,
@@ -207,6 +213,7 @@ impl Ledger {
         if !req.required.iter().chain(&req.optional).any(|c| c == &Capability::NetAsk) {
             grant.net_hosts.clear();
         }
+        retain_setting_hosts(grant, req);
         if !grant.confirmed {
             return Decision::NeedsConfirmation { new: req.required.clone(), first_time: true };
         }
@@ -234,6 +241,7 @@ impl Ledger {
         if !req.required.iter().chain(&req.optional).any(|c| c == &Capability::NetAsk) {
             grant.net_hosts.clear();
         }
+        retain_setting_hosts(grant, req);
         grant.plugin_id = req.plugin_id.to_owned();
         grant.version = req.version.to_owned();
         grant.package_hash = req.package_hash.to_owned();
@@ -267,7 +275,10 @@ impl Ledger {
             if cap == &Capability::NetAsk {
                 grant.net_hosts.clear();
             }
-            if let Capability::Process(_) = cap {
+            if matches!(cap, Capability::NetSetting { .. }) {
+                grant.setting_hosts.remove(&s);
+            }
+            if let Capability::Process(_) | Capability::JavaAgent = cap {
                 grant.binaries.remove(&s);
                 for binaries in grant.project_binaries.values_mut() {
                     binaries.remove(&s);
@@ -290,7 +301,22 @@ impl Ledger {
         self.grants.get_mut(subject).is_some_and(|g| g.net_hosts.remove(host))
     }
 
-    /// Records the program approved for a `process:` grant.
+    /// Remembers the host the user approved for a `net:setting:` grant: it
+    /// covers requests only while the setting still holds it.
+    pub fn remember_setting_host(&mut self, subject: &Subject, cap: &Capability, host: &str) -> bool {
+        let Some(grant) = self.grants.get_mut(subject) else { return false };
+        if !grant.confirmed || !grant.has(cap) || host.contains('*') {
+            return false;
+        }
+        grant.setting_hosts.insert(cap.to_string(), host.to_owned());
+        true
+    }
+
+    pub fn forget_setting_host(&mut self, subject: &Subject, cap: &Capability) -> bool {
+        self.grants.get_mut(subject).is_some_and(|g| g.setting_hosts.remove(&cap.to_string()).is_some())
+    }
+
+    /// Records the program approved for a `process:` grant (or the jar of a `java.agent` one).
     pub fn set_binary(&mut self, subject: &Subject, cap: &Capability, binary: BinaryGrant) {
         if let Some(grant) = self.grants.get_mut(subject) {
             grant.binaries.insert(cap.to_string(), binary);
@@ -380,10 +406,6 @@ impl Ledger {
         }
         grant.binaries.get(&key).cloned()
     }
-
-    pub fn subjects(&self) -> impl Iterator<Item = (&Subject, &Grant)> {
-        self.grants.iter()
-    }
 }
 
 /// What a confirmation page shows: every capability with its risk, high risk first.
@@ -393,6 +415,19 @@ pub fn by_risk(caps: &[Capability]) -> Vec<(Risk, Vec<Capability>)> {
         groups.entry(std::cmp::Reverse(c.risk())).or_default().push(c.clone());
     }
     groups.into_iter().map(|(r, v)| (r.0, v)).collect()
+}
+
+/// Drops setting-derived hosts the manifest no longer asks for, like
+/// `net_hosts` are dropped when `net:ask` is removed.
+fn retain_setting_hosts(grant: &mut Grant, req: &Request<'_>) {
+    let declared: Vec<String> = req
+        .required
+        .iter()
+        .chain(&req.optional)
+        .filter(|c| matches!(c, Capability::NetSetting { .. }))
+        .map(|c| c.to_string())
+        .collect();
+    grant.setting_hosts.retain(|cap, _| declared.contains(cap));
 }
 
 /// Pins an explicitly selected executable, retaining a multicall shim's filename.
@@ -458,16 +493,13 @@ fn canonical_dir(p: &Path) -> PathBuf {
 
 fn is_executable(p: &Path) -> bool {
     let Ok(meta) = std::fs::metadata(p) else { return false };
-    if !meta.is_file() {
-        return false;
-    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        meta.permissions().mode() & 0o111 != 0
+        meta.is_file() && meta.permissions().mode() & 0o111 != 0
     }
     #[cfg(not(unix))]
-    true
+    meta.is_file()
 }
 
 /// blake3 of a file, hex.
@@ -594,6 +626,58 @@ mod tests {
         assert!(l.get(&r.subject).unwrap().net_hosts.is_empty());
     }
 
+    /// A setting-derived host is approved per grant, survives re-confirmation,
+    /// is replaced by the next approval, and goes when the grant or the
+    /// manifest declaration goes (#3809).
+    #[test]
+    fn setting_hosts_are_approved_per_grant_and_drop_with_it() {
+        let mut l = Ledger::in_memory();
+        let r = req("1.0.0", "h", &["project.read"], &["net:setting:server", "net.http:setting:server"]);
+        l.confirm(
+            &r,
+            &["net:setting:server".parse().unwrap(), "net.http:setting:server".parse().unwrap()],
+            BTreeMap::new(),
+        );
+        let cap: Capability = "net:setting:server".parse().unwrap();
+        let other: Capability = "net.http:setting:server".parse().unwrap();
+
+        // Not granted (declined optional, or not confirmed): refused.
+        let declined = req("1.0.0", "h", &["project.read"], &["net:setting:server"]);
+        let mut l2 = Ledger::in_memory();
+        l2.confirm(&declined, &[], BTreeMap::new());
+        assert!(!l2.remember_setting_host(&declined.subject, &cap, "jira.corp.example"), "declined optional");
+        let never = req("1.0.0", "h", &["project.read"], &[]);
+        let mut l3 = Ledger::in_memory();
+        assert!(!l3.remember_setting_host(&never.subject, &cap, "jira.corp.example"), "never confirmed");
+
+        assert!(l.remember_setting_host(&r.subject, &cap, "gitlab.intranet.example"));
+        assert!(!l.remember_setting_host(&r.subject, &cap, "*"), "a wildcard value is refused");
+        assert_eq!(
+            l.get(&r.subject).unwrap().setting_hosts.get("net:setting:server").map(String::as_str),
+            Some("gitlab.intranet.example")
+        );
+        // The other transport is its own record; the derived grant itself covers no host.
+        assert!(l.remember_setting_host(&r.subject, &other, "jira.corp.example"));
+        assert!(!l.get(&r.subject).unwrap().has(&Capability::Net("gitlab.intranet.example".into())));
+        // Re-confirmation keeps the approval; a manifest that drops the grant drops the record.
+        l.confirm(&r, &["net:setting:server".parse().unwrap()], BTreeMap::new());
+        assert_eq!(
+            l.get(&r.subject).unwrap().setting_hosts.get("net:setting:server").map(String::as_str),
+            Some("gitlab.intranet.example")
+        );
+        let without = req("2.0.0", "h2", &["project.read"], &[]);
+        assert!(matches!(l.decide(&without), Decision::Allowed { .. }), "same or fewer needs: silent");
+        assert!(l.get(&r.subject).unwrap().setting_hosts.is_empty(), "records follow the manifest");
+
+        // Revoking the capability clears its record.
+        l.confirm(&r, &["net:setting:server".parse().unwrap()], BTreeMap::new());
+        l.remember_setting_host(&r.subject, &cap, "gitlab.intranet.example");
+        assert!(l.set(&r.subject, &cap, false));
+        assert!(l.get(&r.subject).unwrap().setting_hosts.is_empty());
+        // Forgetting without a record is an error.
+        assert!(!l.forget_setting_host(&r.subject, &cap));
+    }
+
     #[test]
     fn migration_grants_low_risk_only() {
         let tmp = tempfile::tempdir().unwrap();
@@ -676,6 +760,21 @@ mod tests {
         assert_eq!(l.check_binary(&r.subject, &cap).unwrap(), resolved);
         std::fs::write(&target, "#!/bin/sh\necho evil\n").unwrap();
         assert!(l.check_binary(&r.subject, &cap).unwrap_err().contains("changed"));
+    }
+
+    #[test]
+    fn revoking_java_agent_forgets_its_jar() {
+        let mut l = Ledger::in_memory();
+        let r = req("1.0.0", "h", &[], &["java.agent"]);
+        let cap = Capability::JavaAgent;
+        let jar = BinaryGrant { path: "/plugins/p/agent.jar".into(), hash: "abc".into() };
+        l.confirm(&r, std::slice::from_ref(&cap), [(cap.to_string(), jar.clone())].into());
+        assert_eq!(l.pinned_binary(&r.subject, &cap), Some(jar.clone()));
+        l.set(&r.subject, &cap, false);
+        assert_eq!(l.pinned_binary(&r.subject, &cap), None);
+        // Granting again without a new hash does not bring the old one back.
+        l.set(&r.subject, &cap, true);
+        assert_eq!(l.pinned_binary(&r.subject, &cap), None);
     }
 
     #[test]

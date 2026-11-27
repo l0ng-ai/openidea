@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { installPreparedMessage, useCommit } from "../commitStore";
+import { installCommitMessages, useCommit } from "../commitStore";
 import { installGitLog, useGitLog } from "../logStore";
 import { logConsole, useVcsConsole } from "../ops";
 import { useVcs } from "../store";
@@ -10,7 +10,7 @@ describe("switching the window to another repository", () => {
 
   it("drops the commit message, Amend and the log of the previous one", () => {
     useVcs.setState({ root: "/a" });
-    disposers.push(installPreparedMessage(), installGitLog());
+    disposers.push(installCommitMessages(), installGitLog());
     useCommit.setState({ message: "wip", amend: true, selection: ["/a/x"] });
     useGitLog.setState({ commits: [{ id: "c1" } as never], selected: "c1", selection: ["c1"] });
     useGitLog.setState((s) => ({ filters: { ...s.filters, authors: ["me"] } }));

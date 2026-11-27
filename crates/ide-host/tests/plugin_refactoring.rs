@@ -1,4 +1,6 @@
 //! Indexed names use the same preview/apply/undo commands as language-server refactorings.
+mod common;
+
 use ide_core::{IdeEvent, Pos, RequestId, error::ErrorKind};
 use ide_host::{
     Host, HostConfig, ops,
@@ -21,18 +23,12 @@ async fn indexed_usages_rename_preview_staleness_and_grouped_undo() {
     let events = Arc::new(Mutex::new(vec![]));
     let captured = events.clone();
     let host = Host::new(HostConfig {
-        config_dir: root.join("config"),
-        data_dir: root.join("data"),
-        local_data_dir: root.join("local"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
         sink_for: Box::new(move |_| {
             let events = captured.clone();
             Arc::new(move |e| events.lock().push(e))
         }),
-        owner: |window| window,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
+        local_data_dir: root.join("local"),
+        ..common::host_config(&root)
     });
     let project = host.open_light("main", &first).unwrap();
     let doc = project.documents.open(&first).unwrap();
@@ -225,6 +221,7 @@ async fn indexed_usages_rename_preview_staleness_and_grouped_undo() {
         kind: ide_core::SymbolKind::Method,
         container: None,
         range: ide_core::Range::new(Pos::new(0, 4), Pos::new(0, 5)),
+        bases: Vec::new(),
     };
     plugins
         .index_navigation(
@@ -267,7 +264,7 @@ async fn indexed_usages_rename_preview_staleness_and_grouped_undo() {
         let usage_doc = project.documents.open(&second).unwrap();
         ide_host::plugins::index_ops::plugin_navigation_index(
             &host,
-            plugins.clone(),
+            &plugins,
             "main",
             vec![first.clone(), second.clone()],
             RequestId(100),
@@ -296,7 +293,7 @@ async fn indexed_usages_rename_preview_staleness_and_grouped_undo() {
         plugins.invalidate_client_navigation(&project.root, Some("main"), Some(std::slice::from_ref(&second)));
         ide_host::plugins::index_ops::plugin_navigation_index(
             &host,
-            plugins.clone(),
+            &plugins,
             "main",
             vec![second.clone()],
             RequestId(102),

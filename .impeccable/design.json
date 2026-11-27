@@ -1,0 +1,557 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-24T15:06:05+00:00",
+  "title": "Design System: OpenIDEA",
+  "extensions": {
+    "colorMeta": {
+      "workbench-blue": {
+        "role": "primary",
+        "displayName": "Workbench Blue",
+        "canonical": "#3871e1",
+        "tonalRamp": [
+          "oklch(15% 0.073 262)",
+          "oklch(25% 0.121 262)",
+          "oklch(35% 0.17 262)",
+          "oklch(48% 0.17 262)",
+          "oklch(60% 0.17 262)",
+          "oklch(72% 0.136 262)",
+          "oklch(84% 0.078 262)",
+          "oklch(95% 0.024 262)"
+        ]
+      },
+      "link-blue": {
+        "role": "primary",
+        "displayName": "Link Blue",
+        "canonical": "#2f5eb9",
+        "tonalRamp": [
+          "oklch(15% 0.064 262)",
+          "oklch(25% 0.107 262)",
+          "oklch(35% 0.15 262)",
+          "oklch(48% 0.15 262)",
+          "oklch(60% 0.15 262)",
+          "oklch(72% 0.12 262)",
+          "oklch(84% 0.069 262)",
+          "oklch(95% 0.021 262)"
+        ]
+      },
+      "selection-wash": {
+        "role": "primary",
+        "displayName": "Selection Wash",
+        "canonical": "#d0dffe",
+        "tonalRamp": [
+          "oklch(15% 0.034 262)",
+          "oklch(25% 0.057 262)",
+          "oklch(35% 0.08 262)",
+          "oklch(48% 0.08 262)",
+          "oklch(60% 0.08 262)",
+          "oklch(72% 0.064 262)",
+          "oklch(84% 0.037 262)",
+          "oklch(95% 0.011 262)"
+        ]
+      },
+      "tab-wash": {
+        "role": "primary",
+        "displayName": "Tab Wash",
+        "canonical": "#e3ebfe",
+        "tonalRamp": [
+          "oklch(15% 0.026 262)",
+          "oklch(25% 0.043 262)",
+          "oklch(35% 0.06 262)",
+          "oklch(48% 0.06 262)",
+          "oklch(60% 0.06 262)",
+          "oklch(72% 0.048 262)",
+          "oklch(84% 0.027 262)",
+          "oklch(95% 0.009 262)"
+        ]
+      },
+      "danger": {
+        "role": "status",
+        "displayName": "Danger",
+        "canonical": "#c54e58",
+        "tonalRamp": [
+          "oklch(15% 0.064 18)",
+          "oklch(25% 0.107 18)",
+          "oklch(35% 0.15 18)",
+          "oklch(48% 0.15 18)",
+          "oklch(60% 0.15 18)",
+          "oklch(72% 0.12 18)",
+          "oklch(84% 0.069 18)",
+          "oklch(95% 0.021 18)"
+        ]
+      },
+      "warning": {
+        "role": "status",
+        "displayName": "Warning",
+        "canonical": "#a56906",
+        "tonalRamp": [
+          "oklch(15% 0.056 70)",
+          "oklch(25% 0.093 70)",
+          "oklch(35% 0.13 70)",
+          "oklch(48% 0.13 70)",
+          "oklch(60% 0.13 70)",
+          "oklch(72% 0.104 70)",
+          "oklch(84% 0.059 70)",
+          "oklch(95% 0.019 70)"
+        ]
+      },
+      "success": {
+        "role": "status",
+        "displayName": "Success",
+        "canonical": "#338555",
+        "tonalRamp": [
+          "oklch(15% 0.047 152)",
+          "oklch(25% 0.079 152)",
+          "oklch(35% 0.11 152)",
+          "oklch(48% 0.11 152)",
+          "oklch(60% 0.11 152)",
+          "oklch(72% 0.088 152)",
+          "oklch(84% 0.05 152)",
+          "oklch(95% 0.016 152)"
+        ]
+      },
+      "frame-grey": {
+        "role": "neutral",
+        "displayName": "Frame Grey",
+        "tonalRamp": [
+          "oklch(15% 0.005 265)",
+          "oklch(25% 0.009 265)",
+          "oklch(35% 0.012 265)",
+          "oklch(48% 0.012 265)",
+          "oklch(60% 0.012 265)",
+          "oklch(72% 0.01 265)",
+          "oklch(84% 0.005 265)",
+          "oklch(95% 0.002 265)"
+        ]
+      },
+      "island-white": {
+        "role": "neutral",
+        "displayName": "Island White",
+        "tonalRamp": [
+          "oklch(15% 0.005 265)",
+          "oklch(25% 0.009 265)",
+          "oklch(35% 0.012 265)",
+          "oklch(48% 0.012 265)",
+          "oklch(60% 0.012 265)",
+          "oklch(72% 0.01 265)",
+          "oklch(84% 0.005 265)",
+          "oklch(95% 0.002 265)"
+        ]
+      },
+      "raised-paper": {
+        "role": "neutral",
+        "displayName": "Raised Paper",
+        "tonalRamp": [
+          "oklch(15% 0.005 265)",
+          "oklch(25% 0.009 265)",
+          "oklch(35% 0.012 265)",
+          "oklch(48% 0.012 265)",
+          "oklch(60% 0.012 265)",
+          "oklch(72% 0.01 265)",
+          "oklch(84% 0.005 265)",
+          "oklch(95% 0.002 265)"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Ink",
+        "tonalRamp": [
+          "oklch(15% 0.005 265)",
+          "oklch(25% 0.009 265)",
+          "oklch(35% 0.012 265)",
+          "oklch(48% 0.012 265)",
+          "oklch(60% 0.012 265)",
+          "oklch(72% 0.01 265)",
+          "oklch(84% 0.005 265)",
+          "oklch(95% 0.002 265)"
+        ]
+      },
+      "ink-secondary": {
+        "role": "neutral",
+        "displayName": "Ink Secondary",
+        "tonalRamp": [
+          "oklch(15% 0.005 265)",
+          "oklch(25% 0.009 265)",
+          "oklch(35% 0.012 265)",
+          "oklch(48% 0.012 265)",
+          "oklch(60% 0.012 265)",
+          "oklch(72% 0.01 265)",
+          "oklch(84% 0.005 265)",
+          "oklch(95% 0.002 265)"
+        ]
+      },
+      "ink-muted": {
+        "role": "neutral",
+        "displayName": "Ink Muted",
+        "tonalRamp": [
+          "oklch(15% 0.005 265)",
+          "oklch(25% 0.009 265)",
+          "oklch(35% 0.012 265)",
+          "oklch(48% 0.012 265)",
+          "oklch(60% 0.012 265)",
+          "oklch(72% 0.01 265)",
+          "oklch(84% 0.005 265)",
+          "oklch(95% 0.002 265)"
+        ]
+      },
+      "ink-faint": {
+        "role": "neutral",
+        "displayName": "Ink Faint",
+        "tonalRamp": [
+          "oklch(15% 0.005 265)",
+          "oklch(25% 0.009 265)",
+          "oklch(35% 0.012 265)",
+          "oklch(48% 0.012 265)",
+          "oklch(60% 0.012 265)",
+          "oklch(72% 0.01 265)",
+          "oklch(84% 0.005 265)",
+          "oklch(95% 0.002 265)"
+        ]
+      },
+      "hairline": {
+        "role": "neutral",
+        "displayName": "Hairline",
+        "tonalRamp": [
+          "oklch(15% 0.005 265)",
+          "oklch(25% 0.009 265)",
+          "oklch(35% 0.012 265)",
+          "oklch(48% 0.012 265)",
+          "oklch(60% 0.012 265)",
+          "oklch(72% 0.01 265)",
+          "oklch(84% 0.005 265)",
+          "oklch(95% 0.002 265)"
+        ]
+      },
+      "control-edge": {
+        "role": "neutral",
+        "displayName": "Control Edge",
+        "tonalRamp": [
+          "oklch(15% 0.005 265)",
+          "oklch(25% 0.009 265)",
+          "oklch(35% 0.012 265)",
+          "oklch(48% 0.012 265)",
+          "oklch(60% 0.012 265)",
+          "oklch(72% 0.01 265)",
+          "oklch(84% 0.005 265)",
+          "oklch(95% 0.002 265)"
+        ]
+      },
+      "frame-grey-dark": {
+        "role": "neutral",
+        "displayName": "Frame Grey (Dark)",
+        "tonalRamp": [
+          "oklch(15% 0.005 265)",
+          "oklch(25% 0.009 265)",
+          "oklch(35% 0.012 265)",
+          "oklch(48% 0.012 265)",
+          "oklch(60% 0.012 265)",
+          "oklch(72% 0.01 265)",
+          "oklch(84% 0.005 265)",
+          "oklch(95% 0.002 265)"
+        ]
+      },
+      "island-dark": {
+        "role": "neutral",
+        "displayName": "Island (Dark)",
+        "tonalRamp": [
+          "oklch(15% 0.005 265)",
+          "oklch(25% 0.009 265)",
+          "oklch(35% 0.012 265)",
+          "oklch(48% 0.012 265)",
+          "oklch(60% 0.012 265)",
+          "oklch(72% 0.01 265)",
+          "oklch(84% 0.005 265)",
+          "oklch(95% 0.002 265)"
+        ]
+      },
+      "ink-dark": {
+        "role": "neutral",
+        "displayName": "Ink (Dark)",
+        "tonalRamp": [
+          "oklch(15% 0.005 265)",
+          "oklch(25% 0.009 265)",
+          "oklch(35% 0.012 265)",
+          "oklch(48% 0.012 265)",
+          "oklch(60% 0.012 265)",
+          "oklch(72% 0.01 265)",
+          "oklch(84% 0.005 265)",
+          "oklch(95% 0.002 265)"
+        ]
+      },
+      "ink-strong-dark": {
+        "role": "neutral",
+        "displayName": "Ink Strong (Dark)",
+        "tonalRamp": [
+          "oklch(15% 0.005 265)",
+          "oklch(25% 0.009 265)",
+          "oklch(35% 0.012 265)",
+          "oklch(48% 0.012 265)",
+          "oklch(60% 0.012 265)",
+          "oklch(72% 0.01 265)",
+          "oklch(84% 0.005 265)",
+          "oklch(95% 0.002 265)"
+        ]
+      },
+      "ink-muted-dark": {
+        "role": "neutral",
+        "displayName": "Ink Muted (Dark)",
+        "tonalRamp": [
+          "oklch(15% 0.005 265)",
+          "oklch(25% 0.009 265)",
+          "oklch(35% 0.012 265)",
+          "oklch(48% 0.012 265)",
+          "oklch(60% 0.012 265)",
+          "oklch(72% 0.01 265)",
+          "oklch(84% 0.005 265)",
+          "oklch(95% 0.002 265)"
+        ]
+      },
+      "control-edge-dark": {
+        "role": "neutral",
+        "displayName": "Control Edge (Dark)",
+        "tonalRamp": [
+          "oklch(15% 0.005 265)",
+          "oklch(25% 0.009 265)",
+          "oklch(35% 0.012 265)",
+          "oklch(48% 0.012 265)",
+          "oklch(60% 0.012 265)",
+          "oklch(72% 0.01 265)",
+          "oklch(84% 0.005 265)",
+          "oklch(95% 0.002 265)"
+        ]
+      },
+      "selection-wash-dark": {
+        "role": "primary",
+        "displayName": "Selection Wash (Dark)",
+        "canonical": "#2a4371",
+        "tonalRamp": [
+          "oklch(15% 0.034 262)",
+          "oklch(25% 0.057 262)",
+          "oklch(35% 0.08 262)",
+          "oklch(48% 0.08 262)",
+          "oklch(60% 0.08 262)",
+          "oklch(72% 0.064 262)",
+          "oklch(84% 0.037 262)",
+          "oklch(95% 0.011 262)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "title": {
+        "displayName": "Title",
+        "purpose": "Tool window titles, section headers, dialog titles; weight 600 is the main emphasis."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Default UI text, menus, rows, buttons."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Secondary metadata, chips, status bar, table cells; the most-used size."
+      },
+      "label-tiny": {
+        "displayName": "Label Tiny",
+        "purpose": "Stripe labels, counters, badges."
+      },
+      "input-large": {
+        "displayName": "Input Large",
+        "purpose": "Search Everywhere and other large query fields."
+      },
+      "code": {
+        "displayName": "Code",
+        "purpose": "Editor, console, terminal and every monospace preview; size and weights are user settings."
+      }
+    },
+    "shadows": [
+      {
+        "name": "shadow-popup",
+        "value": "0 6px 20px rgba(0, 0, 0, 0.12)",
+        "purpose": "Popups, menus, completion, floating toolbar (Light; Dark uses 0.45 alpha)."
+      },
+      {
+        "name": "shadow-dialog",
+        "value": "0 0 0 0.5px rgba(0, 0, 0, 0.1), 0 10px 24px rgba(0, 0, 0, 0.1), 0 24px 72px rgba(0, 0, 0, 0.2)",
+        "purpose": "Window-style shadow for dialogs (Light)."
+      },
+      {
+        "name": "shadow-tooltip",
+        "value": "0 4px 12px rgba(0, 0, 0, 0.12)",
+        "purpose": "Hover tooltips (Light)."
+      },
+      {
+        "name": "shadow-balloon",
+        "value": "0 8px 24px rgba(0, 0, 0, 0.14)",
+        "purpose": "Notification balloons (Light)."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease",
+        "value": "cubic-bezier(0.2, 0, 0, 1)",
+        "purpose": "Default easing for every state transition."
+      },
+      {
+        "name": "dur-fast",
+        "value": "80ms",
+        "purpose": "Hover, press and focus changes on controls."
+      },
+      {
+        "name": "dur",
+        "value": "140ms",
+        "purpose": "Standard transitions such as popup fades."
+      },
+      {
+        "name": "dur-slow",
+        "value": "220ms",
+        "purpose": "Upper bound for any state transition."
+      }
+    ],
+    "density": [
+      {
+        "name": "default",
+        "value": "rows 24px, fields/buttons 28px, titlebar 40px, tab bar 38px, status bar 30px, island gap 6px, island radius 10px"
+      },
+      {
+        "name": "compact",
+        "value": "rows 22px, fields/buttons 24px, titlebar/headers 32px, tab bar 32px, status bar 24px, island gap 4px, island radius 8px, chrome text -1px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The one default action in a dialog or form.",
+      "html": "<button class=\"ds-btn ds-btn-primary\">OK</button>",
+      "css": ".ds-btn { display:inline-flex; align-items:center; justify-content:center; height:var(--h-button,28px); min-width:72px; padding:0 16px; border:0; border-radius:var(--radius-control,4px); font-family:var(--font-ui); font-size:var(--fs-ui,13px); line-height:1; cursor:default; transition:background var(--dur-fast,80ms) var(--ease), color var(--dur-fast,80ms) var(--ease), box-shadow var(--dur-fast,80ms) var(--ease); } .ds-btn:focus-visible { outline:2px solid var(--focus-ring,#3871e1); outline-offset:1px; } .ds-btn-primary { background:var(--bg-button-primary,#3871e1); color:var(--fg-button-primary,#fff); } .ds-btn-primary:hover { background:var(--bg-button-primary-hover,#3366cc); }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Every other dialog action: Cancel, Apply, Browse.",
+      "html": "<button class=\"ds-btn ds-btn-secondary\">Cancel</button>",
+      "css": ".ds-btn { display:inline-flex; align-items:center; justify-content:center; height:var(--h-button,28px); min-width:72px; padding:0 16px; border:0; border-radius:var(--radius-control,4px); font-family:var(--font-ui); font-size:var(--fs-ui,13px); line-height:1; cursor:default; transition:background var(--dur-fast,80ms) var(--ease), box-shadow var(--dur-fast,80ms) var(--ease); } .ds-btn:focus-visible { outline:2px solid var(--focus-ring,#3871e1); outline-offset:1px; } .ds-btn-secondary { background:var(--bg-button,#fff); color:var(--fg-strong,#000); box-shadow:inset 0 0 0 1px var(--border-button,#d1d3d9); } .ds-btn-secondary:hover { background:color-mix(in srgb, var(--bg-button,#fff) 94%, var(--fg-strong,#000)); }"
+    },
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "Low-emphasis text actions in headers and inline rows.",
+      "html": "<button class=\"ds-btn-ghost\">Show all</button>",
+      "css": ".ds-btn-ghost { display:inline-flex; align-items:center; height:var(--h-button,28px); padding:0 8px; border:0; background:transparent; border-radius:var(--radius-control,4px); color:var(--fg-secondary,#5f6269); font-family:var(--font-ui); font-size:var(--fs-ui,13px); cursor:default; transition:background var(--dur-fast,80ms) var(--ease), color var(--dur-fast,80ms) var(--ease); } .ds-btn-ghost:hover { background:var(--bg-toolbar-hover,#00000012); color:var(--fg-strong,#000); } .ds-btn-ghost:active { background:var(--bg-toolbar-pressed,#00000020); } .ds-btn-ghost:focus-visible { outline:2px solid var(--focus-ring,#3871e1); outline-offset:1px; }"
+    },
+    {
+      "name": "Toolbar Icon Button",
+      "kind": "button",
+      "refersTo": "icon-button",
+      "description": "Toolbar and tool window header actions; frameless at rest, toggles show Selection Wash.",
+      "html": "<div class=\"ds-iconbar\"><button class=\"ds-icon-btn\" aria-label=\"Refresh\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\"><path d=\"M13 8a5 5 0 1 1-1.46-3.54M13 3v2.5h-2.5\" stroke=\"currentColor\" stroke-width=\"1.2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg></button><button class=\"ds-icon-btn\" aria-label=\"Show options\" aria-pressed=\"true\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 16 16\" fill=\"none\"><path d=\"M2.5 4.5h11M2.5 8h11M2.5 11.5h11\" stroke=\"currentColor\" stroke-width=\"1.2\" stroke-linecap=\"round\"/></svg></button></div>",
+      "css": ".ds-iconbar { display:flex; gap:2px; } .ds-icon-btn { display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; padding:0; border:0; background:transparent; border-radius:var(--radius-toolbar-button,6px); color:var(--fg-muted,#6c707e); cursor:default; transition:background var(--dur-fast,80ms) var(--ease), color var(--dur-fast,80ms) var(--ease); } .ds-icon-btn:hover { background:var(--bg-toolbar-hover,#00000012); color:var(--fg-strong,#000); } .ds-icon-btn:active { background:var(--bg-toolbar-pressed,#00000020); } .ds-icon-btn[aria-pressed=\"true\"] { background:var(--bg-toolbar-selected,#d0dffe); color:var(--fg-strong,#000); } .ds-icon-btn:focus-visible { outline:2px solid var(--focus-ring,#3871e1); outline-offset:-2px; }"
+    },
+    {
+      "name": "Text Field",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Framed text field; the frame doubles in Workbench Blue on focus.",
+      "html": "<input class=\"ds-input\" placeholder=\"Project name\" />",
+      "css": ".ds-input { height:var(--h-field,28px); padding:0 8px; border:0; appearance:none; border-radius:var(--radius-control,4px); background:var(--bg-field,#fff); color:var(--fg-strong,#000); font-family:var(--font-ui); font-size:var(--fs-ui,13px); outline:none; box-shadow:inset 0 0 0 1px var(--border-button,#d1d3d9); transition:box-shadow var(--dur-fast,80ms) var(--ease); } .ds-input::placeholder { color:var(--fg-faint,#9fa2a8); } .ds-input:focus { box-shadow:inset 0 0 0 1px var(--focus-ring,#3871e1), 0 0 0 1px var(--focus-ring,#3871e1); }"
+    },
+    {
+      "name": "Chip",
+      "kind": "chip",
+      "refersTo": "chip",
+      "description": "Flat read-only fact or picker trigger, sized like the toolbar widgets.",
+      "html": "<button class=\"ds-chip\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\"><circle cx=\"5\" cy=\"4\" r=\"1.5\" stroke=\"currentColor\"/><circle cx=\"5\" cy=\"12\" r=\"1.5\" stroke=\"currentColor\"/><circle cx=\"11\" cy=\"6\" r=\"1.5\" stroke=\"currentColor\"/><path d=\"M5 5.5v5M11 7.5c0 2-2 2.5-6 3\" stroke=\"currentColor\"/></svg><span>main</span></button>",
+      "css": ".ds-chip { display:inline-flex; align-items:center; gap:var(--space-1,4px); height:22px; padding:0 6px; border:0; background:transparent; border-radius:var(--radius-toolbar-button,6px); color:var(--fg-secondary,#5f6269); font-family:var(--font-ui); font-size:var(--fs-small,12px); line-height:1; cursor:default; transition:background var(--dur-fast,80ms) var(--ease); } .ds-chip svg { color:var(--fg-muted,#6c707e); } .ds-chip:hover { background:var(--bg-toolbar-hover,#00000012); } .ds-chip:focus-visible { outline:2px solid var(--focus-ring,#3871e1); outline-offset:-2px; }"
+    },
+    {
+      "name": "Tree Rows",
+      "kind": "custom",
+      "refersTo": "list-row-selected",
+      "description": "24px rows with an inset rounded selection wash; unfocused selection turns neutral.",
+      "html": "<div class=\"ds-tree\" tabindex=\"0\"><div class=\"ds-row\">src</div><div class=\"ds-row ds-row-sel\">main.tsx</div><div class=\"ds-row\">workbench</div></div>",
+      "css": ".ds-tree { width:220px; padding:4px var(--tree-inset,6px); background:var(--bg-island,#fff); border-radius:var(--island-radius,10px); font-family:var(--font-ui); font-size:var(--fs-ui,13px); color:var(--fg,#000); outline:none; } .ds-row { height:var(--h-row,24px); display:flex; align-items:center; padding:0 8px; border-radius:var(--radius-row,4px); } .ds-row:hover { background:var(--bg-tree-hover,#0000000a); } .ds-row-sel, .ds-row-sel:hover { background:var(--bg-tree-selected-inactive,#e9eaee); } .ds-tree:focus .ds-row-sel { background:var(--bg-tree-selected,#d0dffe); }"
+    },
+    {
+      "name": "Island on Frame",
+      "kind": "card",
+      "description": "The signature layout unit: rounded islands 6px apart on the grey frame, flat at rest.",
+      "html": "<div class=\"ds-frame\"><div class=\"ds-island ds-side\"><div class=\"ds-head\">Project</div></div><div class=\"ds-island ds-main\"><code>fn main() {}</code></div></div>",
+      "css": ".ds-frame { display:flex; gap:var(--island-gap,6px); padding:var(--island-gap,6px); background:var(--bg-frame,#e9eaee); height:160px; } .ds-island { background:var(--bg-island,#fff); border-radius:var(--island-radius,10px); } .ds-side { width:140px; } .ds-main { flex:1; padding:12px; font-family:var(--font-mono); font-size:var(--fs-code,13px); color:var(--fg-editor,#080808); } .ds-head { height:40px; display:flex; align-items:center; padding:0 12px; font-family:var(--font-ui); font-size:var(--fs-ui,13px); font-weight:600; color:var(--fg-strong,#000); }"
+    },
+    {
+      "name": "Tooltip",
+      "kind": "custom",
+      "refersTo": "tooltip",
+      "description": "Floating hover help: one of the few surfaces allowed a shadow.",
+      "html": "<div class=\"ds-tooltip\">Run 'main' <span class=\"ds-kbd\">⌃R</span></div>",
+      "css": ".ds-tooltip { display:inline-flex; gap:8px; align-items:center; padding:6px 10px; border-radius:var(--radius-tooltip,6px); background:var(--bg-tooltip,#fff); color:var(--fg-tooltip,#000); border:1px solid var(--border-tooltip,#d1d3d9); box-shadow:var(--shadow-tooltip,0 4px 12px rgba(0,0,0,.12)); font-family:var(--font-ui); font-size:var(--fs-ui,13px); } .ds-kbd { font-family:var(--font-keys); color:var(--fg-muted,#6c707e); }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Quiet Workbench",
+    "overview": "The interface is a workbench, not a showroom. Code, trees, logs and diffs are the work. The chrome around them stays quiet, so the eye goes to the content and a long session stays calm.\n\nThe visual language is the JetBrains new UI in its **Islands** form, and this document records it rather than inventing one. The tokens in `src/styles/tokens.css` take their values from the Islands Light and Islands Dark theme JSON and editor schemes, at 100% zoom. Component metrics follow the matching IntelliJ theme keys (a Swing `arc` is a diameter, so the CSS radius is half of it), and component CSS names the key it follows. Behaviour follows IDEA as well, from focus and selection to dialogs and drag and drop. Users bring their JetBrains muscle memory, so a layout, metric or state that looks or behaves differently from IDEA counts as a bug, not a style choice.\n\nEvery panel sits on a grey frame as a rounded island (10px corners, 6px gaps). Depth comes from that tonal step, not from decoration. The density is that of a professional desktop tool: 13px UI text, 24px rows, 28px controls, with a compact mode that tightens all of them.\n\nThe tokens are a theming contract, not one palette. The built-in themes are Islands Light (the default), Islands Dark, High Contrast, Solarized Light and Solarized Dark. Users can also change the accent colour, give tool windows a different background from the editor, set a background image, use contrast scrollbars, or adjust colours for red-green vision deficiency. Imported IntelliJ themes and plugin themes set the same tokens at runtime. A component that looks right only in Islands Light is broken.\n\nExpression is kept to precise details: one blue accent, controls with no frame until they're hovered, hairline frames on fields and secondary buttons, and fast state transitions. Three things are rejected outright. It must not look like a web app: no big rounded cards, airy marketing whitespace, decorative gradients or illustrations. It has no second accent colour. And it has no eye-catching animation.",
+    "keyCharacteristics": [
+      "JetBrains new UI (Islands): metrics and behaviour follow IntelliJ's theme keys.",
+      "Grey frame, rounded content islands, tonal layering only.",
+      "A single accent (Workbench Blue) for primary actions, focus, selection and the active tool window.",
+      "High density on a 4px grid. Compact mode is a first-class variant.",
+      "Controls are quiet at rest: toolbar buttons and chips have no frame until hover.",
+      "Semantic colour (status, VCS, diff, syntax) carries meaning and is never decoration.",
+      "Every colour and metric is a token in `src/styles/tokens.css`. Tokens are the public theme API for plugins."
+    ],
+    "rules": [
+      {
+        "name": "The IDEA Reference Rule",
+        "body": "When tokens and this document don't answer a question, the answer is what IntelliJ IDEA does in the Islands theme, with the same metric and the same state behaviour. Take the value from the theme key, add it as a token, and name the key in a CSS comment.",
+        "section": "overview"
+      },
+      {
+        "name": "The One Accent Rule",
+        "body": "Workbench Blue is the only accent. Every other hue in the UI belongs to a functional vocabulary (status, VCS, diff, syntax, charts) and means something specific. If a new colour has no meaning to carry, it doesn't ship.",
+        "section": "colors"
+      },
+      {
+        "name": "The Token Only Rule",
+        "body": "Components never contain hex, `rgb()` or named colour literals. A new colour is a new token with a value in every theme variant, named for its purpose. Run `pnpm gen:theme-docs` afterwards.",
+        "section": "colors"
+      },
+      {
+        "name": "The Flat Scale Rule",
+        "body": "The UI uses 11, 12, 13 and 15px, and nothing in between. Emphasis is weight 600 or a stronger ink colour, not a bigger size.",
+        "section": "typography"
+      },
+      {
+        "name": "The User Owns Size Rule",
+        "body": "Sizes are tokens because users change them (UI font size, editor font, compact mode's -1px chrome offset). Never hard-code a font size.",
+        "section": "typography"
+      },
+      {
+        "name": "The Flat at Rest Rule",
+        "body": "No docked panel, island, row or control gets a shadow. A shadow means \"this floats over the workbench and will go away\". Depth inside the layout is only ever a tonal step.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "**Do** match IntelliJ IDEA's Islands theme for any metric or state that isn't tokenized yet. Take the value from the theme key and name the key in a CSS comment (for example `Button.arc 8 (radius 4)`).",
+      "**Do** take every colour and metric from `src/styles/tokens.css`, and add a token for every theme variant when you need a new one.",
+      "**Do** separate regions with a tonal step (frame against island) or a 1px hairline, never with a shadow.",
+      "**Do** keep toolbar buttons and chips without a frame at rest, with the toolbar hover wash over the full hit target.",
+      "**Do** draw frames and focus rings as inset box-shadows (1px at rest, doubled on focus), and keep the 2px Workbench Blue focus outline visible.",
+      "**Do** check every surface in Islands Light and Islands Dark at least, as the contribution guidelines require. Check High Contrast and compact density whenever a change touches colour or metrics.",
+      "**Do** keep transitions to state changes: 80ms (`--dur-fast`), 140ms (`--dur`) or at most 220ms (`--dur-slow`) with `--ease`, and none under reduced motion.",
+      "**Do** use icons from the `src/ui/icons.tsx` registry, drawn in `currentColor`."
+    ],
+    "donts": [
+      "**Don't** make it look like a web app: no large rounded cards, airy marketing whitespace, decorative gradients, hero illustrations or corners above 10px. The project wash is the one gradient in the chrome. Progress shimmer counts as activity, not decoration.",
+      "**Don't** invent a look or behaviour where IDEA already has one. A custom variant of an IDEA pattern breaks muscle memory.",
+      "**Don't** add a second accent. Any hue other than Workbench Blue must carry status, VCS, diff, syntax or chart meaning.",
+      "**Don't** add attention-seeking animation: no bounces, no staggered entrances, and no state transition over 220ms. Looping animation is only for activity that is really happening (spinners, progress, loading shimmer, a running pulse, the caret), never decoration.",
+      "**Don't** put shadows on docked panels, islands, rows or controls.",
+      "**Don't** use sizes off the 11/12/13/15px scale, or hard-code a font size users can change.",
+      "**Don't** use hex, `rgb()` or named colours in component CSS or inline styles.",
+      "**Don't** use emoji as icons or decoration, or inline ad-hoc SVG in a feature."
+    ]
+  }
+}

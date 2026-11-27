@@ -3,11 +3,11 @@
  * (like run configurations' gutter) and a toolbar panel above the text with
  * the environment selector, Run All and Stop.
  */
-import { RangeSet, StateEffect, StateField, type EditorState, type Extension } from "@codemirror/state";
+import { EditorState, RangeSet, StateEffect, StateField, type Extension } from "@codemirror/state";
 import { EditorView, GutterMarker, ViewPlugin, gutter, showPanel, type Panel, type ViewUpdate } from "@codemirror/view";
 import { useEffect } from "react";
 import { createRoot } from "react-dom/client";
-import type { EditorDocContext } from "@/editor/api";
+import { CONTRIBUTED_FORMAT, mapLineStart, type EditorDocContext } from "@/editor/api";
 import { shortcutLabel } from "@/platform/keymap";
 import { isVirtualUri } from "@/platform/virtualDocs";
 import type { HttpRequestBlock } from "@/platform/ipc";
@@ -23,6 +23,7 @@ import {
   setEnvironment,
   useHttpClient,
 } from "./store";
+import { httpBodyFormatter } from "./bodyFormat";
 import styles from "./HttpClient.module.css";
 
 export const HTTP_LANGUAGE = "http";
@@ -40,7 +41,7 @@ export const requestsField = StateField.define<Placed[]>({
     for (const e of tr.effects) if (e.is(setRequests)) return e.value;
     if (!tr.docChanged || !value.length) return value;
     return value.map((r) => {
-      const pos = tr.state.doc.lineAt(tr.changes.mapPos(r.pos, -1)).from;
+      const pos = mapLineStart(tr, r.pos);
       return { ...r, pos, line: tr.state.doc.lineAt(pos).number - 1 };
     });
   },
@@ -105,7 +106,10 @@ function Toolbar({ path, view }: { path: string | null; view: EditorView }) {
   useEffect(() => {
     if (path) void loadEnvironments(path);
   }, [path]);
-  const options = [{ value: "", label: "No Environment" }, ...(envs ?? []).map((e) => ({ value: e, label: e }))];
+  const options = [
+    { value: "", label: "No Environment" },
+    ...(envs ?? []).map((e) => ({ value: e, label: e, verbatim: true })),
+  ];
   return (
     <div className={styles.toolbar}>
       <IconButton
@@ -209,8 +213,11 @@ export function httpEditorExtension(ctx: EditorDocContext): Extension {
       }
     },
   );
+  // Reformat Code: JSON request bodies (the blocks as last parsed).
+  const format = httpBodyFormatter((state) => state.field(requestsField, false) ?? []);
   return [
     requestsField,
+    EditorState.languageData.of(() => [{ [CONTRIBUTED_FORMAT]: format }]),
     detector,
     curlPaste,
     showPanel.of(toolbarPanel(path)),

@@ -16,6 +16,11 @@ struct Env {
 }
 
 async fn env() -> Env {
+    env_with(|_| Arc::new(|cmd| (format!("ran: {cmd}"), 0))).await
+}
+
+/// `exec`: the server's command handler, given the folder that backs `/`.
+async fn env_with(exec: impl FnOnce(std::path::PathBuf) -> ide_ssh::testing::ExecFn) -> Env {
     let tmp = tempfile::tempdir().unwrap();
     let project = tmp.path().join("project");
     let server_root = tmp.path().join("server");
@@ -25,7 +30,7 @@ async fn env() -> Env {
     std::fs::write(project.join("src/main.py"), "print('hi')\n").unwrap();
     std::fs::write(project.join("README.md"), "# demo\n").unwrap();
     std::fs::write(project.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
-    let port = ide_ssh::testing::sshd(server_root.clone(), Arc::new(|cmd| (format!("ran: {cmd}"), 0))).await;
+    let port = ide_ssh::testing::sshd(server_root.clone(), exec(server_root.clone())).await;
     let files = SshFiles { known_hosts: tmp.path().join("known_hosts"), config: None };
     let target = SshTarget {
         host: "127.0.0.1".into(),
@@ -56,6 +61,157 @@ fn server() -> DeploymentServer {
 
 fn no_progress() -> impl FnMut(&str, usize, usize) + Send {
     |_, _, _| {}
+}
+
+#[tokio::test]
+async fn direct_uploads_merge_only_with_confirmation_and_preserve_cancelled_replacements() {
+    let env = env().await;
+    let outside = env._tmp.path().join("outside");
+    std::fs::create_dir_all(outside.join("assets/empty")).unwrap();
+    std::fs::write(outside.join("assets/banner.svg"), "new banner").unwrap();
+    std::fs::write(outside.join("notes.txt"), "outside project").unwrap();
+    for sftp in [false, true] {
+        let fs = if sftp { RemoteFs::new(env.session.sftp().await.unwrap()) } else { RemoteFs::Local };
+        let base = if sftp {
+            "/direct".to_owned()
+        } else {
+            env.server_root.join("direct-local").to_string_lossy().into_owned()
+        };
+        fs.mkdir_all(&base).await.unwrap();
+        let cancel = CancellationToken::new();
+        let paths = vec![
+            outside.join("assets"),
+            outside.join("assets/banner.svg"),
+            outside.join("notes.txt"),
+            outside.join("notes.txt"),
+        ];
+        let report =
+            ide_remote::upload::upload_into(&fs, &paths, &base, false, &cancel, &mut no_progress()).await.unwrap();
+        assert!(report.errors.is_empty(), "{report:?}");
+        assert_eq!(report.files, 2);
+        assert!(fs.stat(&format!("{base}/assets/empty")).await.unwrap().unwrap().is_dir);
+        assert_eq!(fs.read(&format!("{base}/notes.txt")).await.unwrap(), b"outside project");
+
+        std::fs::write(outside.join("assets/banner.svg"), "replacement").unwrap();
+        std::fs::write(outside.join("assets/added.txt"), "added").unwrap();
+        let paths = vec![outside.join("assets")];
+        let report =
+            ide_remote::upload::upload_into(&fs, &paths, &base, false, &cancel, &mut no_progress()).await.unwrap();
+        assert_eq!(report.errors.len(), 1, "{report:?}");
+        assert_eq!(fs.read(&format!("{base}/assets/banner.svg")).await.unwrap(), b"new banner");
+        assert!(fs.stat(&format!("{base}/assets/added.txt")).await.unwrap().is_none());
+        let report =
+            ide_remote::upload::upload_into(&fs, &paths, &base, true, &cancel, &mut no_progress()).await.unwrap();
+        assert!(report.errors.is_empty(), "{report:?}");
+        assert_eq!(report.files, 2);
+        assert_eq!(fs.read(&format!("{base}/assets/banner.svg")).await.unwrap(), b"replacement");
+        assert_eq!(fs.read(&format!("{base}/notes.txt")).await.unwrap(), b"outside project");
+
+        let cancelled = CancellationToken::new();
+        std::fs::write(outside.join("notes.txt"), "cancelled replacement").unwrap();
+        let error = ide_remote::upload::upload_into(
+            &fs,
+            &[outside.join("notes.txt")],
+            &base,
+            true,
+            &cancelled,
+            &mut |_, _, _| cancelled.cancel(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind, ide_core::error::ErrorKind::Cancelled);
+        assert_eq!(fs.read(&format!("{base}/notes.txt")).await.unwrap(), b"outside project");
+        assert!(!fs.list(&base).await.unwrap().iter().any(|e| e.name.starts_with(".openidea-upload-")));
+        fs.close().await;
+        std::fs::write(outside.join("assets/banner.svg"), "new banner").unwrap();
+        std::fs::remove_file(outside.join("assets/added.txt")).unwrap();
+        std::fs::write(outside.join("notes.txt"), "outside project").unwrap();
+    }
+}
+
+#[tokio::test]
+async fn direct_uploads_validate_sources_before_writing_and_reject_self_copies() {
+    let env = env().await;
+    let fs = RemoteFs::new(env.session.sftp().await.unwrap());
+    fs.mkdir_all("/target").await.unwrap();
+    let second = env._tmp.path().join("second");
+    std::fs::create_dir(&second).unwrap();
+    std::fs::write(second.join("README.md"), "duplicate").unwrap();
+    let cancel = CancellationToken::new();
+    let error = ide_remote::upload::upload_into(
+        &fs,
+        &[env.project.join("src/main.py"), env.project.join("README.md"), second.join("README.md")],
+        "/target",
+        false,
+        &cancel,
+        &mut no_progress(),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.message.contains("same name"));
+    assert!(fs.list("/target").await.unwrap().is_empty());
+    let error =
+        ide_remote::upload::upload_into(&fs, &["relative.txt".into()], "/target", false, &cancel, &mut no_progress())
+            .await
+            .unwrap_err();
+    assert!(error.message.contains("absolute"));
+    fs.close().await;
+    let error = ide_remote::upload::upload_into(
+        &RemoteFs::Local,
+        std::slice::from_ref(&env.project),
+        env.project.join("src").to_str().unwrap(),
+        true,
+        &cancel,
+        &mut no_progress(),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.message.contains("itself"));
+}
+
+#[tokio::test]
+async fn direct_uploads_report_type_conflicts_and_missing_sources_without_stopping_other_files() {
+    let env = env().await;
+    let fs = RemoteFs::new(env.session.sftp().await.unwrap());
+    fs.mkdir_all("/target/README.md").await.unwrap();
+    let paths = vec![env.project.join("README.md"), env.project.join("missing.txt"), env.project.join("src/main.py")];
+    let report =
+        ide_remote::upload::upload_into(&fs, &paths, "/target", true, &CancellationToken::new(), &mut no_progress())
+            .await
+            .unwrap();
+    assert_eq!(report.files, 1, "{report:?}");
+    assert_eq!(report.errors.len(), 2, "{report:?}");
+    assert!(fs.stat("/target/README.md").await.unwrap().unwrap().is_dir);
+    assert_eq!(fs.read("/target/main.py").await.unwrap(), b"print('hi')\n");
+    fs.close().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn direct_uploads_skip_source_links_and_refuse_destination_links() {
+    let env = env().await;
+    std::os::unix::fs::symlink(".", env.project.join("cycle")).unwrap();
+    std::os::unix::fs::symlink("README.md", env.project.join("readme-link")).unwrap();
+    let fs = RemoteFs::new(env.session.sftp().await.unwrap());
+    fs.mkdir_all("/target/project").await.unwrap();
+    fs.mkdir_all("/outside").await.unwrap();
+    fs.symlink("../../outside", "/target/project/src").await.unwrap();
+    let report = ide_remote::upload::upload_into(
+        &fs,
+        &[env.project],
+        "/target",
+        true,
+        &CancellationToken::new(),
+        &mut no_progress(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.files, 2, "{report:?}");
+    assert_eq!(report.errors.len(), 1, "{report:?}");
+    assert_eq!(report.skipped, 3, "{report:?}");
+    assert!(fs.list("/outside").await.unwrap().is_empty());
+    assert_eq!(fs.read("/target/project/README.md").await.unwrap(), b"# demo\n");
+    fs.close().await;
 }
 
 #[tokio::test]
@@ -182,6 +338,72 @@ async fn uploads_compares_syncs_and_downloads() {
     let report = d.push_changes(&env.project, &mut no_progress()).await.unwrap();
     assert_eq!(report.files, 2, "{report:?}");
     assert_eq!(d.push_changes(&env.project, &mut no_progress()).await.unwrap().files, 0);
+}
+
+/// GNU `find -printf '%y\t%s\t%T@\t%p\0'` over the test server's files (no pruning: the
+/// deployment filters what it excludes itself).
+fn find_printf(root: std::path::PathBuf, calls: Arc<std::sync::atomic::AtomicUsize>) -> ide_ssh::testing::ExecFn {
+    Arc::new(move |cmd| {
+        let Some(dir) = cmd.strip_prefix("LC_ALL=C find ").and_then(|c| c.split(" -mindepth").next()) else {
+            return (String::new(), 127);
+        };
+        calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        fn walk(local: &std::path::Path, remote: &str, out: &mut String) {
+            for e in std::fs::read_dir(local).unwrap().flatten() {
+                let (path, meta) = (format!("{remote}/{}", e.file_name().to_string_lossy()), e.metadata().unwrap());
+                if meta.is_dir() {
+                    walk(&e.path(), &path, out);
+                } else {
+                    let mtime = meta.modified().unwrap().duration_since(std::time::UNIX_EPOCH).unwrap();
+                    out.push_str(&format!(
+                        "f\t{}\t{}.{:09}0\t{path}\0",
+                        meta.len(),
+                        mtime.as_secs(),
+                        mtime.subsec_nanos()
+                    ));
+                }
+            }
+        }
+        let mut out = String::new();
+        let local = root.join(dir.trim_start_matches('/'));
+        if local.is_dir() {
+            walk(&local, dir, &mut out);
+        }
+        (out, 0)
+    })
+}
+
+#[tokio::test]
+async fn compares_with_one_find_over_ssh_and_falls_back_to_listing_folders() {
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = calls.clone();
+    let env = env_with(move |root| find_printf(root, counted)).await;
+    let server = server();
+    let settings = DeploymentSettings::default();
+    let map = Mappings::new(&server, &env.project, "/srv");
+    let exclude = Excludes::new(&settings, &server, "/srv");
+    // An excluded folder on the server is not listed, whatever `find` returns.
+    std::fs::create_dir_all(env.server_root.join("srv/app/.git")).unwrap();
+    std::fs::write(env.server_root.join("srv/app/.git/HEAD"), "x\n").unwrap();
+    std::fs::write(env.server_root.join("srv/app/remote.txt"), "server side\n").unwrap();
+    for shell in [true, false] {
+        let fs = RemoteFs::new(env.session.sftp().await.unwrap());
+        let fs = if shell { fs.with_shell(env.session.clone()) } else { fs };
+        let d =
+            Deployment { fs: &fs, map: &map, exclude: &exclude, preserve_time: true, cancel: CancellationToken::new() };
+        let before = calls.load(std::sync::atomic::Ordering::SeqCst);
+        if shell {
+            assert_eq!(d.push_changes(&env.project, &mut no_progress()).await.unwrap().files, 2);
+        }
+        let entries = d.compare(&env.project).await.unwrap();
+        let status = |p: &str| entries.iter().find(|e| e.path == p).map(|e| e.status);
+        assert_eq!(status("src/main.py"), Some(SyncStatus::Same), "{entries:?}");
+        assert_eq!(status("README.md"), Some(SyncStatus::Same));
+        assert_eq!(status("remote.txt"), Some(SyncStatus::RemoteOnly));
+        assert!(entries.iter().all(|e| !e.path.starts_with(".git")), "{entries:?}");
+        let used = calls.load(std::sync::atomic::Ordering::SeqCst) - before;
+        assert_eq!(used > 0, shell, "find is used only with a shell");
+    }
 }
 
 struct Sink(Mutex<Vec<IdeEvent>>);

@@ -8,6 +8,7 @@ import { FontPicker } from "../components/FontPicker";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import { quotePath } from "@/platform/commandLine";
+import { choosePath } from "@/platform/choosePath";
 import { commands, isTauri } from "@/platform/ipc";
 import {
   DEFAULT_EXTERNAL_TOOL,
@@ -16,14 +17,17 @@ import {
   type ExternalToolValid,
 } from "@/platform/workflowSettings";
 import { Button, Checkbox, IconButton, Input, Menu, type SelectOption, T } from "@/ui";
-import { NumberInput, Row, SearchLabel, Section, Select } from "../components/Form";
+import { FormGroup, NumberInput, Row, SearchLabel, Section, Select, SettingSelect, Toggle } from "../components/Form";
 import { useLabelMatch, useSetting } from "../components/context";
 import { selectPage, setQuery } from "../model/staging";
+import { MirrorPrefixRow } from "./DownloadSources";
 import { MCP_SERVER_PAGE } from "./mcpServer";
 import type { PageSpec } from "./spec";
-import { BoundToggle, Grid, Indented, PageLink, TableEditor } from "./workflowControls";
+import { BoundToggle, Grid, PageLink, TableEditor } from "./workflowControls";
 import styles from "./Workflow.module.css";
+import terminalStyles from "./TerminalSettings.module.css";
 import { tx } from "@/platform/i18n";
+import { TERMINAL_MAX_FPS_OPTIONS } from "@/platform/workflowSettings";
 
 export const TOOLS_GROUP = "Tools";
 
@@ -31,9 +35,18 @@ const SEND_KEY_OPTIONS = [
   { value: "enter", label: "Enter" },
   { value: "modEnter", label: "⌘Enter" },
 ];
+const APP_TITLE_OPTIONS = [
+  { value: "running", label: "When command is running" },
+  { value: "always", label: "Always" },
+  { value: "off", label: "Never" },
+];
 const WHILE_RUNNING_OPTIONS = [
   { value: "queue", label: "Queues the message for after the turn" },
   { value: "steer", label: "Sends it into the turn" },
+];
+const NEW_TASK_APPROVAL_OPTIONS = [
+  { value: "bypass", label: "Without asking for approval" },
+  { value: "ask", label: "Asking for approval" },
 ];
 const TOOL_CALL_OPTIONS = [
   { value: "grouped", label: "Grouped by what they did" },
@@ -51,29 +64,27 @@ const isMac = typeof navigator !== "undefined" && /Mac/i.test(navigator.platform
 // ---------------------------------------------------------------------------
 // Terminal
 
-function TextSetting({
+function TerminalTextSetting({
   k,
   label,
   placeholder,
   hint,
-  width = "wide",
   mono,
 }: {
   k: string;
   label: string;
   placeholder?: string;
   hint?: ReactNode;
-  width?: "wide" | "medium";
   mono?: boolean;
 }) {
   const [value, set] = useSetting<string>(k);
   const id = useId();
   return (
-    <Row label={label} htmlFor={id} hint={hint}>
+    <Row label={label} htmlFor={id} hint={hint} className={terminalStyles.textRow}>
       <Input
         id={id}
         mono={mono}
-        className={styles[width]}
+        className={terminalStyles.field}
         value={value}
         placeholder={placeholder}
         onChange={(e) => set(e.target.value)}
@@ -84,7 +95,7 @@ function TextSetting({
 
 function StartDirectoryRow() {
   return (
-    <TextSetting
+    <TerminalTextSetting
       k="terminal.startDirectory"
       label="Start directory"
       placeholder="Project root"
@@ -127,9 +138,7 @@ function ShellPathRow() {
     void commands.termAvailableShells().then(setShells, () => undefined);
   }, []);
   const browse = async () => {
-    const { open: pick } = await import("@tauri-apps/plugin-dialog");
-    const picked = await pick({ multiple: false, title: "Shell Path" });
-    const path = Array.isArray(picked) ? picked[0] : picked;
+    const path = await choosePath({ directory: false, title: "Shell Path" });
     if (path) set(quotePath(path));
   };
   return (
@@ -137,40 +146,48 @@ function ShellPathRow() {
       label="Shell path"
       htmlFor={id}
       hint="A command line, e.g. /bin/zsh --login. Leave empty to use the login shell."
+      className={terminalStyles.textRow}
     >
-      <Input
-        id={id}
-        mono
-        className={styles.wide}
-        value={value}
-        placeholder={detected ?? "Login shell"}
-        onChange={(e) => set(e.target.value)}
-      />
-      <IconButton
-        ref={menuRef}
-        icon="chevron-down"
-        size="small"
-        title="Installed Shells"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        disabled={shells.length === 0}
-        onClick={() => setOpen((o) => !o)}
-      />
+      <div className={terminalStyles.shellControls}>
+        <Input
+          id={id}
+          mono
+          value={value}
+          placeholder={detected ?? "Login shell"}
+          onChange={(e) => set(e.target.value)}
+        />
+        <IconButton
+          ref={menuRef}
+          icon="chevron-down"
+          size="small"
+          title="Installed Shells"
+          aria-haspopup="menu"
+          aria-expanded={open}
+          disabled={shells.length === 0}
+          onClick={() => setOpen((o) => !o)}
+        />
+        <IconButton
+          icon="folder-open"
+          size="small"
+          title="Browse…"
+          aria-label="Browse"
+          disabled={!isTauri()}
+          onClick={() => void browse()}
+        />
+      </div>
       <Menu
         open={open}
         onClose={() => setOpen(false)}
         anchor={menuRef}
         placement="bottom-end"
         aria-label="Installed shells"
-        items={shells.map((p) => ({ id: p, label: p, checked: quotePath(p) === value, run: () => set(quotePath(p)) }))}
-      />
-      <IconButton
-        icon="folder-open"
-        size="small"
-        title="Browse…"
-        aria-label="Browse"
-        disabled={!isTauri()}
-        onClick={() => void browse()}
+        items={shells.map((p) => ({
+          id: p,
+          verbatim: true,
+          label: p,
+          checked: quotePath(p) === value,
+          run: () => set(quotePath(p)),
+        }))}
       />
     </Row>
   );
@@ -214,34 +231,45 @@ function TerminalKeybindingsLink() {
 
 function TerminalOptions() {
   return (
-    <Grid
-      left={
-        <>
-          <BoundToggle k="terminal.audibleBell" label="Audible bell" />
-          <BoundToggle k="terminal.closeOnExit" label="Close session when it ends" />
-          <BoundToggle k="terminal.mouseReporting" label="Mouse reporting" />
-          <BoundToggle k="terminal.copyOnSelection" label="Copy to clipboard on selection" />
-          <BoundToggle k="terminal.pasteOnMiddleClick" label="Paste on middle mouse button click" />
-          <BoundToggle
-            k="terminal.escapeToEditor"
-            label="Move focus to the Editor with Escape"
-            hint="Otherwise Escape goes to the shell."
-          />
-        </>
-      }
-      right={
-        <>
-          <BoundToggle
-            k="terminal.overrideIdeShortcuts"
-            label="Override IDE shortcuts"
-            hint={<TerminalKeybindingsLink />}
-          />
-          <BoundToggle k="terminal.shellIntegration" label="Shell integration" />
-          <BoundToggle k="terminal.highlightHyperlinks" label="Highlight hyperlinks" />
-          {isMac && <BoundToggle k="terminal.optionAsMeta" label="Use Option as Meta key" />}
-        </>
-      }
-    />
+    <>
+      <div className={terminalStyles.options}>
+        <Grid
+          left={
+            <>
+              <BoundToggle k="terminal.audibleBell" label="Audible bell" />
+              <BoundToggle k="terminal.closeOnExit" label="Close session when it ends" />
+              <BoundToggle k="terminal.mouseReporting" label="Mouse reporting" />
+              <BoundToggle k="terminal.copyOnSelection" label="Copy to clipboard on selection" />
+              <BoundToggle k="terminal.pasteOnMiddleClick" label="Paste on middle mouse button click" />
+              <BoundToggle
+                k="terminal.escapeToEditor"
+                label="Move focus to the Editor with Escape"
+                hint="Otherwise Escape goes to the shell."
+              />
+            </>
+          }
+          right={
+            <>
+              <BoundToggle
+                k="terminal.overrideIdeShortcuts"
+                label="Override IDE shortcuts"
+                hint={<TerminalKeybindingsLink />}
+              />
+              <BoundToggle k="terminal.shellIntegration" label="Shell integration" />
+              <BoundToggle k="terminal.highlightHyperlinks" label="Highlight hyperlinks" />
+              <BoundToggle k="terminal.highlightSelection" label="Highlight occurrences of selected text" />
+              {isMac && <BoundToggle k="terminal.optionAsMeta" label="Use Option as Meta key" />}
+            </>
+          }
+        />
+      </div>
+      <SettingSelect
+        k="terminal.maxFps"
+        label="Maximum refresh rate"
+        hint="Caps how often fast output is sent and painted in the terminal and the Run and Debug consoles. Hidden windows always paint more slowly."
+        options={TERMINAL_MAX_FPS_OPTIONS}
+      />
+    </>
   );
 }
 
@@ -254,7 +282,8 @@ function TerminalFont() {
   const [columnWidth, setColumnWidth] = useSetting<number>("terminal.columnWidth");
   const matched = useLabelMatch("Use editor font");
   const monoMatched = useLabelMatch("Show only monospaced fonts");
-  const [monoOnly, setMonoOnly] = useState(true);
+  const [monoSetting, setMonoOnly] = useSetting<boolean>("editor.onlyMonospacedFonts");
+  const monoOnly = monoSetting !== false;
   return (
     <>
       <div className={clsx(styles.inlineRow, matched && styles.matched)}>
@@ -266,9 +295,9 @@ function TerminalFont() {
           </PageLink>
         </span>
       </div>
-      <Indented>
-        <Row label="Font">
-          <span className={styles.fontFamily}>
+      <div className={terminalStyles.families}>
+        <Row label="Font" stacked>
+          <span className={terminalStyles.fontPicker}>
             <FontPicker
               value={family}
               onChange={setFamily}
@@ -286,6 +315,11 @@ function TerminalFont() {
             </span>
           </span>
         </Row>
+        <Row label="Fallback font" stacked hint="Used for characters the main font lacks.">
+          <FontPicker value={fallback} onChange={setFallback} allowEmpty label="Terminal fallback font" />
+        </Row>
+      </div>
+      <div className={terminalStyles.metrics}>
         <Row label="Size">
           <NumberInput
             value={size}
@@ -296,28 +330,25 @@ function TerminalFont() {
             aria-label="Terminal font size"
           />
         </Row>
-      </Indented>
-      <Row label="Line height">
-        <NumberInput
-          value={lineHeight}
-          onChange={setLineHeight}
-          {...L.terminalLineHeight}
-          step={0.1}
-          aria-label="Terminal line height"
-        />
-      </Row>
-      <Row label="Fallback font" hint="Used for characters the main font lacks.">
-        <FontPicker value={fallback} onChange={setFallback} allowEmpty label="Terminal fallback font" />
-      </Row>
-      <Row label="Column width">
-        <NumberInput
-          value={columnWidth}
-          onChange={setColumnWidth}
-          {...L.terminalColumnWidth}
-          step={0.1}
-          aria-label="Terminal column width"
-        />
-      </Row>
+        <Row label="Line height">
+          <NumberInput
+            value={lineHeight}
+            onChange={setLineHeight}
+            {...L.terminalLineHeight}
+            step={0.1}
+            aria-label="Terminal line height"
+          />
+        </Row>
+        <Row label="Column width">
+          <NumberInput
+            value={columnWidth}
+            onChange={setColumnWidth}
+            {...L.terminalColumnWidth}
+            step={0.1}
+            aria-label="Terminal column width"
+          />
+        </Row>
+      </div>
     </>
   );
 }
@@ -325,40 +356,75 @@ function TerminalFont() {
 // ---------------------------------------------------------------------------
 // Actions on Save
 
-function ActionsOnSave() {
+const SAVE_ACTIONS = [
+  {
+    k: "editor.formatOnSave",
+    label: "Reformat code",
+    hint: "Formats the whole file with the language server's formatter.",
+  },
+  {
+    k: "actionsOnSave.optimizeImports",
+    label: "Optimize imports",
+    hint: "Uses the language server or a tool such as Ruff to organize imports.",
+  },
+  {
+    k: "actionsOnSave.cleanup",
+    label: "Run code cleanup",
+    hint: "Applies the language server's fix-all action (source.fixAll).",
+  },
+];
+
+function SaveActionRow({ k, label, hint }: (typeof SAVE_ACTIONS)[number]) {
+  const [enabled, setEnabled] = useSetting<boolean>(k);
   return (
-    <>
-      <BoundToggle
-        k="editor.formatOnSave"
-        label="Reformat code"
-        hint="Formats the whole file with the language server's formatter."
-      />
-      <BoundToggle
-        k="actionsOnSave.optimizeImports"
-        label="Optimize imports"
-        hint="Runs the language server's Organize Imports action."
-      />
-      <BoundToggle
-        k="actionsOnSave.cleanup"
-        label="Run code cleanup"
-        hint="Applies the language server's fix-all action (source.fixAll)."
-      />
-    </>
+    <tr>
+      <td>
+        <Toggle label={label} hint={hint} checked={!!enabled} onChange={setEnabled} />
+      </td>
+      <td>
+        {enabled && (
+          <div className={styles.saveActivation}>
+            <T>Save or Save All</T>
+          </div>
+        )}
+      </td>
+    </tr>
   );
 }
 
-function ActionsOnSaveNote() {
+function ActionsOnSave() {
   return (
-    <div className={styles.note}>
-      <T>
-        {
-          "Actions run when a file is saved with Save (⌘S) or Save All. Trailing spaces and the final line break are configured in"
-        }
-      </T>{" "}
-      <PageLink page="editor.general">
-        <T>Editor › General</T>
-      </PageLink>
-      .
+    <div className={styles.saveActions}>
+      <div className={styles.tableBox}>
+        <table className={clsx(styles.table, styles.saveActionsTable)} aria-label={tx("Actions on Save")}>
+          <colgroup>
+            <col />
+            <col className={styles.saveActivationColumn} />
+          </colgroup>
+          <thead>
+            <tr>
+              <th scope="col">
+                <T>Action</T>
+              </th>
+              <th scope="col">
+                <T>Activated on</T>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {SAVE_ACTIONS.map((action) => (
+              <SaveActionRow key={action.k} {...action} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className={styles.note}>
+        <T>Trailing spaces and the final line break are configured in</T>{" "}
+        <PageLink page="editor.general">
+          <T>Editor › General</T>
+        </PageLink>
+        .
+      </div>
     </div>
   );
 }
@@ -382,6 +448,7 @@ function MacroButton({ onInsert }: { onInsert: (macro: string) => void }) {
         aria-label="Macros"
         items={EXTERNAL_TOOL_MACROS.map((m) => ({
           id: m.name,
+          verbatim: true,
           label: m.name,
           shortcut: m.description,
           run: () => onInsert(m.name),
@@ -397,21 +464,22 @@ function ToolField({
   onChange,
   macros,
   placeholder,
+  className,
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
   macros?: boolean;
   placeholder?: string;
+  className?: string;
 }) {
   const id = useId();
   return (
-    <Row label={label} htmlFor={id} className={styles.alignedRow}>
-      <span className={styles.macroField}>
+    <Row label={label} htmlFor={id} className={className}>
+      <span className={styles.toolField}>
         <Input
           id={id}
           mono={macros}
-          className={styles.wide}
           value={value}
           placeholder={placeholder}
           onChange={(e) => onChange(e.target.value)}
@@ -432,6 +500,9 @@ function ExternalToolsEditor() {
   const [selected, setSelected] = useState<string | null>(tools[0]?.id ?? null);
   const current = tools.find((t) => t.id === selected) ?? null;
   const index = current ? tools.indexOf(current) : -1;
+  const advancedMatch = useLabelMatch("Advanced options");
+  const synchronizeMatch = useLabelMatch("Synchronize files after execution");
+  const consoleMatch = useLabelMatch("Open console for tool output");
 
   const update = (patch: Partial<ExternalToolValid>) => {
     if (!current) return;
@@ -510,50 +581,62 @@ function ExternalToolsEditor() {
         </div>
       </div>
       {current && (
-        <Section title="Tool Settings">
-          <ToolField label="Name" value={current.name} onChange={(name) => update({ name })} />
-          <ToolField
-            label="Group"
-            value={current.group}
-            onChange={(group) => update({ group })}
-            placeholder="External Tools"
-          />
-          <ToolField
-            label="Description"
-            value={current.description}
-            onChange={(description) => update({ description })}
-          />
-          <ToolField
-            label="Program"
-            value={current.program}
-            onChange={(program) => update({ program })}
-            macros
-            placeholder="e.g. /usr/bin/env"
-          />
-          <ToolField
-            label="Arguments"
-            value={current.arguments}
-            onChange={(args) => update({ arguments: args })}
-            macros
-          />
-          <ToolField
-            label="Working directory"
-            value={current.workingDirectory}
-            onChange={(workingDirectory) => update({ workingDirectory })}
-            macros
-            placeholder="$ProjectFileDir$"
-          />
-          <Checkbox
-            checked={current.synchronizeAfter}
-            onChange={(synchronizeAfter) => update({ synchronizeAfter })}
-            label="Synchronize files after execution"
-          />
-          <Checkbox
-            checked={current.openConsole}
-            onChange={(openConsole) => update({ openConsole })}
-            label="Open console for tool output"
-          />
-        </Section>
+        <>
+          <div className={styles.toolIdentity}>
+            <ToolField label="Name" value={current.name} onChange={(name) => update({ name })} />
+            <ToolField
+              label="Group"
+              value={current.group}
+              onChange={(group) => update({ group })}
+              placeholder="External Tools"
+            />
+            <ToolField
+              label="Description"
+              value={current.description}
+              onChange={(description) => update({ description })}
+              className={styles.toolDescription}
+            />
+          </div>
+          <Section title="Tool Settings">
+            <ToolField
+              label="Program"
+              value={current.program}
+              onChange={(program) => update({ program })}
+              macros
+              placeholder="e.g. /usr/bin/env"
+            />
+            <ToolField
+              label="Arguments"
+              value={current.arguments}
+              onChange={(args) => update({ arguments: args })}
+              macros
+            />
+            <ToolField
+              label="Working directory"
+              value={current.workingDirectory}
+              onChange={(workingDirectory) => update({ workingDirectory })}
+              macros
+              placeholder="$ProjectFileDir$"
+            />
+          </Section>
+          <details className={styles.toolOptions} open={advancedMatch || synchronizeMatch || consoleMatch || undefined}>
+            <summary>
+              <SearchLabel text="Advanced options" />
+            </summary>
+            <FormGroup indented>
+              <Toggle
+                checked={current.synchronizeAfter}
+                onChange={(synchronizeAfter) => update({ synchronizeAfter })}
+                label="Synchronize files after execution"
+              />
+              <Toggle
+                checked={current.openConsole}
+                onChange={(openConsole) => update({ openConsole })}
+                label="Open console for tool output"
+              />
+            </FormGroup>
+          </details>
+        </>
       )}
       <div className={styles.note}>
         <T>
@@ -583,10 +666,31 @@ export const TOOLS_PAGES: PageSpec[] = [
         ],
       },
       {
+        title: "Font",
+        options: [
+          {
+            kind: "custom",
+            label: "Use editor font",
+            keywords: ["Font", "Show only monospaced fonts", "Size", "Line height", "Fallback font", "Column width"],
+            component: TerminalFont,
+          },
+        ],
+      },
+      {
         title: "Application Settings",
         options: [
           { kind: "custom", label: "Shell path", component: ShellPathRow },
-          { kind: "text", key: "terminal.tabName", label: "Default Tab name", placeholder: "Local" },
+          {
+            kind: "custom",
+            label: "Default Tab name",
+            component: () => <TerminalTextSetting k="terminal.tabName" label="Default Tab name" placeholder="Local" />,
+          },
+          {
+            kind: "select",
+            key: "terminal.appTitleAsTabName",
+            label: "Use application title as tab name",
+            options: APP_TITLE_OPTIONS,
+          },
           {
             kind: "custom",
             label: "Audible bell",
@@ -601,6 +705,7 @@ export const TOOLS_PAGES: PageSpec[] = [
               "Use Option as Meta key",
               "Move focus to the Editor with Escape",
               "Configure terminal keybindings",
+              "Maximum refresh rate",
             ],
             component: TerminalOptions,
           },
@@ -612,17 +717,6 @@ export const TOOLS_PAGES: PageSpec[] = [
           },
         ],
       },
-      {
-        title: "Font",
-        options: [
-          {
-            kind: "custom",
-            label: "Use editor font",
-            keywords: ["Font", "Show only monospaced fonts", "Size", "Line height", "Fallback font", "Column width"],
-            component: TerminalFont,
-          },
-        ],
-      },
     ],
   },
   {
@@ -631,20 +725,41 @@ export const TOOLS_PAGES: PageSpec[] = [
     group: TOOLS_GROUP,
     order: 601,
     projectScope: true,
-    keywords: ["save", "format on save", "reformat", "organize imports", "cleanup"],
+    keywords: [
+      "save",
+      "format on save",
+      "reformat",
+      "organize imports",
+      "cleanup",
+      ...SAVE_ACTIONS.map((a) => a.label),
+    ],
+    component: ActionsOnSave,
+  },
+  {
+    id: "tools.externalDiff",
+    title: "External Diff Tools",
+    group: TOOLS_GROUP,
+    order: 605,
+    keywords: ["diff", "compare", "Beyond Compare", "meld", "kdiff3", "opendiff", "FileMerge"],
     sections: [
       {
-        title: "Activate on Save",
         options: [
           {
-            kind: "custom",
-            label: "Reformat code",
-            keywords: ["Optimize imports", "Run code cleanup"],
-            component: ActionsOnSave,
+            kind: "toggle",
+            key: "externalDiff.enabled",
+            label: "Use external diff tool",
+            hint: "Diff viewers offer Show Diff in External Tool.",
+          },
+          { kind: "text", key: "externalDiff.path", label: "Path to executable", placeholder: "/usr/local/bin/bcomp" },
+          {
+            kind: "text",
+            key: "externalDiff.parameters",
+            label: "Parameters",
+            placeholder: "%1 %2 %3",
+            hint: "%1 – the left file, %2 – the right file, %3 – the diff's title.",
           },
         ],
       },
-      { options: [{ kind: "custom", label: "Save", component: ActionsOnSaveNote }] },
     ],
   },
   {
@@ -664,8 +779,24 @@ export const TOOLS_PAGES: PageSpec[] = [
       "meter",
       "send",
       "reasoning",
+      "approval",
+      "permission",
+      "bypass",
+      "width",
     ],
     sections: [
+      {
+        title: "New Tasks",
+        options: [
+          {
+            kind: "select",
+            key: "agents.newTaskApprovals",
+            label: "New tasks start",
+            options: NEW_TASK_APPROVAL_OPTIONS,
+            hint: "Without asking uses the agent's bypass or full-access mode, which skips Command Rules.",
+          },
+        ],
+      },
       {
         title: "Sending",
         options: [
@@ -675,19 +806,13 @@ export const TOOLS_PAGES: PageSpec[] = [
             key: "agents.whileRunning",
             label: "While the agent works, sending",
             options: WHILE_RUNNING_OPTIONS,
-            hint: "The other way is a modifier away: ⌘↵ with Enter, ⌘⇧↵ with ⌘↵",
+            hint: "For the other choice, press ⌘↵ (or ⌘⇧↵ when sending with ⌘↵).",
           },
         ],
       },
       {
         title: "Conversation",
         options: [
-          {
-            kind: "toggle",
-            key: "agents.foldTurns",
-            label: "Fold a finished turn's work",
-            hint: "Reasoning and tool calls before the reply fold into one line under its message",
-          },
           {
             kind: "select",
             key: "agents.toolCalls",
@@ -705,7 +830,12 @@ export const TOOLS_PAGES: PageSpec[] = [
             kind: "toggle",
             key: "agents.smoothText",
             label: "Reveal streaming text smoothly",
-            hint: "Text appears at a steady pace instead of in bursts",
+            hint: "Text appears at a steady pace instead of in bursts.",
+          },
+          {
+            kind: "toggle",
+            key: "agents.fitWindowWidth",
+            label: "Fit conversation to the window width",
           },
         ],
       },
@@ -713,18 +843,17 @@ export const TOOLS_PAGES: PageSpec[] = [
         title: "Shown in the Task Header",
         options: [
           { kind: "toggle", key: "agents.showContextUsage", label: "Context window usage" },
-          { kind: "toggle", key: "agents.showWorkTime", label: "Time spent on the task" },
           {
             kind: "toggle",
             key: "agents.showUsageLimits",
             label: "Usage limits",
-            hint: "The account's 5-hour and weekly limits, when the agent reports them (Claude Code)",
+            hint: "5-hour and weekly limits, when the agent reports them (Claude Code).",
           },
           {
             kind: "toggle",
             key: "agents.showCost",
             label: "Session cost",
-            hint: "What the session has cost so far, as the agent reports it (API pricing, also shown on subscriptions)",
+            hint: "As the agent reports it, at API pricing.",
           },
         ],
       },
@@ -747,7 +876,9 @@ export const TOOLS_PAGES: PageSpec[] = [
               "Arguments",
               "Working directory",
               "Insert Macro",
+              "Advanced options",
               "Synchronize files after execution",
+              "Open console for tool output",
             ],
             component: ExternalToolsEditor,
           },
@@ -756,4 +887,48 @@ export const TOOLS_PAGES: PageSpec[] = [
     ],
   },
   MCP_SERVER_PAGE,
+  {
+    id: "tools.downloadSources",
+    title: "Download Mirrors",
+    group: TOOLS_GROUP,
+    order: 590,
+    keywords: [
+      "mirror",
+      "download",
+      "github",
+      "proxy",
+      "slow",
+      "language server",
+      "accelerate",
+      "registry",
+      "npm",
+      "maven central",
+      "nexus",
+      "artifactory",
+    ],
+    sections: [
+      {
+        title: "GitHub",
+        options: [
+          {
+            kind: "custom",
+            label: "Mirror prefix for GitHub downloads",
+            keywords: ["https://gh-proxy.com/", "info"],
+            component: MirrorPrefixRow,
+          },
+        ],
+      },
+      {
+        title: "Package Registries",
+        options: [
+          {
+            kind: "toggle",
+            key: "toolDownloads.configuredRegistriesOnly",
+            label: "Use only the configured package registries",
+            hint: "For a company registry such as Nexus or Artifactory: installing tools and agents never retries against the public npm registry when the configured one refuses or misses a package, and the IDE fetches nothing from Maven Central, npm, PyPI or crates.io itself (the JUnit launcher, dependency version completion).",
+          },
+        ],
+      },
+    ],
+  },
 ];

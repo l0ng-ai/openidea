@@ -6,11 +6,11 @@
  */
 import { useEffect, useRef } from "react";
 import clsx from "clsx";
-import { BarButton, Button, Popup, T } from "@/ui";
+import { BarButton, Button, IconButton, Popup, T } from "@/ui";
 import { executeAction } from "@/platform/actions";
-import { isTauri, type AppMetrics } from "@/platform/ipc";
+import { call, commands, isTauri, type AppMetrics } from "@/platform/ipc";
 import { formatBytes, formatCount, formatMs, formatSize, formatUptime } from "./format";
-import { indicatorLabel, indicatorTooltip, memorySections, summarizeMemory } from "./memory";
+import { indicatorLabel, indicatorTooltip, memorySections, summarizeMemory, type BreakdownRow } from "./memory";
 import { startPolling } from "./poll";
 import { METRICS_INTERVAL_MS, refreshMetrics, usePerf } from "./store";
 import styles from "./perf.module.css";
@@ -82,6 +82,40 @@ function Row({ label, detail, value, title, indented }: RowProps) {
   );
 }
 
+async function endProcess(pid: number) {
+  const error = await call(commands.endProcess(pid)).then(
+    () => null,
+    (e: unknown) => String(e),
+  );
+  await refreshMetrics();
+  if (error) usePerf.setState({ error });
+}
+
+function ProcessRow({ row }: { row: BreakdownRow }) {
+  const title = row.processes > 1 ? tx`PID ${row.pid} · ${row.processes} processes` : tx`PID ${row.pid}`;
+  return (
+    <div className={clsx(styles.row, styles.indented, styles.processRow)} title={title}>
+      <span className={styles.label}>
+        {row.label}
+        {row.detail && <span className={styles.detail}>{row.detail}</span>}
+      </span>
+      <span className={clsx(styles.value, styles.cpu)}>{row.cpu}</span>
+      <span className={clsx(styles.value, styles.memory)}>{row.value}</span>
+      <span className={styles.end}>
+        {row.endable && (
+          <IconButton
+            icon="close"
+            size="small"
+            iconSize={14}
+            title={tx`End Process ${row.label}`}
+            onClick={() => void endProcess(row.pid)}
+          />
+        )}
+      </span>
+    </div>
+  );
+}
+
 export function MemoryDetails({ metrics: m }: { metrics: AppMetrics }) {
   const error = usePerf((s) => s.error);
   const s = m.syntax;
@@ -89,22 +123,26 @@ export function MemoryDetails({ metrics: m }: { metrics: AppMetrics }) {
   const sections = memorySections(m.memory ?? []);
   return (
     <div className={styles.panel}>
-      <div className={styles.header}>{tx("Memory & Diagnostics")}</div>
+      <div className={clsx(styles.header, styles.columns)}>
+        <span className={styles.groupTitle}>{tx("Memory & Diagnostics")}</span>
+        <span className={styles.cpu}>
+          <T>CPU</T>
+        </span>
+        <span className={styles.memory}>
+          <T>Memory</T>
+        </span>
+        <span className={styles.end} />
+      </div>
       {sections.map((sec) => (
         <div key={sec.title} className={styles.section} aria-label={sec.title} role="group">
-          <div className={styles.groupRow}>
+          <div className={clsx(styles.groupRow, styles.processRow)}>
             <span className={styles.groupTitle}>{sec.title}</span>
-            <span className={styles.value}>{sec.total}</span>
+            <span className={clsx(styles.value, styles.cpu)}>{sec.cpu}</span>
+            <span className={clsx(styles.value, styles.memory)}>{sec.total}</span>
+            <span className={styles.end} />
           </div>
           {sec.rows.map((r) => (
-            <Row
-              key={r.key}
-              label={r.label}
-              detail={r.detail}
-              value={r.value}
-              title={r.processes > 1 ? tx`${r.processes} processes` : undefined}
-              indented
-            />
+            <ProcessRow key={r.key} row={r} />
           ))}
         </div>
       ))}

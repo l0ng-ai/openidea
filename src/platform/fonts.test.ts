@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { monoFontFamily, quoteFontFamily, uiFontFamily } from "./fonts";
+import { monoFontFamily, quoteFontFamily, resolveMonoFont, uiFontFamily } from "./fonts";
 
 const BASE = "var(--font-mono)";
 
@@ -37,13 +37,133 @@ it("escapes CSS special characters without turning a family into a list", () => 
 
 describe("uiFontFamily", () => {
   it.each([
-    ["Inter", "", '"Inter", "Inter Variable", system-ui, sans-serif'],
-    ["JetBrains Mono", "", '"JetBrains Mono", "JetBrains Mono Variable", system-ui, sans-serif'],
-    [' "PingFang SC" ', "", '"PingFang SC", system-ui, sans-serif'],
-    ["Inter", "思源黑体", '"Inter", "Inter Variable", "思源黑体", system-ui, sans-serif'],
-    ["Inter", " ", '"Inter", "Inter Variable", system-ui, sans-serif'],
+    ["Inter", "", '"Inter", "Inter Variable", var(--ui-platform-fonts, var(--ui-system-fonts))'],
+    [
+      "JetBrains Mono",
+      "",
+      '"JetBrains Mono", "JetBrains Mono Variable", var(--ui-platform-fonts, var(--ui-system-fonts))',
+    ],
+    [' "PingFang SC" ', "", '"PingFang SC", var(--ui-platform-fonts, var(--ui-system-fonts))'],
+    ["Inter", "思源黑体", '"Inter", "Inter Variable", "思源黑体", var(--ui-platform-fonts, var(--ui-system-fonts))'],
+    ["Inter", " ", '"Inter", "Inter Variable", var(--ui-platform-fonts, var(--ui-system-fonts))'],
   ])("%j + %j", (family, fallback, expected) => {
     expect(uiFontFamily(family, fallback)).toBe(expected);
+  });
+});
+
+describe("resolveMonoFont", () => {
+  const terminal = {
+    useEditorFont: true,
+    fontFamily: "JetBrains Mono",
+    fallbackFontFamily: "",
+    fontSize: 13,
+  };
+  const editor = {
+    fontFamily: "Fira Code",
+    fallbackFont: "PingFang SC",
+    fontSize: 16,
+  };
+
+  it("follows Editor › Font while Use editor font is on", () => {
+    expect(resolveMonoFont(terminal, editor, BASE)).toEqual({
+      family: `"Fira Code", "PingFang SC", ${BASE}`,
+      size: 16,
+    });
+  });
+
+  it("uses the terminal's own family, fallback and size when it is off", () => {
+    expect(
+      resolveMonoFont(
+        {
+          ...terminal,
+          useEditorFont: false,
+          fontFamily: "Hack",
+          fallbackFontFamily: "Maple Mono NF CN",
+          fontSize: 14,
+        },
+        editor,
+        BASE,
+      ),
+    ).toEqual({ family: `"Hack", "Maple Mono NF CN", ${BASE}`, size: 14 });
+  });
+
+  it("prefers the terminal's fallback over the editor's while following the editor font", () => {
+    expect(resolveMonoFont({ ...terminal, fallbackFontFamily: "Maple Mono NF CN" }, editor, BASE).family).toBe(
+      `"Fira Code", "Maple Mono NF CN", ${BASE}`,
+    );
+  });
+
+  it("falls back to the bundled family and 13px without settings", () => {
+    expect(resolveMonoFont(undefined, undefined, BASE)).toEqual({
+      family: `"JetBrains Mono", "JetBrains Mono Variable", ${BASE}`,
+      size: 13,
+    });
+  });
+});
+
+describe("discovered Nerd Font fallbacks (#3723)", () => {
+  afterEach(() => {
+    vi.resetModules();
+  });
+
+  it("ranks full faces before their Mono variants, Propo last, without non-Nerd names", async () => {
+    const fonts = await import("./fonts");
+    expect(
+      fonts.nerdFontFamilies([
+        "Inter",
+        "Maple Mono NF CN",
+        "JetBrainsMono Nerd Font Mono",
+        "CaskaydiaCove Nerd Font Propo",
+        "JetBrainsMono Nerd Font",
+        "Cascadia Code NF",
+        "Symbols Nerd Font Mono",
+      ]),
+    ).toEqual([
+      "Maple Mono NF CN",
+      "JetBrainsMono Nerd Font",
+      "Cascadia Code NF",
+      "JetBrainsMono Nerd Font Mono",
+      "Symbols Nerd Font Mono",
+      "CaskaydiaCove Nerd Font Propo",
+    ]);
+    expect(fonts.nerdFontFamilies(["Inter", "Menlo", "NFsans"])).toEqual([]);
+    expect(fonts.nerdFontFamilies(["Inter", "NF Sans Display"])).toEqual(["NF Sans Display"]);
+  });
+
+  it("feeds nerdFontFaces beyond the known list, deduped against it", async () => {
+    const fonts = await import("./fonts");
+    fonts.discoverNerdFonts(["Inter", "CaskaydiaCove Nerd Font", "Maple Mono NF CN", "JetBrainsMono Nerd Font Mono"]);
+    const faces = fonts.nerdFontFaces();
+    expect(faces.filter((face) => face.includes("CaskaydiaCove"))).toHaveLength(1);
+    // Discovered faces join after every known one.
+    expect(faces.indexOf('"Maple Mono NF CN"')).toBeGreaterThan(faces.indexOf('"CaskaydiaCove Nerd Font"'));
+    expect(faces).toHaveLength(11);
+  });
+
+  it("lets terminalFont pick up discovered families once they land", async () => {
+    const { terminalFont } = await import("../features/terminal/theme");
+    const t = {
+      useEditorFont: true,
+      fontFamily: "JetBrains Mono",
+      fontSize: 10,
+      lineHeight: 1,
+      fallbackFontFamily: "",
+      columnWidth: 1,
+    };
+    const BASE = '"JetBrains Mono Variable", monospace';
+    expect(terminalFont(t, { fontFamily: "JetBrains Mono", fontSize: 10 }, BASE).family).not.toContain("Maple");
+    const fonts = await import("./fonts");
+    fonts.discoverNerdFonts(["Maple Mono NF CN"]);
+    const { family } = terminalFont(t, { fontFamily: "JetBrains Mono", fontSize: 10 }, BASE);
+    expect(family.indexOf('"Maple Mono NF CN"')).toBeGreaterThan(family.indexOf('"Symbols Nerd Font"'));
+    expect(family.endsWith(", monospace")).toBe(true);
+  });
+
+  it("uiIconFaces falls back to a discovered family, proportional faces first", async () => {
+    const fonts = await import("./fonts");
+    expect(fonts.uiIconFaces(["Inter", "Maple Mono NF CN", "Maple Mono NF Propo"])).toEqual(['"Maple Mono NF Propo"']);
+    expect(fonts.uiIconFaces(["Inter", "Maple Mono NF CN"])).toEqual(['"Maple Mono NF CN"']);
+    expect(fonts.uiIconFaces(["Inter", "Menlo"])).toEqual([]);
   });
 });
 
@@ -91,7 +211,10 @@ describe("macOS user font resolver", () => {
       },
     );
     const load = vi.fn().mockResolvedValue([]);
-    Object.defineProperty(document, "fonts", { configurable: true, value: { add: vi.fn(), delete: vi.fn(), load } });
+    Object.defineProperty(document, "fonts", {
+      configurable: true,
+      value: { add: vi.fn(), delete: vi.fn(), load },
+    });
     const header = new TextEncoder().encode(
       JSON.stringify([
         { weight: 400, style: "normal", offset: 0, length: 2 },
@@ -103,7 +226,13 @@ describe("macOS user font resolver", () => {
     new DataView(bundle.buffer).setUint32(0, header.length, true);
     bundle.set(header, 4);
     invoke.mockResolvedValue(bundle.buffer);
-    return { fonts: await import("./fonts"), invoke, registered, load, canvases };
+    return {
+      fonts: await import("./fonts"),
+      invoke,
+      registered,
+      load,
+      canvases,
+    };
   }
 
   it("loads an unavailable family once across primary, fallback and UI, including regular/bold/italic", async () => {
@@ -113,7 +242,9 @@ describe("macOS user font resolver", () => {
     fonts.uiFontFamily("jetbrainsmono nerd font mono");
     fonts.monoFontFamily("Inter", "JetBrainsMono Nerd Font Mono");
     await fonts.fontsLoaded(family, 14);
-    expect(invoke).toHaveBeenCalledExactlyOnceWith("user_font_data", { family: "JetBrainsMono Nerd Font Mono" });
+    expect(invoke).toHaveBeenCalledExactlyOnceWith("user_font_data", {
+      family: "JetBrainsMono Nerd Font Mono",
+    });
     expect(registered.map((f) => f.descriptors)).toEqual([
       { weight: "400", style: "normal" },
       { weight: "700", style: "normal" },
@@ -124,7 +255,7 @@ describe("macOS user font resolver", () => {
 
   it("uses available local/system families without reading font data", async () => {
     const { fonts, invoke } = await resolver(true);
-    expect(fonts.uiFontFamily("Menlo")).toBe('"Menlo", system-ui, sans-serif');
+    expect(fonts.uiFontFamily("Menlo")).toBe('"Menlo", var(--ui-platform-fonts, var(--ui-system-fonts))');
     fonts.monoFontFamily("Maple Mono NF CN");
     expect(invoke).not.toHaveBeenCalled();
   });
@@ -132,10 +263,14 @@ describe("macOS user font resolver", () => {
   it("loads a UI fallback through the shared macOS user font resolver", async () => {
     const { fonts, invoke, registered } = await resolver(false);
     const family = fonts.uiFontFamily("Inter", "Maple Mono NF CN");
-    expect(family).toBe('"Inter", "Inter Variable", "OpenIDEA User Font 0", "Maple Mono NF CN", system-ui, sans-serif');
+    expect(family).toBe(
+      '"Inter", "Inter Variable", "OpenIDEA User Font 0", "Maple Mono NF CN", var(--ui-platform-fonts, var(--ui-system-fonts))',
+    );
     expect(fonts.monoFontFamily("Inter", "Maple Mono NF CN")).toContain('"OpenIDEA User Font 0"');
     await fonts.fontsLoaded(family, 13);
-    expect(invoke).toHaveBeenCalledExactlyOnceWith("user_font_data", { family: "Maple Mono NF CN" });
+    expect(invoke).toHaveBeenCalledExactlyOnceWith("user_font_data", {
+      family: "Maple Mono NF CN",
+    });
     expect(registered).toHaveLength(3);
   });
 
@@ -167,6 +302,16 @@ describe("macOS user font resolver", () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
+  it("loads only the first installed Nerd Font for UI icons, proportional faces first", async () => {
+    const { fonts, invoke } = await resolver(false);
+    const installed = ["Inter", "JetBrainsMono Nerd Font Mono", "jetbrainsmono nerd font propo"];
+    expect(fonts.uiIconFaces(installed)).toEqual(['"OpenIDEA User Font 0"', '"JetBrainsMono Nerd Font Propo"']);
+    expect(invoke).toHaveBeenCalledExactlyOnceWith("user_font_data", {
+      family: "JetBrainsMono Nerd Font Propo",
+    });
+    expect(fonts.uiIconFaces(["Inter", "Menlo"])).toEqual([]);
+  });
+
   it("never reads bundled webfonts even before their CSS faces load", async () => {
     const { fonts, invoke } = await resolver(false);
     fonts.monoFontFamily("Inter");
@@ -180,7 +325,39 @@ describe("macOS user font resolver", () => {
     const { fonts, invoke } = await resolver(false, "windows");
     fonts.monoFontFamily("Inter");
     fonts.monoFontFamily("JetBrains Mono");
-    expect(fonts.uiFontFamily("User Font")).toBe('"User Font", system-ui, sans-serif');
+    expect(fonts.uiFontFamily("User Font")).toBe('"User Font", var(--ui-platform-fonts, var(--ui-system-fonts))');
     expect(invoke).not.toHaveBeenCalled();
+  });
+});
+
+describe("bundled mono face on Linux (#5770)", () => {
+  afterEach(() => {
+    vi.doUnmock("./platformInfo");
+    vi.resetModules();
+    document.documentElement.style.removeProperty("--font-mono");
+  });
+
+  async function onLinux() {
+    vi.resetModules();
+    vi.doMock("./platformInfo", () => ({ guessOs: () => "linux" }));
+    return import("./fonts");
+  }
+
+  it("names only the bundled face until the system lists JetBrains Mono, as fontconfig may alias the name", async () => {
+    const fonts = await onLinux();
+    expect(fonts.monoFontFamily("JetBrains Mono", "", BASE)).toBe(`"JetBrains Mono Variable", ${BASE}`);
+    fonts.installMonoStack();
+    expect(document.documentElement.style.getPropertyValue("--font-mono")).toBe(
+      '"JetBrains Mono Variable", ui-monospace, monospace',
+    );
+
+    fonts.noteInstalledFonts(["DejaVu Sans Mono", "JetBrains Mono"]);
+    expect(fonts.monoFontFamily("JetBrains Mono", "", BASE)).toBe(
+      `"JetBrains Mono", "JetBrains Mono Variable", ${BASE}`,
+    );
+    expect(document.documentElement.style.getPropertyValue("--font-mono")).toBe("");
+
+    fonts.noteInstalledFonts(["DejaVu Sans Mono", "Noto Sans CJK SC"]);
+    expect(fonts.monoFontFamily("", "", BASE)).toBe(`"JetBrains Mono Variable", ${BASE}`);
   });
 });

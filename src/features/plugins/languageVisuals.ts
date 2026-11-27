@@ -1,33 +1,38 @@
 /** Embedded highlighting and command gutter actions share the editor-provider refresh. */
 import {
-  Compartment,
   Prec,
   RangeSet,
   StateEffect,
   StateField,
   type Extension,
   type EditorState,
+  type Text,
 } from "@codemirror/state";
 import {
   Decoration,
   EditorView,
   GutterMarker,
   ViewPlugin,
-  gutter,
   type DecorationSet,
   type ViewUpdate,
 } from "@codemirror/view";
 import { highlightingFor } from "@codemirror/language";
 import { highlightTree } from "@lezer/highlight";
-import { shownAgain, type EditorDocContext } from "@/editor/api";
-import { rangeToOffsets } from "@/editor/lsp/positions";
+import {
+  iconAreaSource,
+  mapLineStart,
+  onNavigationProvidersChanged,
+  rangeToOffsets,
+  shownAgain,
+  type EditorDocContext,
+} from "@/editor/api";
 import { pluginVisuals } from "@/editor/lsp/pluginVisuals";
 import { findLanguageDescription, languageInfo, loadSupport } from "@/editor/core/cm/languages";
-import { onNavigationProvidersChanged } from "@/editor/navigationProviders";
 import { call, commands, type GutterAction, type Injection } from "@/platform/ipc";
 import { gutterIconMarkup } from "@/ui/icons";
 import { resolveMarkerIcon, onMarkerIconsChanged } from "./markerIcons";
 import { markerIcon } from "./lineMarkerGutter";
+import { hoverActionLayer, type HoverActionLayer, type PlacedHoverAction } from "./hoverActions";
 import styles from "@/editor/navigation/LineMarkers.module.css";
 
 export async function injectedHighlights(state: EditorState, injections: readonly Injection[]): Promise<DecorationSet> {
@@ -70,10 +75,13 @@ class ActionMarker extends GutterMarker {
     return (
       other instanceof ActionMarker &&
       other.plugin === this.plugin &&
-      JSON.stringify(other.action) === JSON.stringify(this.action)
+      other.action.icon === this.action.icon &&
+      other.action.tooltip === this.action.tooltip &&
+      other.action.command === this.action.command &&
+      other.action.argument === this.action.argument
     );
   }
-  override toDOM() {
+  override toDOM(view: EditorView) {
     const el = document.createElement("button");
     el.type = "button";
     el.className = `${styles.marker} cm-plugin-gutter-action`;
@@ -83,6 +91,8 @@ class ActionMarker extends GutterMarker {
     el.onclick = (e) => {
       e.preventDefault();
       e.stopPropagation();
+      // Edited since the plugin placed it: the action may no longer mean this line.
+      if (!actionsCurrent(view.state)) return;
       void call(
         commands.lspExecuteCommand(this.ctx.doc, {
           title: this.action.tooltip,
@@ -94,39 +104,59 @@ class ActionMarker extends GutterMarker {
     return el;
   }
 }
-const setActions = StateEffect.define<{ pos: number; marker: ActionMarker }[]>();
-const actions = StateField.define<{ pos: number; marker: ActionMarker }[]>({
-  create: () => [],
+type PlacedAction = { pos: number; marker: ActionMarker };
+const setActions = StateEffect.define<PlacedAction[]>();
+/**
+ * The plugins' actions and the text they were placed for. After an edit they stay where the
+ * edit moved them (no flicker while typing) but are inert until the providers answer for the
+ * new text: an action placed for older text may run the wrong target.
+ */
+const actions = StateField.define<{ placed: PlacedAction[]; text: Text | null }>({
+  create: () => ({ placed: [], text: null }),
   update(v, tr) {
-    for (const e of tr.effects) if (e.is(setActions)) return e.value;
-    return tr.docChanged ? [] : v;
+    for (const e of tr.effects) if (e.is(setActions)) return { placed: e.value, text: tr.state.doc };
+    if (!tr.docChanged) return v;
+    return { ...v, placed: v.placed.map((a) => ({ ...a, pos: mapLineStart(tr, a.pos) })) };
   },
+  provide: (f) =>
+    EditorView.editorAttributes.compute([f, "doc"], (state): Record<string, string> =>
+      state.field(f).placed.length > 0 && !actionsCurrent(state) ? { class: "cm-plugin-actions-stale" } : {},
+    ),
 });
-const column = gutter({
-  class: `${styles.gutter} cm-plugin-gutter-actions`,
+/** Whether the actions were placed for the editor's current text. */
+function actionsCurrent(state: EditorState): boolean {
+  return state.field(actions, false)?.text === state.doc;
+}
+const staleTheme = EditorView.baseTheme({
+  "&.cm-plugin-actions-stale .cm-plugin-gutter-action": { opacity: "0.5", cursor: "default" },
+});
+/** In the shared icon area, beside the plugins' line markers. */
+const actionSource = iconAreaSource.of({
+  order: 65,
   markers: (view) =>
     RangeSet.of(
-      view.state.field(actions).map((a) => a.marker.range(a.pos)),
+      view.state.field(actions).placed.map((a) => a.marker.range(a.pos)),
       true,
     ),
 });
 export function pluginLanguageVisuals(ctx: EditorDocContext): Extension {
   if (ctx.doc < 0) return [];
-  const compartment = new Compartment();
   return [
     highlights,
     actions,
-    compartment.of([]),
+    actionSource,
+    staleTheme,
     ViewPlugin.define(
       (view) =>
         new (class {
           timer: ReturnType<typeof setTimeout> | undefined;
           generation = 0;
-          shown = false;
           skipped = false;
           off: () => void;
+          hover: HoverActionLayer;
           constructor() {
-            const a = onNavigationProvidersChanged(() => this.schedule(true));
+            this.hover = hoverActionLayer(view, ctx);
+            const a = onNavigationProvidersChanged(() => this.schedule());
             const b = onMarkerIconsChanged(() => this.schedule());
             this.off = () => {
               a();
@@ -134,17 +164,9 @@ export function pluginLanguageVisuals(ctx: EditorDocContext): Extension {
             };
             this.schedule();
           }
-          schedule(clear = false) {
+          schedule() {
             this.generation++;
             clearTimeout(this.timer);
-            if (clear)
-              queueMicrotask(() => {
-                if (view.dom.isConnected)
-                  view.dispatch({
-                    effects: [setHighlight.of(Decoration.none), setActions.of([]), compartment.reconfigure([])],
-                  });
-                this.shown = false;
-              });
             this.timer = setTimeout(() => void this.run(), 300);
           }
           update(u: ViewUpdate) {
@@ -156,6 +178,12 @@ export function pluginLanguageVisuals(ctx: EditorDocContext): Extension {
             try {
               const result = await pluginVisuals(view, ctx);
               const deco = await injectedHighlights(view.state, result.injections);
+              const hover = await Promise.all(
+                (result.hoverActions ?? []).map(async ([plugin, a]) => ({
+                  plugin,
+                  action: { ...a, icon: await resolveMarkerIcon(plugin, a.icon) },
+                })),
+              );
               const placed = await Promise.all(
                 result.gutterActions
                   .filter(([, a]) => a.line < text.lines)
@@ -167,25 +195,17 @@ export function pluginLanguageVisuals(ctx: EditorDocContext): Extension {
               if (generation !== this.generation || view.state.doc !== text) return;
               this.skipped = !view.dom.isConnected;
               if (this.skipped) return;
-              this.shown = !!placed.length;
-              view.dispatch({
-                effects: [
-                  setHighlight.of(deco),
-                  setActions.of(placed),
-                  compartment.reconfigure(this.shown ? column : []),
-                ],
-              });
-            } catch {
-              if (generation === this.generation && view.dom.isConnected)
-                view.dispatch({
-                  effects: [setHighlight.of(Decoration.none), setActions.of([]), compartment.reconfigure([])],
-                });
+              view.dispatch({ effects: [setHighlight.of(deco), setActions.of(placed)] });
+              this.hover.set(hover as PlacedHoverAction[]);
+            } catch (error) {
+              console.debug("[plugin language visuals]", error);
             }
           }
           destroy() {
             this.generation++;
             clearTimeout(this.timer);
             this.off();
+            this.hover.destroy();
           }
         })(),
     ),

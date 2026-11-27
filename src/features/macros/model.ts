@@ -116,15 +116,17 @@ export function stopRecording(): MacroStep[] {
   return rec;
 }
 
-/** Saves `steps` as `name`, replacing a macro of that name. */
-export function saveMacro(name: string, macroSteps: MacroStep[]) {
+/** Saves a macro, replacing an existing entry only if it is the one confirmed. */
+export function saveMacro(name: string, macroSteps: MacroStep[], replace?: Macro): boolean {
   const n = name.trim();
-  if (!n) return;
+  if (!n) return false;
   const saved = useMacros.getState().saved;
   const i = saved.findIndex((m) => m.name === n);
+  if (i >= 0 && saved[i] !== replace) return false;
   const entry = { name: n, steps: macroSteps };
   useMacros.setState({ saved: i >= 0 ? saved.map((m, j) => (j === i ? entry : m)) : [...saved, entry] });
   persist();
+  return true;
 }
 
 export function renameMacro(from: string, to: string): boolean {
@@ -170,12 +172,14 @@ export async function playSteps(
     for (const step of macroSteps) {
       const ok =
         step.kind === "action"
-          ? await run.action(step.id, step.arg)
+          ? // oxlint-disable-next-line no-await-in-loop -- steps run one after another and stop at the first failure.
+            await run.action(step.id, step.arg)
           : step.kind === "text"
             ? run.text(step.text)
             : run.key(step.key);
       if (!ok) return false;
       // Let the UI settle (popups open, editors mount) before the next step.
+      // oxlint-disable-next-line no-await-in-loop -- the settle delay must finish before the next step starts.
       await new Promise((r) => setTimeout(r, 0));
     }
     return true;

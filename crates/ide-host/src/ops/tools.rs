@@ -1,35 +1,47 @@
 //! Language server / debug adapter installer and JDK downloads (`ide-tools`).
+use super::{blocking, blocking_value};
 use crate::Host;
 use crate::ops::Channel;
-use crate::rpc::Dispatcher;
+use ide_command::command;
 
 use ide_core::{IdeError, IdeResult, RequestId};
 use ide_sdk::Sdk;
 use ide_tools::jdk::{JdkReleases, JdkVendor};
-use ide_tools::{InstallEvent, ToolInfo, Tools};
+use ide_tools::{InstallEvent, ToolInfo, ToolUpdate, Tools};
 use std::path::PathBuf;
 
 /// The installer, reporting the executables chosen in the window's settings.
 fn tools(host: &Host, window: &str) -> IdeResult<Tools> {
-    host.require_trust(window)?;
+    host.require_trust_if_project(window)?;
     let data = host.local_data_dir.clone();
     let (settings, root) = match host.project(window) {
         Ok(project) => (project.settings.effective(), project.root.clone()),
         Err(_) => (host.global_settings.effective(), Default::default()),
     };
-    let custom = settings
+    let mut custom: std::collections::BTreeMap<_, _> = settings
         .tools
         .iter()
         .filter_map(|(command, t)| Some((command.clone(), ide_sdk::apply::setting_path(&root, &t.path)?)))
         .collect();
-    // Godot is usually an app bundle / Flatpak outside the search path.
-    let found = ide_sdk::godot::find(None).map(|p| (ide_sdk::godot::COMMAND.to_owned(), p));
+    let langs = host.languages.all();
+    custom.extend(ide_sdk::apply::server_command_paths(
+        langs.iter().flat_map(|l| &l.language_servers),
+        &root,
+        &settings,
+    ));
+    // Godot and GitHub CLI can live in app bundles / MSI / Snap folders outside the search path.
+    let mut found: std::collections::BTreeMap<_, _> =
+        ide_sdk::godot::find(None).map(|p| (ide_sdk::godot::COMMAND.to_owned(), p)).into_iter().collect();
+    if let Some(gh) = ide_core::tool_path::find_gh_outside_search_path() {
+        found.insert("gh".to_owned(), gh);
+    }
     let runtime = ide_sdk::apply::tool_install_environment(&root, &settings);
     let work_dir = (!root.as_os_str().is_empty()).then_some(root);
     Ok(Tools::new(&data)
+        .with_downloads(settings.tool_downloads.clone())
         .with_runtime(runtime.commands, runtime.env)
         .with_custom_paths(custom)
-        .with_found_paths(found.into_iter().collect())
+        .with_found_paths(found)
         .with_work_dir(work_dir))
 }
 
@@ -44,10 +56,6 @@ fn languages(host: &Host, window: &str) -> Vec<ide_language::LanguageConfig> {
     langs
 }
 
-fn join_err(e: impl std::fmt::Display) -> IdeError {
-    IdeError::internal(e.to_string())
-}
-
 fn reconfigure_servers(host: &Host) {
     for project in host.projects() {
         let lsp = project.lsp.clone();
@@ -56,14 +64,16 @@ fn reconfigure_servers(host: &Host) {
 }
 
 /// Status of every known language server / debug adapter and the languages using it.
+#[command(trust = outside_restricted)]
 pub async fn tools_list(host: &Host, window: &str) -> IdeResult<Vec<ToolInfo>> {
     let tools = tools(host, window)?;
     let langs = languages(host, window);
-    tokio::task::spawn_blocking(move || tools.list(&langs)).await.map_err(join_err)
+    blocking_value(move || tools.list(&langs)).await
 }
 
 /// Installs (or reinstalls) a tool into `<app-data>/tools`, streaming output through
 /// `on_event`. Cancel with `cancel_request(request)`.
+#[command(trust = outside_restricted)]
 pub async fn tools_install(
     host: &Host,
     window: &str,
@@ -74,51 +84,60 @@ pub async fn tools_install(
     let tools = tools(host, window)?;
     let langs = languages(host, window);
     let cancel = host.begin_request(request);
-    let result = tokio::task::spawn_blocking(move || {
+    let result = blocking(move || {
         tools.install(&name, &langs, &cancel, &|e| {
             let _ = on_event.send(e);
         })
     })
-    .await
-    .map_err(join_err);
+    .await;
     host.end_request(request);
-    let info = result??;
+    let info = result?;
     // Language servers whose launch depends on installed tools (jdtls loads the
     // java-debug bundle) pick the change up.
     reconfigure_servers(host);
     Ok(info)
 }
 
+/// Newer versions of the tools the IDE installed (release downloads and npm packages).
+/// Cancel with `cancel_request(request)`.
+#[command(trust = outside_restricted)]
+pub async fn tools_updates(host: &Host, window: &str, request: RequestId) -> IdeResult<Vec<ToolUpdate>> {
+    let tools = tools(host, window)?;
+    let cancel = host.begin_request(request);
+    let result = blocking(move || tools.updates(&cancel)).await;
+    host.end_request(request);
+    result
+}
+
 /// Removes a tool the IDE installed.
+#[command(trust = outside_restricted)]
 pub async fn tools_uninstall(host: &Host, window: &str, name: String) -> IdeResult<ToolInfo> {
     let tools = tools(host, window)?;
     let langs = languages(host, window);
-    let info = tokio::task::spawn_blocking(move || tools.uninstall(&name, &langs)).await.map_err(join_err)??;
+    let info = blocking(move || tools.uninstall(&name, &langs)).await?;
     reconfigure_servers(host);
     Ok(info)
 }
 
 /// JDK distributions Download JDK offers.
-pub fn jdk_download_vendors(_host: &Host, _window: &str) -> Vec<JdkVendor> {
+#[command(trust = always)]
+pub fn jdk_download_vendors() -> Vec<JdkVendor> {
     ide_tools::jdk::vendors()
 }
 
 /// Java versions `vendor` publishes; cancellable with `cancel_request(request)`.
-pub async fn jdk_download_releases(
-    host: &Host,
-    _window: &str,
-    vendor: String,
-    request: RequestId,
-) -> IdeResult<JdkReleases> {
+#[command(trust = always)]
+pub async fn jdk_download_releases(host: &Host, vendor: String, request: RequestId) -> IdeResult<JdkReleases> {
     let tools = Tools::new(&host.local_data_dir);
     let cancel = host.begin_request(request);
-    let result = tokio::task::spawn_blocking(move || tools.jdk_releases(&vendor, &cancel)).await.map_err(join_err);
+    let result = blocking(move || tools.jdk_releases(&vendor, &cancel)).await;
     host.end_request(request);
-    result?
+    result
 }
 
 /// Where Download JDK puts JDKs unless told otherwise.
-pub fn jdk_download_location(host: &Host, _window: &str) -> IdeResult<ide_core::IpcPath> {
+#[command(trust = always)]
+pub fn jdk_download_location(host: &Host) -> IdeResult<ide_core::IpcPath> {
     Ok(ide_tools::jdk::jdks_dir(&host.local_data_dir).into())
 }
 
@@ -126,10 +145,9 @@ pub fn jdk_download_location(host: &Host, _window: &str) -> IdeResult<ide_core::
 /// [`jdk_download_location`]), streaming progress through `on_event`; cancellable
 /// with `cancel_request(request)`. The JDK is then detected like an installed one,
 /// and language servers waiting for a JDK (jdtls) start on it.
-#[allow(clippy::too_many_arguments)]
+#[command(trust = always)]
 pub async fn jdk_download(
     host: &Host,
-    _window: &str,
     vendor: String,
     version: u32,
     location: Option<PathBuf>,
@@ -139,7 +157,7 @@ pub async fn jdk_download(
     let tools = Tools::new(&host.local_data_dir);
     let location = location.filter(|p| !p.as_os_str().is_empty());
     let cancel = host.begin_request(request);
-    let result = tokio::task::spawn_blocking(move || {
+    let result = blocking(move || {
         let jdk = tools.download_jdk(&vendor, version, location.as_deref(), &cancel, &|e| {
             let _ = on_event.send(e);
         })?;
@@ -153,36 +171,39 @@ pub async fn jdk_download(
             .ok_or_else(|| IdeError::internal(format!("{} is not a JDK home", home.display())))?;
         IdeResult::Ok(ide_sdk::jdk_sdk(&jdk))
     })
-    .await
-    .map_err(join_err);
+    .await;
     host.end_request(request);
-    let sdk = result??;
+    let sdk = result?;
     reconfigure_servers(host);
     Ok(sdk)
 }
 
-/// Commands of this module the remote server answers.
-pub(crate) fn register(d: &mut Dispatcher) {
-    d.add("tools_list", |c| async move { tools_list(&c.host, &c.window).await });
-    d.add("tools_install", |c| async move {
-        tools_install(&c.host, &c.window, c.arg("name")?, c.arg("request")?, c.sender("onEvent")?).await
-    });
-    d.add("tools_uninstall", |c| async move { tools_uninstall(&c.host, &c.window, c.arg("name")?).await });
-    d.add("jdk_download_vendors", |c| async move { Ok(jdk_download_vendors(&c.host, &c.window)) });
-    d.add("jdk_download_releases", |c| async move {
-        jdk_download_releases(&c.host, &c.window, c.arg("vendor")?, c.arg("request")?).await
-    });
-    d.add("jdk_download_location", |c| async move { jdk_download_location(&c.host, &c.window) });
-    d.add("jdk_download", |c| async move {
-        jdk_download(
-            &c.host,
-            &c.window,
-            c.arg("vendor")?,
-            c.arg("version")?,
-            c.arg("location")?,
-            c.arg("request")?,
-            c.sender("onEvent")?,
-        )
-        .await
-    });
+/// The Java version the window's jdtls needs; `None` while it isn't installed or doesn't tell.
+#[command(trust = always)]
+pub async fn jdtls_required_java(host: &Host, window: &str) -> IdeResult<Option<u32>> {
+    let settings = match host.project(window) {
+        Ok(project) => project.settings.effective(),
+        Err(_) => host.global_settings.effective(),
+    };
+    let Some(mut cfg) =
+        languages(host, window).into_iter().flat_map(|l| l.language_servers).find(|s| s.name == "jdtls")
+    else {
+        return Ok(None);
+    };
+    ide_sdk::apply::server_launch_overrides(&mut cfg, &settings);
+    ide_sdk::apply::server_protocol_overrides(&mut cfg, &settings);
+    blocking_value(move || ide_sdk::java::jdtls_required_java(&cfg)).await
 }
+
+ide_command::domain!(
+    tools:
+    jdk_download,
+    jdk_download_location,
+    jdk_download_releases,
+    jdk_download_vendors,
+    jdtls_required_java,
+    tools_install,
+    tools_list,
+    tools_uninstall,
+    tools_updates,
+);

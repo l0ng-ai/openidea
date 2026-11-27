@@ -140,6 +140,20 @@ fn path_options(args: &[String]) -> (Option<usize>, Option<usize>) {
     (cp, mp)
 }
 
+/// Where the VM options of `java` arguments end: the index of the main class, `-jar` or
+/// `-m` / `--module` (the arguments' length when there is none).
+pub fn vm_options_end(args: &[String]) -> usize {
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if matches!(a, "-jar" | "-m" | "--module") || a.starts_with("--module=") || !a.starts_with(['-', '@']) {
+            return i;
+        }
+        i += if WITH_VALUE.contains(&a) { 2 } else { 1 };
+    }
+    args.len()
+}
+
 /// A shortened command line and the temporary file it refers to (delete it once the process exits).
 #[derive(Debug)]
 pub struct Shortened {
@@ -379,6 +393,15 @@ mod tests {
     }
 
     #[test]
+    fn vm_options_end_before_the_main_class_or_jar() {
+        assert_eq!(vm_options_end(&strings(&["-Xmx1g", "-cp", "x.jar", "Main", "-v"])), 3);
+        assert_eq!(vm_options_end(&strings(&["--add-opens", "a/b=ALL", "-jar", "app.jar"])), 2);
+        assert_eq!(vm_options_end(&strings(&["@opts", "-m", "mod/app.Main"])), 1);
+        assert_eq!(vm_options_end(&strings(&["--module=mod/app.Main"])), 0);
+        assert_eq!(vm_options_end(&strings(&["-Xmx1g"])), 1);
+    }
+
+    #[test]
     fn urls_are_encoded_and_directories_end_with_a_slash() {
         assert_eq!(file_url("/p/a b/x.jar", false), "file:/p/a%20b/x.jar");
         assert_eq!(file_url("/p/classes", true), "file:/p/classes/");
@@ -493,7 +516,7 @@ mod tests {
     #[test]
     fn pathing_jar_runs_with_a_local_jdk() {
         let Some(home) = std::env::var_os("JAVA_HOME").map(PathBuf::from).or_else(|| {
-            let java = crate::which::find_executable("java", &std::env::var_os("PATH").unwrap_or_default())?;
+            let java = ide_core::process::find_executable("java", &std::env::var_os("PATH").unwrap_or_default())?;
             dunce::canonicalize(java).ok()?.parent()?.parent().map(Path::to_path_buf)
         }) else {
             return;

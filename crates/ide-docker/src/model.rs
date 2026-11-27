@@ -211,10 +211,10 @@ pub fn parse_labels(raw: &str) -> BTreeMap<String, String> {
     out
 }
 
-const COMPOSE_PROJECT: &str = "com.docker.compose.project";
-const COMPOSE_SERVICE: &str = "com.docker.compose.service";
-const COMPOSE_DIR: &str = "com.docker.compose.project.working_dir";
-const COMPOSE_FILES: &str = "com.docker.compose.project.config_files";
+pub(crate) const COMPOSE_PROJECT: &str = "com.docker.compose.project";
+pub(crate) const COMPOSE_SERVICE: &str = "com.docker.compose.service";
+pub(crate) const COMPOSE_DIR: &str = "com.docker.compose.project.working_dir";
+pub(crate) const COMPOSE_FILES: &str = "com.docker.compose.project.config_files";
 
 fn lines<T: for<'de> Deserialize<'de>>(text: &str) -> impl Iterator<Item = T> + '_ {
     text.lines().filter(|l| l.trim_start().starts_with('{')).filter_map(|l| match serde_json::from_str::<T>(l) {
@@ -225,6 +225,16 @@ fn lines<T: for<'de> Deserialize<'de>>(text: &str) -> impl Iterator<Item = T> + 
         }
     })
 }
+
+/// The `docker ps --format` template: only the fields [`RawContainer`] reads. `{{json .}}`
+/// would also include `Size`, which makes the daemon compute every container's writable
+/// layer and can take tens of seconds.
+pub const PS_FORMAT: &str = concat!(
+    r#"{"ID":{{json .ID}},"Names":{{json .Names}},"Image":{{json .Image}},"#,
+    r#""Command":{{json .Command}},"State":{{json .State}},"Status":{{json .Status}},"#,
+    r#""Ports":{{json .Ports}},"CreatedAt":{{json .CreatedAt}},"Labels":{{json .Labels}},"#,
+    r#""Mounts":{{json .Mounts}},"Networks":{{json .Networks}}}"#,
+);
 
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "PascalCase", default)]
@@ -243,11 +253,11 @@ struct RawContainer {
     networks: String,
 }
 
-fn split_csv(raw: &str) -> Vec<String> {
+pub(crate) fn split_csv(raw: &str) -> Vec<String> {
     raw.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect()
 }
 
-/// `docker ps -a --no-trunc --format '{{json .}}'`.
+/// `docker ps -a --no-trunc --format` [`PS_FORMAT`] (or `'{{json .}}'`).
 pub fn parse_containers(text: &str) -> Vec<DockerContainer> {
     let mut out: Vec<DockerContainer> = lines::<RawContainer>(text)
         .map(|r| {
@@ -461,6 +471,33 @@ pub fn parse_container_stats(text: &str) -> Option<DockerContainerStats> {
         block_io: r.block_io,
         pids: r.pids,
     })
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "PascalCase", default)]
+struct RawVolumeUsage {
+    name: String,
+    size: String,
+}
+
+/// `docker system df -v --format '{{json .Volumes}}'` volume name → human size.
+pub fn parse_volume_sizes(text: &str) -> BTreeMap<String, String> {
+    let trimmed = text.trim();
+    let items: Vec<RawVolumeUsage> = if trimmed.is_empty() || trimmed == "null" {
+        Vec::new()
+    } else if let Ok(parsed) = serde_json::from_str::<Option<Vec<RawVolumeUsage>>>(trimmed) {
+        parsed.unwrap_or_default()
+    } else {
+        lines::<RawVolumeUsage>(text).collect()
+    };
+    items
+        .into_iter()
+        .filter(|v| {
+            let size = v.size.trim();
+            !v.name.is_empty() && !size.is_empty() && !size.eq_ignore_ascii_case("n/a")
+        })
+        .map(|v| (v.name, v.size.trim().to_owned()))
+        .collect()
 }
 
 #[derive(Deserialize, Default)]

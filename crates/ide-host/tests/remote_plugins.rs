@@ -5,6 +5,8 @@
 
 #![cfg(unix)]
 
+mod common;
+
 use ide_core::IdeEvent;
 use ide_host::plugins::remote_host::{
     EVENT_NOTIFICATION, PackageSyncReport, PluginEventMessage, RemotePlugins, SECRET_REQUEST, SYNC_PACKAGES,
@@ -139,15 +141,8 @@ async fn remote_projects_run_the_desktops_code_plugins_on_the_server() {
     let peer_slot = Arc::new(OnceLock::new());
     let sink_peer = peer_slot.clone();
     let host = Arc::new(Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
         sink_for: Box::new(move |w| rpc::event_sink(sink_peer.clone(), Some(w.to_owned()))),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
+        ..common::host_config(&base)
     }));
     let plugins = RemotePlugins::start(&base.join("data"), &host, peer_slot.clone()).unwrap();
     plugins.host().set_program_path(path_var);
@@ -260,15 +255,8 @@ async fn remote_projects_get_plugin_views_and_custom_editors() {
     let peer_slot = Arc::new(OnceLock::new());
     let sink_peer = peer_slot.clone();
     let host = Arc::new(Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
         sink_for: Box::new(move |w| rpc::event_sink(sink_peer.clone(), Some(w.to_owned()))),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
+        ..common::host_config(&base)
     }));
     let plugins = RemotePlugins::start(&base.join("data"), &host, peer_slot.clone()).unwrap();
     plugins.host().set_program_path(path_var);
@@ -367,6 +355,7 @@ async fn remote_projects_get_plugin_views_and_custom_editors() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn api14_remote_calls_keep_browser_listeners_and_secrets_on_the_desktop() {
+    use ide_core::{Diagnostic, Pos, Range, Severity};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let tmp = tempfile::tempdir().unwrap();
     let desktop = Arc::new(
@@ -381,15 +370,8 @@ async fn api14_remote_calls_keep_browser_listeners_and_secrets_on_the_desktop() 
     let peer_slot = Arc::new(OnceLock::new());
     let sink_peer = peer_slot.clone();
     let host = Arc::new(Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
         sink_for: Box::new(move |w| rpc::event_sink(sink_peer.clone(), Some(w.into()))),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
+        ..common::host_config(&base)
     }));
     let plugins = RemotePlugins::start(&base.join("data"), &host, peer_slot.clone()).unwrap();
     let mut dispatcher = Dispatcher::standard();
@@ -426,42 +408,70 @@ async fn api14_remote_calls_keep_browser_listeners_and_secrets_on_the_desktop() 
             "severity": "warning", "message": message, "source": "remote-check", "code": null
         }]})
     };
+    let publish = |path: &Path, source: &str, message: Option<&str>| {
+        let items = message
+            .map(|message| Diagnostic {
+                range: Range::new(Pos::new(0, 1), Pos::new(0, 3)),
+                severity: Severity::Warning,
+                message: message.into(),
+                source: Some(source.into()),
+                code: None,
+                unnecessary: false,
+                deprecated: false,
+                server: None,
+            })
+            .into_iter()
+            .collect();
+        host.project("main").unwrap().sink.emit(IdeEvent::Diagnostics {
+            path: path.to_path_buf().into(),
+            source: source.into(),
+            items,
+        });
+    };
     let files = json!([
         problem(&remote_file, "remote warning"),
         problem(&other_file, "other warning"),
         problem(&outside_file, "outside warning")
     ]);
     invoke(&peer, "mcp_report_problems", json!({"reset": true, "files": files})).await.unwrap();
+    // UI reports are not the source of the plugin's host-owned snapshot.
+    assert_eq!(invoke(&peer, "plugin_run_command", run("problems", None)).await.unwrap(), json!("[]"));
+    publish(&remote_file, "remote-check", Some("remote warning"));
+    publish(&other_file, "remote-check", Some("other warning"));
+    publish(&outside_file, "remote-check", Some("outside warning"));
+
     let problems = invoke(&peer, "plugin_run_command", run("problems", None)).await.unwrap();
     let problems = problems.as_str().unwrap();
     assert!(problems.contains("remote warning"), "{problems}");
     assert!(problems.contains("other warning"), "{problems}");
-    assert!(!problems.contains("outside warning"), "{problems}");
+    assert!(problems.contains("outside warning"), "{problems}");
     for path in ["remote.txt", remote_file.to_str().unwrap()] {
         let problems = invoke(&peer, "plugin_run_command", run("problems", Some(path))).await.unwrap();
         let problems = problems.as_str().unwrap();
         assert!(problems.contains("remote warning"), "{problems}");
         assert!(!problems.contains("other warning"), "{problems}");
+        assert!(!problems.contains("outside warning"), "{problems}");
         assert!(problems.contains(remote_file.to_str().unwrap()), "{problems}");
     }
     assert_eq!(invoke(&peer, "plugin_run_command", run("problems", Some("missing.txt"))).await.unwrap(), json!("[]"));
-    invoke(&peer, "mcp_report_problems", json!({"reset": false, "files": [{"path": remote_file, "items": []}]}))
-        .await
-        .unwrap();
+    publish(&remote_file, "second-check", Some("second warning"));
+    invoke(&peer, "mcp_report_problems", json!({"reset": true, "files": []})).await.unwrap();
+    let problems = invoke(&peer, "plugin_run_command", run("problems", None)).await.unwrap();
+    assert!(problems.as_str().unwrap().contains("remote warning"));
+    assert!(problems.as_str().unwrap().contains("second warning"));
+    publish(&remote_file, "remote-check", None);
     let problems = invoke(&peer, "plugin_run_command", run("problems", None)).await.unwrap();
     assert!(!problems.as_str().unwrap().contains("remote warning"));
+    assert!(problems.as_str().unwrap().contains("second warning"));
     assert!(problems.as_str().unwrap().contains("other warning"));
-    invoke(
-        &peer,
-        "mcp_report_problems",
-        json!({"reset": true, "files": [problem(&remote_file, "replacement warning")]}),
-    )
-    .await
-    .unwrap();
+    publish(&remote_file, "second-check", Some("replacement warning"));
     let problems = invoke(&peer, "plugin_run_command", run("problems", None)).await.unwrap();
     assert!(problems.as_str().unwrap().contains("replacement warning"));
-    assert!(!problems.as_str().unwrap().contains("other warning"));
-    invoke(&peer, "mcp_report_problems", json!({"reset": true, "files": []})).await.unwrap();
+    assert!(!problems.as_str().unwrap().contains("second warning"));
+    assert!(problems.as_str().unwrap().contains("other warning"));
+    publish(&remote_file, "second-check", None);
+    publish(&other_file, "remote-check", None);
+    publish(&outside_file, "remote-check", None);
     assert_eq!(invoke(&peer, "plugin_run_command", run("problems", None)).await.unwrap(), json!("[]"));
     invoke(&peer, "plugin_run_command", run("open-editor", Some("remote.txt"))).await.unwrap();
     invoke(&peer, "plugin_run_command", run("decorations", remote_file.to_str())).await.unwrap();
@@ -513,11 +523,11 @@ async fn api14_remote_calls_keep_browser_listeners_and_secrets_on_the_desktop() 
     stream.read_to_string(&mut response).await.unwrap();
     assert!(response.contains("You can close this tab"));
     assert_eq!(oauth.await.unwrap().unwrap(), json!("code=desktop%2Bcode"));
-    invoke(&peer, "mcp_report_problems", json!({"reset": true, "files": files})).await.unwrap();
+    publish(&remote_file, "remote-check", Some("remote warning"));
     invoke(&peer, "close_project", json!({})).await.unwrap();
     invoke(&peer, "open_project", json!({"path": project})).await.unwrap();
     assert_eq!(invoke(&peer, "plugin_run_command", run("problems", None)).await.unwrap(), json!("[]"));
-    invoke(&peer, "mcp_report_problems", json!({"reset": true, "files": files})).await.unwrap();
+    publish(&remote_file, "remote-check", Some("remote warning"));
     peer.kill();
     tokio::time::timeout(Duration::from_secs(5), server).await.unwrap().unwrap();
     let plugin_host = plugins.host().clone();
@@ -537,7 +547,11 @@ async fn api14_remote_calls_keep_browser_listeners_and_secrets_on_the_desktop() 
     })
     .await
     .unwrap();
-    assert_eq!(result.as_deref(), Some("[]"));
+    // Disconnect clears desktop reports, not the still-live host project snapshot.
+    let problems = result.as_deref().unwrap();
+    assert!(problems.contains("remote warning"), "{problems}");
+    assert!(problems.contains("remote-check"), "{problems}");
+    assert!(problems.contains(remote_file.to_str().unwrap()), "{problems}");
     plugins.host().shutdown();
     desktop.shutdown();
 }
@@ -567,15 +581,8 @@ async fn api14_stage3_remote_terminal_pins_and_exit_events_stay_on_the_execution
     let peer_slot = Arc::new(OnceLock::new());
     let sink_peer = peer_slot.clone();
     let host = Arc::new(Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
         sink_for: Box::new(move |w| rpc::event_sink(sink_peer.clone(), Some(w.into()))),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
+        ..common::host_config(&base)
     }));
     let plugins = RemotePlugins::start(&base.join("data"), &host, peer_slot.clone()).unwrap();
     plugins.host().set_program_path(path_var);
@@ -713,6 +720,14 @@ async fn api14_stage3_remote_terminal_pins_and_exit_events_stay_on_the_execution
     .await
     .unwrap();
     assert_eq!(run.await.unwrap(), operation);
+    let attached = invoke(
+        &peer,
+        "term_attach",
+        json!({"id": terminal["id"], "cols": 80, "rows": 24, "onOutput": {"$channel": 41}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(attached["session"]["id"], terminal["id"]);
     invoke(
         &peer,
         "plugin_run_command",
@@ -722,16 +737,23 @@ async fn api14_stage3_remote_terminal_pins_and_exit_events_stay_on_the_execution
     .unwrap();
     until("PTY exit", 5, || client.events.lock().iter().any(|m| matches!(m.event, IdeEvent::TerminalExited { .. })))
         .await;
-    plugins.host().flush_events_at(std::time::Instant::now() + Duration::from_secs(3));
-    plugins.host().wait_events(Duration::from_secs(5));
-    let received = invoke(
-        &peer,
-        "plugin_run_command",
-        json!({"pluginId": "execution", "commandId": "events", "arg": null, "editor": null}),
-    )
+    let received = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let received = invoke(
+                &peer,
+                "plugin_run_command",
+                json!({"pluginId": "execution", "commandId": "events", "arg": null, "editor": null}),
+            )
+            .await
+            .unwrap();
+            if let Some(events) = received.as_str() {
+                break serde_json::from_str::<Value>(events).unwrap();
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
     .await
-    .unwrap();
-    let received: Value = serde_json::from_str(received.as_str().unwrap()).unwrap();
+    .expect("plugin terminal completion after reattach");
     assert_eq!(received.as_array().unwrap().len(), 1);
     assert_eq!(received[0]["kind"], "terminal-exited");
     let data: Value = serde_json::from_str(received[0]["data"].as_str().unwrap()).unwrap();
@@ -817,15 +839,9 @@ async fn api14_database_sources_credentials_and_disable_lifetime_run_on_the_serv
     let slot = Arc::new(OnceLock::new());
     let sink = slot.clone();
     let host = Arc::new(Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("local"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
         sink_for: Box::new(move |w| rpc::event_sink(sink.clone(), Some(w.into()))),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
+        local_data_dir: base.join("local"),
+        ..common::host_config(&base)
     }));
     let plugins = RemotePlugins::start(&base.join("data"), &host, slot.clone()).unwrap();
     let mut dispatcher = Dispatcher::standard();
@@ -908,5 +924,211 @@ async fn api14_database_sources_credentials_and_disable_lifetime_run_on_the_serv
     assert_eq!(sync(&peer, &desktop, &[]).await.removed, [id]);
     assert!(invoke(&peer, "db_sources", json!({})).await.unwrap().as_array().unwrap().is_empty());
     assert!(store.get(internal).is_none());
+    plugins.host().shutdown();
+}
+
+async fn command_rpc_fixture() -> (tempfile::TempDir, Arc<RemotePlugins>, Peer, Arc<Client>) {
+    let tmp = tempfile::tempdir().unwrap();
+    let peer_slot = Arc::new(OnceLock::new());
+    let host = Arc::new(Host::new(common::host_config(tmp.path())));
+    let plugins = RemotePlugins::start(&tmp.path().join("data"), &host, peer_slot.clone()).unwrap();
+    plugins.host().install_from_dir(&fixture("misbehave"), &Consent::all()).unwrap();
+    plugins.host().install_from_dir(&fixture("jobs"), &Consent::all()).unwrap();
+    let mut dispatcher = Dispatcher::standard();
+    plugins.register(&mut dispatcher);
+    let (client_io, server_io) = tokio::io::duplex(1 << 20);
+    let (sr, sw) = tokio::io::split(server_io);
+    tokio::spawn(rpc::serve(host, dispatcher, peer_slot, sr, sw));
+    let (cr, cw) = tokio::io::split(client_io);
+    let client = Arc::new(Client::default());
+    let peer = Peer::connect(cr, cw, client.clone());
+    let _: Value = peer.request("initialize", json!({ "version": rpc::PROTOCOL_VERSION }), None).await.unwrap();
+
+    let project = tmp.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    invoke(&peer, "open_project", json!({ "path": project })).await.unwrap();
+    invoke(&peer, "project_trust_set", json!({ "path": project, "trusted": true, "folder": false })).await.unwrap();
+
+    (tmp, plugins, peer, client)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelled_command_requests_do_not_activate_the_remote_plugin() {
+    let (_tmp, plugins, peer, _client) = command_rpc_fixture().await;
+    invoke(&peer, "cancel_request", json!({ "id": 91 })).await.unwrap();
+    let error = invoke(
+        &peer,
+        "plugin_run_command",
+        json!({ "pluginId": "misbehave", "commandId": "echo", "arg": "not delivered", "request": 91 }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.kind, ide_core::error::ErrorKind::Cancelled, "{error:?}");
+    assert_eq!(plugins.host().info_of("misbehave").unwrap().status, PluginStatus::Inactive);
+    let reply = invoke(
+        &peer,
+        "plugin_run_command",
+        json!({ "pluginId": "misbehave", "commandId": "echo", "arg": "next request", "request": 92 }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(reply, "next request");
+    plugins.host().shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelling_a_running_remote_command_releases_its_prompt_and_command_lane() {
+    let (_tmp, plugins, peer, client) = command_rpc_fixture().await;
+    let pending = tokio::spawn({
+        let peer = peer.clone();
+        async move {
+            invoke(&peer, "plugin_run_command", json!({ "pluginId": "jobs", "commandId": "input", "request": 93 }))
+                .await
+        }
+    });
+    until("the command's input prompt", 5, || {
+        client.plugin_events.lock().iter().any(|event| matches!(event.event, PluginEvent::PromptRequested { .. }))
+    })
+    .await;
+    invoke(&peer, "cancel_request", json!({ "id": 93 })).await.unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(1), pending).await;
+    if result.is_err() {
+        plugins.host().cancel("jobs");
+    }
+    let error = result.expect("request cancellation must stop the running command").unwrap().unwrap_err();
+    assert_eq!(error.kind, ide_core::error::ErrorKind::Cancelled, "{error:?}");
+    assert_eq!(plugins.host().info_of("jobs").unwrap().stats.crashes, 0);
+    assert_eq!(
+        invoke(
+            &peer,
+            "plugin_run_command",
+            json!({ "pluginId": "jobs", "commandId": "selection", "paths": ["/next/file"], "request": 94 }),
+        )
+        .await
+        .unwrap(),
+        "/next/file"
+    );
+    plugins.host().shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cancelling_one_request_does_not_interrupt_another_running_command() {
+    let (_tmp, plugins, peer, client) = command_rpc_fixture().await;
+    let active = tokio::spawn({
+        let peer = peer.clone();
+        async move {
+            invoke(&peer, "plugin_run_command", json!({ "pluginId": "jobs", "commandId": "input", "request": 95 }))
+                .await
+        }
+    });
+    until("the active command's input prompt", 5, || {
+        client.plugin_events.lock().iter().any(|event| matches!(event.event, PluginEvent::PromptRequested { .. }))
+    })
+    .await;
+    let prompt = client
+        .plugin_events
+        .lock()
+        .iter()
+        .find_map(|message| match &message.event {
+            PluginEvent::PromptRequested { prompt_id, .. } => Some(prompt_id.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let cancelled = tokio::spawn({
+        let peer = peer.clone();
+        async move {
+            invoke(&peer, "plugin_run_command", json!({ "pluginId": "jobs", "commandId": "selection", "request": 96 }))
+                .await
+        }
+    });
+    invoke(&peer, "cancel_request", json!({ "id": 96 })).await.unwrap();
+    let error = tokio::time::timeout(Duration::from_secs(1), cancelled).await.unwrap().unwrap().unwrap_err();
+    assert_eq!(error.kind, ide_core::error::ErrorKind::Cancelled);
+    assert!(!active.is_finished(), "request cancellation must not cancel another invocation");
+    assert_eq!(
+        invoke(&peer, "plugin_answer_prompt", json!({ "promptId": prompt, "answer": ["kept running"] })).await.unwrap(),
+        true
+    );
+    assert_eq!(tokio::time::timeout(Duration::from_secs(1), active).await.unwrap().unwrap().unwrap(), "kept running");
+    assert_eq!(plugins.host().info_of("jobs").unwrap().stats.crashes, 0);
+    plugins.host().shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remote_focus_preserves_the_editor_for_following_plugin_events() {
+    let (tmp, plugins, peer, _client) = command_rpc_fixture().await;
+    plugins.host().install_from_dir(&fixture("api14"), &Consent::all()).unwrap();
+    let path = tmp.path().join("project/notes.txt").to_string_lossy().into_owned();
+    let selection = json!({"start":{"line":4,"col":2},"end":{"line":4,"col":5}});
+    invoke(
+        &peer,
+        "plugin_set_active_file",
+        json!({"path":path,"editor":{"path":path,"language":"text","selections":[selection]}}),
+    )
+    .await
+    .unwrap();
+    for focused in [true, false] {
+        if !focused {
+            invoke(&peer, "plugin_set_active_file", json!({"path":null,"editor":null})).await.unwrap();
+        }
+        plugins.host().post_events(
+            Some("main"),
+            vec![WorkbenchEvent::InputModeChanged(ide_plugin::InputMode {
+                path: path.clone(),
+                mode: "visual".into(),
+                sub: None,
+            })],
+        );
+        plugins.host().flush_events_at(std::time::Instant::now() + Duration::from_secs(2));
+        assert!(plugins.host().wait_events(Duration::from_secs(5)));
+        let received = invoke(
+            &peer,
+            "plugin_run_command",
+            json!({"pluginId":"api14","commandId":"events","arg":null,"editor":null}),
+        )
+        .await
+        .unwrap();
+        let events: Value = serde_json::from_str(received.as_str().unwrap()).unwrap();
+        let event = events.as_array().unwrap().iter().rev().find(|e| e["kind"] == "input-mode-changed").unwrap();
+        if focused {
+            assert_eq!(event["editor"], json!([path, [[4, 2, 4, 5]]]));
+        } else {
+            assert!(event["editor"].is_null(), "lost focus must clear the previous editor: {event}");
+        }
+    }
+    // Older callers may omit the optional editor payload.
+    invoke(&peer, "plugin_set_active_file", json!({"path":path})).await.unwrap();
+    plugins.host().shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_remote_command_reads_the_clipboard_of_the_desktop_window() {
+    let (_tmp, plugins, peer, client) = command_rpc_fixture().await;
+    plugins.host().install_from_dir(&fixture("clipboard"), &Consent::all()).unwrap();
+    let read = tokio::spawn({
+        let peer = peer.clone();
+        async move {
+            invoke(&peer, "plugin_run_command", json!({ "pluginId": "test.clipboard", "commandId": "read" })).await
+        }
+    });
+    until("the server asks the window for its clipboard", 5, || {
+        client.plugin_events.lock().iter().any(|m| matches!(m.event, PluginEvent::ClipboardRequested { .. }))
+    })
+    .await;
+    let (window, request) = client
+        .plugin_events
+        .lock()
+        .iter()
+        .find_map(|m| match &m.event {
+            PluginEvent::ClipboardRequested { request_id, .. } => Some((m.window.clone(), request_id.clone())),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(window.as_deref(), Some("main"), "the invoking window reads its own clipboard");
+    let answer = json!({ "kind": "content", "text": "from the desktop", "png": null });
+    let answered = invoke(&peer, "plugin_answer_clipboard", json!({ "requestId": request, "answer": answer }));
+    assert_eq!(answered.await.unwrap(), true);
+    let reply = tokio::time::timeout(Duration::from_secs(5), read).await.unwrap().unwrap().unwrap();
+    assert_eq!(reply, "text=from the desktop image=-");
     plugins.host().shutdown();
 }

@@ -1,8 +1,9 @@
 import { parseArgs, formatArgs } from "@/platform/commandLine";
 /** Run configuration → DAP launch configuration, per adapter. */
 import { workflowSettings } from "@/platform/workflowSettings";
-import type { LaunchConfig, RunConfig } from "@/platform/ipc";
+import { call, commands, type LaunchConfig, type RunConfig } from "@/platform/ipc";
 import { hostOs } from "@/platform/remote";
+import { flutterDeviceFor, parseFlutterRun } from "@/workbench/flutterDevices";
 
 function isAbsolute(p: string) {
   return p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p);
@@ -37,6 +38,18 @@ function base(rc: RunConfig, adapter: string, cwd: string): LaunchConfig {
   };
 }
 
+/**
+ * `rc` with its `.env` files loaded underneath its explicit variables (mirrors Run):
+ * Debug used to drop them because `base` only copies `env`. Absolute paths go to the
+ * backend, which parses with the same loader runs use.
+ */
+export async function withEnvFiles(rc: RunConfig, root: string): Promise<RunConfig> {
+  const files = rc.envFiles?.filter((f) => f.trim()) ?? [];
+  if (!files.length) return rc;
+  const loaded = await call(commands.runEnvFiles(files.map((f) => join(root, f))));
+  return { ...rc, env: { ...loaded, ...rc.env } };
+}
+
 function cargoLaunch(rc: RunConfig, cwd: string, adapter: string): LaunchConfig {
   const [cargoArgs, programArgs] = splitAtDashDash(rc.args);
   const [sub, ...rest] = cargoArgs;
@@ -55,11 +68,16 @@ function cargoLaunch(rc: RunConfig, cwd: string, adapter: string): LaunchConfig 
   return {
     ...base(rc, adapter, cwd),
     args: programArgs,
-    extraJson: JSON.stringify({ cargo: filter ? { args, filter } : { args }, sourceLanguages: ["rust"] }),
+    extraJson: JSON.stringify({
+      cargo: filter ? { args, filter } : { args },
+      ...(adapter === "codelldb" ? { sourceLanguages: ["rust"] } : {}),
+      // lldb-dap takes the environment as `KEY=VALUE` strings.
+      ...(adapter === "lldb-dap" ? { env: Object.entries(rc.env).map(([k, v]) => `${k}=${v}`) } : {}),
+    }),
   };
 }
 
-const PYTHON_NAME = /^python[\d.]*(\.exe)?$/;
+const PYTHON_NAME = /^python[\d.]*(\.exe)?$/i;
 
 /** `python` on Windows (`python3` is at most a Store alias there, and venvs have no `python3.exe`), `python3` elsewhere. */
 function systemPython(): string {
@@ -68,38 +86,69 @@ function systemPython(): string {
 
 function pythonFor(rc: RunConfig, cwd: string): string {
   const cmd = rc.command;
-  const name = cmd.split("/").pop() ?? cmd;
-  if (PYTHON_NAME.test(name)) return resolveCommand(cmd, cwd);
-  // A venv tool such as `.venv/bin/pytest`: use the interpreter next to it.
-  if (cmd.includes("/")) return resolveCommand(cmd.slice(0, cmd.lastIndexOf("/") + 1) + "python", cwd);
+  if (PYTHON_NAME.test(commandName(cmd))) return resolveCommand(cmd, cwd);
+  // A venv tool such as `.venv/bin/pytest` or `.venv\Scripts\pytest.exe`: use the interpreter next to it.
+  const dir = cmd.slice(0, Math.max(cmd.lastIndexOf("/"), cmd.lastIndexOf("\\")) + 1);
+  if (dir) return resolveCommand(dir + (hostOs() === "windows" ? "python.exe" : "python"), cwd);
   return systemPython();
 }
 
 /** Project managers whose `run` executes in the project's environment (`uv run python …`). */
 const PYTHON_RUNNERS = new Set(["uv", "poetry", "pdm", "pipenv", "hatch", "rye"]);
 
+/** `uv run` / `poetry run` / `pdm run` options that take a separate value. */
+const RUNNER_VALUE_OPTIONS = new Set([
+  "--with",
+  "--with-editable",
+  "--with-requirements",
+  "--project",
+  "--directory",
+  "--python",
+  "--package",
+  "--extra",
+  "--group",
+  "--env-file",
+  "--index",
+  "--index-url",
+  "--extra-index-url",
+]);
+
+/** Index of what `run` runs, past the manager's own options (`run --with rich --no-sync app.py`). */
+function runnerOptionsEnd(args: readonly string[]): number {
+  let i = 1;
+  while (i < args.length && args[i]!.startsWith("-") && args[i] !== "-m" && args[i] !== "--module")
+    i += RUNNER_VALUE_OPTIONS.has(args[i]!) ? 2 : 1;
+  return Math.min(i, args.length);
+}
+
 function debugpyLaunch(rc: RunConfig, cwd: string): LaunchConfig {
   const out = base(rc, "debugpy", cwd);
   const dbg = workflowSettings().debugger;
   const extra: Record<string, unknown> = {
     python: pythonFor(rc, cwd),
-    console: "internalConsole",
+    // On a terminal the program reads what is typed in the debug console (`input()`); its
+    // output reaches the console from there, so debugpy doesn't capture it a second time.
+    console: "integratedTerminal",
     justMyCode: dbg.skipLibraryCode,
     subProcess: dbg.python.attachSubprocess,
-    redirectOutput: true,
   };
   if (dbg.python.gevent) extra.gevent = true;
-  const name = (rc.command.split("/").pop() ?? rc.command).replace(/\.exe$/, "");
+  const name = commandName(rc.command);
   let args = rc.args;
   let tool: string | null = PYTHON_NAME.test(name) ? null : name;
-  if (PYTHON_RUNNERS.has(name) && args[0] === "run" && args[1]) {
-    // The debuggee runs through the manager (`uv run python <debugpy> …`) to get the project's
-    // environment; the adapter and its launcher need a plain interpreter.
-    const python = PYTHON_NAME.test(args[1]) ? args[1] : "python";
-    extra.python = [resolveCommand(rc.command, cwd), "run", python];
+  const at = PYTHON_RUNNERS.has(name) && args[0] === "run" ? runnerOptionsEnd(args) : 0;
+  if (at && args[at]) {
+    // The debuggee runs through the manager (`uv run [options] python <debugpy> …`) to get the
+    // project's environment; the adapter and its launcher need a plain interpreter. The
+    // manager's own options (`--with rich`, `--no-sync`, `--project member`) stay with it (#5874).
+    const named = PYTHON_NAME.test(args[at]!);
+    extra.python = [resolveCommand(rc.command, cwd), ...args.slice(0, at), named ? args[at]! : "python"];
     extra.debugLauncherPython = systemPython();
-    tool = PYTHON_NAME.test(args[1]) ? null : args[1];
-    args = args.slice(2);
+    args = args.slice(named ? at + 1 : at);
+    if (args[0] === "--module") args = ["-m", ...args.slice(1)];
+    // `uv run app.py` / `uv run -m app` run Python directly; anything else is a console script.
+    tool = named || args[0] === "-m" || args[0]!.endsWith(".py") ? null : args[0]!;
+    if (tool) args = args.slice(1);
   }
   if (tool) {
     // A console script (`pytest`, `uvicorn`, …): run it as a module.
@@ -153,10 +202,10 @@ export function debugUnsupportedReason(rc: RunConfig): string | null {
   if (rc.debugAdapter === "java-debug")
     return "The Java debugger can't start this command itself. Debug an Application, Spring Boot, Maven or Gradle configuration, or start the JVM with a JDWP agent and attach with a Remote JVM Debug configuration.";
   const name = commandName(rc.command);
-  if (rc.kind === "bun" || (name === "bun" && rc.kind !== "npm"))
+  if (rc.debugAdapter === "js-debug" && (rc.kind === "bun" || (name === "bun" && rc.kind !== "npm")))
     return (
       "Bun's inspector speaks the WebKit Inspector protocol, which the JavaScript debugger (vscode-js-debug) " +
-      "can't attach to. Run it with `bun --inspect` and open the printed debug.bun.sh link, or debug the file with Node.js or Deno."
+      "can't attach to. Use the bun-dap debugger, or run it with `bun --inspect` and open the printed debug.bun.sh link."
     );
   if (rc.kind === "deno" || name === "deno") {
     if (!denoRuntime(rc))
@@ -169,8 +218,7 @@ function jsDebugLaunch(rc: RunConfig, cwd: string): LaunchConfig {
   const out = base(rc, "js-debug", cwd);
   const extra: Record<string, unknown> = {
     type: "pwa-node",
-    console: "internalConsole",
-    outputCapture: "std",
+    console: "integratedTerminal",
     skipFiles: workflowSettings().debugger.skipLibraryCode ? ["<node_internals>/**", "**/node_modules/**"] : [],
     autoAttachChildProcesses: true,
   };
@@ -187,6 +235,19 @@ function jsDebugLaunch(rc: RunConfig, cwd: string): LaunchConfig {
     extra.runtimeExecutable = rc.command;
     extra.runtimeArgs = [...rc.args];
   }
+  out.extraJson = JSON.stringify(extra);
+  return out;
+}
+
+function bunDapLaunch(rc: RunConfig, cwd: string): LaunchConfig {
+  const out = base(rc, "bun-dap", cwd);
+  // `bun run <file> [args…]`: the file and its arguments come from the command line itself.
+  const [, file = "", ...args] = rc.args[0] === "run" ? rc.args : ["run", ...rc.args];
+  const extra: Record<string, unknown> = {
+    program: join(cwd, file),
+    runtime: rc.command,
+    runtimeArgs: args,
+  };
   out.extraJson = JSON.stringify(extra);
   return out;
 }
@@ -329,6 +390,10 @@ function nativeLaunch(rc: RunConfig, cwd: string, adapter: string): LaunchConfig
       env: Object.entries(rc.env).map(([k, v]) => `${k}=${v}`),
       ...(from && to && from !== to ? { sourceMap: [[from, to]] } : {}),
     });
+  } else if (rc.kind === "zig-application" || rc.params?.language === "zig") {
+    // Zig under CodeLLDB: without a source language, evaluation stays LLDB's own
+    // (the default Rust mode would shape `Evaluate Expression` as Rust).
+    out.extraJson = JSON.stringify({ sourceLanguages: [] });
   }
   return out;
 }
@@ -338,13 +403,21 @@ function nativeLaunch(rc: RunConfig, cwd: string, adapter: string): LaunchConfig
  * entry point (`lib/main.dart`) — never the interpreter named by `command`.
  */
 function flutterLaunch(rc: RunConfig, cwd: string, adapter: string): LaunchConfig {
-  // A file-scoped config carries the entry point as its last `.dart` argument
-  // (`dart run lib/main.dart`); a user config may name none, which is the
-  // conventional Flutter entry point.
-  const entry = [...rc.args].reverse().find((a) => a.endsWith(".dart")) ?? "lib/main.dart";
+  // A Flutter configuration names its entry point with `--target`; a file-scoped one carries
+  // it as its last `.dart` argument (`dart run lib/main.dart`). Either may name none, which
+  // is the conventional Flutter entry point.
+  const run = rc.kind === "flutter" ? parseFlutterRun(rc.args) : null;
+  const named = run ? run.entry : [...rc.args].reverse().find((a) => a.endsWith(".dart"));
+  const entry = named ?? "lib/main.dart";
+  const toolArgs = run?.rest ?? [];
+  const device = flutterDeviceFor(rc);
+  // `__flutterDevice` becomes `-d` only if the backend finds this is a Flutter project: the
+  // same adapter debugs plain Dart programs.
+  const extra = { ...(toolArgs.length ? { toolArgs } : {}), ...(device ? { __flutterDevice: device } : {}) };
   return {
     ...base(rc, adapter, cwd),
     program: join(cwd, entry),
+    extraJson: Object.keys(extra).length ? JSON.stringify(extra) : null,
   };
 }
 
@@ -355,23 +428,27 @@ function flutterLaunch(rc: RunConfig, cwd: string, adapter: string): LaunchConfi
  *
  * `params.vm-service-uri` pins the VM Service endpoint (`flutter attach
  * --debug-uri`); without it `flutter attach` discovers the running app on the
- * device. `params.device` becomes `-d <device>`.
+ * device. `params.device`, else the toolbar's device, becomes `-d <device>`.
+ * A Flutter run configuration (Flutter Attach) adds its entry point as
+ * `--target` and its `params.attachArgs`.
  */
 function flutterAttach(rc: RunConfig, cwd: string, adapter: string): LaunchConfig {
   const p = rc.params ?? {};
   const uri = p["vm-service-uri"] || p.vmServiceUri;
-  const device = p.device;
+  const device = flutterDeviceFor(rc);
+  const entry = rc.kind === "flutter" ? (parseFlutterRun(rc.args).entry ?? "lib/main.dart") : null;
+  const toolArgs = [...(device ? ["-d", device] : []), ...parseArgs(p.attachArgs ?? "")];
   // `__flutter` tells the adapter launcher to use `flutter debug_adapter`
   // whatever the working directory holds (an add-to-app module lives below a
   // workspace root that has no Flutter dependency of its own). It is removed
   // before the request reaches the adapter.
   const extra: Record<string, unknown> = { __flutter: true };
   if (uri) extra.vmServiceUri = uri;
-  if (device) extra.toolArgs = ["-d", device];
+  if (toolArgs.length) extra.toolArgs = toolArgs;
   return {
     ...base(rc, adapter, cwd),
     request: "attach",
-    program: null,
+    program: entry && join(cwd, entry),
     extraJson: JSON.stringify(extra),
   };
 }
@@ -425,6 +502,7 @@ export function launchConfigFor(rc: RunConfig, root: string, php: string | null 
   }
   if (adapter === "debugpy") return debugpyLaunch(rc, cwd);
   if (adapter === "js-debug") return jsDebugLaunch(rc, cwd);
+  if (adapter === "bun-dap") return bunDapLaunch(rc, cwd);
   if (adapter === "delve") return delveLaunch(rc, cwd, root);
   if (adapter === "godot") return godotLaunch(rc, cwd);
   if (adapter === "php-debug") return phpDebugLaunch(rc, cwd, php);

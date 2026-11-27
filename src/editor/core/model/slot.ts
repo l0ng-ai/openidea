@@ -20,7 +20,7 @@ import {
   type TransactionSpec,
 } from "@codemirror/state";
 import { historyField } from "@codemirror/commands";
-import { EditorView, ViewPlugin, keymap, type ViewUpdate } from "@codemirror/view";
+import { EditorView, ViewPlugin, keymap, tooltips, type ViewUpdate } from "@codemirror/view";
 import {
   _addEditor,
   _removeEditor,
@@ -33,8 +33,10 @@ import {
 } from "@/editor/api";
 import { showContextMenu } from "@/ui";
 import { baseExtensions, compartments, contributionExtensions } from "../cm/setup";
+import { markdownImageFolds } from "../cm/folding";
 import { gutterMenuItems, inGutterMenuArea } from "../gutterMenu";
-import type { DocModel } from "./document";
+import { offerMakeWritable } from "../fileAttributes";
+import { restoresVcsText, type DocModel } from "./document";
 import type { WorkspaceHistoryTarget } from "./workspaceHistory";
 import { isNavigation } from "./navHistory";
 
@@ -56,9 +58,27 @@ export interface Reveal {
   center?: boolean;
 }
 
+/** Reformat Code and Convert Indents rewrite the file's indents, which are then detected again. */
+const rewritesIndents = (tr: Transaction) =>
+  tr.docChanged && (tr.isUserEvent("format.reformat") || tr.isUserEvent("input.indent.convert"));
+
 /** Hidden views kept for showing again, least recently hidden first. */
 const KEPT_VIEWS = 8;
 const keptSlots: EditorSlot[] = [];
+
+/**
+ * Holds the visible tabs' tooltip layers. A layer added to `document.body` itself on every
+ * tab switch would change which element is the body's last child, and Chromium then
+ * restyles the whole workbench (`:last-child` rules); inside this host it restyles nothing else.
+ */
+let tooltipHost: HTMLElement | null = null;
+function tooltipHostElement(): HTMLElement {
+  if (!tooltipHost?.isConnected) {
+    tooltipHost = document.createElement("div");
+    document.body.appendChild(tooltipHost);
+  }
+  return tooltipHost;
+}
 
 export class EditorSlot {
   private stored: EditorState;
@@ -68,6 +88,11 @@ export class EditorSlot {
   view: EditorView | null = null;
   /** The view kept, detached from the document, while the tab is hidden. */
   private kept: EditorView | null = null;
+  /**
+   * The tab's tooltips (hints, hover, completion…). They live outside the view, under `document.body`,
+   * so they leave the page with the view when the tab is hidden instead of floating over the next tab.
+   */
+  private readonly tooltipLayer = typeof document === "undefined" ? null : document.createElement("div");
   /** The view's scroll offset, tracked so hiding it needn't read layout. */
   private scrollPos = { top: 0, left: 0 };
   handle: TextEditorHandle | null = null;
@@ -117,10 +142,15 @@ export class EditorSlot {
           indent: model.effectiveIndent(),
           formatIndent: model.formatIndent(),
           wrapOverride: model.softWrapOverride,
+          renderedDocsOverride: model.renderedDocsOverride,
           extra: this.slotExtensions(),
         }),
       ],
     });
+    if (model.ctx().language === "markdown") {
+      const effects = markdownImageFolds(this.stored);
+      if (effects.length) this.stored = this.stored.update({ effects }).state;
+    }
     this.contributionsVersion = model.manager.contributionsVersion;
     if (source?.view) this.scroll = source.view.scrollSnapshot();
     else if (source) this.scroll = source.scroll;
@@ -134,7 +164,7 @@ export class EditorSlot {
   }
 
   /** The visible or kept view: the one holding the tab's state. */
-  private get live(): EditorView | null {
+  get live(): EditorView | null {
     return this.view ?? this.kept;
   }
 
@@ -144,6 +174,12 @@ export class EditorSlot {
 
   currentState(): EditorState {
     return this.state;
+  }
+
+  private refuseReadOnlyEdit(e: Event): boolean {
+    if (!offerMakeWritable(this.model)) return false;
+    e.preventDefault();
+    return true;
   }
 
   private slotExtensions() {
@@ -158,6 +194,8 @@ export class EditorSlot {
         }
       }),
       Prec.highest(keymap.of([{ key: "Escape", run: () => this.host.onEscape?.(this) ?? false }])),
+      // Ahead of the shared `document.body` parent (the tooltip space still comes from it).
+      this.tooltipLayer ? Prec.highest(tooltips({ parent: this.tooltipLayer })) : [],
       EditorView.domEventObservers({
         scroll: (_e, view) => {
           if (view === this.view) this.scrollPos = { top: view.scrollDOM.scrollTop, left: view.scrollDOM.scrollLeft };
@@ -168,6 +206,10 @@ export class EditorSlot {
           this.host.onContextMenu(this, e);
           return true;
         },
+        // Typing, pasting or dropping into a read-only file offers to make it writable.
+        beforeinput: (e) => this.refuseReadOnlyEdit(e),
+        paste: (e) => this.refuseReadOnlyEdit(e),
+        drop: (e) => this.refuseReadOnlyEdit(e),
       }),
       ViewPlugin.define((view) => {
         // Gutters sit outside the content DOM. Gutter extensions with their own menu (breakpoints,
@@ -188,6 +230,7 @@ export class EditorSlot {
 
   mount(parent: HTMLElement): EditorView {
     if (this.view) return this.view;
+    if (this.tooltipLayer && !this.tooltipLayer.isConnected) tooltipHostElement().appendChild(this.tooltipLayer);
     const kept = this.kept;
     let view: EditorView;
     if (kept) {
@@ -211,7 +254,7 @@ export class EditorSlot {
       if (this.scroll) view.dispatch({ effects: this.scroll });
     }
     this.scroll = null;
-    this.handle = { view, ctx: this.model.ctx() };
+    this.handle = { view, ctx: this.model.ctx(), tabId: this.tabId };
     _addEditor(this.handle);
     if (this.pendingReveal) {
       const r = this.pendingReveal;
@@ -231,6 +274,7 @@ export class EditorSlot {
     this.kept = view;
     if (!keep) return this.release();
     view.dom.remove();
+    this.tooltipLayer?.remove();
     keptSlots.push(this);
     if (keptSlots.length > KEPT_VIEWS) keptSlots.shift()!.release();
   }
@@ -246,6 +290,7 @@ export class EditorSlot {
     this.scroll = scrollSnapshotAt(view, this.scrollPos);
     this.stored = view.state;
     view.destroy();
+    this.tooltipLayer?.remove();
   }
 
   dispose() {
@@ -272,7 +317,7 @@ export class EditorSlot {
   private onTransactions(trs: readonly Transaction[], view: EditorView) {
     view.update(trs);
     let selection = false;
-    let reformatted = false;
+    let reindented = false;
     let navigatedFrom: { line: number; col: number } | undefined;
     for (const tr of trs) {
       if (!navigatedFrom && tr.selection && isNavigation(tr)) {
@@ -281,7 +326,7 @@ export class EditorSlot {
         navigatedFrom = { line: line.number - 1, col: head - line.from };
       }
       if (tr.docChanged && !isExternalChange(tr) && !tr.annotation(transientChange)) {
-        this.model.onLocal(tr.changes, this);
+        this.model.onLocal(tr.changes, this, restoresVcsText(tr));
         if (
           tr.isUserEvent("input") ||
           tr.isUserEvent("delete") ||
@@ -291,10 +336,10 @@ export class EditorSlot {
         )
           this.host.onUserEdit(this, tr);
       }
-      if (tr.docChanged && tr.isUserEvent("format.reformat")) reformatted = true;
+      if (rewritesIndents(tr)) reindented = true;
       if (tr.selection || tr.docChanged) selection = true;
     }
-    if (reformatted) this.model.redetectIndent();
+    if (reindented) this.model.redetectIndent();
     if (selection) this.host.onSelection(this, navigatedFrom);
   }
 
@@ -306,8 +351,8 @@ export class EditorSlot {
     }
     const tr = "startState" in spec ? spec : this.stored.update(spec);
     this.stored = tr.state;
-    if (tr.docChanged) this.model.onLocal(tr.changes, this);
-    if (tr.docChanged && tr.isUserEvent("format.reformat")) this.model.redetectIndent();
+    if (tr.docChanged) this.model.onLocal(tr.changes, this, restoresVcsText(tr));
+    if (rewritesIndents(tr)) this.model.redetectIndent();
   }
 
   /** Applies changes that are already in the model (other slot / backend). */

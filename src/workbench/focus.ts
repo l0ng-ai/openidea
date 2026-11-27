@@ -1,8 +1,17 @@
 /** Focus routing between tool windows and the editor area. */
 import { setContext, useContextKeys } from "@/platform/context";
+import { syncFocusScope } from "@/ui/focusScope";
 import { maybeEditorService } from "./contributions";
 
 export const EDITOR_AREA_SELECTOR = "[data-editor-area]";
+
+let activeTracker: ((el: Element | null) => void) | null = null;
+
+/** Reports that focus entered `el` (e.g. a sandboxed plugin iframe that does not bubble `focusin`). */
+export function notifyFocusElement(el: Element | null) {
+  syncFocusScope(el);
+  activeTracker?.(el);
+}
 
 /** Moves focus to the active editor (or the editor area when none is open). */
 export function focusEditor() {
@@ -50,25 +59,45 @@ function dropEditorCaret(e: FocusEvent) {
  * Tracks which workbench part holds focus and publishes `toolWindowFocus`,
  * `activeToolWindow` and `editorAreaFocus`. Returns an uninstaller.
  */
-export function installFocusTracking(onToolWindowFocus: (id: string | null) => void): () => void {
-  const onFocusIn = (e: FocusEvent) => {
-    const el = e.target as Element | null;
+export function installFocusTracking(onToolWindowFocus: (id: string | null, editor: boolean) => void): () => void {
+  let lastEl: Element | null = null;
+  const handleFocus = (el: Element | null) => {
+    if (el && el === lastEl && el instanceof HTMLIFrameElement) return;
+    lastEl = el;
     const tw = el?.closest?.("[data-toolwindow]");
-    onToolWindowFocus(tw?.getAttribute("data-toolwindow") ?? null);
-    setContext("editorAreaFocus", !!el?.closest?.(EDITOR_AREA_SELECTOR));
+    const editor = !!el?.closest?.(EDITOR_AREA_SELECTOR);
+    onToolWindowFocus(tw?.getAttribute("data-toolwindow") ?? null, editor);
+    setContext("editorAreaFocus", editor);
+  };
+  activeTracker = handleFocus;
+  const onFocusIn = (e: FocusEvent) => handleFocus(e.target as Element | null);
+  const checkIframeFocus = () => {
+    const active = document.activeElement;
+    if (active instanceof HTMLIFrameElement && document.hasFocus()) handleFocus(active);
+  };
+  const onWindowBlur = () => {
+    checkIframeFocus();
+    queueMicrotask(checkIframeFocus);
   };
   const onFocusOut = (e: FocusEvent) => {
     dropEditorCaret(e);
     if (e.relatedTarget) return;
-    // Focus left to nowhere (window blur keeps document.activeElement).
+    // Focus left to nowhere (window blur keeps document.activeElement) or into an iframe.
     queueMicrotask(() => {
-      if (document.activeElement && document.activeElement !== document.body) return;
-      onToolWindowFocus(null);
+      const active = document.activeElement;
+      if (active instanceof HTMLIFrameElement && document.hasFocus()) {
+        handleFocus(active);
+        return;
+      }
+      if (active && active !== document.body) return;
+      lastEl = null;
+      onToolWindowFocus(null, false);
       setContext("editorAreaFocus", false);
     });
   };
   document.addEventListener("focusin", onFocusIn);
   document.addEventListener("focusout", onFocusOut);
+  window.addEventListener("blur", onWindowBlur);
   // IDEA: closing the last popup / menu / dialog never leaves focus nowhere.
   let popupOpen = !!useContextKeys.getState().popupOpen;
   let refocus: ReturnType<typeof setTimeout> | undefined;
@@ -83,9 +112,11 @@ export function installFocusTracking(onToolWindowFocus: (id: string | null) => v
     });
   });
   return () => {
+    if (activeTracker === handleFocus) activeTracker = null;
     clearTimeout(refocus);
     unsubPopups();
     document.removeEventListener("focusin", onFocusIn);
     document.removeEventListener("focusout", onFocusOut);
+    window.removeEventListener("blur", onWindowBlur);
   };
 }

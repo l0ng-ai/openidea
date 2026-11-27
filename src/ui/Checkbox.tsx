@@ -12,10 +12,21 @@ export interface CheckboxProps {
   /** Tri-state display. */
   indeterminate?: boolean;
   className?: string;
+  /** `-1` keeps it out of the Tab order, e.g. inside a grid that moves between cells itself. */
+  tabIndex?: number;
   "aria-label"?: string;
 }
 
-export function Checkbox({ checked, onChange, label, disabled, indeterminate, className, ...aria }: CheckboxProps) {
+export function Checkbox({
+  checked,
+  onChange,
+  label,
+  disabled,
+  indeterminate,
+  className,
+  tabIndex,
+  ...aria
+}: CheckboxProps) {
   const id = useId();
   const tx = useGivenTx();
   return (
@@ -27,6 +38,7 @@ export function Checkbox({ checked, onChange, label, disabled, indeterminate, cl
           className={styles.native}
           checked={checked}
           disabled={disabled}
+          tabIndex={tabIndex}
           aria-checked={indeterminate ? "mixed" : checked}
           aria-label={tx(aria["aria-label"])}
           onChange={(e) => onChange(e.target.checked)}
@@ -51,10 +63,11 @@ export interface RadioProps {
   label?: ReactNode;
   disabled?: boolean;
   className?: string;
+  "aria-label"?: string;
 }
 
 /** Radio button, drawn like the checkbox with a round box and a dot. */
-export function Radio({ checked, onChange, name, label, disabled, className }: RadioProps) {
+export function Radio({ checked, onChange, name, label, disabled, className, ...aria }: RadioProps) {
   const id = useId();
   const tx = useGivenTx();
   return (
@@ -67,6 +80,7 @@ export function Radio({ checked, onChange, name, label, disabled, className }: R
           className={styles.native}
           checked={checked}
           disabled={disabled}
+          aria-label={tx(aria["aria-label"])}
           onChange={onChange}
         />
         <span className={clsx(styles.box, styles.radio, checked && styles.on)} aria-hidden />

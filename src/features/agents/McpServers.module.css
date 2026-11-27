@@ -1,173 +1,54 @@
-.page {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  font-size: var(--fs-ui);
-  color: var(--fg-strong);
-}
-
-.header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.headerActions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.title {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--fg-strong);
-}
-
-.lead {
-  margin: 0;
-  color: var(--fg-muted);
-  line-height: 1.45;
-}
-
-.link {
-  padding: 0;
-  border: none;
-  background: none;
-  color: var(--link);
-  font: inherit;
-  cursor: pointer;
-}
-
-.link:hover {
-  text-decoration: underline;
-}
-
-.search {
-  width: 100%;
-}
-
-.error {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 8px;
-  border-radius: var(--radius-control);
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
-  color: var(--danger);
-  font-size: var(--fs-small);
-}
-
 .notice {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 8px;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: 6px 10px;
   border-radius: var(--radius-control);
-  background: var(--accent-soft);
+  background: var(--bg-feedback-info);
+  box-shadow: inset 0 0 0 1px var(--border-feedback-info);
   color: var(--fg);
   font-size: var(--fs-small);
 }
 
-.sections {
+.noticeMain {
   display: flex;
-  flex-direction: column;
-  border-top: 1px solid var(--border);
+  align-items: center;
+  gap: var(--space-1-5);
+  min-width: 0;
 }
 
-.section {
-  display: flex;
-  flex-direction: column;
-  border-bottom: 1px solid var(--border);
-}
-
-.sectionBar {
+.builtinCard {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  min-height: 32px;
-  padding: 2px 4px;
-  gap: 8px;
+  gap: var(--space-3);
+  padding: 8px 12px;
+  border-radius: var(--radius-control);
+  background: var(--bg-elev);
+  box-shadow: inset 0 0 0 1px var(--border);
 }
 
-.sectionToggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: 1;
-  min-width: 0;
-  padding: 4px 2px;
-  border: none;
-  background: none;
-  color: var(--fg-strong);
-  font: inherit;
-  font-weight: 600;
-  text-align: left;
-  cursor: pointer;
-}
-
-.sectionToggle:hover {
-  color: var(--fg-strong);
-}
-
-.chevron {
-  color: var(--fg-muted);
-  flex-shrink: 0;
-}
-
-.sectionTitle {
-  font-size: var(--fs-ui);
-  font-weight: 600;
-}
-
-.badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 6px;
-  border-radius: 999px;
-  background: var(--bg-hover);
-  color: var(--fg-muted);
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1;
-}
-
-.sectionBody {
+.builtinMain {
   display: flex;
   flex-direction: column;
-  padding: 2px 0 6px;
+  gap: var(--space-0-5);
+  min-width: 0;
 }
 
-.emptySection {
-  padding: 6px 24px 8px;
+.builtinHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  flex-wrap: wrap;
+}
+
+.sectionNote {
+  margin: 0;
+  padding: 0 4px 2px 20px;
   color: var(--fg-muted);
   font-size: var(--fs-small);
-}
-
-.row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 6px 8px 6px 22px;
-  border-radius: var(--radius-control);
-}
-
-.row:hover {
-  background: var(--bg-hover);
-}
-
-.rowMain {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-  flex: 1;
+  line-height: 1.4;
 }
 
 .serverName {
@@ -178,19 +59,235 @@
   white-space: nowrap;
 }
 
+.tagSuccess {
+  color: var(--success);
+}
+
 .subtitle {
   color: var(--fg-muted);
+  font-family: var(--font-mono);
   font-size: var(--fs-small);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.rowActions {
+.statusProbing {
+  background: var(--warning);
+}
+
+.statusError {
+  background: var(--danger);
+}
+
+.toolsPanel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1-5);
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.toolsHeader {
   display: flex;
   align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
+  justify-content: space-between;
+  gap: var(--space-2);
+  color: var(--fg-secondary);
+  font-weight: 600;
+}
+
+.toolsMeta {
+  color: var(--fg-muted);
+  font-weight: 400;
+}
+
+.toolsList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  max-height: 220px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.toolRow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0-5);
+  padding: 5px 8px;
+  border-radius: var(--radius-small);
+  background: var(--bg-elev);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.toolName {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--fg-strong);
+}
+
+.toolDesc {
+  color: var(--fg-muted);
+  line-height: 1.35;
+}
+
+/* Discovered external agent CLI sources. */
+.importToolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: 8px 10px;
+  border-radius: var(--radius-control);
+  background: var(--bg-elev);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.importControls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.sourceCard {
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-control);
+  background: var(--bg-elev);
+  box-shadow: inset 0 0 0 1px var(--border);
+  overflow: hidden;
+}
+
+.sourceHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sourceTitleGroup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0-5);
+  min-width: 0;
+}
+
+.sourceTitleRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  font-weight: 600;
+}
+
+.sourcePath {
+  color: var(--fg-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-tiny);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.discoveredList {
+  display: flex;
+  flex-direction: column;
+}
+
+.discoveredRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: 6px 12px;
+}
+
+.discoveredRow + .discoveredRow {
+  border-top: 1px solid var(--border);
+}
+
+.discoveredMain {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  flex: 1;
+}
+
+.discoveredInfo {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0-5);
+  min-width: 0;
+}
+
+/* Modal Form / JSON switcher and agent pills. */
+.modalModeBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: 8px 16px 0;
+}
+
+.segmented {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: var(--radius-control);
+  background: var(--bg-elev);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.segmentBtn {
+  padding: 3px 10px;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: var(--fs-small);
+}
+
+.segmentActive {
+  background: var(--bg-selected);
+  color: var(--fg-strong);
+}
+
+.agentPicker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.agentChip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: var(--bg-elev);
+  box-shadow: inset 0 0 0 1px var(--border-button);
+  color: var(--fg-secondary);
+  font: inherit;
+  font-size: var(--fs-small);
+}
+
+.agentChip:hover {
+  background: var(--bg-hover);
+  color: var(--fg-strong);
+}
+
+.agentChipSelected {
+  background: var(--bg-selected);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  color: var(--fg-strong);
 }
 
 /* Server form: a label column, controls filling the rest. */
@@ -198,7 +295,7 @@
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
   align-items: start;
-  gap: 10px 12px;
+  gap: 10px var(--space-3);
   padding: 12px 16px 4px;
 }
 
@@ -215,7 +312,7 @@
 .formControl {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   min-width: 0;
 }
 
@@ -243,6 +340,10 @@
   resize: vertical;
   outline: none;
   transition: box-shadow var(--dur-fast) var(--ease);
+}
+
+.jsonArea {
+  min-height: 168px;
 }
 
 .textarea::placeholder {

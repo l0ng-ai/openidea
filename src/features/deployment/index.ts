@@ -17,8 +17,6 @@ import { transferMenuEntries } from "./model";
 import { REMOTE_HOST_WINDOW, useDeployment } from "./store";
 import { installDeploymentEditorHost } from "./windowBridge";
 
-export { activateDeploymentWindow, DeploymentWindow } from "./window";
-
 /** Deployed URL of the path the last menu was prepared for. */
 let webUrlFor: { path: string; url: string | null } | null = null;
 
@@ -87,7 +85,7 @@ export function activate(): () => void {
     registerOverlay({ id: "deployment.dialogs", component: DeploymentDialogs }),
     registerMenuGroup({
       id: "deployment",
-      menus: ["projectView", "editor", "editorTab"],
+      menus: ["projectView", "editor", "editorTab", "changes"],
       order: 60,
       items: (_menu, { paths }) => deploymentMenu(paths),
       prepare: async (_menu, { paths }) => {

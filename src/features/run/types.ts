@@ -1,5 +1,5 @@
 /**
- * Built-in run configuration types (Shell Script, Program, npm, Gradle, Maven,
+ * Built-in run configuration types (Shell Script, Program, npm, Node.js, Gradle, Maven,
  * Application, Spring Boot, Compound) and the helpers that turn a type's params into the launched
  * command line. Other features contribute types with `registerRunConfigType`.
  */
@@ -16,18 +16,23 @@ import {
   mavenForkedJvm,
   ROOT_MODULE,
   springBootType,
+  splitJvmArgs,
   type ForkedJvm,
 } from "./jvmTypes";
 import { tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
 
+import { flutterType } from "./flutterType";
 import { tomcatType } from "./tomcat";
 import { goBuildType, goTestType } from "./goTypes";
 
 import { dotnetProjectType, dotnetTestType } from "./dotnetTypes";
 import { rakeType, rspecType, rubyScriptType } from "./rubyTypes";
 import { djangoTestType } from "./djangoTypes";
+import { pythonType } from "./pythonTypes";
 import { phpunitType } from "./phpunitTypes";
+import { cypressType } from "./cypressType";
+import { UNITY_CONFIG_KIND } from "./unity";
 
 export const COMPOUND = "compound";
 
@@ -200,6 +205,47 @@ const godot: RunConfigTypeContribution = {
   },
 };
 
+const isUProject = (a: string) => !a.startsWith("-") && /\.uproject$/i.test(a);
+
+/**
+ * Unreal Engine: `<editor> <project>.uproject [-game|-server]`. The editor comes from the
+ * detected configuration (the engine is registered per version); the mode stays in the
+ * arguments, so the editor, a game and a server are the same type.
+ */
+const unreal: RunConfigTypeContribution = {
+  id: "unreal",
+  label: "Unreal Engine",
+  icon: "file-cpp",
+  group: "Unreal",
+  description: "Open an Unreal Engine project in the editor, or in game mode",
+  debugAdapter: "lldb-dap",
+  fields: [
+    {
+      key: "project",
+      label: "Project",
+      mono: true,
+      browse: "file",
+      required: true,
+      placeholder: "…/Game.uproject",
+    },
+    { key: "arguments", label: "Arguments", mono: true, placeholder: "e.g. -game" },
+  ],
+  commandLine: (p) => ({
+    command: p.executable || "UnrealEditor.exe",
+    args: [p.project ?? "", ...parseArgs(p.arguments ?? "")],
+    cwd: null,
+  }),
+  paramsFrom(c) {
+    const project = c.args.find(isUProject);
+    if (!project) return null;
+    return {
+      project,
+      arguments: formatArgs(c.args.filter((a) => a !== project)),
+      ...(c.command !== "UnrealEditor.exe" ? { executable: c.command } : {}),
+    };
+  },
+};
+
 const PACKAGE_MANAGERS = ["npm", "pnpm", "yarn", "bun"];
 const NPM_COMMANDS = ["run", "test", "start", "install", "ci", "publish", "pack"];
 
@@ -240,7 +286,7 @@ const npm: RunConfigTypeContribution = {
       mono: true,
       browse: "file",
       placeholder: "Project default",
-      hint: "The node executable this script runs on; empty uses Settings › Languages & Frameworks › Node.js.",
+      hint: "The node executable this script runs on; empty uses Settings › Languages & Frameworks › JavaScript Runtime.",
     },
   ],
   commandLine(p) {
@@ -253,6 +299,128 @@ const npm: RunConfigTypeContribution = {
   paramsFrom(c) {
     const [command, ...rest] = c.args;
     if (!PACKAGE_MANAGERS.includes(commandName(c.command)) || !command || !NPM_COMMANDS.includes(command)) return null;
+    const script = command === "run" ? (rest.shift() ?? "") : "";
+    return {
+      packageManager: commandName(c.command),
+      command,
+      script,
+      arguments: formatArgs(rest),
+      packageDir: dirOf(c.cwd),
+      ...(c.command !== commandName(c.command) ? { executable: c.command } : {}),
+    };
+  },
+};
+
+/** Node options whose value is the next argument (`-r ./setup.js`); `-e` / `-p` take code, not a file. */
+const NODE_VALUE_OPTIONS = [
+  "-r",
+  "--require",
+  "--import",
+  "--loader",
+  "--experimental-loader",
+  "-C",
+  "--conditions",
+  "--env-file",
+  "-e",
+  "--eval",
+  "-p",
+  "--print",
+  "--run",
+  "--watch-path",
+  "--input-type",
+  "--inspect-port",
+  "--debug-port",
+  "--test-reporter",
+  "--test-reporter-destination",
+  "--env-file-if-exists",
+  "--disable-warning",
+];
+
+/** `[node options, file, application arguments]` of a Node command line; no file when only options follow. */
+export function splitNodeArgs(args: readonly string[]): [string[], string | null, string[]] {
+  let i = 0;
+  for (let a = args[0]; a?.startsWith("-"); a = args[i]) i += NODE_VALUE_OPTIONS.includes(a) ? 2 : 1;
+  const file = args[i];
+  return file === undefined ? [[...args], null, []] : [args.slice(0, i), file, args.slice(i + 1)];
+}
+
+/** Runs a file with Node.js (or a Node-compatible runner such as tsx): `node <options> <file> <arguments>`. */
+const node: RunConfigTypeContribution = {
+  id: "node",
+  label: "Node.js",
+  icon: "file-js",
+  description: "Run a JavaScript or TypeScript file with Node.js",
+  debugAdapter: "js-debug",
+  fields: [
+    {
+      key: "interpreter",
+      label: "Node interpreter",
+      mono: true,
+      browse: "file",
+      placeholder: "Project default",
+      hint: "The node executable, or a runner such as tsx; empty uses Settings › Languages & Frameworks › JavaScript Runtime.",
+    },
+    {
+      key: "nodeOptions",
+      label: "Node options",
+      mono: true,
+      placeholder: "e.g. --env-file=.env --max-old-space-size=4096",
+    },
+    { key: "file", label: "JavaScript file", mono: true, required: true, browse: "file" },
+    { key: "arguments", label: "Application arguments", mono: true },
+  ],
+  commandLine: (p) => ({
+    command: p.interpreter?.trim() || "node",
+    args: [...splitJvmArgs(p.nodeOptions), ...(p.file?.trim() ? [p.file.trim()] : []), ...splitJvmArgs(p.arguments)],
+  }),
+  paramsFrom(c) {
+    // `npx tsx …`, test runs and the like keep their own command line.
+    if (c.isTest || !["node", "tsx", "ts-node"].includes(commandName(c.command))) return null;
+    const [options, file, rest] = splitNodeArgs(c.args);
+    // Only a new configuration (params set, still empty) opens without a file; an older bare `node`
+    // stays a plain command rather than failing validation. `node --test` and `node -e …` run none.
+    if (!file && (c.args.length || !c.params)) return null;
+    return {
+      ...(c.command !== "node" ? { interpreter: c.command } : {}),
+      nodeOptions: formatArgs(options),
+      file: file ?? "",
+      arguments: formatArgs(rest),
+    };
+  },
+};
+
+const BUN_COMMANDS = ["run", "test"];
+
+const bun: RunConfigTypeContribution = {
+  id: "bun",
+  label: "Bun",
+  icon: "file-bun",
+  description: "Run a TypeScript or JavaScript file with Bun",
+  defaults: { packageManager: "bun", command: "run" },
+  ownsWorkingDirectory: true,
+  fields: [
+    { key: "packageDir", label: "Working directory", mono: true, browse: "directory", placeholder: "Project root" },
+    { key: "command", label: "Command", control: "select", options: BUN_COMMANDS.map((v) => ({ value: v, label: v })) },
+    {
+      key: "script",
+      label: "Script",
+      mono: true,
+      required: true,
+      visible: (p) => p.command === "run",
+      suggestions: (configs) => argsOf(configs, "bun", 1),
+    },
+    { key: "arguments", label: "Arguments", mono: true },
+  ],
+  commandLine(p) {
+    const command = p.command || "run";
+    const args = [command, ...(command === "run" ? [p.script ?? ""] : []), ...parseArgs(p.arguments ?? "")];
+    const manager = p.packageManager || "bun";
+    const executable = p.executable && commandName(p.executable) === manager ? p.executable : manager;
+    return { command: executable, args, cwd: p.packageDir?.trim() || null };
+  },
+  paramsFrom(c) {
+    const [command, ...rest] = c.args;
+    if (commandName(c.command) !== "bun" || !command || !BUN_COMMANDS.includes(command)) return null;
     const script = command === "run" ? (rest.shift() ?? "") : "";
     return {
       packageManager: commandName(c.command),
@@ -431,12 +599,26 @@ const pytest: RunConfigTypeContribution = {
 };
 
 export const BUILTIN_TYPES: readonly RunConfigTypeContribution[] = [
+  {
+    id: UNITY_CONFIG_KIND,
+    label: "Unity Editor",
+    icon: "attach-to-process",
+    debugOnly: true,
+    fields: [],
+    commandLine: () => null,
+  },
   shell,
   program,
   npm,
+  node,
+  bun,
+  cypressType,
   gradle,
   maven,
   godot,
+  flutterType,
+  unreal,
+  pythonType,
   pytest,
   rubyScriptType,
   rakeType,
@@ -499,7 +681,8 @@ export function withParams(config: RunConfig, params: Record<string, string>, ty
     ...(config.kind === "dotnet" && config.beforeLaunch === undefined
       ? { beforeLaunch: [{ kind: "dotnetBuild", target: "" }] }
       : {}),
-    ...(config.kind === "dotnet-test" ||
+    ...(config.kind === "cypress" ||
+    config.kind === "dotnet-test" ||
     config.kind === "django-test" ||
     config.kind === "phpunit" ||
     config.kind === "junit" ||
@@ -615,6 +798,8 @@ export function newConfigOfType(
     local: true,
     ...(folder ? { folder } : {}),
   };
+  // A new Shell Script runs in a terminal, as IDEA's "Execute in the terminal" does by default.
+  if (type.id === "shell") base.emulateTerminal = true;
   const copied: Partial<RunConfig> = {};
   if (template) {
     for (const key of TEMPLATE_KEYS) {

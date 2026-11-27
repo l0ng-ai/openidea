@@ -118,6 +118,16 @@ pub(super) fn folding(
             });
             return true;
         }
+        // Some languages write documentation as a string-like node rather than a
+        // lexical comment (Python docstrings, Elixir `@doc` / `@moduledoc`). The
+        // generic comment pass above never sees those, so fold them as documentation.
+        if node.is_named()
+            && start != end
+            && let Some(fold) = docstring_fold(spec, &node, kinds, text)
+        {
+            out.push(fold);
+            return false;
+        }
         if start != end && !spec.imports.is_empty() && node.named_child_count() > 1 {
             import_runs(kinds, node, text, &mut out);
         }
@@ -134,7 +144,11 @@ pub(super) fn folding(
         if !node.is_named() {
             return true;
         }
-        if let Some(close_row) = kinds.bracket_close_row(&node) {
+        if spec.name == "go"
+            && let Some(end) = go_compact_end(&node, text)
+        {
+            push(&mut out, start, end, FoldKind::Compact);
+        } else if let Some(close_row) = kinds.bracket_close_row(&node) {
             push(&mut out, start, close_row, FoldKind::Region);
         } else if kinds.has(&node, FOLD_NODE) {
             push(&mut out, start, last_content_row(&node, text), FoldKind::Region);
@@ -145,6 +159,71 @@ pub(super) fn folding(
     out.sort_by(|a, b| a.start_line.cmp(&b.start_line).then(b.end_line.cmp(&a.end_line)));
     out.dedup_by_key(|f| f.start_line);
     out
+}
+
+// Only join a single statement on the next line. Comments, blank lines and
+// nested multi-line statements must keep their own lines.
+fn go_compact_end(node: &Node, text: &str) -> Option<usize> {
+    let start = node.start_position().row;
+    let braced = match node.kind() {
+        "block" => {
+            let parent = node.parent()?;
+            if parent.kind() != "if_statement"
+                || parent.child_by_field_name("consequence") != Some(*node)
+                || !go_error_guard(parent.child_by_field_name("condition")?, text)
+            {
+                return None;
+            }
+            true
+        }
+        "expression_case" | "type_case" | "communication_case" | "default_case" => false,
+        _ => return None,
+    };
+    let body = node.named_child(node.named_child_count().checked_sub(1)?)?;
+    if body.kind() != "statement_list" || body.named_child_count() != 1 {
+        return None;
+    }
+    let header_end = body.prev_sibling()?;
+    if header_end.kind() != if braced { "{" } else { ":" } || header_end.end_position().row != start {
+        return None;
+    }
+    let statement = body.named_child(0)?;
+    let position = statement.start_position();
+    if statement.has_error()
+        || statement.is_extra()
+        || position.row != start + 1
+        || statement.end_position().row != position.row
+        || !own_line(text, statement.start_byte(), position.column)
+        || !text.get(header_end.end_byte()..statement.start_byte())?.trim().is_empty()
+    {
+        return None;
+    }
+    let tail = text.get(statement.end_byte()..)?.split('\n').next()?.trim();
+    if !matches!(tail, "" | ";") {
+        return None;
+    }
+    let end = start + if braced { 2 } else { 1 };
+    (!braced || node.end_position().row == end).then_some(end)
+}
+
+// Folding runs without Go type information. Recognize conventional error
+// guards and leave other nil checks alone.
+fn go_error_guard(condition: Node, text: &str) -> bool {
+    if condition.kind() != "binary_expression"
+        || !condition.child_by_field_name("operator").is_some_and(|op| op.kind() == "!=")
+    {
+        return false;
+    }
+    let (Some(left), Some(right)) = (condition.child_by_field_name("left"), condition.child_by_field_name("right"))
+    else {
+        return false;
+    };
+    let name = match (left.kind(), right.kind()) {
+        ("identifier", "nil") => left,
+        ("nil", "identifier") => right,
+        _ => return false,
+    };
+    name.utf8_text(text.as_bytes()).is_ok_and(|name| name == "err" || name.ends_with("Err"))
 }
 
 fn push(out: &mut Vec<FoldRange>, start: usize, end: usize, kind: FoldKind) {
@@ -204,6 +283,64 @@ fn visit(cursor: &mut TreeCursor, mut f: impl FnMut(Node) -> bool) {
 
 pub(crate) fn is_comment(kind: &str) -> bool {
     kind.contains("comment") || kind == "Comment"
+}
+
+/// Folds a documentation string written as a non-comment node. Returns `None`
+/// for every other node; the caller skips its subtree only on a match.
+fn docstring_fold(spec: &Spec, node: &Node, kinds: &KindTable, text: &str) -> Option<FoldRange> {
+    let multi_line = |n: &Node| n.start_position().row != n.end_position().row && kinds.has(n, FOLD_NODE);
+    let range = |n: &Node| FoldRange {
+        start_line: n.start_position().row as u32,
+        end_line: last_content_row(n, text) as u32,
+        kind: FoldKind::Comment,
+    };
+    match spec.name {
+        // A bare string as the first statement of a module/class/function body.
+        "python" if node.kind() == "expression_statement" => {
+            let string = node.named_child(0)?;
+            if string.kind() != "string" || !multi_line(&string) {
+                return None;
+            }
+            let parent = node.parent()?;
+            let mut cursor = parent.walk();
+            if parent.named_children(&mut cursor).find(|c| !kinds.has(c, COMMENT)) != Some(*node) {
+                return None;
+            }
+            Some(range(node))
+        }
+        // `@doc """…"""` / `@moduledoc """…"""`: an @-prefixed call whose
+        // argument is a multi-line string (or a sigil like `~S"""`).
+        "elixir" if node.kind() == "unary_operator" => {
+            let operand = node.child_by_field_name("operand")?;
+            if operand.kind() != "call" || !is_elixir_doc_attr(operand, text) {
+                return None;
+            }
+            // The string is the argument of the attribute call: `@doc """…"""`
+            // parses as unary_operator -> call(target: doc) -> arguments -> string.
+            let mut cursor = operand.walk();
+            let doc_string =
+                operand.named_children(&mut cursor).find(|c| c.kind() == "arguments").and_then(|args| {
+                    let mut args_cursor = args.walk();
+                    args.named_children(&mut args_cursor).find(|c| multi_line(c))
+                })?;
+            if !matches!(doc_string.kind(), "string" | "sigil") {
+                return None;
+            }
+            Some(range(&doc_string))
+        }
+        _ => None,
+    }
+}
+
+/// Whether an Elixir `call` is `@doc` / `@moduledoc` / `@typedoc` (the documented
+/// attributes that take a string argument).
+fn is_elixir_doc_attr(call: Node, text: &str) -> bool {
+    let Some(target) = call.child_by_field_name("target") else { return false };
+    let name = text.get(target.byte_range()).unwrap_or_default();
+    if target.kind() != "identifier" {
+        return false;
+    }
+    matches!(name, "doc" | "moduledoc" | "typedoc")
 }
 
 /// Row of the closing token when `node` is delimited by a matching bracket pair.

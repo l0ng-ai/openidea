@@ -19,9 +19,9 @@ test("an unresolved module gets a startup timeout", async ({ page }) => {
   );
   await page.goto("/", { waitUntil: "commit" });
   await page.locator("#splash").waitFor({ state: "attached" });
-  await page.clock.runFor(30_000);
+  await page.clock.runFor(60_000);
   await expect(page.getByRole("textbox", { name: "Startup error details" })).toHaveValue(
-    /Startup did not finish within 30 seconds/,
+    /Startup did not finish within 60 seconds/,
   );
 });
 
@@ -55,6 +55,7 @@ test("a rejected boot shows Chinese diagnostics without application modules", as
 });
 
 test("a slow module load succeeds before the deadline and cancels the startup timer", async ({ page }) => {
+  test.setTimeout(60_000);
   await page.clock.install();
   await page.addInitScript(() => {
     new MutationObserver((records) => {
@@ -80,10 +81,10 @@ test("a slow module load succeeds before the deadline and cancels the startup ti
   await page.clock.runFor(15_000);
   await expect(page.locator("#boot-error")).toHaveCount(0);
   release();
-  await expect(page.locator("#root")).not.toBeEmpty();
+  await expect(page.locator("#root")).not.toBeEmpty({ timeout: test.info().timeout });
   await page.clock.runFor(4000);
   await expect(page.locator("#splash")).toHaveCount(0);
-  await page.clock.runFor(35_000);
+  await page.clock.runFor(50_000);
   await expect(page.locator("#boot-error")).toHaveCount(0);
   expect(await page.evaluate(() => sessionStorage.getItem("boot-error-seen"))).toBeNull();
 });

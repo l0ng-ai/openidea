@@ -2,16 +2,27 @@
  * Web browsers (IDEA's Open In › Browser and the editor's browser bar): HTML
  * and SVG files open in an installed browser through the built-in server, and
  * HTML files get a built-in preview beside the editor. ⌃⇧R in an HTML editor
- * opens the default browser, like IDEA's Run for HTML files.
+ * opens the default browser, like IDEA's Run for HTML files. HTML files with
+ * Django template tags offer the Django Template language.
  */
 import { registerActions } from "@/platform/actions";
 import { getContext } from "@/platform/context";
+import { onFileTypesChange } from "@/platform/fileTypes";
 import { basename } from "@/platform/project";
 import { lazyComponent, type MenuItem } from "@/ui";
-import { maybeEditorService, registerMenuGroup, registerTextEditorWrapper } from "@/workbench/contributions";
+import {
+  maybeEditorService,
+  registerEditorBanner,
+  registerMenuGroup,
+  registerTextEditorWrapper,
+  useTextEditorWrappers,
+} from "@/workbench/contributions";
+import { activeEditor, registerEditorContribution } from "@/editor/api";
+import { djangoContentWatcher, djangoTemplateBanner } from "./djangoTemplates";
 import {
   browserIcon,
   isHtmlPath,
+  isWebPagePath,
   isWebPath,
   loadBrowsers,
   openInBrowser,
@@ -34,7 +45,15 @@ function targetPath(arg: unknown): string | null {
 
 async function showPreview(path: string) {
   await maybeEditorService()?.openFile(path, { focus: true });
-  togglePreview(path, true);
+  const editor = activeEditor();
+  if (editor?.tabId && editor.ctx.path === path) togglePreview(editor.tabId, true);
+}
+
+/** The tab a preview button passes, or the focused HTML editor's. */
+function previewTab(arg: unknown): string | undefined {
+  if (typeof arg === "string") return arg;
+  const editor = activeEditor();
+  return editor && isHtmlPath(editor.ctx.path) ? editor.tabId : undefined;
 }
 
 function browserMenu(path: string): MenuItem {
@@ -59,6 +78,10 @@ function browserMenu(path: string): MenuItem {
 export function activate(): () => void {
   void loadBrowsers();
   const disposers = [
+    // Open tabs gain or lose the browser bar and preview when File Types change.
+    onFileTypesChange(() => useTextEditorWrappers.setState((w) => ({ wrappers: new Map(w.wrappers) }))),
+    registerEditorBanner(djangoTemplateBanner),
+    registerEditorContribution({ id: "web.djangoContent", order: 57, extensions: djangoContentWatcher }),
     registerTextEditorWrapper({
       id: "web.html",
       matches: isHtmlPath,
@@ -88,12 +111,12 @@ export function activate(): () => void {
         when: "textEditorActive && editorLangId == html",
         keywords: ["browser", "html", "preview", "live"],
         toggled: () => {
-          const path = getContext().editorPath;
-          return typeof path === "string" && !!useWebPreview.getState()[path];
+          const tabId = previewTab(undefined);
+          return !!tabId && !!useWebPreview.getState()[tabId];
         },
         run: ({ arg }) => {
-          const path = targetPath(arg);
-          if (path && isHtmlPath(path)) togglePreview(path);
+          const tabId = previewTab(arg);
+          if (tabId) togglePreview(tabId);
         },
       },
     ]),
@@ -103,7 +126,7 @@ export function activate(): () => void {
       order: 5,
       items: (_menu, { paths, dirs }) => {
         const path = paths.length === 1 && !dirs?.[0] ? paths[0]! : null;
-        if (!path || !isHtmlPath(path)) return [];
+        if (!path || !isWebPagePath(path)) return [];
         return [
           {
             kind: "action",

@@ -1,7 +1,10 @@
 //! OpenIDEA desktop shell: wires the backend crates into Tauri.
 //!
-//! This crate is glue only. Each `commands/<domain>.rs` is a thin, typed
-//! adapter from IPC to a backend crate; no domain logic lives here.
+//! This crate is glue only. `commands/<domain>.rs` holds the commands only the desktop runs; the
+//! Tauri adapters of project-host commands are derived from their `ide-host` declarations. No
+//! domain logic lives here.
+// `commands::catalogue!` recurses once per command, so the limit grows with the command count.
+#![recursion_limit = "512"]
 
 mod application_focus;
 mod cli;
@@ -26,6 +29,7 @@ mod relaunch;
 mod remote_container;
 mod remote_dev;
 mod remote_wsl;
+mod system_notifications;
 
 mod state;
 mod theme_frame;
@@ -37,6 +41,12 @@ mod window_groups;
 mod window_work_area;
 mod window_zoom;
 mod windows;
+#[cfg(windows)]
+mod windows_error_mode;
+#[cfg(windows)]
+mod windows_webview_keys;
+#[cfg(windows)]
+mod windows_webview_recovery;
 
 use parking_lot::Mutex;
 use state::AppState;
@@ -44,6 +54,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
 use windows::WindowsState;
+
+pub use commands::declarations;
 
 /// Builds the tauri-specta builder holding every command and exported type.
 /// Also used by `export_bindings` (tests) to regenerate `src/bindings.ts`.
@@ -53,6 +65,12 @@ pub fn specta_builder() -> tauri_specta::Builder<tauri::Wry> {
 
 pub fn export_bindings(builder: &tauri_specta::Builder<tauri::Wry>) {
     let target = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../src/bindings.ts"));
+    // Debug builds can end up on machines other than the one that built them
+    // (packaged test builds). Without the checkout there is nothing to sync,
+    // and `CARGO_MANIFEST_DIR` points at the build machine anyway.
+    if !target.parent().is_some_and(Path::is_dir) {
+        return;
+    }
     // Rewritten only when it changes: every debug launch exports, also a second instance that just
     // hands its path over, and a rewrite makes Vite reload the running app's windows.
     let fresh = std::env::temp_dir().join(format!("openidea-bindings-{}.ts", std::process::id()));
@@ -72,11 +90,13 @@ pub fn export_bindings(builder: &tauri_specta::Builder<tauri::Wry>) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     ide_workspace::process::mark_start();
+    #[cfg(windows)]
+    windows_error_mode::quiet_error_dialogs();
     let context = tauri::generate_context!();
     #[cfg(debug_assertions)]
     let context = dev::configure(context);
     if let Some(project) = ide_mcp::stdio_request(&std::env::args().collect::<Vec<_>>()) {
-        let app_data = dirs::data_dir().unwrap_or_default().join(&context.config().identifier);
+        let app_data = ide_host::data_dirs::data_dir(&context.config().identifier).unwrap_or_default();
         std::process::exit(ide_mcp::stdio::run(&ide_mcp::discovery_path(&app_data), project));
     }
     // The `openidea` command: answer and exit, no UI.
@@ -90,7 +110,9 @@ pub fn run() {
     linux_webkit::configure();
 
     let refresh_shell_path = ide_host::shell_env::inherit_login_shell_path(&context.config().identifier);
-    let local_data_dir = ide_host::data_dirs::local_data_dir(&context.config().identifier);
+    // A custom directory from Settings › System Settings › Caches applies here too
+    // (`OPENIDEA_LOCAL_DATA_DIR` still wins), so tools resolve against the new root.
+    let local_data_dir = ide_host::data_dirs::startup_local_data_dir(&context.config().identifier);
     // Managed LSP/DAP installs; must run before other threads start and before PATH is cached.
     match &local_data_dir {
         Ok(data) => {
@@ -115,14 +137,30 @@ pub fn run() {
     // Install before window-state restores maximized geometry during window creation.
     #[cfg(windows)]
     let app = app.plugin(window_work_area::init());
-    let app = app.plugin(tauri_plugin_opener::init()).plugin(tauri_plugin_dialog::init());
+    let app = app
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init());
+    #[cfg(windows)]
+    let app = app.plugin(windows_webview_keys::init());
+    #[cfg(windows)]
+    let app = app.plugin(windows_webview_recovery::init());
     #[cfg(target_os = "linux")]
     let app = app.plugin(linux_window_state::plugin());
+    #[cfg(target_os = "linux")]
+    let app = app.plugin(linux_webkit::smooth_scrolling_plugin());
     #[cfg(not(target_os = "linux"))]
     let window_state = tauri_plugin_window_state::Builder::default()
         .with_state_flags(window_state_flags())
         // One remembered geometry per kind of auxiliary window (all projects' settings windows share one).
         .map_label(windows::state_key);
+    // The plugin stores its file in the OS configuration directory; an absolute name follows
+    // `OPENIDEA_CONFIG_DIR` instead.
+    #[cfg(not(target_os = "linux"))]
+    let window_state = match ide_host::data_dirs::config_dir(&context.config().identifier) {
+        Ok(dir) => window_state.with_filename(dir.join(tauri_plugin_window_state::DEFAULT_FILENAME).to_string_lossy()),
+        Err(_) => window_state,
+    };
     #[cfg(target_os = "macos")]
     let window_state = window_state.with_filter(windows::keeps_window_state);
     #[cfg(not(target_os = "linux"))]
@@ -149,30 +187,17 @@ pub fn run() {
         let webview = request.message.webview_ref();
         if let Some(state) = webview.try_state::<AppState>() {
             let label = AppState::owner_window(webview.label());
-            if let Some(connection) = state.remote_dev.get(label) {
-                let label = label.to_owned();
-                let command = request.message.command().to_owned();
-                let invoke = invoke.clone();
-                let app = webview.app_handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    match connection.authorize_command(&label, &command).await {
-                        Ok(()) => {
-                            let resolver = request.resolver.clone();
-                            // Sync commands must run on the main thread, as they do in local windows.
-                            if let Err(error) = app.run_on_main_thread(move || {
-                                invoke(request);
-                            }) {
-                                resolver.reject(ide_core::IdeError::internal(format!(
-                                    "failed to dispatch command on the main thread: {error}"
-                                )));
-                            }
-                        }
-                        Err(error) => request.resolver.reject(error),
-                    }
-                });
-                return true;
-            }
-            if let Err(error) = state.host.authorize_command(webview.label(), request.message.command()) {
+            let command = request.message.command();
+            let authorized = match commands::trust_of(command) {
+                Some(trust) => match state.remote_dev.get(label) {
+                    Some(connection) => connection.authorize(&state.host.trust, trust),
+                    None => state.host.authorize(webview.label(), trust),
+                },
+                // Tauri's own commands (events, channels, windows, the plugins `lib.rs` adds).
+                None if command.starts_with("plugin:") => Ok(()),
+                None => Err(ide_core::IdeError::not_found(format!("no command {command}"))),
+            };
+            if let Err(error) = authorized {
                 request.resolver.reject(error);
                 return true;
             }
@@ -181,6 +206,19 @@ pub fn run() {
     })
     .setup(move |app| {
         builder.mount_events(app);
+        #[cfg(windows)]
+        tauri::async_runtime::spawn_blocking(|| {
+            if let Ok(exe) = tauri::utils::platform::current_exe() {
+                ide_tools::portable_update::cleanup(&exe);
+            }
+        });
+        // An unusable directory variable stops the start with a message, never a silent fallback.
+        let identifier = app.config().identifier.clone();
+        let local_data_dir = local_data_dir.and_then(|dir| {
+            ide_host::data_dirs::config_dir(&identifier)?;
+            ide_host::data_dirs::data_dir(&identifier)?;
+            Ok(dir)
+        });
         let local_data_dir = match local_data_dir {
             Ok(dir) => dir,
             Err(error) => {
@@ -206,12 +244,16 @@ pub fn run() {
         let menu_state = menu::MenuState::default();
         menu::install(app.handle(), &menu_state, &state.recent.list());
         app.manage(state);
-        commands::mcp::apply(&app.state::<AppState>());
+        {
+            let state = app.state::<AppState>();
+            state.host.mcp.apply(&state.host);
+        }
         #[cfg(windows)]
         if let Err(error) = windows::allow_external_launches(app.handle()) {
             windows::report_cli_error(app.handle(), error);
         }
         app.manage(application_focus::ApplicationFocus::default());
+        system_notifications::init(app.handle());
         #[cfg(target_os = "macos")]
         macos::intercept_system_quit(app.handle());
         #[cfg(target_os = "macos")]
@@ -233,6 +275,12 @@ pub fn run() {
     })
     .on_window_event(|window, event| match event {
         tauri::WindowEvent::CloseRequested { .. } => {
+            // A dead web engine never answers the page's close handler: close the window here.
+            #[cfg(windows)]
+            if windows_webview_recovery::browser_failed(window.app_handle()) {
+                let _ = window.destroy();
+                return;
+            }
             #[cfg(target_os = "linux")]
             linux_window_state::save_before_close(window.app_handle());
             if let Some(w) = window.try_state::<WindowsState>() {
@@ -250,6 +298,12 @@ pub fn run() {
             window_groups::frame_changed(window.app_handle(), window.label());
         }
         tauri::WindowEvent::Destroyed => {
+            // Also release a view that failed during startup, before the parent could watch it.
+            if let Some(state) = window.try_state::<AppState>()
+                && let Ok(project) = state.host.project(window.label())
+            {
+                project.agents.unsubscribe(window.label());
+            }
             window_zoom::forget(window.label());
             #[cfg(target_os = "macos")]
             {
@@ -262,7 +316,7 @@ pub fn run() {
                 if let Some(state) = window.try_state::<AppState>() {
                     #[cfg(target_os = "macos")]
                     if let Some(w) = window.try_state::<WindowsState>() {
-                        let settings = ide_host::ops::project::settings(&state.host, window.label());
+                        let settings = ide_host::ops::project::settings_get(&state.host, window.label());
                         w.keep_alive.store(settings.general.close_without_welcome, std::sync::atomic::Ordering::SeqCst);
                     }
                     state.updates.forget_window(window.label());
@@ -309,9 +363,12 @@ pub fn run() {
         #[cfg(not(target_os = "macos"))]
         let _ = &early_opens;
         if let tauri::RunEvent::Exit = event {
+            #[cfg(target_os = "macos")]
+            windows::flush_auxiliary_geometry(app);
             if let Some(state) = app.try_state::<AppState>() {
+                ide_db::stop_external_tunnels_on_exit();
                 state.host.stop_processes_on_exit();
-                commands::mcp::stop(&state);
+                state.host.mcp.stop(&state.host);
                 state.host.clear_workspace_edit_history_on_exit();
                 state.host.shutdown_notebooks_on_exit();
             }
@@ -360,25 +417,29 @@ pub(crate) fn dispatch_menu_action(app: &tauri::AppHandle, id: &str) {
     let Some(route) = menu::route(&menu::spec(menu::Os::current()), id) else { return };
     match windows::target_window(app) {
         Some(w) => {
-            // App-level items of an auxiliary window go to its project window. Settings is modal for it:
-            // nothing else gets through. Others handle their own items; Close Tab closes the window.
-            let label = match windows::auxiliary(w.label()) {
-                Some((_, parent))
-                    if matches!(
-                        route.action.as_str(),
-                        "app.quit" | "file.settings" | "file.projectStructure" | "file.newProjectsSettings"
-                    ) =>
-                {
-                    parent
+            if matches!(route.action.as_str(), "file.settings" | "file.newProjectsSettings")
+                && windows::open_settings_from_menu(app, &w, &route.action, route.arg.clone())
+            {
+                return;
+            }
+            // The window to bring back to the front once what the action shows is closed (Settings).
+            let mut return_to = None;
+            let label = match windows::menu_destination(w.label(), &route.action) {
+                windows::MenuDestination::Own => w.label(),
+                windows::MenuDestination::Parent { label, raise } => {
+                    if raise && let Some(parent) = app.get_webview_window(label) {
+                        windows::focus(&parent);
+                        return_to = Some(w.label());
+                    }
+                    label
                 }
-                Some((kind, _)) if kind.modal() => return,
-                Some(_) if route.action == "editor.closeTab" => {
+                windows::MenuDestination::Close => {
                     let _ = w.close();
                     return;
                 }
-                _ => w.label(),
             };
-            if let Err(e) = app.emit_to(label, menu::MENU_EVENT, &route) {
+            let event = menu::MenuEvent { route: &route, return_to };
+            if let Err(e) = app.emit_to(label, menu::MENU_EVENT, &event) {
                 tracing::warn!("failed to deliver menu event {id}: {e}");
             }
         }

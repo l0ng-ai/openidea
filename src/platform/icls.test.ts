@@ -9,14 +9,16 @@ import {
   SCHEMES,
   schemeCss,
 } from "./colorScheme";
-import { deleteScheme, exportIcls, importScheme, parseIcls } from "./icls";
+import { deleteScheme, exportIcls, importScheme, parseIcls, SchemeParseError } from "./icls";
+import { DARCULA_ATTRIBUTES } from "./iclsDarcula";
 import { validateSettings } from "@/features/settings/model/schema";
 import { colorSchemeItems } from "@/workbench/quickSwitch";
 import { useProject } from "./project";
 import type { Settings } from "./ipc";
 import { isClientSetting } from "./clientSettings";
 
-const fixture = (name: string) => readFileSync(`src/platform/__fixtures__/colorSchemes/${name}.icls`, "utf8");
+const fixture = (name: string, ext = "icls") =>
+  readFileSync(`src/platform/__fixtures__/colorSchemes/${name}.${ext}`, "utf8");
 beforeAll(() => _setSchemeSource(readFileSync("src/styles/tokens.css", "utf8")));
 
 describe(".icls schemes", () => {
@@ -34,6 +36,32 @@ describe(".icls schemes", () => {
     expect(parseIcls(xml).scheme.attributes).toMatchObject(scheme.attributes);
   });
 
+  it("round trips Diff & Merge change types, error stripes and the separator wave", () => {
+    const { scheme } = parseIcls(`<scheme name="Diff" parent_scheme="Darcula"><colors>
+      <option name="DIFF_SEPARATOR_WAVE" value="555555"/>
+    </colors><attributes>
+      <option name="DIFF_MODIFIED"><value>
+        <option name="BACKGROUND" value="385570"/><option name="ERROR_STRIPE_COLOR" value="43698d"/>
+      </value></option>
+      <option name="DIFF_INSERTED"><value>
+        <option name="BACKGROUND" value="294436"/><option name="ERROR_STRIPE_COLOR" value="447152"/>
+      </value></option>
+      <option name="DIFF_DELETED"><value>
+        <option name="BACKGROUND" value="484a4a"/><option name="ERROR_STRIPE_COLOR" value="656e76"/>
+      </value></option>
+      <option name="DIFF_CONFLICT"><value><option name="ERROR_STRIPE_COLOR" value="8f5247"/></value></option>
+    </attributes></scheme>`);
+    expect(scheme.attributes.diffChanged).toEqual({ background: "#385570", errorStripeColor: "#43698d" });
+    expect(scheme.attributes.diffConflict).toEqual({ errorStripeColor: "#8f5247" });
+    expect(scheme.attributes.diffSeparatorWave).toEqual({ foreground: "#555555" });
+    const { id, customs } = importScheme({}, scheme);
+    const xml = exportIcls(id, customs);
+    expect(xml).toContain('<option name="DIFF_SEPARATOR_WAVE" value="555555" />');
+    expect(xml).toContain('name="DIFF_MODIFIED"');
+    expect(xml).toContain('<option name="ERROR_STRIPE_COLOR" value="43698d" />');
+    expect(parseIcls(xml).scheme.attributes).toMatchObject(scheme.attributes);
+  });
+
   it("round trips the selection foreground through SELECTION_FOREGROUND (#2446)", () => {
     const { scheme } = parseIcls(`<scheme name="Sel" parent_scheme="Default"><colors>
       <option name="SELECTION_BACKGROUND" value="214283"/>
@@ -45,6 +73,33 @@ describe(".icls schemes", () => {
     const xml = exportIcls(id, customs);
     expect(xml).toContain('<option name="SELECTION_FOREGROUND" value="ffffff" />');
     expect(parseIcls(xml).scheme.attributes.selectionForeground).toEqual({ foreground: "#ffffff" });
+  });
+
+  it("round trips both caret identifier attributes with their foregrounds (#4109)", () => {
+    const { scheme } = parseIcls(`<scheme name="Caret" parent_scheme="Darcula"><attributes>
+      <option name="WRITE_SEARCH_RESULT_ATTRIBUTES"><value><option name="BACKGROUND" value="111111"/></value></option>
+      <option name="IDENTIFIER_UNDER_CARET_ATTRIBUTES"><value>
+        <option name="FOREGROUND" value="aa0000"/><option name="BACKGROUND" value="220000"/>
+      </value></option>
+      <option name="WRITE_IDENTIFIER_UNDER_CARET_ATTRIBUTES"><value>
+        <option name="FOREGROUND" value="00aa00"/><option name="BACKGROUND" value="002200"/>
+      </value></option>
+    </attributes></scheme>`);
+    expect(scheme.attributes.identifierUnderCaret).toEqual({ foreground: "#aa0000", background: "#220000" });
+    expect(scheme.attributes.identifierUnderCaretWrite).toEqual({ foreground: "#00aa00", background: "#002200" });
+    const { id, customs } = importScheme({}, scheme);
+    const xml = exportIcls(id, customs);
+    expect(xml).toContain('name="WRITE_IDENTIFIER_UNDER_CARET_ATTRIBUTES"');
+    expect(parseIcls(xml).scheme.attributes.identifierUnderCaretWrite).toEqual(
+      scheme.attributes.identifierUnderCaretWrite,
+    );
+  });
+
+  it("still reads the write highlight from WRITE_SEARCH_RESULT_ATTRIBUTES alone", () => {
+    const { scheme } = parseIcls(`<scheme name="Old"><attributes>
+      <option name="WRITE_SEARCH_RESULT_ATTRIBUTES"><value><option name="BACKGROUND" value="111111"/></value></option>
+    </attributes></scheme>`);
+    expect(scheme.attributes.identifierUnderCaretWrite).toEqual({ background: "#111111" });
   });
 
   it("resolves explicit attribute inheritance independent of XML order and stops cycles", () => {
@@ -135,18 +190,196 @@ describe(".icls schemes", () => {
     expect([applied, skipped]).toEqual([16, 2]);
   });
 
+  it("imports IntelliJ's Kotlin call and enum entry keys into their own entries (#4059)", () => {
+    const opt = (name: string, value: string, font = "0") =>
+      `<option name="${name}"><value><option name="FOREGROUND" value="${value}"/><option name="FONT_TYPE" value="${font}"/></value></option>`;
+    const { scheme } = parseIcls(
+      `<scheme name="K"><attributes>${opt("KOTLIN_FUNCTION_CALL", "bcbec4")}${opt(
+        "KOTLIN_EXTENSION_FUNCTION_CALL",
+        "56a8f5",
+      )}${opt("KOTLIN_PACKAGE_FUNCTION_CALL", "57aaf7", "2")}${opt("KOTLIN_ENUM_ENTRY", "c77dbb", "2")}</attributes></scheme>`,
+    );
+    expect(scheme.attributes["kotlin.functionCall"]?.foreground).toBe("#bcbec4");
+    expect(scheme.attributes["kotlin.extensionCall"]?.foreground).toBe("#56a8f5");
+    expect(scheme.attributes["kotlin.packageCall"]).toEqual({ foreground: "#57aaf7", bold: false, italic: true });
+    expect(scheme.attributes["kotlin.enumEntry"]).toEqual({ foreground: "#c77dbb", bold: false, italic: true });
+  });
+
+  it("reads colours written with a leading # or 0x, as IntelliJ does (#5619)", () => {
+    // One Dark writes most of its values as `#rrggbb`.
+    const { scheme } = parseIcls(`<scheme name="One" parent_scheme="Darcula"><colors>
+      <option name="CARET_COLOR" value="#528bff"/>
+      <option name="LINE_NUMBERS_COLOR" value="0x495162"/>
+      </colors><attributes>
+      <option name="DEFAULT_CLASS_NAME"><value><option name="FOREGROUND" value="#E5C07B"/></value></option>
+      <option name="DEFAULT_KEYWORD"><value><option name="FOREGROUND" value="c678dd"/></value></option>
+      <option name="DEFAULT_STRING"><value><option name="FOREGROUND" value="#98c37980"/></value></option>
+      </attributes></scheme>`);
+    const fg = (id: string) => scheme.attributes[id]?.foreground;
+    expect(fg("caret")).toBe("#528bff");
+    expect(fg("lineNumber")).toBe("#495162");
+    expect(fg("className")).toBe("#e5c07b");
+    expect(fg("keyword")).toBe("#c678dd");
+    // No alpha in schemes here: an RRGGBBAA value is left out, with or without `#`.
+    expect(fg("string")).toBeUndefined();
+  });
+
+  it("maps WebStorm's JavaScript and TypeScript keys to their page, TypeScript first, then JavaScript", () => {
+    const { scheme, applied, skipped } = parseIcls(fixture("webstorm-darcula"));
+    const fg = (id: string) => scheme.attributes[id]?.foreground;
+    expect(scheme.attributes["javascript.keyword"]).toEqual({ foreground: "#e89c45", bold: false, italic: false });
+    // Language Defaults keep the DEFAULT_* keys.
+    expect(fg("keyword")).toBe("#cc7832");
+    expect(fg("string")).toBe("#8bb770");
+    // Global functions and instance methods have their own entries (a method's calls use its key).
+    expect(fg("javascript.globalFunction")).toBe("#6dacff");
+    expect(fg("javascript.instanceMethod")).toBe("#e06c75");
+    expect(fg("javascript.functionDeclaration")).toBeUndefined();
+    expect(fg("javascript.globalVariable")).toBe("#c678dd");
+    expect(fg("javascript.field")).toBe("#ef8a80");
+    expect(fg("javascript.constant")).toBe("#c580ea");
+    // JS.INTERFACE has its own entry; Class name falls back to the shared default.
+    expect(fg("javascript.interface")).toBe("#6fa4e5");
+    expect(fg("javascript.className")).toBeUndefined();
+    expect(fg("javascript.docCommentTagValue")).toBe("#e5c07b");
+    expect(fg("regexp")).toBe("#56b6c2");
+    // Superseded keys and DEFAULT_SEMICOLON are counted as skipped.
+    expect(scheme.attributes.operator).toEqual(DARCULA_ATTRIBUTES.operator);
+    // The member function key no longer also sets the generic function call.
+    expect([applied, skipped]).toEqual([11, 4]);
+  });
+
+  it("imports WebStorm's decorator and global keys into the JavaScript and TypeScript page (#4059)", () => {
+    const opt = (name: string, value: string) =>
+      `<option name="${name}"><value><option name="FOREGROUND" value="${value}"/><option name="FONT_TYPE" value="2"/></value></option>`;
+    const { scheme } = parseIcls(
+      `<scheme name="W"><attributes>${opt("TS.DECORATOR", "b3ae60")}${opt("JS.DECORATOR", "111111")}${opt(
+        "TS.GLOBAL_VARIABLE",
+        "c77dba",
+      )}${opt("TS.GLOBAL_FUNCTION", "56a8f5")}${opt("TS.STATIC_MEMBER_FUNCTION", "cf8e6d")}</attributes></scheme>`,
+    );
+    expect(scheme.attributes["javascript.decorator"]).toEqual({ foreground: "#b3ae60", bold: false, italic: true });
+    expect(scheme.attributes["javascript.globalVariable"]?.foreground).toBe("#c77dba");
+    expect(scheme.attributes["javascript.globalFunction"]?.foreground).toBe("#56a8f5");
+    expect(scheme.attributes["javascript.staticMethod"]).toEqual({ foreground: "#cf8e6d", bold: false, italic: true });
+    // Other languages keep their own colours.
+    expect(scheme.attributes.metadata).toBeUndefined();
+  });
+
+  it("imports WebStorm's interface, type alias and type parameter keys into their own entries (#5619)", () => {
+    const opt = (name: string, value: string) =>
+      `<option name="${name}"><value><option name="FOREGROUND" value="${value}"/></value></option>`;
+    const { scheme } = parseIcls(
+      `<scheme name="W"><attributes>${opt("TS.CLASS", "6fa4e5")}${opt("TS.INTERFACE", "4ec9b0")}${opt(
+        "TS.TYPE.ALIAS",
+        "b8d7a3",
+      )}${opt("JS.TYPE_PARAMETER", "20999d")}</attributes></scheme>`,
+    );
+    const fg = (id: string) => scheme.attributes[id]?.foreground;
+    expect(fg("javascript.className")).toBe("#6fa4e5");
+    expect(fg("javascript.interface")).toBe("#4ec9b0");
+    expect(fg("javascript.typeAlias")).toBe("#b8d7a3");
+    expect(fg("javascript.typeParameter")).toBe("#20999d");
+    expect(scheme.attributes.globalVariable).toBeUndefined();
+  });
+
+  it("colours TypeScript interfaces with the language default Interface name when no JS./TS. key does (#5619)", () => {
+    const opt = (name: string, value: string) =>
+      `<option name="${name}"><value><option name="FOREGROUND" value="${value}"/></value></option>`;
+    const parse = (...options: string[]) =>
+      parseIcls(`<scheme name="S"><attributes>${options.join("")}</attributes></scheme>`).scheme.attributes;
+    // A Space Day–style scheme: DEFAULT_INTERFACE_NAME and JS.CLASS, no TS.* keys.
+    const spaceDay = parse(opt("DEFAULT_INTERFACE_NAME", "ebcb8b"), opt("JS.CLASS", "8fa1b3"));
+    expect(spaceDay["javascript.interface"]?.foreground).toBe("#ebcb8b");
+    expect(spaceDay["javascript.className"]?.foreground).toBe("#8fa1b3");
+    // An explicit interface key still wins over the default.
+    const explicit = parse(opt("DEFAULT_INTERFACE_NAME", "ebcb8b"), opt("TS.INTERFACE", "4ec9b0"));
+    expect(explicit["javascript.interface"]?.foreground).toBe("#4ec9b0");
+  });
+
+  it("maps punctuation only from keys that do not spread one colour to other punctuation", () => {
+    const opt = (name: string, c: string) =>
+      `<option name="${name}"><value><option name="FOREGROUND" value="${c}"/></value></option>`;
+    const parse = (...options: string[]) =>
+      parseIcls(`<scheme name="P"><attributes>${options.join("")}</attributes></scheme>`);
+    const separators = parse(
+      opt("DEFAULT_SEMICOLON", "d56075"),
+      opt("DEFAULT_COMMA", "111111"),
+      opt("DEFAULT_DOT", "222222"),
+    );
+    expect(separators.scheme.attributes.operator).toBeUndefined();
+    expect([separators.applied, separators.skipped]).toEqual([0, 3]);
+    const braces = parse(opt("DEFAULT_BRACES", "333333"), opt("DEFAULT_PARENTHS", "444444"));
+    expect(braces.scheme.attributes.operator?.foreground).toBe("#444444");
+    const sign = parse(
+      opt("DEFAULT_PARENTHS", "444444"),
+      opt("DEFAULT_SEMICOLON", "d56075"),
+      opt("DEFAULT_OPERATION_SIGN", "555555"),
+    );
+    expect(sign.scheme.attributes.operator?.foreground).toBe("#555555");
+    expect([sign.applied, sign.skipped]).toEqual([1, 2]);
+  });
+
+  it.each(["", "<scheme", '<scheme name="A"><attributes></scheme>', "<nope>", '<html name="x"/>'])(
+    "rejects malformed or non-scheme XML without mutating schemes: %s",
+    (xml) => {
+      const customs = importScheme({}, parseIcls(fixture("forest")).scheme).customs;
+      const before = structuredClone(customs);
+      expect(() => parseIcls(xml)).toThrow(SchemeParseError);
+      expect(customs).toEqual(before);
+    },
+  );
+
+  it("names what is wrong with a rejected file", () => {
+    expect(() => parseIcls("<nope>")).toThrow(/not valid XML/);
+    try {
+      parseIcls('<html name="x"/>');
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(SchemeParseError);
+      expect((error as Error).message).toMatch(/<scheme> element/);
+    }
+  });
+
+  it("imports a real-world .xml scheme from Material Theme UI (#2714)", () => {
+    const { scheme, applied, skipped } = parseIcls(fixture("material-darker", "xml"));
+    expect(scheme.name).toBe("Material Darker");
+    expect(scheme.parent).toBe("dark");
+    expect(scheme.attributes.keyword).toEqual({ foreground: "#c792ea", bold: false, italic: true });
+    expect(scheme.attributes.string?.foreground).toBe("#c3e88d");
+    expect(scheme.attributes.lineComment).toEqual({ foreground: "#616161", bold: false, italic: true });
+    expect(scheme.attributes.text).toEqual({ foreground: "#eeffff", background: "#212121" });
+    expect(scheme.attributes.caret?.foreground).toBe("#ffcc00");
+    expect(scheme.attributes.gutter?.background).toBe("#212121");
+    expect(scheme.attributes.lineNumber?.foreground).toBe("#424242");
+    expect(scheme.attributes.selection?.background).toBe("#353535");
+    expect(scheme.attributes.consoleBackground?.background).toBe("#212121");
+    expect([applied, skipped]).toEqual([13, 2]);
+  });
+
   it.each([
-    "",
-    "<scheme",
-    '<scheme name="A"><attributes></scheme>',
-    "<scheme/>",
-    '<html name="x"/>',
-    '<!DOCTYPE scheme [<!ENTITY a "red">]><scheme name="x"/>',
-  ])("rejects malformed XML without mutating schemes: %s", (xml) => {
-    const customs = importScheme({}, parseIcls(fixture("forest")).scheme).customs;
-    const before = structuredClone(customs);
-    expect(() => parseIcls(xml)).toThrow("Invalid .icls color scheme");
-    expect(customs).toEqual(before);
+    ["bom-utf8", "Bom Light"],
+    ["declared-encoding", "Café Solar"],
+  ] as const)("accepts the BOM and encoding-declaration variants of a scheme: %s", (name, schemeName) => {
+    const { scheme } = parseIcls(fixture(name));
+    expect(scheme.name).toBe(schemeName);
+    expect(scheme.attributes.keyword?.foreground).toBe(name === "bom-utf8" ? "#1122ff" : "#cc7832");
+    // Byte-order and encoding marks do not change what a scheme says.
+    expect(parseIcls(`\uFEFF${fixture(name)}`).scheme).toEqual(scheme);
+  });
+
+  it("unwraps a scheme element from its settings export and names a scheme after its file (#2714)", () => {
+    const { scheme } = parseIcls(fixture("one-dark-wrapped", "xml"));
+    expect(scheme.name).toBe("Imported scheme");
+    expect(scheme.attributes.keyword).toEqual({ foreground: "#c678dd", bold: true, italic: false });
+    expect(scheme.attributes.text).toEqual({ foreground: "#abb2bf", background: "#282c34" });
+    expect(parseIcls(fixture("one-dark-wrapped", "xml"), "One Dark").scheme.name).toBe("One Dark");
+  });
+
+  it("accepts a DOCTYPE prolog, which XML allows and old exporters emit (#2714)", () => {
+    const { scheme } = parseIcls('<!DOCTYPE scheme SYSTEM "scheme.dtd"><scheme name="D"><colors/></scheme>');
+    expect(scheme.name).toBe("D");
+    expect(() => parseIcls('<!DOCTYPE scheme [<!ENTITY a "red">]><scheme name="x"/>')).not.toThrow();
   });
 
   it.each([
@@ -243,7 +476,9 @@ describe(".icls schemes", () => {
       <option name="PY.BUILTIN_NAME"><value><option name="FOREGROUND" value="abcd"/></value></option>
     </attributes></scheme>`;
     const attrs = parseIcls(xml).scheme.attributes;
-    expect(attrs.keyword).toEqual({ foreground: "#112233", bold: false, italic: false, effect: "none" });
+    // PY.KEYWORD styles Python only now; the shared keyword keeps DEFAULT_KEYWORD's value.
+    expect(attrs.pyKeyword).toEqual({ foreground: "#112233", bold: false, italic: false, effect: "none" });
+    expect(attrs.keyword).toEqual({ foreground: "#ff0000", bold: true, italic: false });
     expect(attrs.pyNestedFunction?.foreground).toBe("#223344");
     expect(attrs.pyDocstring?.foreground).toBe("#334455");
     expect(attrs.pyDocstring?.effect).toBe("none");
@@ -277,12 +512,69 @@ describe(".icls schemes", () => {
     for (const [name, value] of names) expect(attrs[name]?.foreground).toBe(`#${value}`);
   });
 
+  it("imports PyCharm's function call, class, parameter and f-string keys and exports them by those keys", () => {
+    const keys = [
+      ["PY.FUNCTION_CALL", "pyFunctionCall", "d56075"],
+      ["PY.CLASS_DEFINITION", "pyClassDefinition", "7bcbff"],
+      ["PY.PARAMETER", "pyParameter", "101010"],
+      ["PY.LOCAL_VARIABLE", "pyLocalVariable", "202020"],
+      ["PY.TYPE_PARAMETER", "pyTypeParameter", "303030"],
+      ["PY.INVALID_STRING_ESCAPE", "pyInvalidEscape", "404040"],
+      ["PY.FSTRING_FRAGMENT_BRACES", "pyFString", "e89c45"],
+      ["PY.FSTRING_FORMAT_SPEC_NUMBER", "pyFormat", "505050"],
+    ] as const;
+    const xml = `<scheme name="PyCharm" parent_scheme="Darcula"><attributes>${keys
+      .map(
+        ([key, , value]) =>
+          `<option name="${key}"><value><option name="FOREGROUND" value="${value}"/></value></option>`,
+      )
+      .join("")}<option name="JS.GLOBAL_FUNCTION"><value><option name="FOREGROUND" value="6dacff"/></value></option>
+    </attributes></scheme>`;
+    const { scheme, skipped } = parseIcls(xml);
+    expect(skipped).toBe(0);
+    for (const [, id, value] of keys) expect(scheme.attributes[id]?.foreground).toBe(`#${value}`);
+    // A WebStorm function colour goes to the JavaScript and TypeScript page; Python calls keep PyCharm's.
+    expect(scheme.attributes["javascript.globalFunction"]?.foreground).toBe("#6dacff");
+    expect(scheme.attributes.functionCall?.foreground).not.toBe("#6dacff");
+    const { id, customs } = importScheme({}, scheme);
+    const exported = exportIcls(id, customs);
+    for (const [key] of keys) expect(exported).toContain(`name="${key}"`);
+    expect(exported).not.toContain('name="PY.STRING.F"');
+  });
+
+  it("still reads Python attributes that earlier versions exported under OPENIDEA_ names", () => {
+    const xml =
+      '<scheme name="Old"><attributes><option name="OPENIDEA_pyFunctionCall"><value>' +
+      '<option name="FOREGROUND" value="d56075"/></value></option></attributes></scheme>';
+    expect(parseIcls(xml).scheme.attributes.pyFunctionCall?.foreground).toBe("#d56075");
+  });
+
   it("imports the Python f-string colour", () => {
     const xml =
       '<scheme name="F"><attributes><option name="PY.STRING.F"><value>' +
       '<option name="FOREGROUND" value="808080"/></value></option></attributes></scheme>';
     const { id, customs } = importScheme({}, parseIcls(xml).scheme);
     expect(parseIcls(exportIcls(id, customs)).scheme.attributes.pyFString?.foreground).toBe("#808080");
+  });
+
+  it("takes what a Darcula-based scheme leaves out from Darcula, as IntelliJ does", () => {
+    const { scheme, applied } = parseIcls(`<scheme name="Mine" parent_scheme="Darcula"><attributes>
+      <option name="DEFAULT_KEYWORD"><value><option name="FOREGROUND" value="ff8800"/></value></option>
+      <option name="ERRORS_ATTRIBUTES"><value/></option>
+      <option name="DEFAULT_CONSTANT" baseAttributes="DEFAULT_IDENTIFIER"/>
+    </attributes></scheme>`);
+    expect(applied).toBe(1);
+    expect(scheme.parent).toBe("dark");
+    expect(scheme.attributes.text).toEqual({ foreground: "#a9b7c6", background: "#2b2b2b" });
+    expect(scheme.attributes.string?.foreground).toBe("#6a8759");
+    expect(scheme.attributes.keyword).toEqual({ foreground: "#ff8800", bold: false, italic: false });
+    // An entry of its own, even an empty one, replaces Darcula's.
+    expect(scheme.attributes.error).toBeUndefined();
+    expect(scheme.attributes.constant).toBeUndefined();
+    // The gutter keeps the editor's background, as in IntelliJ's new UI.
+    expect(scheme.attributes.gutter).toBeUndefined();
+    // Other parents keep the IDE's own base.
+    expect(parseIcls('<scheme name="I" parent_scheme="Islands Dark"></scheme>').scheme.attributes).toEqual({});
   });
 
   it("imports the global variable colour", () => {
@@ -418,5 +710,38 @@ describe(".icls schemes", () => {
     } finally {
       useProject.setState({ settings: previous });
     }
+  });
+});
+
+describe("annotation colour (#6108)", () => {
+  const opt = (name: string, value: string) =>
+    `<option name="${name}"><value><option name="FOREGROUND" value="${value}"/></value></option>`;
+  const scheme = (parent: string | null, ...options: string[]) =>
+    parseIcls(
+      `<scheme name="A"${parent ? ` parent_scheme="${parent}"` : ""}><attributes>${options.join("")}</attributes></scheme>`,
+    ).scheme;
+
+  it.each([
+    ["Default", "#808000"],
+    ["Darcula", "#bbb529"],
+  ])("keeps %s's own annotation colour when the file only changes DEFAULT_METADATA", (parent, colour) => {
+    // IntelliJ shows Java annotations with the parent's ANNOTATION_NAME_ATTRIBUTES, not the file's default.
+    expect(scheme(parent, opt("DEFAULT_METADATA", "1d8711")).attributes.metadata?.foreground).toBe(colour);
+  });
+
+  it("takes the file's annotation key over its DEFAULT_METADATA", () => {
+    const s = scheme("Default", opt("DEFAULT_METADATA", "1d8711"), opt("ANNOTATION_NAME_ATTRIBUTES", "9e880d"));
+    expect(s.attributes.metadata?.foreground).toBe("#9e880d");
+  });
+
+  it("uses DEFAULT_METADATA without a bundled parent", () => {
+    expect(scheme(null, opt("DEFAULT_METADATA", "1d8711")).attributes.metadata?.foreground).toBe("#1d8711");
+  });
+
+  it("exports the annotation colour under the annotation key, so it survives a re-import", () => {
+    const imported = scheme("Default", opt("ANNOTATION_NAME_ATTRIBUTES", "9e880d"));
+    const xml = exportIcls("custom-a", { "custom-a": imported });
+    expect(xml).toContain('<option name="ANNOTATION_NAME_ATTRIBUTES">');
+    expect(parseIcls(xml).scheme.attributes.metadata?.foreground).toBe("#9e880d");
   });
 });

@@ -38,6 +38,29 @@ pub struct ContentDiff {
     pub title: Option<String>,
 }
 
+/// A diff opened by a plugin (API 1.10): `None` is a side where the file doesn't exist.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FileDiff {
+    pub left: Option<String>,
+    pub right: Option<String>,
+    pub left_label: Option<String>,
+    pub right_label: Option<String>,
+    pub title: Option<String>,
+}
+
+impl From<ContentDiff> for FileDiff {
+    fn from(v: ContentDiff) -> Self {
+        Self {
+            left: Some(v.left),
+            right: Some(v.right),
+            left_label: v.left_label,
+            right_label: v.right_label,
+            title: v.title,
+        }
+    }
+}
+
 /// ContentTabReply data exchanged with the IDE.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -48,6 +71,28 @@ pub struct ContentTabReply {
     pub status: Option<String>,
     pub error: Option<String>,
     pub diff: Option<ContentDiff>,
+}
+
+/// Output stream transport for a plugin-owned run configuration (API 1.18).
+///
+/// Ordinary pseudo-terminals combine stdout and stderr and can change
+/// buffering, input handling, and terminal behavior.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum PluginOutputMode {
+    /// Separate stdout and stderr pipes in the Run console (default).
+    #[default]
+    Pipes,
+    /// Pseudo-terminal ("Emulate terminal in output console").
+    Pty,
+}
+
+/// Per-launch options for `run.start-with-options` (API 1.18).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginRunStartOptions {
+    pub debug: bool,
+    pub output_mode: Option<PluginOutputMode>,
 }
 
 /// PluginRunConfiguration data exchanged with the IDE.
@@ -61,6 +106,27 @@ pub struct PluginRunConfiguration {
     pub cwd: Option<String>,
     pub test: bool,
     pub framework: Option<String>,
+    /// API 1.9: variables added to the run's environment.
+    #[serde(default)]
+    pub env: Vec<(String, String)>,
+    /// API 1.9: how Debug starts the configuration.
+    #[serde(default)]
+    pub debugger: Option<PluginDebugger>,
+    /// API 1.18: default output stream transport (`pipes` or `pty`).
+    #[serde(default)]
+    pub output_mode: PluginOutputMode,
+}
+
+/// How Debug starts a plugin configuration (API 1.9 `launch-configurations.debugger`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase", tag = "type")]
+pub enum PluginDebugger {
+    /// `program` under the debugger of this language id.
+    #[serde(rename_all = "camelCase")]
+    Launch { language: String },
+    /// Run, then attach to the first matching process the run starts.
+    #[serde(rename_all = "camelCase")]
+    AttachChild { kind: String, command_contains: Option<String> },
 }
 
 /// RunExited data exchanged with the IDE.

@@ -186,6 +186,47 @@ describe("project view modes", () => {
     expect(localStorage.getItem("openidea.projectTree.mode")).toBe(JSON.stringify("scratches"));
   });
 
+  it("hides Scratches and Consoles from the Project pane only when the option is off", () => {
+    store.setViewOption("showScratches", false);
+    expect(labels()).toEqual(["proj", "External Libraries"]);
+    expect(modeShows("/data/scratches/s.py")).toBe(false);
+    expect(modeShows("/data/scratches/s.py", "scratches")).toBe(true);
+    expect(modeShows("/p/src/App.kt")).toBe(true);
+    // A scratches folder inside the project stays under the project root.
+    const inner = registerProjectViewRoot({
+      id: "inner",
+      label: "Inner",
+      icon: "scratches",
+      path: "/p/tmp",
+      scope: "scratches",
+    });
+    expect(modeShows("/p/tmp/a.txt")).toBe(true);
+    inner();
+    // The Scratches and Consoles pane and the Open Files pane still list them.
+    setViewMode("scratches");
+    expect(labels()).toEqual(["Scratches"]);
+    setOpenFiles(["/data/scratches/s.py"]);
+    setViewMode("openFiles");
+    expect(labels()).toEqual(["Scratches"]);
+    setViewMode("project");
+    store.setViewOption("showScratches", true);
+    expect(labels()).toEqual(["proj", "External Libraries", "Scratches"]);
+    expect(modeShows("/data/scratches/s.py")).toBe(true);
+  });
+
+  it("selects a hidden scratch in the Scratches and Consoles pane", async () => {
+    const { selectInProjectView } = await import("./actions");
+    store.setViewOption("showScratches", false);
+    expect(selectInProjectView("/data/scratches/s.py", false)).toBe(true);
+    expect(useProjectTree.getState().mode).toBe("scratches");
+    // Project files go back to the Project pane.
+    expect(selectInProjectView("/p/src/App.kt", false)).toBe(true);
+    expect(useProjectTree.getState().mode).toBe("project");
+    store.setViewOption("showScratches", true);
+    expect(selectInProjectView("/data/scratches/s.py", false)).toBe(true);
+    expect(useProjectTree.getState().mode).toBe("project");
+  });
+
   it("keeps each pane's expansion", () => {
     store.setExpanded(new Set(["/p", "/p/src"]));
     setViewMode("projectFiles");
@@ -216,6 +257,25 @@ describe("project view modes", () => {
     ).toEqual(["README.md"]);
   });
 
+  it("shows a user scope's files as a pane", () => {
+    store.setScopeView("Changed for FTP");
+    expect(useProjectTree.getState()).toMatchObject({ mode: "scope", scope: "Changed for FTP" });
+    store.setScopeFiles(["/p/src/App.kt", "/p/README.md"]);
+    autoExpand(currentModel());
+    expect(
+      currentModel()
+        .children.get("/p")!
+        .map((n) => n.label),
+    ).toEqual(["src", "README.md"]);
+    expect(modeShows("/p/src/App.kt")).toBe(true);
+    expect(modeShows("/p/src/Other.kt")).toBe(false);
+    // Another scope starts from its own files.
+    store.setScopeView("Other");
+    expect(useProjectTree.getState()).toMatchObject({ mode: "scope", scope: "Other", scopeFiles: [] });
+    setViewMode("project");
+    expect(useProjectTree.getState().mode).toBe("project");
+  });
+
   it("reveals library files through their group nodes", async () => {
     await loadDir("/py/lib/python3.12");
     expect(revealPath("/py/lib/python3.12/os.py")).toBe(true);
@@ -243,7 +303,9 @@ describe("project view modes", () => {
 
   it("shows library folders inside the project in both places, read-only", async () => {
     const site = "/p/.venv/lib/site-packages";
-    for (const dir of ["/p", "/p/.venv", "/p/.venv/lib", site, `${site}/req`]) await loadDir(dir);
+    for (const dir of ["/p", "/p/.venv", "/p/.venv/lib", site, `${site}/req`])
+      // oxlint-disable-next-line no-await-in-loop -- nested folders are listed in order before the model is asserted
+      await loadDir(dir);
     const m = currentModel();
     // Under the project: path keys, read-only from the library root down.
     const venvKids = m.children.get("/p/.venv")!;
@@ -275,9 +337,26 @@ describe("project view modes", () => {
   });
 
   it("expands library folders in their own namespace", async () => {
-    await store.expandAll(pyKey("/p/.venv/lib/site-packages"));
+    const key = pyKey("/p/.venv/lib/site-packages");
+    store.setExpanded(new Set(["\u0000group:externalLibraries", "\u0000group:externalLibraries/< Python 3.12 >"]));
+    store.setSelection(new Set([key]), key);
+    await store.expandSelected();
     const expanded = useProjectTree.getState().expanded;
     expect(expanded.has(pyKey("/p/.venv/lib/site-packages/req"))).toBe(true);
     expect(expanded.has("/p/.venv/lib/site-packages/req")).toBe(false);
+  });
+
+  it("opens only selected file paths in a filtered pane, including overlapping folders", async () => {
+    setOpenFiles(["/p/src/nested/deep/app.ts", "/p/docs/notes/guide.md"]);
+    setViewMode("openFiles");
+    store.setExpanded(new Set(["/p", "/p/src"]));
+    store.setSelection(new Set(["/p/src", "/p/src/nested"]), "/p/src/nested");
+
+    await store.expandSelected();
+
+    expect(useProjectTree.getState().expanded).toEqual(
+      new Set(["/p", "/p/src", "/p/src/nested", "/p/src/nested/deep"]),
+    );
+    expect([...useProjectTree.getState().listings]).toEqual([]);
   });
 });

@@ -41,3 +41,25 @@ nodePath = ""
 problems = { shortenToSingleLine = false }
 workingDirectory = { mode = "auto" }
 codeAction = { disableRuleComment = { enable = true, location = "separateLine" }, showDocumentation = { enable = true } }
+# vscode-eslint reads it for every source.fixAll request (Actions on Save, Code Cleanup).
+# No `rules`: an empty list there means no rule gets fixed.
+codeActionOnSave = { mode = "all" }
+
+# Tailwind CSS: class completion, hover and diagnostics, only in a project that uses Tailwind
+# (`tailwind.config.*` or `tailwindcss` in package.json). After the language's own servers,
+# which answer hover first.
+[[language-servers]]
+name = "tailwindcss-language-server"
+command = "tailwindcss-language-server"
+args = ["--stdio"]
+root-markers = ["tailwind.config.*", "package.json#dependencies.tailwindcss", "package.json#devDependencies.tailwindcss"]
+require-root-marker = true
+install-hint = "npm i -g @tailwindcss/language-server"
+
+# Components run in the browser: breakpoints in them are hit by a JavaScript Debug configuration.
+[debugger]
+adapter = "js-debug"
+command = "js-debug-adapter"
+args = ["${port}", "127.0.0.1"]
+transport = "tcp"
+install-hint = "Install JavaScript Debugger (vscode-js-debug) in Settings › Languages & Frameworks › Language Servers"

@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef } from "react";
-import { Annotation, Compartment, EditorState, Prec, StateEffect } from "@codemirror/state";
+import { Annotation, Compartment, EditorSelection, EditorState, Prec, StateEffect } from "@codemirror/state";
 import {
   EditorView,
   drawSelection,
@@ -7,46 +7,83 @@ import {
   highlightSpecialChars,
   keymap,
   lineNumbers,
+  tooltips,
 } from "@codemirror/view";
 import { defaultKeymap, indentWithTab } from "@codemirror/commands";
 import { bracketMatching, indentOnInput, syntaxHighlighting } from "@codemirror/language";
+import type { NotebookCellDoc } from "@/bindings";
+import {
+  _setFocusedCellEditor,
+  adjacentEditor,
+  cellEditorExtensions,
+  embeddedEditorExtensions,
+  externalHistory,
+  focusedCellEditor,
+} from "@/editor/api";
 import { openideaTheme } from "@/editor/core/cm/theme";
 import { openideaHighlightStyle } from "@/editor/core/cm/highlight";
 import { selectionMarks } from "@/editor/core/cm/selectionMarks";
 import { seamlessSelection } from "@/editor/core/cm/selectionLayer";
+import { multiCaretMouse } from "@/editor/core/cm/multiCaret";
 import { findLanguageDescription, loadSupport } from "@/editor/core/cm/languages";
+import { tooltipBounds } from "@/editor/core/cm/setup";
 import { tx } from "@/platform/i18n";
-import type { NotebookSession } from "./session";
+import { setContext } from "@/platform/context";
+import type { CellReveal, NotebookSession } from "./session";
 import styles from "./Notebook.module.css";
 
 const external = Annotation.define<boolean>();
+
+/** Completion, hover, diagnostics and navigation for a code cell its language servers know. */
+function languageServices(type: string, doc: NotebookCellDoc | undefined) {
+  if (type !== "code" || !doc) return [];
+  return cellEditorExtensions({ doc: doc.doc, path: doc.uri, language: "python", uiMode: "Python", readOnly: false });
+}
+
+/** Created once: every `EditorView.theme` call mounts new CSS rules into the document. */
+const CELL_EDITOR_THEME = EditorView.theme({
+  "&.cm-editor": { height: "auto" },
+  // `auto`: past either end of a long cell the wheel scrolls the notebook.
+  "&.cm-editor .cm-scroller": { maxHeight: "640px", overflow: "auto", overscrollBehavior: "auto" },
+});
+
 export function CellEditor({
   session,
   id,
   source,
   type,
   frozen,
+  doc,
+  reveal,
 }: {
   session: NotebookSession;
   id: string;
   source: string;
   type: string;
   frozen: boolean;
+  doc?: NotebookCellDoc;
+  /** A location to show in this cell. */
+  reveal?: CellReveal | null;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const readonly = useRef(new Compartment());
+  const services = useRef(new Compartment());
   const initialSource = useRef(source);
+  const initialDoc = useRef(doc);
   useLayoutEffect(() => {
     if (!host.current) return;
     const language = new Compartment();
     const configuration = [
+      // Completion and hover popups leave the cell, whose border clips its content.
+      tooltips({ parent: document.body, tooltipSpace: tooltipBounds }),
       openideaTheme,
       syntaxHighlighting(openideaHighlightStyle),
       lineNumbers(),
       drawSelection(),
       selectionMarks,
       seamlessSelection(),
+      multiCaretMouse,
       highlightActiveLine(),
       highlightSpecialChars(),
       bracketMatching(),
@@ -77,10 +114,17 @@ export function CellEditor({
         ]),
       ),
       keymap.of([indentWithTab, ...defaultKeymap]),
+      externalHistory.of({
+        undo: () => void session.undo().catch((e) => session.report(e)),
+        redo: () => void session.redo().catch((e) => session.report(e)),
+      }),
+      embeddedEditorExtensions(session.path),
       language.of([]),
+      services.current.of(languageServices(type, initialDoc.current)),
       readonly.current.of(EditorState.readOnly.of(session.getState().frozen)),
       EditorView.lineWrapping,
-      EditorView.theme({ "&.cm-editor": { height: "auto" }, ".cm-scroller": { maxHeight: "640px", overflow: "auto" } }),
+      CELL_EDITOR_THEME,
+      adjacentEditor.of((direction, col) => session.revealAdjacent(id, direction, col)),
       EditorView.contentAttributes.of({
         "aria-label": tx(type === "code" ? "Python cell source" : "Markdown cell source"),
       }),
@@ -89,6 +133,16 @@ export function CellEditor({
       ),
       EditorView.updateListener.of((update) => {
         session.editors.set(id, update.state);
+        if (update.focusChanged) {
+          // The session puts the caret back here after a backend undo/redo (session.ts history).
+          session.focusedCell = update.view.hasFocus ? id : null;
+          // While the cell editor has focus the notebook publishes the editor context keys a
+          // text tab does, and the cell's view is what editor actions resolve (@/editor/api,
+          // re-read by editor/core's publishContext and the action resolvers).
+          _setFocusedCellEditor(update.view.hasFocus ? update.view : null);
+          setContext("textEditorActive", update.view.hasFocus);
+          setContext("editorTextFocus", update.view.hasFocus);
+        }
         if (update.docChanged && update.transactions.some((tr) => !tr.annotation(external))) {
           session.edit({ type: "setSource", cell: id, source: update.state.doc.toString() });
         }
@@ -113,6 +167,8 @@ export function CellEditor({
     return () => {
       alive = false;
       session.editors.set(id, editor.state);
+      if (session.focusedCell === id) session.focusedCell = null;
+      if (focusedCellEditor() === editor) _setFocusedCellEditor(null);
       view.current = null;
       editor.destroy();
     };
@@ -127,6 +183,27 @@ export function CellEditor({
       });
     editor.dispatch({ effects: readonly.current.reconfigure(EditorState.readOnly.of(frozen)) });
   }, [source, frozen]);
+  const docId = doc?.doc;
+  const docUri = doc?.uri;
+  useLayoutEffect(() => {
+    const editor = view.current;
+    if (!editor) return;
+    initialDoc.current = doc;
+    editor.dispatch({ effects: services.current.reconfigure(languageServices(type, doc)) });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- a refetch gives the same document a new object
+  }, [docId, docUri, type]);
+  useLayoutEffect(() => {
+    const editor = view.current;
+    if (!editor || !reveal || reveal.cell !== id || session.revealed >= reveal.seq) return;
+    session.revealed = reveal.seq;
+    if (reveal.selection) {
+      const text = editor.state.doc;
+      const line = text.line(Math.min(reveal.selection.line + 1, text.lines));
+      const at = line.from + Math.min(reveal.selection.col, line.length);
+      editor.dispatch({ selection: EditorSelection.cursor(at), scrollIntoView: true });
+    }
+    editor.focus();
+  }, [reveal, id, session]);
   return <div ref={host} className={styles.cellEditor} />;
 }
 

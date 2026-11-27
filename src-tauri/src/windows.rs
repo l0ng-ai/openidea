@@ -6,9 +6,9 @@
 //! (`window_take_launch`), and re-taken whenever [`LAUNCH_EVENT`] fires (a
 //! second app instance asking an already-loaded window to open a path).
 //!
-//! Auxiliary windows ([`AuxKind`]: Settings, Compare with Local, Sync with Deployed) belong to a project window and share its project (see
+//! Auxiliary windows ([`AuxKind`]: Settings, Compare with Local, Diff, Sync with Deployed, New Project, Get from VCS, Remote Development) belong to a project window and share its project (see
 //! [`AppState::project`]). Their labels name the kind and the parent
-//! (`settings-main`, `comparison-project-2-3`); their [`Launch`] says what to show.
+//! (`settings-main`, `comparison-project-2-3`, `diff-main-0`); their [`Launch`] says what to show.
 
 mod cli;
 #[cfg(windows)]
@@ -24,8 +24,9 @@ use ide_core::{IdeError, IdeResult};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tauri::utils::config::{Color, WindowConfig};
 use tauri::{AppHandle, Emitter, Manager, Theme, WebviewWindow, WebviewWindowBuilder};
@@ -39,8 +40,18 @@ const SETTINGS_SIZE: (f64, f64) = (980.0, 720.0);
 const SETTINGS_MIN_SIZE: (f64, f64) = (900.0, 700.0);
 const COMPARISON_SIZE: (f64, f64) = (1100.0, 720.0);
 const COMPARISON_MIN_SIZE: (f64, f64) = (640.0, 360.0);
+const DIFF_SIZE: (f64, f64) = (1100.0, 720.0);
+const DIFF_MIN_SIZE: (f64, f64) = (640.0, 360.0);
+const EDITOR_SIZE: (f64, f64) = (1100.0, 720.0);
+const EDITOR_MIN_SIZE: (f64, f64) = (640.0, 360.0);
 const DEPLOYMENT_SIZE: (f64, f64) = (1400.0, 900.0);
 const DEPLOYMENT_MIN_SIZE: (f64, f64) = (800.0, 500.0);
+const NEW_PROJECT_SIZE: (f64, f64) = (860.0, 620.0);
+const NEW_PROJECT_MIN_SIZE: (f64, f64) = (720.0, 480.0);
+const CLONE_SIZE: (f64, f64) = (920.0, 620.0);
+const CLONE_MIN_SIZE: (f64, f64) = (640.0, 420.0);
+const CONNECT_SIZE: (f64, f64) = (600.0, 460.0);
+const CONNECT_MIN_SIZE: (f64, f64) = (520.0, 380.0);
 
 /// What a freshly opened window should do once its frontend is up.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -63,6 +74,9 @@ pub struct Launch {
     /// Comparison windows: the revisions to compare (boxed: most launches have none).
     #[serde(default)]
     pub comparison: Option<Box<ComparisonLaunch>>,
+    /// Diff windows: the diff to show (boxed: most launches have none).
+    #[serde(default)]
+    pub diff_window: Option<Box<DiffLaunch>>,
     /// `openidea diff a.txt b.txt`: the two files to open in the diff viewer (boxed: most launches have none).
     #[serde(default)]
     pub diff: Option<Box<DiffFilesLaunch>>,
@@ -72,6 +86,32 @@ pub struct Launch {
     /// Deployment windows: the server and local selection to compare.
     #[serde(default)]
     pub deployment: Option<DeploymentLaunch>,
+    /// Editor windows: the file to show (Open in New Window → lightweight aux editor).
+    #[serde(default)]
+    pub editor: Option<Box<EditorLaunch>>,
+    /// Get from VCS windows: the repository URL to fill in.
+    #[serde(default)]
+    pub clone_url: Option<String>,
+}
+
+/// What a lightweight editor window shows: a file, with optional caret / selection (0-based), or
+/// the tab of another editor kind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct EditorLaunch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<ide_core::IpcPath>,
+    /// The tab's editor input, as JSON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_column: Option<u32>,
 }
 
 /// Local files to compare with a deployment server (Sync with Deployed).
@@ -103,6 +143,71 @@ pub struct ComparisonLaunch {
     pub to: Option<ComparisonRevision>,
     pub scope: Option<ComparisonScope>,
     pub repo: Option<ide_core::IpcPath>,
+}
+
+/// One side of a diff window's comparison (the UI's `DiffSide`, `diffInput.ts`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum DiffSide {
+    /// File content at a Git revision (`HEAD`, `:0` = index, a commit id).
+    Rev {
+        rev: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+    },
+    /// The working file (unsaved editor buffer included).
+    Worktree {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label_detail: Option<String>,
+    },
+    /// Another file (Compare With…, Compare Files).
+    File {
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+    },
+    /// Literal text, such as clipboard contents or an editor selection.
+    Text {
+        text: String,
+        label: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label_detail: Option<String>,
+    },
+    /// A Local History revision.
+    History { id: String, label: String },
+}
+
+/// The diff a diff window shows (IDEA's "Show Diff in New Window"), from the UI's `DiffData`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffLaunch {
+    /// Absolute path of the file (the right side's path).
+    pub path: String,
+    pub left: DiffSide,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub middle: Option<DiffSide>,
+    pub right: DiffSide,
+    /// 0-based line to reveal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_side: Option<DiffLineSide>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub col: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain: Option<Vec<DiffLaunch>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum DiffLineSide {
+    Left,
+    Middle,
+    Right,
 }
 
 /// The two files of a command-line diff (`openidea diff a.txt b.txt`), both sides editable.
@@ -144,6 +249,74 @@ pub fn wsl_launch(path: &Path) -> Option<RemoteLaunch> {
     Some(RemoteLaunch { target: RemoteTarget::Wsl { distro: w.distro }, path: w.path })
 }
 
+/// A saved project path that is a remote location: `ssh://`, `wsl://`, `devcontainer://`,
+/// or a `\\wsl.localhost` share remembered before those locations existed.
+pub(crate) fn saved_remote(path: &Path) -> Option<RemoteLaunch> {
+    if let Some(text) = path.to_str()
+        && let Some((target, root)) = crate::remote_dev::parse_remote_location(text)
+    {
+        return Some(RemoteLaunch { target, path: root });
+    }
+    wsl_launch(path)
+}
+
+/// What reopening `path` should launch. A remote location is recognised before any stat,
+/// so a WSL share that is down still comes back as a remote project.
+pub(crate) fn saved_project_launch(path: &Path) -> Option<Launch> {
+    if let Some(remote) = saved_remote(path) {
+        return Some(Launch { remote: Some(remote), ..Default::default() });
+    }
+    path.is_dir().then(|| Launch { project: Some(path.to_path_buf().into()), ..Default::default() })
+}
+
+/// The same project, including a WSL share and the `wsl://` location of that folder.
+pub(crate) fn same_saved_project(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    match (saved_remote(a), saved_remote(b)) {
+        (Some(left), Some(right)) => {
+            left.target == right.target && left.path.trim_end_matches('/') == right.path.trim_end_matches('/')
+        }
+        _ => false,
+    }
+}
+
+/// The project `label` has open: a remote location (`wsl://` and the rest), else its local root.
+pub(crate) fn window_project_path(app: &AppHandle, label: &str) -> Option<PathBuf> {
+    let state = app.try_state::<AppState>()?;
+    if let Some(c) = state.remote_dev.get(label) {
+        return Some(PathBuf::from(crate::remote_dev::remote_location(&c.target, &c.root)));
+    }
+    state.project(label).ok().filter(|p| !p.light).map(|p| p.root.clone())
+}
+
+/// Reopens a project saved at quit. Remote locations become a remote launch; a missing
+/// local folder is skipped. An already connected window is focused instead of duplicated.
+pub(crate) fn reopen_saved_window(app: &AppHandle, path: &Path) -> IdeResult<Option<WebviewWindow>> {
+    let Some(launch) = saved_project_launch(path) else {
+        return Ok(None);
+    };
+    if let Some(remote) = launch.remote.clone() {
+        let open = app.try_state::<AppState>().and_then(|s| s.remote_dev.window_of(&remote.target, &remote.path));
+        if let Some(w) = open.and_then(|label| app.get_webview_window(&label)) {
+            return Ok(Some(w));
+        }
+        let title = remote
+            .path
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .filter(|n| !n.is_empty() && *n != "~")
+            .map(str::to_owned);
+        return Ok(Some(create_window_for(app, title, launch, true)?));
+    }
+    if let Some(w) = find_project_window(app, path) {
+        return Ok(Some(w));
+    }
+    Ok(Some(create_restored_window(app, path.to_path_buf())?))
+}
+
 #[derive(Default)]
 pub struct WindowsState {
     pub groups: Mutex<ide_workspace::window_groups::WindowGroups>,
@@ -157,36 +330,216 @@ pub struct WindowsState {
     cli: Mutex<cli::Queue>,
     /// Most recently focused window label (menu events go there).
     last_focused: Mutex<Option<String>>,
-    /// Set by Quit while windows close one by one.
+    /// Set by Quit while windows close in parallel.
     quitting: AtomicBool,
     /// The last closed project opted out of Welcome; macOS keeps its app in the Dock.
     #[cfg(target_os = "macos")]
     pub keep_alive: AtomicBool,
-    /// Windows asked to close whose guards have not finished. AppKit closes a whole tab group at
-    /// once, so its members ask together.
-    close_requests: Mutex<Vec<String>>,
-    /// Project tabs closing one by one (Close Other Tabs and friends).
+    /// Coordinates parallel window/tab-group closes so clean tabs hide together in one frame
+    /// and interactive prompts still run one at a time.
+    close: Mutex<CloseState>,
+    pub close_notify: Arc<tokio::sync::Notify>,
+    /// Project tabs closing in parallel (Close Other Tabs and friends).
     pub tab_closes: Mutex<Option<crate::window_groups::TabCloses>>,
     /// Relaunch once the quit completes (after installing an update).
     restart: AtomicBool,
     /// Numbers windows of kinds that can open several times per project window.
     aux_serial: AtomicU64,
+    /// Logical sizes remembered per [`AuxKind`] on macOS (`auxiliary-windows.json`), avoiding
+    /// `tauri-plugin-window-state`'s physical-pixel scale-factor drift across mixed-DPI displays.
+    #[cfg(target_os = "macos")]
+    aux_geometry: Mutex<Option<HashMap<String, AuxGeometry>>>,
+}
+
+#[cfg(target_os = "macos")]
+const AUX_STATE_FILE: &str = "auxiliary-windows.json";
+/// How long an auxiliary window waits for the main thread to fit it over its parent.
+#[cfg(target_os = "macos")]
+const FIT_ON_MAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+#[cfg(any(target_os = "macos", test))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct AuxGeometry {
+    pub width: f64,
+    pub height: f64,
+    #[serde(default)]
+    pub maximized: bool,
+}
+
+#[derive(Default)]
+struct CloseState {
+    /// Windows asked to close whose guards have not finished. AppKit closes a whole tab group at
+    /// once, so its members ask together; Quit and Close Other Tabs also close members in parallel.
+    pending: Vec<String>,
+    /// Members that passed their close guard and are waiting at the batch barrier before destroying.
+    ready: HashSet<String>,
+    /// Members whose batch was cancelled while they waited; they stay open.
+    aborted: HashSet<String>,
+    /// Windows already hidden as part of their closing cohort so hiding only runs once per batch.
+    hidden: HashSet<String>,
+    /// Window currently showing an interactive close dialog (at most one across a batch).
+    prompt_holder: Option<String>,
 }
 
 impl WindowsState {
     pub fn close_requested(&self, label: &str) {
-        let mut requests = self.close_requests.lock();
-        if !requests.iter().any(|l| l == label) {
-            requests.push(label.to_owned());
+        let mut close = self.close.lock();
+        close.aborted.remove(label);
+        close.ready.remove(label);
+        close.hidden.remove(label);
+        if !close.pending.iter().any(|l| l == label) {
+            close.pending.push(label.to_owned());
         }
     }
 
     pub fn close_settled(&self, label: &str) {
-        self.close_requests.lock().retain(|l| l != label);
+        {
+            let mut close = self.close.lock();
+            close.pending.retain(|l| l != label);
+            close.ready.remove(label);
+            close.aborted.remove(label);
+            close.hidden.remove(label);
+            if close.prompt_holder.as_deref() == Some(label) {
+                close.prompt_holder = None;
+            }
+        }
+        self.close_notify.notify_waiters();
     }
 
     pub fn pending_closes(&self) -> Vec<String> {
-        self.close_requests.lock().clone()
+        self.close.lock().pending.clone()
+    }
+
+    pub fn is_closing(&self, label: &str) -> bool {
+        let in_close = {
+            let close = self.close.lock();
+            close.pending.iter().any(|l| l == label) || close.ready.contains(label)
+        };
+        in_close || self.in_tab_close_batch(label)
+    }
+
+    pub fn has_other_pending_closes(&self, exclude: &str) -> bool {
+        let other_pending = self.close.lock().pending.iter().any(|l| l != exclude);
+        other_pending || self.tab_closes.lock().as_ref().is_some_and(|b| b.has_other(exclude))
+    }
+
+    pub fn in_tab_close_batch(&self, label: &str) -> bool {
+        self.tab_closes.lock().as_ref().is_some_and(|b| b.contains(label))
+    }
+
+    /// Marks `label` ready to destroy. Returns `false` if its batch was already cancelled.
+    pub fn mark_ready(&self, label: &str) -> bool {
+        let ok = {
+            let mut close = self.close.lock();
+            if close.aborted.remove(label) {
+                close.pending.retain(|l| l != label);
+                close.ready.remove(label);
+                close.hidden.remove(label);
+                if close.prompt_holder.as_deref() == Some(label) {
+                    close.prompt_holder = None;
+                }
+                false
+            } else {
+                if close.prompt_holder.as_deref() == Some(label) {
+                    close.prompt_holder = None;
+                }
+                close.ready.insert(label.to_owned());
+                true
+            }
+        };
+        self.close_notify.notify_waiters();
+        ok
+    }
+
+    pub fn is_ready(&self, label: &str) -> bool {
+        self.close.lock().ready.contains(label)
+    }
+
+    pub fn take_aborted(&self, label: &str) -> bool {
+        let mut close = self.close.lock();
+        if close.aborted.remove(label) {
+            close.pending.retain(|l| l != label);
+            close.ready.remove(label);
+            close.hidden.remove(label);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Marks `labels` as hidden once and returns those newly claimed for hiding.
+    pub fn claim_hide(&self, labels: &[String]) -> Vec<String> {
+        let mut close = self.close.lock();
+        labels.iter().filter(|l| close.hidden.insert((*l).clone())).cloned().collect()
+    }
+
+    /// Marks `labels` as aborted so peers waiting at the close barrier or prompt turn stay open.
+    pub fn abort_batch(&self, labels: impl IntoIterator<Item = String>) {
+        {
+            let mut close = self.close.lock();
+            for label in labels {
+                close.ready.remove(&label);
+                close.hidden.remove(&label);
+                close.pending.retain(|l| l != &label);
+                close.aborted.insert(label);
+            }
+            close.prompt_holder = None;
+        }
+        self.close_notify.notify_waiters();
+    }
+
+    /// Aborts every in-flight close except `initiator` (used when cancelling Quit).
+    pub fn abort_all_closing(&self, initiator: Option<&str>) {
+        {
+            let mut close = self.close.lock();
+            let mut targets: Vec<String> = std::mem::take(&mut close.pending);
+            for label in close.ready.drain() {
+                if !targets.iter().any(|l| l == &label) {
+                    targets.push(label);
+                }
+            }
+            close.hidden.clear();
+            close.prompt_holder = None;
+            for label in targets {
+                if initiator != Some(label.as_str()) {
+                    close.aborted.insert(label);
+                }
+            }
+        }
+        self.close_notify.notify_waiters();
+    }
+
+    /// Tries to acquire the interactive prompt turn. `Err(())` means this close was aborted.
+    pub fn try_acquire_prompt(&self, label: &str) -> Result<bool, ()> {
+        let mut close = self.close.lock();
+        if close.aborted.contains(label) {
+            return Err(());
+        }
+        if close.prompt_holder.is_none() || close.prompt_holder.as_deref() == Some(label) {
+            close.prompt_holder = Some(label.to_owned());
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    pub fn release_prompt(&self, label: &str) {
+        let released = {
+            let mut close = self.close.lock();
+            if close.prompt_holder.as_deref() == Some(label) {
+                close.prompt_holder = None;
+                true
+            } else {
+                false
+            }
+        };
+        if released {
+            self.close_notify.notify_waiters();
+        }
+    }
+
+    pub fn has_prompt_holder(&self) -> bool {
+        self.close.lock().prompt_holder.is_some()
     }
 
     pub fn set_launch(&self, label: &str, launch: Launch) {
@@ -201,6 +554,12 @@ impl WindowsState {
 
     pub fn take_launch(&self, label: &str) -> Option<Launch> {
         let mut launches = self.launches.lock();
+        // Lightweight windows need their launch again when their webview reloads.
+        if let Some(launch) = launches.get(label)
+            && launch.editor.is_some()
+        {
+            return Some(launch.clone());
+        }
         let launch = launches.remove(label)?;
         if launch.project.is_some() || launch.remote.is_some() || !launch.files.is_empty() || launch.diff.is_some() {
             self.opening.lock().insert(label.to_owned(), launch.clone());
@@ -285,40 +644,91 @@ impl WindowsState {
 pub enum AuxKind {
     Settings,
     Comparison,
+    Diff,
+    Editor,
     Deployment,
+    NewProject,
+    Clone,
+    Connect,
 }
 
 impl AuxKind {
-    const ALL: [AuxKind; 3] = [AuxKind::Settings, AuxKind::Comparison, AuxKind::Deployment];
+    const ALL: [AuxKind; 8] = [
+        AuxKind::Settings,
+        AuxKind::Comparison,
+        AuxKind::Diff,
+        AuxKind::Editor,
+        AuxKind::Deployment,
+        AuxKind::NewProject,
+        AuxKind::Clone,
+        AuxKind::Connect,
+    ];
 
     /// Label prefix, and the key of the one remembered geometry shared by every window of the kind.
     pub fn name(self) -> &'static str {
         match self {
             AuxKind::Settings => "settings",
             AuxKind::Comparison => "comparison",
+            AuxKind::Diff => "diff",
+            AuxKind::Editor => "editor",
             AuxKind::Deployment => "deployment",
+            AuxKind::NewProject => "new-project",
+            AuxKind::Clone => "clone",
+            AuxKind::Connect => "connect",
         }
     }
 
     /// Several per project window (`<kind>-<parent>-<n>`), else one (`<kind>-<parent>`).
     fn multiple(self) -> bool {
-        self == AuxKind::Comparison
+        matches!(self, AuxKind::Comparison | AuxKind::Diff | AuxKind::Editor)
     }
 
     /// Shows the project's documents: gets its parent's events and edits made in sibling windows,
     /// and asks about its own unsaved changes before the parent closes it.
     pub fn shares_documents(self) -> bool {
-        self != AuxKind::Settings
+        !self.dialog()
     }
 
-    /// Modal for its parent: menu items other than app-level ones are dropped.
-    pub fn modal(self) -> bool {
-        self == AuxKind::Settings
+    /// Has no actions of its own: menu items run in its project window, which owns the menu.
+    pub fn runs_menu_in_parent(self) -> bool {
+        self.dialog()
     }
 
     /// Needs its parent to have a project open.
     fn needs_project(self) -> bool {
-        self != AuxKind::Settings
+        !self.dialog()
+    }
+
+    /// A dialog in its own window (Settings, New Project, Get from VCS, Remote Development):
+    /// works without the parent's project or documents, and leaves the menu to the parent.
+    fn dialog(self) -> bool {
+        matches!(self, AuxKind::Settings | AuxKind::NewProject | AuxKind::Clone | AuxKind::Connect)
+    }
+
+    pub fn min_size(self) -> (f64, f64) {
+        match self {
+            AuxKind::Settings => SETTINGS_MIN_SIZE,
+            AuxKind::Comparison => COMPARISON_MIN_SIZE,
+            AuxKind::Diff => DIFF_MIN_SIZE,
+            AuxKind::Editor => EDITOR_MIN_SIZE,
+            AuxKind::Deployment => DEPLOYMENT_MIN_SIZE,
+            AuxKind::NewProject => NEW_PROJECT_MIN_SIZE,
+            AuxKind::Clone => CLONE_MIN_SIZE,
+            AuxKind::Connect => CONNECT_MIN_SIZE,
+        }
+    }
+
+    pub fn default_size(self) -> (f64, f64) {
+        match self {
+            AuxKind::Settings => SETTINGS_SIZE,
+            AuxKind::Comparison => COMPARISON_SIZE,
+            AuxKind::Diff => DIFF_SIZE,
+            AuxKind::Editor => EDITOR_SIZE,
+            AuxKind::Deployment => DEPLOYMENT_SIZE,
+            AuxKind::NewProject => NEW_PROJECT_SIZE,
+            AuxKind::Clone => CLONE_SIZE,
+            AuxKind::Connect => CONNECT_SIZE,
+        }
     }
 }
 
@@ -335,6 +745,34 @@ pub fn auxiliary(label: &str) -> Option<(AuxKind, &str)> {
         };
         (!parent.is_empty()).then_some((kind, parent))
     })
+}
+
+/// Where a menu item chosen while window `label` is focused runs.
+#[derive(Debug, PartialEq, Eq)]
+pub enum MenuDestination<'a> {
+    /// The window's own frontend.
+    Own,
+    /// The project window `label`; `raise` brings it to the front so what the action shows is seen.
+    Parent { label: &'a str, raise: bool },
+    /// The window itself is the tab: Close Tab closes it.
+    Close,
+}
+
+/// Actions an auxiliary window always leaves to its project window.
+const PARENT_ACTIONS: [&str; 4] = ["app.quit", "file.settings", "file.projectStructure", "file.newProjectsSettings"];
+
+/// Where menu item `action` runs while window `label` is focused. As in IDEA, the menu stays usable
+/// with Settings open: it runs in the project window, whose enablement (no focused editor) the menu shows.
+pub fn menu_destination<'a>(label: &'a str, action: &str) -> MenuDestination<'a> {
+    match auxiliary(label) {
+        None => MenuDestination::Own,
+        Some((_, parent)) if PARENT_ACTIONS.contains(&action) => {
+            MenuDestination::Parent { label: parent, raise: false }
+        }
+        Some((kind, parent)) if kind.runs_menu_in_parent() => MenuDestination::Parent { label: parent, raise: true },
+        Some(_) if action == "editor.closeTab" => MenuDestination::Close,
+        Some(_) => MenuDestination::Own,
+    }
 }
 
 /// The project window an auxiliary window belongs to (`settings-main` → `main`).
@@ -354,11 +792,16 @@ static CREATING: Mutex<()> = Mutex::new(());
 static JOINING_GROUP: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// Whether the window-state plugin restores and tracks `label`'s geometry. A window joining a
-/// group takes the group's frame instead; restoring a fullscreen state its label kept from an
-/// earlier window would give it a fullscreen Space of its own.
-#[cfg(target_os = "macos")]
+/// group takes the group's frame instead; auxiliary windows store logical sizes in
+/// `auxiliary-windows.json` and place themselves over their parent, avoiding physical-pixel
+/// scale drift and async restore races across mixed-DPI displays.
+#[cfg(any(target_os = "macos", test))]
 pub fn keeps_window_state(label: &str) -> bool {
-    !JOINING_GROUP.lock().iter().any(|l| l == label)
+    #[cfg(target_os = "macos")]
+    if JOINING_GROUP.lock().iter().any(|l| l == label) {
+        return false;
+    }
+    auxiliary_parent(label).is_none() && !AuxKind::ALL.iter().any(|k| k.name() == label)
 }
 
 /// The window state key: one geometry per auxiliary kind, else the label itself.
@@ -501,22 +944,68 @@ pub fn focus(window: &WebviewWindow) {
     let _ = window.set_focus();
 }
 
-/// Present one project's save prompt at a time, including hidden group members.
-pub fn continue_quit(app: &AppHandle, closed: Option<&str>) {
-    if !app.state::<WindowsState>().quitting() {
+pub fn hide_windows(windows: Vec<WebviewWindow>) {
+    #[cfg(target_os = "macos")]
+    crate::macos::hide_windows(windows);
+    #[cfg(not(target_os = "macos"))]
+    for window in windows {
+        let _ = window.hide();
+    }
+}
+
+/// Closes every project window in parallel without flipping focus across clean tabs.
+/// Windows that need user confirmation acquire the prompt turn one at a time via `begin_prompt`.
+pub fn start_quit(app: &AppHandle) {
+    let state = app.state::<WindowsState>();
+    let labels = project_window_labels(app);
+    if labels.is_empty() {
+        app.exit(0);
         return;
     }
-    let next = project_window_labels(app)
-        .into_iter()
-        .filter(|label| Some(label.as_str()) != closed)
-        .find_map(|label| app.get_webview_window(&label));
-    if let Some(window) = next {
-        focus(&window);
-        if window.close().is_err() {
-            app.state::<WindowsState>().set_quitting(false);
+    for label in &labels {
+        state.close_requested(label);
+    }
+    let mut any_sent = false;
+    for label in labels {
+        if let Some(window) = app.get_webview_window(&label)
+            && window.close().is_ok()
+        {
+            any_sent = true;
+            continue;
         }
-    } else {
+        state.close_settled(&label);
+    }
+    if !any_sent {
+        if project_window_labels(app).is_empty() {
+            app.exit(0);
+        } else {
+            state.set_quitting(false);
+        }
+    }
+}
+
+/// Exits once every project window has finished closing during Quit.
+pub fn continue_quit(app: &AppHandle, closed: Option<&str>) {
+    let state = app.state::<WindowsState>();
+    if !state.quitting() {
+        return;
+    }
+    let remaining: Vec<String> =
+        project_window_labels(app).into_iter().filter(|label| Some(label.as_str()) != closed).collect();
+    if remaining.is_empty() {
         app.exit(0);
+        return;
+    }
+    // Close any window that appeared after Quit began and was not yet asked to close.
+    for label in remaining {
+        if !state.is_closing(&label)
+            && let Some(window) = app.get_webview_window(&label)
+        {
+            state.close_requested(&label);
+            if window.close().is_err() {
+                state.close_settled(&label);
+            }
+        }
     }
 }
 
@@ -604,8 +1093,20 @@ fn build_project_window(app: &AppHandle, mut config: WindowConfig) -> IdeResult<
     }
     #[cfg(target_os = "linux")]
     let show_after_build = crate::linux_window_state::prepare(app, &mut config);
+    // Windows opens a project window at the configured size (window-state restores only the
+    // maximized flag there), which Restore Down returns to.
+    #[cfg(windows)]
+    if let Ok(Some(monitor)) = app.primary_monitor() {
+        let area = monitor.work_area().size.to_logical::<f64>(monitor.scale_factor());
+        let min = (config.min_width.unwrap_or(0.0), config.min_height.unwrap_or(0.0));
+        let (size, min) = fit_new_window((config.width, config.height), min, (area.width, area.height));
+        (config.width, config.height) = size;
+        (config.min_width, config.min_height) = (Some(min.0), Some(min.1));
+    }
     let window = WebviewWindowBuilder::from_config(app, &config)
-        .and_then(|b| dev_font_preferences(b).build())
+        .and_then(|b| {
+            macos_webview_configuration(app, webview_profile(app, b)).on_new_window(open_popup_in_browser).build()
+        })
         .map_err(|e| IdeError::internal(format!("cannot create window: {e}")))?;
     #[cfg(target_os = "linux")]
     decorate_csd(&window);
@@ -934,8 +1435,8 @@ pub enum OpenStep {
     Focus(String),
     /// Files open in this window: in its project, or join its LightEdit session.
     Files(String, Vec<PathBuf>),
-    /// A free window opens this.
-    Launch(String, Launch),
+    /// A free window opens this (boxed: the enum stays small).
+    Launch(String, Box<Launch>),
     /// A new window opens the project folder or (without one) the files in LightEdit.
     New(Option<PathBuf>, Vec<PathBuf>),
     /// A new window connects to a WSL distribution.
@@ -977,7 +1478,9 @@ pub fn plan_open(paths: Vec<(PathBuf, bool)>, windows: &[(String, Holds)]) -> Ve
             steps.push(match windows.iter().find(|(_, h)| h.is_wsl_folder(&remote)) {
                 Some((label, _)) => OpenStep::Focus(label.clone()),
                 None => match free.next() {
-                    Some(label) => OpenStep::Launch(label, Launch { remote: Some(remote), ..Default::default() }),
+                    Some(label) => {
+                        OpenStep::Launch(label, Box::new(Launch { remote: Some(remote), ..Default::default() }))
+                    }
                     None => OpenStep::NewRemote(remote),
                 },
             });
@@ -989,7 +1492,7 @@ pub fn plan_open(paths: Vec<(PathBuf, bool)>, windows: &[(String, Holds)]) -> Ve
         }
         roots.push((dir.clone(), ProjectTarget::Step(steps.len())));
         steps.push(match free.next() {
-            Some(label) => OpenStep::Launch(label, path_launch_of(Some(dir), Vec::new())),
+            Some(label) => OpenStep::Launch(label, Box::new(path_launch_of(Some(dir), Vec::new()))),
             None => OpenStep::New(Some(dir), Vec::new()),
         });
     }
@@ -1028,7 +1531,7 @@ pub fn plan_open(paths: Vec<(PathBuf, bool)>, windows: &[(String, Holds)]) -> Ve
     steps.extend(in_windows.into_iter().map(|(label, files)| OpenStep::Files(label, files)));
     if !loose.is_empty() {
         steps.push(match free.next() {
-            Some(label) => OpenStep::Launch(label, path_launch_of(None, loose)),
+            Some(label) => OpenStep::Launch(label, Box::new(path_launch_of(None, loose))),
             None => OpenStep::New(None, loose),
         });
     }
@@ -1149,7 +1652,7 @@ pub(crate) fn run_open_at(
             },
             OpenStep::Launch(label, mut launch) => {
                 launch.add_positions(positions);
-                windows.set_launch(&label, launch);
+                windows.set_launch(&label, *launch);
                 if let Some(w) = app.get_webview_window(&label) {
                     let _ = app.emit_to(&label, LAUNCH_EVENT, ());
                     focus(&w);
@@ -1313,7 +1816,7 @@ fn plan_cli_launch(launch: Launch, windows: &[(String, Holds)]) -> Vec<OpenStep>
                 Some((label, _)) => OpenStep::Focus(label.clone()),
                 None => match windows.iter().find(|(_, h)| *h == Holds::Nothing) {
                     Some((label, _)) => {
-                        OpenStep::Launch(label.clone(), Launch { remote: Some(remote), ..Default::default() })
+                        OpenStep::Launch(label.clone(), Box::new(Launch { remote: Some(remote), ..Default::default() }))
                     }
                     None => OpenStep::NewRemote(remote),
                 },
@@ -1374,8 +1877,8 @@ pub struct AuxWindow {
     pub background: Option<String>,
 }
 
-/// Opens an auxiliary window of `caller`'s project window, centred over it. A kind with one window
-/// per parent reuses it: the new launch is handed over ([`LAUNCH_EVENT`]) and the window focused.
+/// Opens an auxiliary window of `caller`'s project window, centred over it. A matching window
+/// receives the new launch ([`LAUNCH_EVENT`]) and is focused.
 pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWindow) -> IdeResult<()> {
     // Asked from an auxiliary window itself: open it for that window's parent.
     let parent_label = auxiliary_parent(caller.label()).unwrap_or(caller.label()).to_owned();
@@ -1386,7 +1889,9 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
         }
     }
     let windows = app.state::<WindowsState>();
-    let label = if aux.kind.multiple() {
+    let label = if let Some(diff) = aux.launch.diff_window.as_deref() {
+        format!("diff-{parent_label}-{}", diff_window_id(diff))
+    } else if aux.kind.multiple() {
         format!("{}-{parent_label}-{}", aux.kind.name(), windows.aux_serial.fetch_add(1, Ordering::Relaxed))
     } else {
         format!("{}-{parent_label}", aux.kind.name())
@@ -1405,7 +1910,16 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
     config.title = aux.title.into();
     // Frameless on Windows and Linux like project windows (tauri.<os>.conf.json): the page draws
     // the title bar in the app theme instead of a system caption that follows the OS theme.
-    (config.width, config.height) = aux.size;
+    #[cfg(target_os = "macos")]
+    let macos_geom = aux_geometry_for(app, &windows, aux.kind, aux.size, aux.min_size);
+    #[cfg(target_os = "macos")]
+    {
+        (config.width, config.height) = (macos_geom.width, macos_geom.height);
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        (config.width, config.height) = aux.size;
+    }
     (config.min_width, config.min_height) = (Some(aux.min_size.0), Some(aux.min_size.1));
     config.center = false;
     config.visible = false;
@@ -1413,7 +1927,9 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
     config.fullscreen = false;
     config.drag_drop_enabled = false;
     // Paint the theme's frame colour before the page loads.
-    if let Some(color) = aux.background.as_deref().and_then(hex_color) {
+    if let Some(color) =
+        aux.background.as_deref().and_then(hex_color).or_else(|| default_aux_frame_color(app, &parent, &parent_label))
+    {
         config.background_color = Some(color);
     }
     windows.set_launch(&label, aux.launch);
@@ -1428,10 +1944,11 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
     // display's Space, so macOS keeps it too.
     #[cfg(target_os = "linux")]
     let builder = builder.and_then(|b| b.parent(&parent));
-    let window = builder.and_then(|b| dev_font_preferences(b).build()).map_err(|e| {
-        windows.forget(&label);
-        IdeError::internal(format!("cannot create {} window: {e}", aux.kind.name()))
-    })?;
+    let window =
+        builder.and_then(|b| macos_webview_configuration(app, webview_profile(app, b)).build()).map_err(|e| {
+            windows.forget(&label);
+            IdeError::internal(format!("cannot create {} window: {e}", aux.kind.name()))
+        })?;
     #[cfg(target_os = "linux")]
     decorate_csd(&window);
     #[cfg(target_os = "macos")]
@@ -1439,10 +1956,15 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
     apply_zoom(app, &window);
     #[cfg(target_os = "macos")]
     align_titlebar(app, &window, false);
-    // Restore runs during build; fit its size to the parent's current display before showing.
+    // Fit size and position to the parent's current display before showing.
     #[cfg(target_os = "macos")]
-    if let Err(e) = fit_over_parent(&window, &parent, aux.min_size) {
-        tracing::warn!("cannot fit {} window: {e}", aux.kind.name());
+    {
+        if let Err(e) =
+            fit_over_parent(&window, &parent, (macos_geom.width, macos_geom.height), aux.min_size, macos_geom.maximized)
+        {
+            tracing::warn!("cannot fit {} window: {e}", aux.kind.name());
+        }
+        track_auxiliary_geometry(&window, aux.kind, aux.size, aux.min_size);
     }
     #[cfg(not(target_os = "macos"))]
     if let Err(e) = place_over_parent(&window, &parent) {
@@ -1450,6 +1972,76 @@ pub fn open_auxiliary_window(app: &AppHandle, caller: &WebviewWindow, aux: AuxWi
     }
     focus(&window);
     Ok(())
+}
+
+/// Effective appearance settings of project window `parent_label` (client layer on remote windows).
+fn effective_appearance(app: &AppHandle, parent_label: &str) -> Option<AppearanceSettings> {
+    let state = app.try_state::<AppState>()?;
+    if state.remote_dev.get(parent_label).is_some() {
+        return Some(state.global_settings.effective().appearance);
+    }
+    Some(match state.host.project(parent_label) {
+        Ok(p) => p.settings.effective().appearance,
+        Err(_) => state.global_settings.effective().appearance,
+    })
+}
+
+fn default_aux_frame_color(app: &AppHandle, parent: &WebviewWindow, parent_label: &str) -> Option<Color> {
+    let state = app.try_state::<AppState>()?;
+    if let Some(color) = state.plugins.startup_frame().and_then(|c| hex_color(&c)) {
+        return Some(color);
+    }
+    let appearance = effective_appearance(app, parent_label)?;
+    let os_dark =
+        (appearance.sync_with_os || appearance.theme == "system") && parent.theme().is_ok_and(|t| t == Theme::Dark);
+    Some(frame_color(&appearance, os_dark))
+}
+
+/// Whether `parent_label` opens Settings in its own native window.
+pub fn settings_in_separate_window(app: &AppHandle, parent_label: &str) -> bool {
+    effective_appearance(app, parent_label).is_none_or(|a| a.settings_in_separate_window)
+}
+
+fn menu_settings_launch<'a>(
+    target_label: &'a str,
+    has_pending_launch: bool,
+    separate_window: bool,
+    action: &str,
+    arg: Option<String>,
+) -> Option<(&'a str, Option<String>, bool)> {
+    let parent_label = auxiliary_parent(target_label).unwrap_or(target_label);
+    if has_pending_launch || !separate_window {
+        return None;
+    }
+    let (page, new_projects) = match action {
+        "file.settings" => (arg, false),
+        "file.newProjectsSettings" => (Some(arg.unwrap_or_else(|| "languages.java".into())), true),
+        _ => return None,
+    };
+    Some((parent_label, page, new_projects))
+}
+
+/// Opens Settings directly from a native menu click when separate-window mode is enabled,
+/// avoiding a round-trip through the parent window's JS thread.
+pub fn open_settings_from_menu(app: &AppHandle, target: &WebviewWindow, action: &str, arg: Option<String>) -> bool {
+    let parent_label = auxiliary_parent(target.label()).unwrap_or(target.label());
+    let has_pending = app.state::<WindowsState>().pending(parent_label).is_some();
+    let separate = settings_in_separate_window(app, parent_label);
+    let Some((parent_label, page, new_projects)) =
+        menu_settings_launch(target.label(), has_pending, separate, action, arg)
+    else {
+        return false;
+    };
+    let Some(parent) = app.get_webview_window(parent_label) else {
+        return false;
+    };
+    match open_settings_window(app, &parent, page, new_projects, None) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!("settings window unavailable from menu, falling back to frontend: {e}");
+            false
+        }
+    }
 }
 
 /// Opens (or focuses) the settings window of `parent` showing `page`: a
@@ -1467,8 +2059,8 @@ pub fn open_settings_window(
         AuxWindow {
             kind: AuxKind::Settings,
             title: "Settings",
-            size: SETTINGS_SIZE,
-            min_size: SETTINGS_MIN_SIZE,
+            size: AuxKind::Settings.default_size(),
+            min_size: AuxKind::Settings.min_size(),
             launch: Launch { settings_page: page, new_projects, ..Default::default() },
             background,
         },
@@ -1489,9 +2081,60 @@ pub fn open_comparison_window(
         AuxWindow {
             kind: AuxKind::Comparison,
             title: "Compare",
-            size: COMPARISON_SIZE,
-            min_size: COMPARISON_MIN_SIZE,
+            size: AuxKind::Comparison.default_size(),
+            min_size: AuxKind::Comparison.min_size(),
             launch: Launch { comparison: Some(Box::new(comparison)), ..Default::default() },
+            background,
+        },
+    )
+}
+
+fn diff_window_id(diff: &DiffLaunch) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    (&diff.path, &diff.left, &diff.middle, &diff.right).hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Opens a window showing one diff of the project ("Show Diff in New Window"), like IDEA's
+/// diff window next to the Commit tool window.
+pub fn open_diff_window(
+    app: &AppHandle,
+    parent: &WebviewWindow,
+    diff: DiffLaunch,
+    background: Option<String>,
+) -> IdeResult<()> {
+    open_auxiliary_window(
+        app,
+        parent,
+        AuxWindow {
+            kind: AuxKind::Diff,
+            title: "Diff",
+            size: AuxKind::Diff.default_size(),
+            min_size: AuxKind::Diff.min_size(),
+            launch: Launch { diff_window: Some(Box::new(diff)), ..Default::default() },
+            background,
+        },
+    )
+}
+
+/// Opens a lightweight editor window for `editor.path` ("Open in New Window"), sharing the
+/// parent's project documents and language servers.
+pub fn open_editor_window(
+    app: &AppHandle,
+    parent: &WebviewWindow,
+    editor: EditorLaunch,
+    background: Option<String>,
+) -> IdeResult<()> {
+    open_auxiliary_window(
+        app,
+        parent,
+        AuxWindow {
+            kind: AuxKind::Editor,
+            title: "Editor",
+            size: AuxKind::Editor.default_size(),
+            min_size: AuxKind::Editor.min_size(),
+            launch: Launch { editor: Some(Box::new(editor)), ..Default::default() },
             background,
         },
     )
@@ -1513,51 +2156,274 @@ pub fn open_deployment_window(
         AuxWindow {
             kind: AuxKind::Deployment,
             title: "Sync with Deployed",
-            size: DEPLOYMENT_SIZE,
-            min_size: DEPLOYMENT_MIN_SIZE,
+            size: AuxKind::Deployment.default_size(),
+            min_size: AuxKind::Deployment.min_size(),
             launch: Launch { deployment: Some(DeploymentLaunch { server, paths }), ..Default::default() },
             background,
         },
     )
 }
 
-/// Fit outer bounds, including native decorations, using one monitor's logical coordinate space.
+/// Opens (or focuses) the New Project window of `parent`'s project window: a separate window
+/// centred over it, so the wizard can be moved and sized on its own.
+pub fn open_new_project_window(app: &AppHandle, parent: &WebviewWindow, background: Option<String>) -> IdeResult<()> {
+    open_auxiliary_window(
+        app,
+        parent,
+        AuxWindow {
+            kind: AuxKind::NewProject,
+            title: "New Project",
+            size: AuxKind::NewProject.default_size(),
+            min_size: AuxKind::NewProject.min_size(),
+            launch: Launch::default(),
+            background,
+        },
+    )
+}
+
+/// Opens (or focuses, filling in `url`) the Get from VCS window of `parent`'s project window.
+pub fn open_clone_window(
+    app: &AppHandle,
+    parent: &WebviewWindow,
+    url: Option<String>,
+    background: Option<String>,
+) -> IdeResult<()> {
+    open_auxiliary_window(
+        app,
+        parent,
+        AuxWindow {
+            kind: AuxKind::Clone,
+            title: "Get from Version Control",
+            size: AuxKind::Clone.default_size(),
+            min_size: AuxKind::Clone.min_size(),
+            launch: Launch { clone_url: url.filter(|u| !u.trim().is_empty()), ..Default::default() },
+            background,
+        },
+    )
+}
+
+/// Opens (or focuses) the Remote Development window of `parent`'s project window.
+pub fn open_connect_window(app: &AppHandle, parent: &WebviewWindow, background: Option<String>) -> IdeResult<()> {
+    open_auxiliary_window(
+        app,
+        parent,
+        AuxWindow {
+            kind: AuxKind::Connect,
+            title: "Remote Development",
+            size: AuxKind::Connect.default_size(),
+            min_size: AuxKind::Connect.min_size(),
+            launch: Launch::default(),
+            background,
+        },
+    )
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn resolve_aux_geometry(saved: Option<AuxGeometry>, default_size: (f64, f64), min_size: (f64, f64)) -> AuxGeometry {
+    match saved.filter(|g| g.width.is_finite() && g.height.is_finite() && g.width > 0.0 && g.height > 0.0) {
+        Some(g) => {
+            AuxGeometry { width: g.width.max(min_size.0), height: g.height.max(min_size.1), maximized: g.maximized }
+        }
+        None => AuxGeometry {
+            width: default_size.0.max(min_size.0),
+            height: default_size.1.max(min_size.1),
+            maximized: false,
+        },
+    }
+}
+
 #[cfg(target_os = "macos")]
-fn fit_over_parent(window: &WebviewWindow, parent: &WebviewWindow, min_size: (f64, f64)) -> tauri::Result<()> {
-    let Some(monitor) = parent.current_monitor()?.or(parent.primary_monitor()?) else {
-        return Ok(());
+fn aux_state_path(app: &AppHandle) -> Option<PathBuf> {
+    ide_host::data_dirs::config_dir(&app.config().identifier).ok().map(|dir| dir.join(AUX_STATE_FILE))
+}
+
+#[cfg(target_os = "macos")]
+fn load_aux_geometry_map(path: &Path) -> HashMap<String, AuxGeometry> {
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<HashMap<String, AuxGeometry>>(&bytes).ok())
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "macos")]
+fn aux_geometry_for(
+    app: &AppHandle,
+    windows: &WindowsState,
+    kind: AuxKind,
+    default_size: (f64, f64),
+    min_size: (f64, f64),
+) -> AuxGeometry {
+    let mut guard = windows.aux_geometry.lock();
+    let map = guard.get_or_insert_with(|| aux_state_path(app).map_or_else(HashMap::new, |p| load_aux_geometry_map(&p)));
+    resolve_aux_geometry(map.get(kind.name()).copied(), default_size, min_size)
+}
+
+#[cfg(target_os = "macos")]
+pub fn flush_auxiliary_geometry(app: &AppHandle) {
+    let Some(path) = aux_state_path(app) else { return };
+    let Some(snapshot) = app.try_state::<WindowsState>().and_then(|w| w.aux_geometry.lock().clone()) else {
+        return;
     };
-    let scale = monitor.scale_factor();
-    let area = monitor.work_area();
-    let origin = area.position.to_logical::<f64>(scale);
-    let available = area.size.to_logical::<f64>(scale);
-    // Move to the target display first so native frame metrics use its scale factor.
-    window.set_position(area.position)?;
-    let inner = window.inner_size()?.to_logical::<f64>(scale);
-    let outer = window.outer_size()?.to_logical::<f64>(scale);
-    let frame = (outer.width - inner.width, outer.height - inner.height);
-    let pos = parent.outer_position()?.to_logical::<f64>(scale);
-    let size = parent.outer_size()?.to_logical::<f64>(scale);
-    let bounds = fit_bounds(
-        (pos.x, pos.y, size.width, size.height),
-        (outer.width, outer.height),
-        (origin.x, origin.y, available.width, available.height),
-    );
-    // A small work area takes precedence over the usual minimum window size.
-    window.set_min_size(Some(
-        tauri::LogicalSize::new(
-            min_size.0.min((available.width - frame.0).max(1.0)),
-            min_size.1.min((available.height - frame.1).max(1.0)),
-        )
-        .to_physical::<u32>(scale),
-    ))?;
-    window.set_size(
-        tauri::LogicalSize::new((bounds.2 - frame.0).max(1.0), (bounds.3 - frame.1).max(1.0)).to_physical::<u32>(scale),
-    )?;
-    window.set_position(tauri::PhysicalPosition::new(
-        (bounds.0 * scale).round() as i32,
-        (bounds.1 * scale).round() as i32,
-    ))
+    if let Ok(bytes) = serde_json::to_vec_pretty(&snapshot) {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = ide_vfs::write_atomic(&path, &bytes);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn same_cocoa_frame(a: objc2_foundation::NSRect, b: objc2_foundation::NSRect) -> bool {
+    (a.origin.x - b.origin.x).abs() <= 2.0
+        && (a.origin.y - b.origin.y).abs() <= 2.0
+        && (a.size.width - b.size.width).abs() <= 2.0
+        && (a.size.height - b.size.height).abs() <= 2.0
+}
+
+#[cfg(target_os = "macos")]
+fn track_auxiliary_geometry(window: &WebviewWindow, kind: AuxKind, default_size: (f64, f64), min_size: (f64, f64)) {
+    let tracked = window.clone();
+    window.on_window_event(move |event| match event {
+        tauri::WindowEvent::Resized(_) => {
+            if objc2::MainThreadMarker::new().is_none() {
+                return;
+            }
+            let Ok(ptr) = tracked.ns_window() else { return };
+            let ns_win = unsafe { &*ptr.cast::<objc2_app_kit::NSWindow>() };
+            if !ns_win.isVisible()
+                || ns_win.isMiniaturized()
+                || ns_win.styleMask().contains(objc2_app_kit::NSWindowStyleMask::FullScreen)
+            {
+                return;
+            }
+            let frame = ns_win.frame();
+            let content = ns_win.contentRectForFrameRect(frame);
+            let maximized = ns_win.screen().is_some_and(|s| same_cocoa_frame(frame, s.visibleFrame()));
+            let Some(state) = tracked.try_state::<WindowsState>() else { return };
+            let mut guard = state.aux_geometry.lock();
+            let map = guard.get_or_insert_with(|| {
+                aux_state_path(tracked.app_handle()).map_or_else(HashMap::new, |p| load_aux_geometry_map(&p))
+            });
+            let entry = map.entry(kind.name().to_owned()).or_insert(AuxGeometry {
+                width: default_size.0.max(min_size.0),
+                height: default_size.1.max(min_size.1),
+                maximized: false,
+            });
+            entry.maximized = maximized;
+            if !maximized && content.size.width >= min_size.0 && content.size.height >= min_size.1 {
+                entry.width = content.size.width;
+                entry.height = content.size.height;
+            }
+        }
+        tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed => {
+            let app = tracked.app_handle().clone();
+            let Some(path) = aux_state_path(&app) else { return };
+            let Some(snapshot) = app.try_state::<WindowsState>().and_then(|w| w.aux_geometry.lock().clone()) else {
+                return;
+            };
+            std::mem::drop(tauri::async_runtime::spawn_blocking(move || {
+                if let Ok(bytes) = serde_json::to_vec_pretty(&snapshot) {
+                    if let Some(parent) = path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    let _ = ide_vfs::write_atomic(&path, &bytes);
+                }
+            }));
+        }
+        _ => {}
+    });
+}
+
+/// Fit outer bounds in AppKit's global bottom-left point space, centred over `parent` inside
+/// `visible` (`NSScreen::visibleFrame`) and clamped to `[min_size, visible]`.
+#[cfg(any(target_os = "macos", test))]
+fn cocoa_fit_bounds(
+    parent: (f64, f64, f64, f64),
+    size: (f64, f64),
+    min_size: (f64, f64),
+    visible: (f64, f64, f64, f64),
+) -> (f64, f64, f64, f64) {
+    let parent_td = (parent.0, -(parent.1 + parent.3), parent.2, parent.3);
+    let work_td = (visible.0, -(visible.1 + visible.3), visible.2, visible.3);
+    let fitted = fit_bounds(parent_td, size, min_size, work_td);
+    (fitted.0, -(fitted.1 + fitted.3), fitted.2, fitted.3)
+}
+
+/// Synchronously fits and centres `window` over `parent` on `parent`'s `NSScreen` in AppKit
+/// logical points, avoiding `tao`'s async main-queue position/size race across mixed-DPI displays.
+#[cfg(target_os = "macos")]
+fn fit_over_parent(
+    window: &WebviewWindow,
+    parent: &WebviewWindow,
+    desired_size: (f64, f64),
+    min_size: (f64, f64),
+    maximized: bool,
+) -> tauri::Result<()> {
+    let target = window.clone();
+    let owner = parent.clone();
+    let apply = move || {
+        let mtm = objc2::MainThreadMarker::new().expect("AppKit main thread");
+        let (Ok(win_ptr), Ok(parent_ptr)) = (target.ns_window(), owner.ns_window()) else {
+            return;
+        };
+        let win_ns = unsafe { &*win_ptr.cast::<objc2_app_kit::NSWindow>() };
+        let parent_ns = unsafe { &*parent_ptr.cast::<objc2_app_kit::NSWindow>() };
+        let Some(screen) = parent_ns.screen().or_else(|| objc2_app_kit::NSScreen::mainScreen(mtm)) else {
+            return;
+        };
+        let visible = screen.visibleFrame();
+        let parent_frame = parent_ns.frame();
+        let win_frame = win_ns.frame();
+        let content = win_ns.contentRectForFrameRect(win_frame);
+        let frame = (
+            (win_frame.size.width - content.size.width).max(0.0),
+            (win_frame.size.height - content.size.height).max(0.0),
+        );
+        let bounds = if maximized {
+            (visible.origin.x, visible.origin.y, visible.size.width, visible.size.height)
+        } else {
+            cocoa_fit_bounds(
+                (parent_frame.origin.x, parent_frame.origin.y, parent_frame.size.width, parent_frame.size.height),
+                (desired_size.0 + frame.0, desired_size.1 + frame.1),
+                (min_size.0 + frame.0, min_size.1 + frame.1),
+                (visible.origin.x, visible.origin.y, visible.size.width, visible.size.height),
+            )
+        };
+        win_ns.setContentMinSize(objc2_foundation::NSSize::new(
+            min_size.0.min((visible.size.width - frame.0).max(1.0)),
+            min_size.1.min((visible.size.height - frame.1).max(1.0)),
+        ));
+        win_ns.setFrame_display(
+            objc2_foundation::NSRect::new(
+                objc2_foundation::NSPoint::new(bounds.0, bounds.1),
+                objc2_foundation::NSSize::new(bounds.2.max(1.0), bounds.3.max(1.0)),
+            ),
+            false,
+        );
+    };
+    if objc2::MainThreadMarker::new().is_some() {
+        apply();
+        return Ok(());
+    }
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    window.run_on_main_thread(move || {
+        apply();
+        let _ = tx.send(());
+    })?;
+    // A stopped event loop never runs the closure: don't block this thread forever.
+    rx.recv_timeout(FIT_ON_MAIN_TIMEOUT).map_err(|_| tauri::Error::FailedToReceiveMessage)
+}
+
+/// A new window's size and minimum size (logical pixels) shrunk to fit `area`, the work area of
+/// the monitor it opens on: the default 1440×900 is taller than a 1920×1080 laptop screen at
+/// 150 % scaling once the taskbar is taken off.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn fit_new_window(size: (f64, f64), min: (f64, f64), area: (f64, f64)) -> ((f64, f64), (f64, f64)) {
+    if area.0 <= 0.0 || area.1 <= 0.0 {
+        return (size, min);
+    }
+    let size = (size.0.min(area.0), size.1.min(area.1));
+    (size, (min.0.min(size.0), min.1.min(size.1)))
 }
 
 /// Centres the settings window over its owner, inside the owner's monitor work area. The window
@@ -1592,9 +2458,11 @@ pub(super) fn place_over_parent(window: &WebviewWindow, parent: &WebviewWindow) 
     let inner = window.inner_size()?;
     let inner = inner.to_logical::<f64>(own_scale);
     let frame = (own.width - inner.width, own.height - inner.height);
+    let minimum = auxiliary(window.label()).map_or(SETTINGS_MIN_SIZE, |(kind, _)| kind.min_size());
     let bounds = fit_bounds(
         (pos.x, pos.y, size.width, size.height),
         (own.width, own.height),
+        (minimum.0 + frame.0, minimum.1 + frame.1),
         (origin.x, origin.y, available.width, available.height),
     );
     window.set_position(tauri::PhysicalPosition::new(
@@ -1604,11 +2472,6 @@ pub(super) fn place_over_parent(window: &WebviewWindow, parent: &WebviewWindow) 
     if (bounds.2, bounds.3) != (own.width, own.height) {
         // Sizes are set on the client area, and even an undecorated window has a resize frame.
         let (width, height) = ((bounds.2 - frame.0).max(1.0), (bounds.3 - frame.1).max(1.0));
-        let minimum = match auxiliary(window.label()) {
-            Some((AuxKind::Comparison, _)) => COMPARISON_MIN_SIZE,
-            Some((AuxKind::Deployment, _)) => DEPLOYMENT_MIN_SIZE,
-            _ => SETTINGS_MIN_SIZE,
-        };
         window.set_min_size(Some(tauri::LogicalSize::new(minimum.0.min(width), minimum.1.min(height))))?;
         window.set_size(tauri::LogicalSize::new(width, height))?;
     }
@@ -1618,13 +2481,18 @@ pub(super) fn place_over_parent(window: &WebviewWindow, parent: &WebviewWindow) 
     Ok(())
 }
 
-fn fit_bounds(parent: (f64, f64, f64, f64), size: (f64, f64), work: (f64, f64, f64, f64)) -> (f64, f64, f64, f64) {
-    let width = size.0.min(work.2);
-    let height = size.1.min(work.3);
+fn fit_bounds(
+    parent: (f64, f64, f64, f64),
+    size: (f64, f64),
+    min_size: (f64, f64),
+    work: (f64, f64, f64, f64),
+) -> (f64, f64, f64, f64) {
+    let width = size.0.max(min_size.0).min(work.2);
+    let height = size.1.max(min_size.1).min(work.3);
     let at = centered(parent.0, parent.1, parent.2, parent.3, width, height);
     (
-        work.0 + (at.0 - work.0).clamp(0.0, work.2 - width),
-        work.1 + (at.1 - work.1).clamp(0.0, work.3 - height),
+        work.0 + (at.0 - work.0).clamp(0.0, (work.2 - width).max(0.0)),
+        work.1 + (at.1 - work.1).clamp(0.0, (work.3 - height).max(0.0)),
         width,
         height,
     )
@@ -1636,18 +2504,117 @@ fn centered(px: f64, py: f64, pw: f64, ph: f64, w: f64, h: f64) -> (f64, f64) {
     (px + (pw - w) / 2.0, py + ((ph - h) / 2.0).max(0.0))
 }
 
-/// Reproduce WKWebView's user-font restriction before WKWebView creation. The
-/// private selector and environment override are absent from release builds.
-#[cfg(all(debug_assertions, target_os = "macos"))]
-fn dev_font_preferences(
-    builder: WebviewWindowBuilder<'_, tauri::Wry, AppHandle>,
-) -> WebviewWindowBuilder<'_, tauri::Wry, AppHandle> {
+/// A link in an embedded page that asks for a new window (Flutter DevTools' documentation links)
+/// opens in the system browser; the IDE itself never needs such a window.
+fn open_popup_in_browser<R: tauri::Runtime>(
+    url: tauri::Url,
+    _features: tauri::webview::NewWindowFeatures,
+) -> tauri::webview::NewWindowResponse<R> {
+    if matches!(url.scheme(), "http" | "https")
+        && let Err(e) = tauri_plugin_opener::open_url(url.as_str(), None::<&str>)
+    {
+        tracing::warn!("cannot open {url}: {e}");
+    }
+    tauri::webview::NewWindowResponse::Deny
+}
+
+/// On Windows every window keeps WebView2's profile (localStorage, IndexedDB) in the local
+/// data directory, so a custom location from Settings › System Settings › Caches holds it too;
+/// Tauri would always use the default one. All windows share it: one WebView2 browser process
+/// serves a single profile folder.
+fn webview_profile<'a>(
+    app: &AppHandle,
+    builder: WebviewWindowBuilder<'a, tauri::Wry, AppHandle>,
+) -> WebviewWindowBuilder<'a, tauri::Wry, AppHandle> {
+    #[cfg(windows)]
+    if let Some(state) = app.try_state::<AppState>() {
+        return builder.data_directory(state.host.local_data_dir.clone());
+    }
+    #[cfg(not(windows))]
+    let _ = app;
+    builder
+}
+
+/// Configure macOS `WKWebViewConfiguration` before `WKWebView` creation:
+/// - Disable macOS 15+ Apple Intelligence Writing Tools so its floating selection
+///   affordance does not appear over Markdown previews, Quick Documentation, or editors.
+/// - In debug builds, optionally reproduce WKWebView's user-font restriction when
+///   `OPENIDEA_DEV_DISALLOW_USER_FONTS=1` is set (absent from release builds).
+#[cfg(target_os = "macos")]
+fn macos_webview_configuration<'a>(
+    app: &AppHandle,
+    builder: WebviewWindowBuilder<'a, tauri::Wry, AppHandle>,
+) -> WebviewWindowBuilder<'a, tauri::Wry, AppHandle> {
+    match build_macos_webview_configuration(app) {
+        Some(config) => builder.with_webview_configuration(config),
+        None => builder,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn build_macos_webview_configuration(
+    app: &AppHandle,
+) -> Option<objc2::rc::Retained<objc2_web_kit::WKWebViewConfiguration>> {
+    build_macos_webview_configuration_with(|f| app.run_on_main_thread(f))
+}
+
+#[cfg(target_os = "macos")]
+fn build_macos_webview_configuration_with(
+    run_on_main_thread: impl FnOnce(Box<dyn FnOnce() + Send>) -> tauri::Result<()>,
+) -> Option<objc2::rc::Retained<objc2_web_kit::WKWebViewConfiguration>> {
+    const ON_MAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+    struct SendConfig(objc2::rc::Retained<objc2_web_kit::WKWebViewConfiguration>);
+    // SAFETY: Created and configured exclusively on the main thread, then moved untouched into
+    // `WebviewWindowBuilder::with_webview_configuration`, which transfers it back to the main
+    // thread when Wry constructs the WKWebView.
+    unsafe impl Send for SendConfig {}
+
+    let make = |mtm: objc2::MainThreadMarker| {
+        let config = unsafe { objc2_web_kit::WKWebViewConfiguration::new(mtm) };
+        configure_macos_webview_configuration(&config).then_some(SendConfig(config))
+    };
+
+    if let Some(mtm) = objc2::MainThreadMarker::new() {
+        return make(mtm).map(|c| c.0);
+    }
+
+    // Secondary project windows (`spawn_window`) and auxiliary windows (`open_auxiliary_window`)
+    // build off the main thread; create the configuration on the AppKit main thread and fall back
+    // to the default builder if the event loop cannot service it.
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    if let Err(err) = run_on_main_thread(Box::new(move || {
+        let result = objc2::MainThreadMarker::new().and_then(make);
+        let _ = tx.send(result);
+    })) {
+        tracing::warn!("could not schedule macOS WKWebViewConfiguration on main thread: {err}");
+        return None;
+    }
+    match rx.recv_timeout(ON_MAIN_TIMEOUT) {
+        Ok(Some(config)) => Some(config.0),
+        Ok(None) => None,
+        Err(err) => {
+            tracing::warn!("timed out waiting for macOS WKWebViewConfiguration on main thread: {err}");
+            None
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn configure_macos_webview_configuration(config: &objc2_web_kit::WKWebViewConfiguration) -> bool {
+    use objc2::{msg_send, sel};
+    use objc2_app_kit::NSWritingToolsBehavior;
+    use objc2_foundation::NSObjectProtocol;
+
+    let mut configured = false;
+    if config.respondsToSelector(sel!(setWritingToolsBehavior:)) {
+        unsafe {
+            let _: () = msg_send![config, setWritingToolsBehavior: NSWritingToolsBehavior::None];
+        }
+        configured = true;
+    }
+    #[cfg(debug_assertions)]
     if std::env::var("OPENIDEA_DEV_DISALLOW_USER_FONTS").as_deref() == Ok("1") {
-        use objc2::{MainThreadMarker, msg_send, sel};
-        use objc2_foundation::NSObjectProtocol;
-        let config = unsafe {
-            objc2_web_kit::WKWebViewConfiguration::new(MainThreadMarker::new().expect("window creation on main thread"))
-        };
         let preferences = unsafe { config.preferences() };
         if preferences.respondsToSelector(sel!(_setShouldAllowUserInstalledFonts:)) {
             unsafe {
@@ -1655,23 +2622,61 @@ fn dev_font_preferences(
             }
             let allowed: bool = unsafe { msg_send![&preferences, _shouldAllowUserInstalledFonts] };
             tracing::info!(allowed, "Development user-installed fonts override");
-            return builder.with_webview_configuration(config);
+            configured = true;
+        } else {
+            tracing::warn!("WKPreferences user-font development selector unavailable");
         }
-        tracing::warn!("WKPreferences user-font development selector unavailable");
     }
-    builder
+    configured
 }
 
-#[cfg(not(all(debug_assertions, target_os = "macos")))]
-fn dev_font_preferences(
-    builder: WebviewWindowBuilder<'_, tauri::Wry, AppHandle>,
-) -> WebviewWindowBuilder<'_, tauri::Wry, AppHandle> {
+#[cfg(not(target_os = "macos"))]
+fn macos_webview_configuration<'a>(
+    _app: &AppHandle,
+    builder: WebviewWindowBuilder<'a, tauri::Wry, AppHandle>,
+) -> WebviewWindowBuilder<'a, tauri::Wry, AppHandle> {
     builder
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diff_window_identity_keeps_revisions_distinct_and_ignores_reveal_line() {
+        let mut diff = DiffLaunch {
+            path: "/p/a.txt".into(),
+            left: DiffSide::Rev { rev: "HEAD".into(), path: None, label: None },
+            middle: None,
+            right: DiffSide::Worktree { label: None, label_detail: None },
+            line: None,
+            line_side: None,
+            col: None,
+            chain: None,
+        };
+        let id = diff_window_id(&diff);
+        diff.line = Some(12);
+        assert_eq!(diff_window_id(&diff), id);
+        diff.middle = Some(DiffSide::Rev { rev: ":0".into(), path: None, label: None });
+        assert_ne!(diff_window_id(&diff), id);
+        diff.middle = None;
+        diff.right = DiffSide::Rev { rev: ":0".into(), path: None, label: None };
+        assert_ne!(diff_window_id(&diff), id);
+        diff.path = "/p/b.txt".into();
+        assert_ne!(diff_window_id(&diff), id);
+    }
+
+    #[test]
+    fn diff_window_keeps_file_and_selection_label_details() {
+        for side in [
+            serde_json::json!({"type": "worktree", "label": "file.rs", "labelDetail": "src"}),
+            serde_json::json!({"type": "text", "text": "let x = 1;", "label": "Selection from file.rs", "labelDetail": ""}),
+            serde_json::json!({"type": "text", "text": "let x = 2;", "label": "From Clipboard"}),
+        ] {
+            let parsed = serde_json::from_value::<DiffSide>(side.clone()).unwrap();
+            assert_eq!(serde_json::to_value(parsed).unwrap(), side);
+        }
+    }
 
     #[test]
     fn a_project_window_starts_with_the_header_its_page_draws() {
@@ -1704,12 +2709,9 @@ mod tests {
 
     #[test]
     fn additional_palettes_keep_native_startup_and_os_preferences_in_sync() {
-        for (id, color) in [
-            ("solarized-light", Color(0xee, 0xe8, 0xd5, 0xff)),
-            ("solarized-dark", Color(0x07, 0x36, 0x42, 0xff)),
-            ("one-light", Color(0xea, 0xea, 0xeb, 0xff)),
-            ("one-dark", Color(0x21, 0x25, 0x2b, 0xff)),
-        ] {
+        for (id, color) in
+            [("solarized-light", Color(0xee, 0xe8, 0xd5, 0xff)), ("solarized-dark", Color(0x07, 0x36, 0x42, 0xff))]
+        {
             let mut a = AppearanceSettings { theme: id.into(), ..Default::default() };
             assert_eq!(frame_color(&a, false), color);
             assert_eq!(frame_color(&a, true), color);
@@ -1718,6 +2720,76 @@ mod tests {
             a.preferred_dark_theme = id.into();
             assert_eq!(frame_color(&a, false), color);
             assert_eq!(frame_color(&a, true), color);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_webview_configuration_disables_writing_tools() {
+        use objc2::{MainThreadMarker, msg_send, sel};
+        use objc2_app_kit::NSWritingToolsBehavior;
+        use objc2_foundation::NSObjectProtocol;
+
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let config = unsafe { objc2_web_kit::WKWebViewConfiguration::new(mtm) };
+        let configured = configure_macos_webview_configuration(&config);
+        if config.respondsToSelector(sel!(writingToolsBehavior)) {
+            assert!(configured);
+            let behavior: NSWritingToolsBehavior = unsafe { msg_send![&config, writingToolsBehavior] };
+            assert_eq!(behavior, NSWritingToolsBehavior::None);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_webview_configuration_handles_non_main_thread() {
+        use objc2::{MainThreadMarker, sel};
+        use objc2_foundation::NSObjectProtocol;
+
+        // Off-thread scheduling failure falls back to None instead of panicking.
+        let result = std::thread::spawn(|| {
+            assert!(MainThreadMarker::new().is_none());
+            build_macos_webview_configuration_with(|_| Err(tauri::Error::FailedToReceiveMessage)).is_none()
+        })
+        .join()
+        .expect("worker thread must not panic");
+        assert!(result);
+
+        // Off-thread callback without a main-thread marker falls back to None instead of panicking.
+        let result = std::thread::spawn(|| {
+            assert!(MainThreadMarker::new().is_none());
+            build_macos_webview_configuration_with(|f| {
+                f();
+                Ok(())
+            })
+            .is_none()
+        })
+        .join()
+        .expect("worker thread must not panic");
+        assert!(result);
+
+        // When a main thread is available (e.g. nextest or --test-threads=1), dispatching from a
+        // worker thread constructs and configures WKWebViewConfiguration on the main thread.
+        if let Some(mtm) = MainThreadMarker::new() {
+            let probe = unsafe { objc2_web_kit::WKWebViewConfiguration::new(mtm) };
+            let expects_config = probe.respondsToSelector(sel!(setWritingToolsBehavior:));
+
+            let (work_tx, work_rx) = std::sync::mpsc::sync_channel::<Box<dyn FnOnce() + Send>>(1);
+            let worker = std::thread::spawn(move || {
+                assert!(MainThreadMarker::new().is_none());
+                build_macos_webview_configuration_with(move |f| {
+                    work_tx.send(f).map_err(|_| tauri::Error::FailedToReceiveMessage)
+                })
+                .is_some()
+            });
+            let work = work_rx.recv().expect("worker should schedule onto main thread");
+            work();
+            let got_config = worker.join().expect("worker thread must not panic");
+            if expects_config {
+                assert!(got_config);
+            }
         }
     }
 
@@ -1955,7 +3027,7 @@ mod tests {
         assert_eq!(plan_cli_launch(launch(), &[]), vec![OpenStep::New(Some(project.clone()), vec![file.clone()])]);
         assert_eq!(
             plan_cli_launch(launch(), &[("main".into(), Holds::Nothing)]),
-            vec![OpenStep::Launch("main".into(), launch())]
+            vec![OpenStep::Launch("main".into(), Box::new(launch()))]
         );
     }
 
@@ -1974,9 +3046,39 @@ mod tests {
         let folder = launch_for(share.clone(), true);
         let remote =
             RemoteLaunch { target: RemoteTarget::Wsl { distro: "Ubuntu".into() }, path: "/home/me/app".into() };
-        assert_eq!((folder.remote, folder.project, folder.files.len()), (Some(remote), None, 0));
+        assert_eq!((folder.remote, folder.project, folder.files.len()), (Some(remote.clone()), None, 0));
         let file = launch_for(share.join("main.py"), false);
         assert_eq!((file.remote, file.project, file.files.len()), (None, None, 1));
+    }
+
+    #[test]
+    fn a_saved_wsl_project_reopens_as_a_remote_launch_without_the_share() {
+        let remote =
+            RemoteLaunch { target: RemoteTarget::Wsl { distro: "Ubuntu".into() }, path: "/home/me/app".into() };
+        for saved in [r"\\wsl.localhost\Ubuntu\home\me\app", "wsl://Ubuntu/home/me/app", "//wsl$/Ubuntu/home/me/app"] {
+            let launch = saved_project_launch(Path::new(saved)).expect(saved);
+            assert_eq!(launch.remote, Some(remote.clone()));
+            assert!(launch.project.is_none(), "{saved}");
+        }
+        assert!(same_saved_project(
+            Path::new(r"\\wsl.localhost\Ubuntu\home\me\app"),
+            Path::new("wsl://Ubuntu/home/me/app/")
+        ));
+        let ssh = saved_project_launch(Path::new("ssh://box/srv/app")).unwrap();
+        assert_eq!(
+            ssh.remote,
+            Some(RemoteLaunch { target: RemoteTarget::Ssh { config: "box".into() }, path: "/srv/app".into() })
+        );
+        let container =
+            saved_project_launch(Path::new("devcontainer://%2Fwork%2Fapp:devcontainer.json/workspaces/app")).unwrap();
+        assert_eq!(
+            container.remote,
+            Some(RemoteLaunch {
+                target: RemoteTarget::DevContainer { folder: "/work/app".into(), config: "devcontainer.json".into() },
+                path: "/workspaces/app".into(),
+            })
+        );
+        assert!(saved_project_launch(Path::new("/no/such/local/project-openidea")).is_none());
     }
 
     fn p(s: &str) -> PathBuf {
@@ -1991,15 +3093,18 @@ mod tests {
     fn opening_at_launch_gives_the_first_window_files_or_folder() {
         let main = [w("main", Holds::Nothing)];
         let files = plan_open(vec![(p("/x/a.txt"), false), (p("/y/b.rs"), false)], &main);
-        assert_eq!(files, [OpenStep::Launch("main".into(), path_launch_of(None, vec![p("/x/a.txt"), p("/y/b.rs")]))]);
+        assert_eq!(
+            files,
+            [OpenStep::Launch("main".into(), Box::new(path_launch_of(None, vec![p("/x/a.txt"), p("/y/b.rs")])))]
+        );
         let dir = plan_open(vec![(p("/proj"), true)], &main);
-        assert_eq!(dir, [OpenStep::Launch("main".into(), path_launch_of(Some(p("/proj")), Vec::new()))]);
+        assert_eq!(dir, [OpenStep::Launch("main".into(), Box::new(path_launch_of(Some(p("/proj")), Vec::new())))]);
         // Folder and files: the folder takes the first window, the files a new LightEdit one.
         let both = plan_open(vec![(p("/x/a.txt"), false), (p("/proj"), true)], &main);
         assert_eq!(
             both,
             [
-                OpenStep::Launch("main".into(), path_launch_of(Some(p("/proj")), Vec::new())),
+                OpenStep::Launch("main".into(), Box::new(path_launch_of(Some(p("/proj")), Vec::new()))),
                 OpenStep::New(None, vec![p("/x/a.txt")]),
             ]
         );
@@ -2058,7 +3163,7 @@ mod tests {
         assert_eq!(
             steps,
             [
-                OpenStep::Launch("project-1".into(), path_launch_of(Some(p("/b")), vec![p("/b/y.rs")])),
+                OpenStep::Launch("project-1".into(), Box::new(path_launch_of(Some(p("/b")), vec![p("/b/y.rs")]))),
                 OpenStep::Files("main".into(), vec![p("/a/x.rs")]),
             ]
         );
@@ -2088,7 +3193,7 @@ mod tests {
             RemoteLaunch { target: RemoteTarget::Wsl { distro: distro.into() }, path: linux_path.into() }
         );
         assert!(wsl_launch(&p(linux_path)).is_none());
-        let launch = Launch { remote: Some(remote.clone()), ..Default::default() };
+        let launch = Box::new(Launch { remote: Some(remote.clone()), ..Default::default() });
         let folder = vec![(p(share), true)];
         // A free window connects, else a new one; the window that has it open is focused.
         assert_eq!(plan_open(folder.clone(), &[w("main", Holds::Nothing)]), [OpenStep::Launch("main".into(), launch)]);
@@ -2157,7 +3262,7 @@ mod tests {
             [w("main", Holds::Other), w("project-2", Holds::Project(p("/proj"))), w("project-1", Holds::Nothing)];
         assert_eq!(
             plan_open(vec![(p("/x/a.txt"), false)], &free),
-            [OpenStep::Launch("project-1".into(), path_launch_of(None, vec![p("/x/a.txt")]))]
+            [OpenStep::Launch("project-1".into(), Box::new(path_launch_of(None, vec![p("/x/a.txt")])))]
         );
         let busy = [w("main", Holds::Other)];
         assert_eq!(plan_open(vec![(p("/x/a.txt"), false)], &busy), [OpenStep::New(None, vec![p("/x/a.txt")])]);
@@ -2180,6 +3285,27 @@ mod tests {
         st.set_launch("project-1", Launch { project: Some("/p".into()), ..Default::default() });
         assert_eq!(st.take_launch("project-1").and_then(|l| l.project), Some("/p".into()));
         assert_eq!(st.take_launch("project-1"), None);
+    }
+
+    #[test]
+    fn editor_launch_survives_webview_reload_until_window_closes() {
+        let st = WindowsState::default();
+        let launch = Launch {
+            editor: Some(Box::new(EditorLaunch {
+                path: None,
+                input: Some(r#"{"kind":"agent-session","key":"agent:running-task"}"#.into()),
+                line: None,
+                column: None,
+                end_line: None,
+                end_column: None,
+            })),
+            ..Default::default()
+        };
+        st.set_launch("editor-main-3", launch.clone());
+        assert_eq!(st.take_launch("editor-main-3"), Some(launch.clone()));
+        assert_eq!(st.take_launch("editor-main-3"), Some(launch));
+        st.forget("editor-main-3");
+        assert!(st.take_launch("editor-main-3").is_none());
     }
 
     #[test]
@@ -2236,14 +3362,67 @@ mod tests {
         assert_eq!(settings_label("project-2"), "settings-project-2");
         assert_eq!(auxiliary("settings-main"), Some((AuxKind::Settings, "main")));
         assert_eq!(auxiliary("comparison-project-2-14"), Some((AuxKind::Comparison, "project-2")));
+        assert_eq!(auxiliary("diff-project-2-3"), Some((AuxKind::Diff, "project-2")));
+        assert_eq!(auxiliary("editor-project-2-3"), Some((AuxKind::Editor, "project-2")));
         assert_eq!(auxiliary("deployment-project-2"), Some((AuxKind::Deployment, "project-2")));
+        assert_eq!(auxiliary("new-project-project-2"), Some((AuxKind::NewProject, "project-2")));
+        assert_eq!(auxiliary("new-project-main"), Some((AuxKind::NewProject, "main")));
+        assert_eq!(auxiliary("clone-project-2"), Some((AuxKind::Clone, "project-2")));
+        assert_eq!(auxiliary("connect-main"), Some((AuxKind::Connect, "main")));
         for label in ["main", "project-1", "comparison-main", "comparison-main-x", "settings-", "settingsmain"] {
             assert_eq!(auxiliary(label), None, "{label}");
         }
         assert_eq!(state_key("comparison-main-3"), "comparison");
+        assert_eq!(state_key("diff-main-3"), "diff");
+        assert_eq!(state_key("editor-main-3"), "editor");
         assert_eq!(state_key("project-3"), "project-3");
-        let labels = ["comparison-main-0", "project-2", "main", "settings-main", "deployment-project-2"];
+        let labels = [
+            "comparison-main-0",
+            "diff-main-1",
+            "editor-main-2",
+            "project-2",
+            "main",
+            "settings-main",
+            "deployment-project-2",
+        ];
         assert_eq!(sorted_labels(labels.into_iter().filter(|l| auxiliary_parent(l).is_none())), ["main", "project-2"]);
+    }
+
+    #[test]
+    fn menu_items_chosen_in_settings_run_in_its_project_window() {
+        use MenuDestination::*;
+        for (label, action, expected) in [
+            ("main", "app.about", Own),
+            ("main", "editor.closeTab", Own),
+            // #3625: Settings has no actions of its own; the rest of the menu runs in the project window.
+            ("settings-main", "app.checkForUpdates", Parent { label: "main", raise: true }),
+            ("settings-project-2", "file.newFile", Parent { label: "project-2", raise: true }),
+            ("settings-main", "editor.closeTab", Parent { label: "main", raise: true }),
+            ("new-project-main", "file.newFile", Parent { label: "main", raise: true }),
+            ("clone-main", "vcs.clone", Parent { label: "main", raise: true }),
+            ("new-project-project-2", "editor.closeTab", Parent { label: "project-2", raise: true }),
+            ("settings-main", "file.settings", Parent { label: "main", raise: false }),
+            ("settings-main", "app.quit", Parent { label: "main", raise: false }),
+            ("comparison-main-0", "app.quit", Parent { label: "main", raise: false }),
+            ("comparison-main-0", "editor.closeTab", Close),
+            ("diff-main-1", "vcs.diff.next", Own),
+            ("deployment-main", "app.about", Own),
+        ] {
+            assert_eq!(menu_destination(label, action), expected, "{label} {action}");
+        }
+    }
+
+    #[test]
+    fn a_new_window_fits_the_work_area() {
+        // 1920×1080 at 150 % with a 48-pixel taskbar (#5750).
+        let area = (1280.0, 1032.0 / 1.5);
+        assert_eq!(fit_new_window((1440.0, 900.0), (400.0, 500.0), area), ((1280.0, 688.0), (400.0, 500.0)));
+        // A minimum larger than the screen gives way too.
+        assert_eq!(fit_new_window((1440.0, 900.0), (400.0, 800.0), area).1, (400.0, 688.0));
+        // A large screen keeps the configured size; an unknown work area changes nothing.
+        let big = ((1440.0, 900.0), (400.0, 500.0));
+        assert_eq!(fit_new_window(big.0, big.1, (2560.0, 1400.0)), big);
+        assert_eq!(fit_new_window(big.0, big.1, (0.0, 0.0)), big);
     }
 
     #[test]
@@ -2271,9 +3450,87 @@ mod tests {
             ((1700.0, 900.0, 800.0, 600.0), (980.0, 720.0), (0.0, 0.0, 1920.0, 1040.0), (940.0, 320.0, 980.0, 720.0)),
             // Work area smaller than the normal minimum size.
             ((0.0, 0.0, 800.0, 600.0), (980.0, 720.0), (0.0, 0.0, 600.0, 360.0), (0.0, 0.0, 600.0, 360.0)),
+            // Restored geometry shrunk below minimum size (e.g. from a lower-DPI monitor) clamps up to min_size.
+            ((100.0, 60.0, 1440.0, 900.0), (350.0, 177.0), (0.0, 0.0, 1728.0, 1080.0), (370.0, 160.0, 900.0, 700.0)),
         ] {
-            assert_eq!(fit_bounds(parent, size, work), expected);
+            assert_eq!(fit_bounds(parent, size, SETTINGS_MIN_SIZE, work), expected);
         }
+    }
+
+    #[test]
+    fn macos_auxiliary_windows_bypass_physical_window_state_and_clamp_cocoa_bounds() {
+        assert!(keeps_window_state("main"));
+        assert!(keeps_window_state("project-2"));
+        for label in [
+            "settings",
+            "comparison",
+            "diff",
+            "deployment",
+            "settings-main",
+            "comparison-project-2-0",
+            "diff-main-9",
+            "deployment-main",
+            "new-project-main",
+            "clone-main",
+            "connect-main",
+        ] {
+            assert!(!keeps_window_state(label), "{label} must not use physical window-state");
+        }
+
+        // Undersized or invalid saved auxiliary geometry clamps up to min_size.
+        assert_eq!(
+            resolve_aux_geometry(
+                Some(AuxGeometry { width: 350.0, height: 177.0, maximized: false }),
+                SETTINGS_SIZE,
+                SETTINGS_MIN_SIZE,
+            ),
+            AuxGeometry { width: 900.0, height: 700.0, maximized: false },
+        );
+        assert_eq!(
+            resolve_aux_geometry(None, SETTINGS_SIZE, SETTINGS_MIN_SIZE),
+            AuxGeometry { width: 980.0, height: 720.0, maximized: false },
+        );
+        assert_eq!(
+            resolve_aux_geometry(
+                Some(AuxGeometry { width: 1180.0, height: 820.0, maximized: true }),
+                SETTINGS_SIZE,
+                SETTINGS_MIN_SIZE,
+            ),
+            AuxGeometry { width: 1180.0, height: 820.0, maximized: true },
+        );
+
+        // Cocoa bottom-left visibleFrame: y=50..1090 (Dock=50, menu=37 on 1127pt display),
+        // parent=(100, 140, 1440, 900) -> top=1040, centre=(820, 590).
+        // Settings (980×720) centres at x=330, y=590 - 360 = 230.
+        assert_eq!(
+            cocoa_fit_bounds(
+                (100.0, 140.0, 1440.0, 900.0),
+                (980.0, 720.0),
+                SETTINGS_MIN_SIZE,
+                (0.0, 50.0, 1728.0, 1040.0)
+            ),
+            (330.0, 230.0, 980.0, 720.0),
+        );
+        // Secondary QHD display at negative x=(-2560, 0, 2560, 1415), undersized 350×177 clamps to 900×700.
+        assert_eq!(
+            cocoa_fit_bounds(
+                (-2200.0, 200.0, 1600.0, 1000.0),
+                (350.0, 177.0),
+                SETTINGS_MIN_SIZE,
+                (-2560.0, 0.0, 2560.0, 1415.0),
+            ),
+            (-1850.0, 350.0, 900.0, 700.0),
+        );
+        // Taller than parent: top edge aligns with parent's top edge (y + h == 200 + 500 = 700 -> y = 0).
+        assert_eq!(
+            cocoa_fit_bounds(
+                (0.0, 200.0, 1000.0, 500.0),
+                (900.0, 700.0),
+                SETTINGS_MIN_SIZE,
+                (0.0, 0.0, 1728.0, 1040.0)
+            ),
+            (50.0, 0.0, 900.0, 700.0),
+        );
     }
 
     #[test]
@@ -2281,5 +3538,56 @@ mod tests {
         assert_eq!(centered(100.0, 50.0, 1440.0, 900.0, 980.0, 720.0), (330.0, 140.0));
         // Taller than the parent: aligned with its top edge.
         assert_eq!(centered(0.0, 50.0, 800.0, 500.0, 600.0, 720.0), (100.0, 50.0));
+    }
+
+    #[test]
+    fn menu_settings_launch_routes_to_parent_and_respects_separate_window_and_pending_launch() {
+        assert_eq!(menu_settings_launch("main", false, true, "file.settings", None), Some(("main", None, false)),);
+        assert_eq!(
+            menu_settings_launch("diff-project-2-42", false, true, "file.settings", Some("keymap".into())),
+            Some(("project-2", Some("keymap".into()), false)),
+        );
+        assert_eq!(
+            menu_settings_launch("settings-main", false, true, "file.newProjectsSettings", None),
+            Some(("main", Some("languages.java".into()), true)),
+        );
+        // Separate-window off, pending cold launch, or unrelated menu actions fall back to frontend dispatch.
+        assert_eq!(menu_settings_launch("main", false, false, "file.settings", None), None);
+        assert_eq!(menu_settings_launch("main", true, true, "file.settings", None), None);
+        assert_eq!(menu_settings_launch("main", false, true, "file.openProject", None), None);
+    }
+
+    #[test]
+    fn parallel_close_coordination_tracks_ready_prompt_and_abort() {
+        let st = WindowsState::default();
+        st.close_requested("main");
+        st.close_requested("project-1");
+        assert!(st.is_closing("main"));
+        assert!(st.has_other_pending_closes("main"));
+
+        // Prompt turn allows only one holder at a time.
+        assert_eq!(st.try_acquire_prompt("main"), Ok(true));
+        assert_eq!(st.try_acquire_prompt("project-1"), Ok(false));
+        assert!(st.has_prompt_holder());
+
+        // Marking ready releases the prompt turn.
+        assert!(st.mark_ready("main"));
+        assert!(!st.has_prompt_holder());
+        assert_eq!(st.try_acquire_prompt("project-1"), Ok(true));
+
+        // Cancelling the batch aborts waiting ready peers and clears the prompt holder.
+        st.abort_all_closing(Some("project-1"));
+        assert!(!st.has_prompt_holder());
+        assert!(st.take_aborted("main"));
+        assert!(!st.is_closing("main"));
+        assert!(!st.take_aborted("project-1"));
+
+        // A fresh close clears any stale aborted state and claims hide once per cohort.
+        st.close_requested("main");
+        assert_eq!(
+            st.claim_hide(&["main".into(), "project-1".into()]),
+            vec!["main".to_string(), "project-1".to_string()]
+        );
+        assert!(st.claim_hide(&["main".into(), "project-1".into()]).is_empty());
     }
 }

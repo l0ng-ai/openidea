@@ -13,7 +13,12 @@ impl ChangelistState {
     /// The default "Changes" list, active, with no file assignments.
     pub fn initial() -> Self {
         ChangelistState {
-            lists: vec![Changelist { id: DEFAULT_ID.into(), name: DEFAULT_NAME.into(), comment: String::new() }],
+            lists: vec![Changelist {
+                id: DEFAULT_ID.into(),
+                name: DEFAULT_NAME.into(),
+                comment: String::new(),
+                applied_commit: None,
+            }],
             active: DEFAULT_ID.into(),
             files: Default::default(),
         }
@@ -39,9 +44,21 @@ impl ChangelistState {
 pub fn load(file: &Path) -> ChangelistState {
     std::fs::read(file)
         .ok()
-        .and_then(|b| serde_json::from_slice::<ChangelistState>(&b).ok())
+        .and_then(|b| decode(&b).ok())
         .map(ChangelistState::normalized)
         .unwrap_or_else(ChangelistState::initial)
+}
+
+fn decode(bytes: &[u8]) -> serde_json::Result<ChangelistState> {
+    let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
+    if let Some(lists) = value.get_mut("lists").and_then(serde_json::Value::as_array_mut) {
+        for list in lists.iter_mut().filter_map(serde_json::Value::as_object_mut) {
+            if let Some(source) = list.remove("cherryPick") {
+                list.entry("appliedCommit").or_insert(source);
+            }
+        }
+    }
+    serde_json::from_value(value)
 }
 
 pub fn save(file: &Path, state: &ChangelistState) -> IdeResult<()> {
@@ -93,7 +110,12 @@ mod tests {
         assert_eq!(load(&file).lists[0].name, "Changes");
 
         let mut st = ChangelistState::initial();
-        st.lists.push(Changelist { id: "f".into(), name: "Feature".into(), comment: String::new() });
+        st.lists.push(Changelist {
+            id: "f".into(),
+            name: "Feature".into(),
+            comment: String::new(),
+            applied_commit: None,
+        });
         st.active = "f".into();
         st.files.insert("src/a.rs".into(), "f".into());
         st.files.insert("b.rs".into(), "missing".into());
@@ -115,5 +137,34 @@ mod tests {
         let text = std::fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
         assert_eq!(text.matches("/shelf/").count(), 1);
         assert!(text.contains("/changelists.json\n"));
+    }
+
+    #[test]
+    fn restores_earlier_cherry_pick_lists() {
+        let state = decode(
+            br#"{
+                "lists": [{
+                    "id": "pick",
+                    "name": "Incoming change",
+                    "cherryPick": {
+                        "repo": "/repo",
+                        "commit": "source",
+                        "base": "head",
+                        "author": "Author <author@example.invalid>",
+                        "authorDate": "2022-06-04T13:20:21+05:30"
+                    }
+                }],
+                "active": "pick",
+                "files": {"a.txt": "pick"}
+            }"#,
+        )
+        .unwrap();
+        let list = &state.lists[0];
+        let source = list.applied_commit.as_ref().unwrap();
+        assert_eq!(source.kind, crate::CommitApplyKind::CherryPick);
+        assert_eq!(source.author_date.as_deref(), Some("2022-06-04T13:20:21+05:30"));
+        let saved = serde_json::to_value(list).unwrap();
+        assert_eq!(saved["appliedCommit"]["kind"], "cherry-pick");
+        assert_eq!(saved["appliedCommit"]["author"], "Author <author@example.invalid>");
     }
 }

@@ -3,16 +3,16 @@
  * (`expr.if` …), Emmet (Tab expansion, Update Tag with Emmet) and file
  * templates ("New ▸ …").
  */
-import { lazyComponent } from "@/ui";
-import { registerAction, registerActions, type Action } from "@/platform/actions";
+import { registerActions, type Action } from "@/platform/actions";
 import { activeEditor, registerEditorContribution } from "@/editor/api";
 import {
   notifications,
   registerMenuGroup,
   registerOverlay,
-  registerSettingsPage,
+  hasRunConfiguration,
   type MenuGroupContext,
 } from "@/workbench/contributions";
+import { activateSettingsPages } from "./settingsPages";
 import { insertLiveTemplate, surroundTarget, surroundWith, templateEditorExtension } from "./editor";
 import { ChooserHost } from "./popup/Chooser";
 import { NewFileDialogHost, openNewFileDialog } from "./files/NewFileDialog";
@@ -23,9 +23,10 @@ import { syncTemplatesFromStorage } from "./sync";
 import { tagAtCaret, updateTag } from "./emmet/editor";
 import { loadEmmet } from "./emmet/model";
 import { promptAbbreviation, UpdateTagDialogHost } from "./emmet/UpdateTagDialog";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
+import type { ProjectType } from "@/ui/projectType";
 
-const EDITOR_WHEN = "textEditorActive && !editorReadOnly && (editorFocus || popupOpen || !toolWindowFocus)";
+const EDITOR_WHEN = "textEditorActive && !editorReadOnly && (editorFocus || !toolWindowFocus)";
 const MARKUP_PATH = /\.(html?|xhtml|shtml|vue|svelte|xml)$/i;
 
 async function updateTagWithEmmet() {
@@ -78,7 +79,7 @@ function directoryOf(arg: unknown): string | null {
 function newFileAction(t: FileTemplate): Action {
   return {
     id: `templates.new.${t.id}`,
-    title: t.id === "file" ? "New Empty File…" : tx`New ${t.name}…`,
+    title: t.id === "file" ? "New Empty File…" : tx`New ${txPart(t.name)}…`,
     category: "File",
     icon: t.icon,
     when: "projectOpen",
@@ -92,6 +93,22 @@ function newFileAction(t: FileTemplate): Action {
   };
 }
 
+// Generic templates (including JavaScript and TypeScript) and user or plugin templates
+// have no project type restriction.
+const templateProjectTypes: Partial<Record<string, readonly ProjectType[]>> = {
+  svelte: ["vite", "node"],
+  rust: ["cargo"],
+  python: ["python"],
+  jupyter: ["python"],
+  go: ["go"],
+  "go-mod": ["go"],
+  zig: ["zig"],
+  php: ["php"],
+  "php-class": ["php"],
+  java: ["maven", "gradle"],
+  kotlin: ["maven", "gradle"],
+};
+
 /** New popup / New › entries: the enabled templates ("File" is the project view's own entry), then From Template…. */
 function registerNewMenuGroups(): () => void {
   const arg = (ctx: MenuGroupContext) => (ctx.paths[0] ? { directory: ctx.paths[0] } : undefined);
@@ -100,16 +117,24 @@ function registerNewMenuGroups(): () => void {
       id: "templates.new",
       menus: ["new"],
       order: 10,
-      items: (_menu, ctx) =>
-        fileTemplates()
-          .filter((t) => t.enabled !== false && t.id !== "file")
+      items: (_menu, ctx) => {
+        const directory = ctx.paths[0];
+        const tomcat = directory !== undefined && hasRunConfiguration("tomcat", directory);
+        return fileTemplates()
+          .filter((t) => {
+            if (t.enabled === false || t.id === "file") return false;
+            if (t.id === "tomcat-context") return tomcat;
+            const types = templateProjectTypes[t.id];
+            return !types || !ctx.projectType || types.includes(ctx.projectType);
+          })
           .map((t) => ({
             kind: "action",
             action: `templates.new.${t.id}`,
             arg: arg(ctx),
             label: t.name,
             icon: t.icon,
-          })),
+          }));
+      },
     }),
     registerMenuGroup({
       id: "templates.newFromTemplate",
@@ -124,10 +149,10 @@ function registerNewMenuGroups(): () => void {
 }
 
 function registerFileTemplateActions(): () => void {
-  let disposers: Array<() => void> = [];
+  let dispose = () => {};
   const sync = (templates: FileTemplate[]) => {
-    disposers.forEach((d) => d());
-    disposers = templates.filter((t) => t.enabled !== false).map((t) => registerAction(newFileAction(t)));
+    dispose();
+    dispose = registerActions(templates.filter((t) => t.enabled !== false).map(newFileAction));
   };
   sync(useFileTemplates.getState().templates);
   const unsub = useFileTemplates.subscribe((s, prev) => {
@@ -135,40 +160,8 @@ function registerFileTemplateActions(): () => void {
   });
   return () => {
     unsub();
-    disposers.forEach((d) => d());
+    dispose();
   };
-}
-
-/** Live / postfix / file template pages (also used by the Settings window). */
-export function activateSettingsPages(): () => void {
-  const disposers = [
-    registerSettingsPage({
-      id: "editor.liveTemplates",
-      title: "Live Templates",
-      group: "Editor",
-      order: 28,
-      keywords: ["snippet", "abbreviation", "surround", "template"],
-      component: lazyComponent(() => import("./settings/LiveTemplatesPage").then((m) => m.LiveTemplatesPage)),
-    }),
-    registerSettingsPage({
-      // IDEA: Editor › General › Postfix Completion.
-      id: "editor.general.postfixCompletion",
-      title: "Postfix Completion",
-      group: "Editor",
-      order: 7,
-      keywords: ["postfix", "template", ".if", ".var", ".for"],
-      component: lazyComponent(() => import("./settings/PostfixPage").then((m) => m.PostfixPage)),
-    }),
-    registerSettingsPage({
-      id: "editor.fileTemplates",
-      title: "File and Code Templates",
-      group: "Editor",
-      order: 26,
-      keywords: ["new file", "class", "template", "package", "includes", "file header", "code", "scheme", "reformat"],
-      component: lazyComponent(() => import("./settings/FileTemplatesPage").then((m) => m.FileTemplatesPage)),
-    }),
-  ];
-  return () => disposers.reverse().forEach((d) => d());
 }
 
 export function activate(): () => void {

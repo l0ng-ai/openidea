@@ -7,5 +7,10 @@
   <true/>
   <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
   <true/>
+  <!-- Let main honour DYLD_FRAMEWORK_PATH when it re-execs into the WebKit
+       staged by a Safari update on macOS 11 / pre-15.4 12. The staged
+       framework is Apple-signed, so library validation stays enabled. -->
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <true/>
 </dict>
 </plist>

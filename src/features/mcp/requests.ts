@@ -1,5 +1,6 @@
 /** Window requests from the built-in MCP server, answered through window-scoped IPC. */
 import { create } from "zustand";
+import { executeActionOrThrow } from "@/platform/actions";
 import { call, commands, type McpUiRequest } from "@/platform/ipc";
 import { editorService } from "@/workbench/contributions";
 
@@ -41,6 +42,17 @@ export async function handleMcpRequest(
     useMcpConfirms.setState((s) =>
       s.queue.some((c) => c.id === id) ? s : { queue: [...s.queue, { ...request, id }] },
     );
+    return;
+  }
+  if (request.type === "agentRun") {
+    // The Run tool window starts it in the agent tab; the answer says whether it started.
+    try {
+      const { name, command, cwd, env } = request;
+      await executeActionOrThrow("run.agentStart", { name, command, cwd, env });
+      await send(id, true);
+    } catch (error) {
+      await send(id, false, error instanceof Error ? error.message : String(error)).catch(() => {});
+    }
     return;
   }
   try {

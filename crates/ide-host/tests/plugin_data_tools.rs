@@ -1,4 +1,6 @@
 //! Database and MCP calls through a real sandboxed API 1.4 component.
+mod common;
+
 use ide_core::{CancellationToken, IdeEvent, event::McpUiRequest};
 use ide_host::{
     Host, HostConfig,
@@ -27,6 +29,9 @@ struct Harness {
 }
 impl Harness {
     fn new() -> Self {
+        Self::with_timeout(Duration::from_millis(250))
+    }
+    fn with_timeout(timeout: Duration) -> Self {
         ide_ssh::secrets::testing::use_memory_store();
         let tmp = tempfile::tempdir().unwrap();
         let root = dunce::canonicalize(tmp.path()).unwrap().join("project");
@@ -34,18 +39,12 @@ impl Harness {
         let events = Arc::new(Mutex::new(vec![]));
         let out = events.clone();
         let host = Arc::new(Host::new(HostConfig {
-            config_dir: tmp.path().join("config"),
-            data_dir: tmp.path().join("data"),
-            local_data_dir: tmp.path().join("local"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
             sink_for: Box::new(move |w| {
                 let (w, out) = (w.to_owned(), out.clone());
                 Arc::new(move |e| out.lock().unwrap().push((w.clone(), e)))
             }),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
+            local_data_dir: tmp.path().join("local"),
+            ..common::host_config(tmp.path())
         }));
         std::fs::write(root.join("db.sqlite"), "").unwrap();
         host.open_project("main", &root).unwrap();
@@ -56,7 +55,7 @@ impl Harness {
             PluginHost::new(
                 tmp.path().join("plugins"),
                 Arc::new(move |w: Option<&str>, e| out.lock().unwrap().push((w.unwrap_or_default().to_owned(), e))),
-                Limits { timeout: Duration::from_millis(250), ..Default::default() },
+                Limits { timeout, ..Default::default() },
             )
             .unwrap(),
         );
@@ -77,7 +76,8 @@ impl Harness {
 }
 #[tokio::test(flavor = "multi_thread")]
 async fn database_calls_enforce_grants_trust_ownership_and_uninstall_lifetime() {
-    let f = Harness::new();
+    // Nothing here tests the command budget, and a slow runner's first calls can exceed 250 ms.
+    let f = Harness::with_timeout(Duration::from_secs(10));
     assert!(f.run("sources", None).is_err());
     f.host.set_project_trust(&f.root, true, false).await.unwrap();
     let source = f.source();
@@ -135,7 +135,7 @@ async fn database_connect_asks_only_the_invoking_window_and_uses_normal_connecti
     assert_eq!(window, "main");
     assert!(!f.plugins.answer_command("second", &request, ide_host::plugins::CommandAnswer::Value(None)));
     tokio::time::sleep(Duration::from_millis(350)).await; // Password entry can outlive the 250 ms command budget.
-    ops::db::connect(&f.host, "main", &source).await.unwrap();
+    ops::db::db_connect(&f.host, "main", source.to_string()).await.unwrap();
     f.plugins.answer_command("main", &request, ide_host::plugins::CommandAnswer::Value(None));
     run.await.unwrap().unwrap();
     assert!(!f.host.project("main").unwrap().db.connected().is_empty());
@@ -190,6 +190,41 @@ async fn mcp_listing_dispatch_confirmation_and_lifecycle_use_plugin_authority() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_plugin_tool_call_holds_its_background_project_until_it_ends() {
+    use ide_host::mcp::{BackgroundProjects, McpBackgroundHold};
+    // The fixture's `spin` runs until it is cancelled or its budget ends.
+    let f = Harness::with_timeout(Duration::from_secs(10));
+    let inventory = f.root.parent().unwrap().join("inventory");
+    std::fs::create_dir(&inventory).unwrap();
+    for (key, value) in [
+        ("enabled", serde_json::json!(true)),
+        ("backgroundProjects", serde_json::json!("listed")),
+        ("backgroundProjectPaths", serde_json::json!([inventory])),
+    ] {
+        let key = format!("mcpServer.{key}");
+        f.host.global_settings.set(ide_workspace::SettingsScope::Global, &key, value).unwrap();
+    }
+    let held_by = || {
+        let loaded = f.host.mcp_background.snapshot(&f.host, std::time::Instant::now());
+        loaded.into_iter().next().map(|project| project.kept_open_by)
+    };
+    let (registry, root, cancel) = (Registry::new(f.host.clone()), inventory.clone(), CancellationToken::new());
+    let stop = cancel.clone();
+    let call = tokio::task::spawn_blocking(move || registry.call(&root, "test_data_tools__spin", "{}", cancel));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while held_by() != Some(Some(McpBackgroundHold::Request)) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the call holds the project while the plugin runs");
+    stop.cancel();
+    assert!(call.await.unwrap().is_err());
+    assert_eq!(held_by(), Some(None), "the project stays loaded with nothing holding it");
+    f.host.close_project(&BackgroundProjects::key(&inventory));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn database_imports_are_denied_without_the_optional_grant() {
     let f = Harness::new();
     f.host.set_project_trust(&f.root, true, false).await.unwrap();
@@ -202,7 +237,8 @@ async fn database_imports_are_denied_without_the_optional_grant() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn official_api_examples_install_and_render_real_component_contributions() {
-    let f = Harness::new();
+    // The real examples' first calls compile and scan; 250 ms is too tight on Windows runners.
+    let f = Harness::with_timeout(Duration::from_secs(10));
     f.host.set_project_trust(&f.root, true, false).await.unwrap();
     let official = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/official");
     for name in ["blame-annotations", "todo-finder"] {
@@ -238,7 +274,7 @@ async fn official_api_examples_install_and_render_real_component_contributions()
             ide_plugin::ProviderDocument { path: f.root.join("example.tests"), text: "test adds\n".into(), ..doc };
         assert!(eventually(|| {
             f.plugins
-                .language_gutter_actions(&doc)
+                .language_gutter_actions(&doc, Some(&f.root))
                 .iter()
                 .any(|(owner, action)| owner == "openidea.test-runner" && action.argument.as_deref() == Some("adds"))
         }));

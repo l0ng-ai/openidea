@@ -15,6 +15,8 @@ export interface ScopeChoice {
   directory: string;
   /** Name of the custom scope for `custom` (`@/platform/search`). */
   custom?: string;
+  /** The file `file` resolved to, so a rerun inspects it again rather than the file now active. */
+  file?: string;
 }
 
 export const SCOPE_LABELS: Record<ScopeKind, string> = {
@@ -58,7 +60,7 @@ export async function resolveScope(choice: ScopeChoice): Promise<SearchScope | s
     case "directory":
       return choice.directory.trim() ? { kind: "directory", path: choice.directory.trim() } : "Choose a directory";
     case "file": {
-      const file = currentFile();
+      const file = choice.file ?? currentFile();
       return file ? { kind: "files", paths: [file] } : "No file is open";
     }
     case "changed": {

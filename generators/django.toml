@@ -1,0 +1,51 @@
+id = "django"
+name = "Django"
+group = "Python"
+icon = "project-django"
+order = 1
+description = "A Django site, with its environment managed by uv."
+
+[[requires]]
+program = "uv"
+hint = "Install uv: https://docs.astral.sh/uv/getting-started/installation/"
+
+[[fields]]
+id = "python"
+label = "Python version:"
+type = "text"
+placeholder = "Latest installed"
+hint = "A version such as 3.13; uv downloads it when missing."
+
+[[fields]]
+id = "module"
+label = "Project module:"
+type = "text"
+pattern = '^[A-Za-z_][A-Za-z0-9_]*$'
+default = "{{name|snake}}"
+
+[[steps]]
+label = "Running uv init"
+program = "uv"
+args = [
+    "init", "--bare", "--name", "{{name|kebab}}", "--vcs", "none", "--no-workspace",
+    { if-set = "python", args = ["--python", "{{python}}"] },
+]
+
+[[steps]]
+label = "Adding Django"
+program = "uv"
+args = ["add", "django"]
+
+[[steps]]
+label = "Running django-admin startproject"
+program = "uv"
+args = ["run", "django-admin", "startproject", "{{module}}", "."]
+
+[[files]]
+path = ".gitignore"
+content = '''
+.venv/
+__pycache__/
+*.pyc
+db.sqlite3
+'''

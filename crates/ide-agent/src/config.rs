@@ -3,7 +3,7 @@
 
 use crate::model::{
     AgentCommand, AgentCommandSource, AgentConfigOption, AgentConfigValue, AgentConfigVia, AgentCost, AgentLimit,
-    AgentUsage,
+    AgentModelPricing, AgentTokens, AgentUsage,
 };
 use serde_json::{Value, json};
 
@@ -20,17 +20,24 @@ pub(crate) fn add_client_options(provider: &str, config: &mut Vec<AgentConfigOpt
         description: Some("Tool approvals for this Cursor conversation".into()),
         category: Some("approval".into()),
         current: Some("ask".into()),
+        default_value: Some("ask".into()),
         via: AgentConfigVia::Option,
         values: vec![
             AgentConfigValue {
                 value: "ask".into(),
                 name: "Ask for approval".into(),
                 description: Some("Show permission requests from Cursor".into()),
+                cost_category: None,
+                usage_multiplier: None,
+                pricing: None,
             },
             AgentConfigValue {
                 value: "bypass".into(),
                 name: "Bypass approvals".into(),
                 description: Some("Automatically approve tool requests in this conversation".into()),
+                cost_category: None,
+                usage_multiplier: None,
+                pricing: None,
             },
         ],
     });
@@ -42,16 +49,66 @@ pub(crate) fn bypass_approvals(config: &[AgentConfigOption]) -> bool {
     let selected = |category: &str| {
         config.iter().find(|o| o.category.as_deref() == Some(category)).and_then(|o| o.current.as_deref())
     };
-    selected("mode").is_some_and(is_bypass_mode)
-        || selected("permissions").is_some_and(|v| matches!(v.to_ascii_lowercase().as_str(), "on" | "true"))
-        || selected("approval").is_some_and(|v| v.eq_ignore_ascii_case("bypass"))
+    ["mode", "permissions", "approval"]
+        .into_iter()
+        .any(|category| selected(category).zip(bypass_value(category)).is_some_and(|(value, bypass)| bypass(value)))
 }
 
-/// The mode that approves everything without asking (`bypassPermissions`, `yolo`, `full-access`…), if the agent has one.
-pub(crate) fn bypass_mode(options: &[AgentConfigOption]) -> Option<(&AgentConfigOption, &AgentConfigValue)> {
-    let option = options.iter().find(|o| o.category.as_deref() == Some("mode"))?;
-    let value = option.values.iter().find(|v| is_bypass_mode(&v.value))?;
-    Some((option, value))
+/// For an option of `category` that can approve everything, what tells its approving values.
+fn bypass_value(category: &str) -> Option<fn(&str) -> bool> {
+    match category {
+        "mode" => Some(is_bypass_mode),
+        "permissions" => Some(|v| matches!(v.to_ascii_lowercase().as_str(), "on" | "true")),
+        "approval" => Some(|v| v.eq_ignore_ascii_case("bypass")),
+        _ => None,
+    }
+}
+
+/// Moves options that approve everything without asking to a value that asks: the agent's
+/// own default (when it asks), else `default` or `ask`, else its first one that asks.
+pub(crate) fn ask_for_approvals(config: &mut [AgentConfigOption]) {
+    for option in config {
+        let Some(bypass) = option.category.as_deref().and_then(bypass_value) else { continue };
+        if option.current.as_deref().is_some_and(|c| !bypass(c)) {
+            continue;
+        }
+        let asks = |v: &&AgentConfigValue| !bypass(&v.value);
+        let value = option
+            .default_value
+            .as_deref()
+            .and_then(|def| option.values.iter().filter(asks).find(|v| v.value == def))
+            .or_else(|| {
+                ["default", "ask"]
+                    .iter()
+                    .find_map(|preferred| option.values.iter().filter(asks).find(|v| v.value == *preferred))
+            })
+            .or_else(|| option.values.iter().find(asks));
+        if let Some(value) = value {
+            option.current = Some(value.value.clone());
+        }
+    }
+}
+
+/// Moves approval-bearing options (`mode`, `permissions`, `approval`) to their approving value.
+pub(crate) fn apply_bypass_approvals(config: &mut [AgentConfigOption]) {
+    for option in config {
+        let Some(bypass) = option.category.as_deref().and_then(bypass_value) else { continue };
+        if let Some(value) = option.values.iter().find(|v| bypass(&v.value)) {
+            option.current = Some(value.value.clone());
+        }
+    }
+}
+
+/// Applies provider-specific defaults to per-model options for new tasks without altering `default_value`.
+pub(crate) fn apply_model_defaults(provider: &str, options: &mut [AgentConfigOption]) {
+    if provider != "cursor" {
+        return;
+    }
+    if let Some(fast) = options.iter_mut().find(|o| is_fast_option(&o.id))
+        && fast.values.iter().any(|v| v.value == "false")
+    {
+        fast.current = Some("false".into());
+    }
 }
 
 fn is_bypass_mode(mode: &str) -> bool {
@@ -89,6 +146,25 @@ pub(crate) fn options_of(result: &Value) -> Vec<AgentConfigOption> {
     out
 }
 
+pub(crate) fn is_context_option(id: &str) -> bool {
+    matches!(id, "context" | "context_tier" | "contextTier")
+}
+
+pub(crate) fn is_fast_option(id: &str) -> bool {
+    id == "fast"
+}
+
+/// Whether an option's available values and default belong to the selected model
+/// (`thought_level`, `context_tier`, and `model_config` options like `context`, `fast` and `service_tier`)
+/// rather than the provider as a whole.
+pub(crate) fn is_per_model_option(o: &AgentConfigOption) -> bool {
+    matches!(o.category.as_deref(), Some("thought_level" | "context_tier" | "model_config"))
+        || matches!(o.id.as_str(), "effort" | "reasoning_effort" | "thinking" | "reasoning")
+        || is_fast_option(&o.id)
+        || is_context_option(&o.id)
+        || o.id == "service_tier"
+}
+
 /// A `configOptions` array; only select options are kept (the UI shows them as dropdowns).
 pub(crate) fn parse_options(options: &Value) -> Vec<AgentConfigOption> {
     let Some(list) = options.as_array() else { return Vec::new() };
@@ -104,11 +180,22 @@ pub(crate) fn parse_options(options: &Value) -> Vec<AgentConfigOption> {
                     None => values.extend(value_of(v)),
                 }
             }
+            let current = str_of(o, "currentValue");
+            let default_value = str_of(o, "defaultValue").or_else(|| current.clone());
             Some(AgentConfigOption {
                 name: str_of(o, "name").unwrap_or_else(|| id.clone()),
                 description: str_of(o, "description"),
-                category: str_of(o, "category").or_else(|| matches!(id.as_str(), "model" | "mode").then(|| id.clone())),
-                current: str_of(o, "currentValue"),
+                category: str_of(o, "category").or_else(|| {
+                    matches!(id.as_str(), "model" | "mode")
+                        .then(|| id.clone())
+                        .or_else(|| {
+                            matches!(id.as_str(), "effort" | "reasoning_effort" | "thinking" | "reasoning")
+                                .then(|| "thought_level".into())
+                        })
+                        .or_else(|| (is_fast_option(&id) || is_context_option(&id)).then(|| "model_config".into()))
+                }),
+                current,
+                default_value,
                 values,
                 via: AgentConfigVia::Option,
                 id,
@@ -118,9 +205,24 @@ pub(crate) fn parse_options(options: &Value) -> Vec<AgentConfigOption> {
 }
 
 /// A `config_option_update`: its options replace the config-option ones; `modes` / `models`
-/// stand-ins stay.
+/// stand-ins stay, and initial `default_value`s survive same-model option edits for Reset.
 pub(crate) fn merge_update(config: &mut Vec<AgentConfigOption>, options: &Value) {
-    let fresh = parse_options(options);
+    let mut fresh = parse_options(options);
+    let old_model = config.iter().find(|o| o.category.as_deref() == Some("model")).and_then(|o| o.current.as_deref());
+    let new_model = fresh.iter().find(|o| o.category.as_deref() == Some("model")).and_then(|o| o.current.as_deref());
+    let same_model = old_model == new_model;
+    for f in &mut fresh {
+        if f.default_value == f.current
+            && (same_model || !is_per_model_option(f))
+            && let Some(prev_default) = config
+                .iter()
+                .find(|p| p.id == f.id)
+                .and_then(|p| p.default_value.as_ref())
+                .filter(|def| f.values.iter().any(|v| v.value == **def))
+        {
+            f.default_value = Some(prev_default.clone());
+        }
+    }
     let covered = |o: &AgentConfigOption| fresh.iter().any(|f| f.category.is_some() && f.category == o.category);
     config.retain(|o| o.id == CURSOR_APPROVAL || (o.via != AgentConfigVia::Option && !covered(o)));
     let legacy = std::mem::take(config);
@@ -143,6 +245,23 @@ pub(crate) fn set_request(option: &AgentConfigOption, value: &str) -> (&'static 
         AgentConfigVia::Mode => ("session/set_mode", json!({ "modeId": value })),
         AgentConfigVia::Model => ("session/set_model", json!({ "modelId": value })),
     }
+}
+
+/// Legacy setters and agents that report the change in a notification may return no model.
+pub(super) fn accepts_model(reply: &Value, id: &str, value: &str) -> bool {
+    reply
+        .get("configOptions")
+        .and_then(Value::as_array)
+        .and_then(|options| {
+            options.iter().find(|option| {
+                option.get("category").and_then(Value::as_str) == Some("model")
+                    || option.get("id").or_else(|| option.get("configId")).and_then(Value::as_str) == Some(id)
+            })
+        })
+        .and_then(|option| option.get("currentValue"))
+        .or_else(|| reply.pointer("/models/currentModelId"))
+        .and_then(Value::as_str)
+        .is_none_or(|current| current == value)
 }
 
 /// `available_commands_update`.
@@ -181,6 +300,18 @@ pub(crate) fn usage_of(update: &Value) -> Option<AgentUsage> {
     Some(AgentUsage { used: tokens("used")?, size: tokens("size").filter(|s| *s > 0)?, cost })
 }
 
+/// The `usage` of a `session/prompt` result: `{ inputTokens, cachedReadTokens, outputTokens }`.
+pub(crate) fn tokens_of(result: &Value) -> Option<AgentTokens> {
+    let usage = result.get("usage")?;
+    let tokens = |key: &str| usage.get(key).and_then(Value::as_u64).map_or(0, |n| u32::try_from(n).unwrap_or(u32::MAX));
+    let tokens = AgentTokens {
+        input: tokens("inputTokens"),
+        cached: tokens("cachedReadTokens"),
+        output: tokens("outputTokens"),
+    };
+    (tokens != AgentTokens::default()).then_some(tokens)
+}
+
 /// The usage-limit windows a [`crate::LIMITS_UPDATE`] carries; malformed entries are skipped.
 pub(crate) fn limits_of(update: &Value) -> Vec<AgentLimit> {
     let limits = update.get("limits").and_then(Value::as_array).into_iter().flatten();
@@ -214,28 +345,60 @@ fn legacy(
             Some(AgentConfigValue {
                 name: str_of(m, "name").unwrap_or_else(|| value.clone()),
                 description: str_of(m, "description"),
+                cost_category: None,
+                usage_multiplier: None,
+                pricing: pricing_of(m),
                 value,
             })
         })
         .collect();
+    let current = str_of(v, current);
     AgentConfigOption {
         id: id.to_owned(),
         name: name.to_owned(),
         description: None,
         category: Some(id.to_owned()),
-        current: str_of(v, current),
+        default_value: current.clone(),
+        current,
         values,
         via,
     }
 }
 
+fn clean_label(s: String, fallback: &str) -> String {
+    let trimmed = s.trim_matches(|c: char| c.is_whitespace() || matches!(c, '\u{200B}'..='\u{200D}' | '\u{FEFF}'));
+    if trimmed.is_empty() { fallback.to_owned() } else { trimmed.to_owned() }
+}
+
 fn value_of(v: &Value) -> Option<AgentConfigValue> {
     let value = v.get("value")?.as_str()?.to_owned();
+    let meta = v.get("_meta");
+    let cost_category = meta
+        .and_then(|m| m.get("copilotPriceCategory").or_else(|| m.get("priceCategory")))
+        .and_then(Value::as_str)
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty());
+    let usage_multiplier = meta
+        .and_then(|m| m.get("copilotUsage").or_else(|| m.get("usageMultiplier")))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
     Some(AgentConfigValue {
-        name: str_of(v, "name").unwrap_or_else(|| value.clone()),
+        name: str_of(v, "name").map(|n| clean_label(n, &value)).unwrap_or_else(|| value.clone()),
         description: str_of(v, "description"),
+        cost_category,
+        usage_multiplier,
+        pricing: pricing_of(v),
         value,
     })
+}
+
+fn pricing_of(v: &Value) -> Option<Box<AgentModelPricing>> {
+    v.pointer("/_meta/pricing")
+        .or_else(|| v.get("pricing"))
+        .and_then(|p| serde_json::from_value(p.clone()).ok())
+        .map(Box::new)
 }
 
 fn str_of(v: &Value, key: &str) -> Option<String> {
@@ -248,6 +411,15 @@ mod tests {
 
     fn ids(c: &[AgentConfigOption]) -> Vec<(&str, Option<&str>)> {
         c.iter().map(|o| (o.id.as_str(), o.current.as_deref())).collect()
+    }
+
+    #[test]
+    fn a_hermes_prompt_result_reports_the_turns_tokens() {
+        let result = json!({"stopReason": "end_turn", "usage": {"cachedReadTokens": 51306, "inputTokens": 77284,
+            "outputTokens": 509, "thoughtTokens": 0, "totalTokens": 77793}});
+        assert_eq!(tokens_of(&result), Some(AgentTokens { input: 77284, cached: 51306, output: 509 }));
+        assert_eq!(tokens_of(&json!({"stopReason": "end_turn"})), None);
+        assert_eq!(tokens_of(&json!({"usage": {}})), None);
     }
 
     #[test]
@@ -295,19 +467,16 @@ mod tests {
             ]}
         }));
         assert!(bypass_approvals(&full_access));
-        assert_eq!(bypass_mode(&full_access).map(|(_, v)| v.value.as_str()), Some("full-access"));
 
-        let asking = options_of(&json!({
+        let mut asking = options_of(&json!({
             "modes": {"currentModeId": "ask", "availableModes": [
                 {"id": "ask", "name": "Ask"}, {"id": "full-access", "name": "Full Access"}
             ]}
         }));
         assert!(!bypass_approvals(&asking));
-        assert_eq!(
-            bypass_mode(&asking).map(|(_, v)| v.value.as_str()),
-            Some("full-access"),
-            "the offered bypass mode stays available"
-        );
+        apply_bypass_approvals(&mut asking);
+        assert_eq!(asking[0].current.as_deref(), Some("full-access"));
+        assert!(bypass_approvals(&asking));
 
         let permissions = |current: &str| {
             options_of(&json!({"configOptions": [{
@@ -331,6 +500,139 @@ mod tests {
                       "availableModes": [{"id": "https://agentclientprotocol.com/protocol/session-modes#yolo"}]}
         }));
         assert!(bypass_approvals(&url_mode));
+    }
+
+    #[test]
+    fn asking_for_approvals_keeps_a_mode_that_asks_and_leaves_one_that_does_not() {
+        let mode = |current: &str, values: &[&str]| {
+            options_of(&json!({"modes": {"currentModeId": current,
+                "availableModes": values.iter().map(|v| json!({"id": v})).collect::<Vec<_>>()}}))
+        };
+        let codex = ["read-only", "ask", "auto", "full-access"];
+        for (current, expected) in [("auto", "auto"), ("read-only", "read-only"), ("full-access", "ask")] {
+            let mut c = mode(current, &codex);
+            ask_for_approvals(&mut c);
+            assert_eq!(c[0].current.as_deref(), Some(expected), "{current}");
+            assert!(!bypass_approvals(&c));
+        }
+        let mut claude = mode("bypassPermissions", &["acceptEdits", "default", "plan", "bypassPermissions"]);
+        ask_for_approvals(&mut claude);
+        assert_eq!(claude[0].current.as_deref(), Some("default"));
+        let mut other = mode("yolo", &["yolo", "code", "architect"]);
+        ask_for_approvals(&mut other);
+        assert_eq!(other[0].current.as_deref(), Some("code"));
+
+        let mut c = options_of(&json!({"configOptions": [
+            {"id": "allow_all", "category": "permissions", "type": "select", "currentValue": "on",
+             "options": [{"value": "on"}, {"value": "off"}]},
+            {"id": "approval", "category": "approval", "type": "select", "currentValue": "bypass",
+             "options": [{"value": "bypass"}, {"value": "ask"}]}
+        ]}));
+        ask_for_approvals(&mut c);
+        assert_eq!(ids(&c), [("allow_all", Some("off")), ("approval", Some("ask"))]);
+    }
+
+    #[test]
+    fn service_tier_is_per_model() {
+        let options = options_of(&json!({ "configOptions": [
+            { "id": "service_tier", "type": "select", "currentValue": "false",
+              "options": [{ "value": "false" }, { "value": "true" }] }
+        ] }));
+        assert!(is_per_model_option(&options[0]));
+    }
+
+    #[test]
+    fn effort_context_and_fast_are_per_model_options() {
+        let mut c = options_of(&json!({
+            "configOptions": [
+                {"id": "model", "type": "select", "currentValue": "gemini-4-carbon",
+                 "options": [{"value": "gemini-4-carbon", "name": "Gemini 4 Carbon",
+                              "description": "Powerful · Medium cost",
+                              "_meta": {"copilotPriceCategory": "Medium", "copilotUsage": "1x"}}]},
+                {"id": "effort", "type": "select", "currentValue": "medium",
+                 "options": [{"value": "low"}, {"value": "medium"}, {"value": "high"}]},
+                {"id": "context", "type": "select", "currentValue": "256k",
+                 "options": [{"value": "256k", "name": "256K"}, {"value": "500k", "name": "500K"}]},
+                {"id": "contextTier", "type": "select", "currentValue": "default",
+                 "options": [{"value": "default", "name": "200K"}, {"value": "long_context", "name": "1M"}]},
+                {"id": "fast", "type": "select", "currentValue": "true",
+                 "options": [{"value": "false", "name": "Off"}, {"value": "true", "name": "Fast\u{200b}\u{200b}"}]}
+            ]
+        }));
+        assert_eq!(c.len(), 5);
+        assert_eq!(c[0].values[0].cost_category.as_deref(), Some("medium"));
+        assert_eq!(c[0].values[0].usage_multiplier.as_deref(), Some("1x"));
+        assert_eq!(c[1].category.as_deref(), Some("thought_level"));
+        assert_eq!(c[1].default_value.as_deref(), Some("medium"));
+        assert_eq!(c[2].category.as_deref(), Some("model_config"));
+        assert_eq!(c[3].category.as_deref(), Some("model_config"));
+        assert_eq!(c[4].category.as_deref(), Some("model_config"));
+        assert_eq!(c[4].values[1].name, "Fast");
+        assert!(
+            is_per_model_option(&c[1])
+                && is_per_model_option(&c[2])
+                && is_per_model_option(&c[3])
+                && is_per_model_option(&c[4])
+        );
+        assert!(!is_per_model_option(&c[0]));
+
+        // Cursor defaults fast off for new tasks while preserving the agent's own default_value.
+        let mut cursor_opts = c.clone();
+        apply_model_defaults("cursor", &mut cursor_opts);
+        let fast = cursor_opts.iter().find(|o| o.id == "fast").unwrap();
+        assert_eq!((fast.current.as_deref(), fast.default_value.as_deref()), (Some("false"), Some("true")));
+        let mut other_opts = c.clone();
+        apply_model_defaults("claude", &mut other_opts);
+        assert_eq!(other_opts.iter().find(|o| o.id == "fast").unwrap().current.as_deref(), Some("true"));
+
+        // Editing effort on the same model preserves its initial `default_value` for Reset.
+        merge_update(
+            &mut c,
+            &json!([
+                {"id": "model", "type": "select", "currentValue": "gemini-4-carbon",
+                 "options": [{"value": "gemini-4-carbon"}]},
+                {"id": "effort", "type": "select", "currentValue": "high",
+                 "options": [{"value": "low"}, {"value": "medium"}, {"value": "high"}]}
+            ]),
+        );
+        let effort = c.iter().find(|o| o.id == "effort").unwrap();
+        assert_eq!((effort.current.as_deref(), effort.default_value.as_deref()), (Some("high"), Some("medium")));
+
+        // Switching models refreshes per-model `default_value` to the new model's default.
+        merge_update(
+            &mut c,
+            &json!([
+                {"id": "model", "type": "select", "currentValue": "gpt-6-sol",
+                 "options": [{"value": "gemini-4-carbon"}, {"value": "gpt-6-sol"}]},
+                {"id": "effort", "type": "select", "currentValue": "low",
+                 "options": [{"value": "low"}, {"value": "medium"}, {"value": "high"}]},
+                {"id": "context", "type": "select", "currentValue": "1m",
+                 "options": [{"value": "300k", "name": "300K"}, {"value": "1m", "name": "1M"}]}
+            ]),
+        );
+        let effort = c.iter().find(|o| o.id == "effort").unwrap();
+        assert_eq!((effort.current.as_deref(), effort.default_value.as_deref()), (Some("low"), Some("low")));
+        let context = c.iter().find(|o| o.id == "context").unwrap();
+        assert_eq!((context.current.as_deref(), context.default_value.as_deref()), (Some("1m"), Some("1m")));
+    }
+
+    #[test]
+    fn apply_bypass_approvals_covers_mode_permissions_and_approval() {
+        let mut c = options_of(&json!({"configOptions": [
+            {"id": "mode", "category": "mode", "type": "select", "currentValue": "ask",
+             "options": [{"value": "ask"}, {"value": "full-access"}]},
+            {"id": "allow_all", "category": "permissions", "type": "select", "currentValue": "off",
+             "options": [{"value": "off"}, {"value": "on"}]},
+            {"id": "approval", "category": "approval", "type": "select", "currentValue": "ask",
+             "options": [{"value": "ask"}, {"value": "bypass"}]}
+        ]}));
+        apply_bypass_approvals(&mut c);
+        assert_eq!(ids(&c), [("mode", Some("full-access")), ("allow_all", Some("on")), ("approval", Some("bypass"))]);
+        // Original agent default_values stay intact.
+        assert_eq!(
+            c.iter().map(|o| o.default_value.as_deref()).collect::<Vec<_>>(),
+            [Some("ask"), Some("off"), Some("ask")]
+        );
     }
 
     #[test]

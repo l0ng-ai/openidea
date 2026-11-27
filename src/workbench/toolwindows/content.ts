@@ -1,6 +1,6 @@
 import type { TabStripHandle } from "@/ui/Tabs";
 
-/** Content tab strips rendered in each tool window's header (Run sessions, Find tabs, terminals…). */
+/** Content tab strips of each tool window, in its header or content (Run sessions, Find tabs, terminals, query results…). */
 const strips = new Map<string, Set<TabStripHandle>>();
 const registries = new Map<string, (handle: TabStripHandle) => () => void>();
 
@@ -17,6 +17,12 @@ export function contentTabRegistry(id: string): (handle: TabStripHandle) => () =
     registries.set(id, fn);
   }
   return fn;
+}
+
+/** Pins or unpins the selected content tab of tool window `id`; false when it has none that can be pinned. */
+export function togglePinSelectedContent(id: string): boolean {
+  for (const strip of strips.get(id) ?? []) if (strip.togglePinSelected()) return true;
+  return false;
 }
 
 /** Closes the selected content tab of tool window `id`; false when it has none that can be closed. */

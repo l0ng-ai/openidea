@@ -12,5 +12,7 @@ public class App {
         long revenue = book.revenueCents();
         System.out.printf("%d orders, revenue %.2f%n", book.size(), revenue / 100.0);
         book.largest().ifPresent(o -> System.out.println("Largest: " + o.product()));
+        int alices = book.byCustomer("alice").size();
+        System.out.println("alice placed " + alices + " orders");
     }
 }

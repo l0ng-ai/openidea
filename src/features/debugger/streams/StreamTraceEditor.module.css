@@ -1,0 +1,238 @@
+.root {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  background: var(--bg-editor);
+  color: var(--fg);
+  font-size: var(--fs-ui);
+}
+
+.header {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+
+.chain {
+  flex: 1 1 320px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-strong);
+  font-family: var(--font-mono);
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.tools {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.progressText {
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.banner,
+.error {
+  flex: none;
+  padding: 4px var(--space-3);
+  font-size: var(--fs-ui);
+  color: var(--fg);
+  border-bottom: 1px solid var(--border);
+}
+.banner {
+  background: var(--bg-feedback-warning);
+  border-bottom-color: var(--border-feedback-warning);
+}
+.error {
+  background: var(--bg-feedback-error);
+  border-bottom-color: var(--border-feedback-error);
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.note {
+  flex: none;
+  padding: var(--space-2) var(--space-3);
+  color: var(--fg-subtle);
+  font-size: var(--fs-ui);
+}
+
+.result {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* The steps above, the opened value below; the steps scroll, the value pane keeps its height. */
+.body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.flow {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: flex-start;
+  overflow: auto;
+  padding: var(--space-2) var(--space-3);
+}
+
+.column {
+  flex: none;
+  width: 160px;
+  display: flex;
+  flex-direction: column;
+}
+
+.resultColumn {
+  margin-left: var(--trace-gap);
+}
+
+.columnHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--trace-row);
+  padding: 0 6px;
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-size: var(--fs-small);
+}
+.columnTitle {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+.count {
+  flex: none;
+  color: var(--fg-subtle);
+  font-variant-numeric: tabular-nums;
+}
+
+.cells {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cellRow {
+  display: flex;
+  height: var(--trace-row);
+}
+
+.cell,
+.cellText {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 6px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-ui);
+  text-align: left;
+  line-height: var(--trace-row);
+}
+.cell {
+  color: var(--fg);
+  background: none;
+  border: none;
+  border-radius: var(--radius-row);
+  cursor: default;
+}
+.cell:hover {
+  background: var(--bg-hover);
+}
+.cell:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.cell.related {
+  background: var(--accent-soft);
+  color: var(--fg-strong);
+}
+.cell[aria-pressed="true"] {
+  background: var(--bg-selected-strong);
+  color: var(--fg-strong);
+}
+.cellText {
+  color: var(--fg-subtle);
+}
+
+/* Starts below the column heads, so a curve's ends meet the middle of their rows. */
+.curves {
+  flex: none;
+  margin-top: var(--trace-row);
+  overflow: visible;
+}
+.curve {
+  fill: none;
+  stroke: var(--border-strong);
+  stroke-width: 1;
+}
+.ambiguous {
+  stroke: var(--warning);
+  stroke-dasharray: 3 2;
+}
+.relatedCurve {
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+
+.valuePane {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  height: min(calc(10 * var(--h-list-row)), 40%);
+  border-top: 1px solid var(--border);
+}
+
+.valueTree {
+  flex: 1;
+  min-height: 0;
+}
+
+.node,
+.message {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  font-size: var(--fs-ui);
+}
+.name {
+  color: var(--fg-strong);
+}
+.equals {
+  white-space: pre;
+  color: var(--fg-subtle);
+}
+.value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+.message {
+  color: var(--fg-subtle);
+}

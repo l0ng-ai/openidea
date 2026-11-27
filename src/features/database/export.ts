@@ -5,25 +5,42 @@
  * distinguishes them.
  */
 import type { DbDriver } from "@/platform/ipc";
+import { jsonNumber } from "@/platform/losslessJson";
 import { isNumericColumn } from "./Grid";
-import { toCsv, toOneRow, toTsv, type Cell } from "./model";
+import { sqlLiteral, toCsv, toOneRow, toTsv, type Cell } from "./model";
 import { quoteIdent } from "./sql/complete";
 
-export type ExportFormat = "csv" | "tsv" | "json" | "sql" | "markdown" | "onerow";
+export type ExportFormat =
+  | "csv"
+  | "tsv"
+  | "json"
+  | "sql"
+  | "sqlUpdates"
+  | "sqlDeletes"
+  | "where"
+  | "markdown"
+  | "onerow";
+
+/** The formats written as SQL (highlighted as SQL in the Export Data preview). */
+export const SQL_FORMATS: ReadonlySet<ExportFormat> = new Set(["sql", "sqlUpdates", "sqlDeletes", "where"]);
 
 export const EXPORT_FORMATS: ReadonlyArray<{ id: ExportFormat; label: string; extension: string }> = [
   { id: "csv", label: "CSV", extension: "csv" },
   { id: "tsv", label: "TSV", extension: "tsv" },
   { id: "json", label: "JSON", extension: "json" },
   { id: "sql", label: "SQL Inserts", extension: "sql" },
+  { id: "sqlUpdates", label: "SQL Updates", extension: "sql" },
+  { id: "sqlDeletes", label: "SQL Deletes", extension: "sql" },
+  { id: "where", label: "Where Clause", extension: "sql" },
   { id: "markdown", label: "Markdown", extension: "md" },
   { id: "onerow", label: "One-Row", extension: "txt" },
 ];
 
 export interface ExportData {
-  columns: ReadonlyArray<{ name: string; type: string }>;
+  /** `primaryKey` columns identify a row in SQL Updates, SQL Deletes and Where Clause. */
+  columns: ReadonlyArray<{ name: string; type: string; primaryKey?: boolean }>;
   rows: ReadonlyArray<readonly Cell[]>;
-  /** Target of SQL inserts (the query's table, when it reads one). */
+  /** Target of SQL statements (the query's table, when it reads one). */
   table: string;
   driver: DbDriver;
 }
@@ -49,6 +66,16 @@ function laidOut(d: ExportData, o: ExportOptions): { head: string[] | null; rows
   return { head: null, rows: head.map((h, c) => [...(o.columnHeader ? [h] : []), ...rows.map((r) => r[c] ?? null)]) };
 }
 
+/** A cell as JSON: numeric columns keep their exact digits, everything else is a string. */
+function jsonCell(v: Cell, numeric: boolean): string {
+  if (v === null) return "null";
+  if (!numeric) return JSON.stringify(v);
+  const literal = jsonNumber(v);
+  if (literal !== null) return literal;
+  const number = Number(v);
+  return Number.isFinite(number) ? JSON.stringify(number) : JSON.stringify(v);
+}
+
 export function exportData(
   format: ExportFormat,
   d: ExportData,
@@ -71,24 +98,18 @@ export function exportData(
       return toTsv(t.head, t.rows);
     }
     case "json": {
-      const value = (v: Cell, i: number) =>
-        v === null ? null : numeric[i] && Number.isFinite(Number(v)) ? Number(v) : v;
-      return JSON.stringify(
-        d.rows.map((r) => Object.fromEntries(names.map((n, i) => [n, value(r[i] ?? null, i)]))),
-        null,
-        2,
-      );
+      const rows = d.rows.map((r) => {
+        const cells = Object.fromEntries(names.map((n, i) => [n, jsonCell(r[i] ?? null, numeric[i]!)]));
+        const members = Object.entries(cells).map(([name, value]) => `    ${JSON.stringify(name)}: ${value}`);
+        return members.length ? `  {\n${members.join(",\n")}\n  }` : "  {}";
+      });
+      return rows.length ? `[\n${rows.join(",\n")}\n]` : "[]";
     }
-    case "sql": {
-      const literal = (v: Cell, i: number) =>
-        v === null
-          ? "NULL"
-          : numeric[i] && Number.isFinite(Number(v))
-            ? v
-            : `'${(d.driver === "clickhouse" ? v.replace(/\\/g, "\\\\") : v).replace(/'/g, "''")}'`;
-      const head = `INSERT INTO ${quoteIdent(d.table, d.driver)} (${names.map((n) => quoteIdent(n, d.driver)).join(", ")}) VALUES`;
-      return d.rows.map((r) => `${head} (${r.map(literal).join(", ")});`).join("\n");
-    }
+    case "sql":
+    case "sqlUpdates":
+    case "sqlDeletes":
+    case "where":
+      return sqlStatements(format, d, numeric);
     case "markdown": {
       const cell = (v: Cell) => (v ?? "").replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
       const t = laidOut(d, options);
@@ -104,4 +125,42 @@ export function exportData(
     case "onerow":
       return toOneRow(d.rows, (c) => numeric[c]!);
   }
+}
+
+/**
+ * SQL Inserts, Updates, Deletes and the Where Clause of the rows, one statement per row in
+ * their order. A row is identified by its primary key columns; with none known, by every
+ * column, which the text says first.
+ */
+function sqlStatements(format: ExportFormat, d: ExportData, numeric: readonly boolean[]): string {
+  const ident = (name: string) => quoteIdent(name, d.driver);
+  const names = d.columns.map((c) => ident(c.name));
+  const literal = (v: Cell | undefined, i: number) => sqlLiteral(v ?? null, numeric[i]!, d.driver);
+  const table = ident(d.table);
+  if (format === "sql")
+    return d.rows
+      .map((r) => `INSERT INTO ${table} (${names.join(", ")}) VALUES (${r.map(literal).join(", ")});`)
+      .join("\n");
+  const keys = d.columns.flatMap((c, i) => (c.primaryKey ? [i] : []));
+  const match = keys.length ? keys : names.map((_, i) => i);
+  const where = (r: readonly Cell[]) =>
+    match.map((i) => (r[i] == null ? `${names[i]} IS NULL` : `${names[i]} = ${literal(r[i], i)}`)).join(" AND ");
+  const note = keys.length || !d.rows.length ? "" : "-- No primary key is known: rows are matched on every column.\n";
+  if (format === "where") {
+    if (!d.rows.length) return "";
+    const body = d.rows.length === 1 ? where(d.rows[0]!) : d.rows.map((r) => `(${where(r)})`).join(" OR ");
+    return `${note}WHERE ${body}`;
+  }
+  if (format === "sqlDeletes") return note + d.rows.map((r) => `DELETE FROM ${table} WHERE ${where(r)};`).join("\n");
+  // Updates set the other columns (every column when no key is known).
+  const set = keys.length ? names.flatMap((_, i) => (keys.includes(i) ? [] : [i])) : match;
+  return (
+    note +
+    d.rows
+      .map(
+        (r) =>
+          `UPDATE ${table} SET ${set.map((i) => `${names[i]} = ${literal(r[i], i)}`).join(", ")} WHERE ${where(r)};`,
+      )
+      .join("\n")
+  );
 }

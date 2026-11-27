@@ -4,6 +4,7 @@ import { HighlightedText, List, Popup, fuzzyMatch, listNavigate } from "@/ui";
 import { closeChooser, useChooser, type ChooserItem, type ChooserRequest } from "./store";
 import styles from "./Chooser.module.css";
 import { tx } from "@/platform/i18n";
+import { useRowHeight } from "@/ui/density";
 
 /** Overlay contribution: renders the pending chooser, if any. */
 export function ChooserHost() {
@@ -36,17 +37,10 @@ export function filterChooserItems(items: readonly ChooserItem[], filter: string
 
 const isSection = (r: Row) => !!r.item.section;
 
-/** The label with its mnemonic underlined (IDEA: `1. if`, `T. Surround with…`). */
+/** The abbreviation with its mnemonic underlined. */
 function MnemonicLabel({ item }: { item: ChooserItem }) {
-  const m = item.mnemonic;
-  if (!m) return <>{item.label}</>;
   const i = item.mnemonicIndex;
-  if (i === undefined)
-    return (
-      <>
-        <u>{m}</u>. {item.label}
-      </>
-    );
+  if (i === undefined) return <>{item.label}</>;
   return (
     <>
       {item.label.slice(0, i)}
@@ -57,6 +51,11 @@ function MnemonicLabel({ item }: { item: ChooserItem }) {
 }
 
 function ChooserPopup({ request }: { request: ChooserRequest }) {
+  const rowHeight = useRowHeight(request.mnemonics ? 24 : 22);
+  // Keep the scroll viewport stable as the popup finds room above or below the caret.
+  const maxHeight = request.mnemonics
+    ? `calc(max(${request.anchor.y}px, 100vh - ${request.anchor.y}px) - 8px)`
+    : undefined;
   const [filter, setFilter] = useState(request.filter ?? "");
   const rows = useMemo(() => filterChooserItems(request.items, filter), [request.items, filter]);
   const [active, setActive] = useState(() =>
@@ -111,11 +110,12 @@ function ChooserPopup({ request }: { request: ChooserRequest }) {
       onClose={close}
       role="dialog"
       aria-label={request.title}
-      className={styles.popup}
+      className={clsx(styles.popup, request.mnemonics && styles.actions)}
+      style={maxHeight ? { maxHeight } : undefined}
     >
       <div className={styles.body} tabIndex={0} data-autofocus onKeyDown={onKeyDown}>
         <div className={styles.header}>
-          <span className={styles.title}>{request.title}</span>
+          <span className={styles.title}>{tx(request.title)}</span>
           {request.filterable && filter && <span className={styles.filter}>{filter}</span>}
         </div>
         <List
@@ -126,23 +126,31 @@ function ChooserPopup({ request }: { request: ChooserRequest }) {
           onActivate={(r) => pick(r)}
           isSection={isSection}
           sectionHeight={22}
-          renderSection={(r) => <div className={styles.section}>{r.item.label}</div>}
+          sectionHeightOf={request.mnemonics ? (r) => (r.item.label ? undefined : 12) : undefined}
+          renderSection={(r) => <div className={styles.section}>{tx(r.item.label)}</div>}
           focusable={false}
           hoverSelects
-          rowHeight={22}
+          rowHeight={rowHeight}
           className={styles.list}
           aria-label={request.title}
           empty={<div className={styles.empty}>{request.emptyText ?? tx("Nothing to show")}</div>}
           renderItem={(r, state) => (
             <div className={clsx(styles.row, state.active && styles.active)}>
-              <span className={styles.label}>
-                {r.item.mnemonic ? (
+              {request.mnemonics && (
+                <span className={styles.mnemonic}>{r.item.mnemonicIndex === undefined && r.item.mnemonic}</span>
+              )}
+              <span className={styles.label} title={request.mnemonics ? r.item.label : undefined}>
+                {r.item.mnemonicIndex !== undefined ? (
                   <MnemonicLabel item={r.item} />
                 ) : (
                   <HighlightedText text={r.item.label} indices={r.matches ?? undefined} />
                 )}
               </span>
-              {r.item.detail && <span className={styles.detail}>{r.item.detail}</span>}
+              {r.item.detail && (
+                <span className={styles.detail} title={request.mnemonics ? r.item.detail : undefined}>
+                  {r.item.detail}
+                </span>
+              )}
             </div>
           )}
         />

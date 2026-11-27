@@ -10,13 +10,16 @@ import { goTargets } from "./goTargets";
 import { csharpTargets } from "./csharpTargets";
 import { formatArgs } from "./configs";
 import type { RunConfig } from "@/platform/ipc";
-import { applicationConfig, jvmTestConfig } from "./application";
+import { applicationConfig, junitRunnerConfig, jvmTestConfig, runsJunitInIde } from "./application";
 import { goTestParts, withoutGoSelection } from "./goArguments";
 import { contextConfig, relToCwd, testConfigFor } from "./context";
 import { djangoLabel, djangoTestsOf } from "./djangoTypes";
 import { scanJvmTargets, simpleClassName } from "./jvmTargets";
 import { escapeRegExp } from "./testing/rerun";
 import { pestFilter, phpunitArgs, phpunitFilter } from "./testing/phpunit";
+import { frameworkFor } from "./testing";
+import { withNodeTestNamePattern } from "./testing/nodeTest";
+import { cypressSelection, cypressSpecs } from "./testing/cypress";
 
 export type TargetKind = "main" | "test" | "suite" | "generate";
 
@@ -132,8 +135,12 @@ function rustTargets(lines: string[], relPath: string): RunTarget[] {
   );
 }
 
+/**
+ * Jest / Vitest `describe` / `test` / `it` (Mocha's `specify` and Jasmine's `fdescribe` / `fit` /
+ * `xdescribe` / `xit` too), and Playwright's `test.describe` and modifiers.
+ */
 const JS_RE =
-  /^(\s*)(describe|suite|context|test|it)\b(?:\.(?:only|skip|todo|concurrent|failing|sequential))*(\.each\s*(?:\(.*?\)|`[^`]*`))?\s*\(\s*(['"`])((?:\\.|(?!\4).)*)\4/;
+  /^(\s*)(test\.describe|[fx]?describe|suite|context|test|[fx]?it|specify)\b(?:\.(?:only|skip|todo|concurrent|failing|sequential|fixme|fail|serial|parallel))*(\.each\s*(?:\(.*?\)|`[^`]*`))?\s*\(\s*(['"`])((?:\\.|(?!\4).)*)\4/;
 
 function jsTargets(lines: string[]): RunTarget[] {
   const out: RunTarget[] = [];
@@ -146,7 +153,7 @@ function jsTargets(lines: string[]): RunTarget[] {
     const name = m[5]!.replace(/\\(.)/g, "$1");
     const parameterized = !!m[3] || (m[4] === "`" && name.includes("${")) || /%[sdifjo#%p]|\$\w+/.test(name);
     const path = [...stack.map((s) => s.name), name];
-    const isSuite = m[2] === "describe" || m[2] === "suite" || m[2] === "context";
+    const isSuite = m[2]!.endsWith("describe") || m[2] === "suite" || m[2] === "context";
     out.push({ line: i, kind: isSuite ? "suite" : "test", name: path.join(" > "), path, parameterized });
     if (isSuite) stack.push({ indent, name });
   }
@@ -349,20 +356,58 @@ function jvmTargets(lines: string[], relPath: string): RunTarget[] {
   return out;
 }
 
+/** Zig: a top-level `pub fn main` and `test "name" {` / `test name {` blocks, nested ones too. */
+export function zigTargets(content: string): RunTarget[] {
+  if (content.length > MAX_SCAN) return [];
+  const out: RunTarget[] = [];
+  content.split("\n").forEach((line, i) => {
+    if (/^pub\s+fn\s+main\s*\(/.test(line)) out.push({ line: i, kind: "main", name: "main", path: [] });
+    const test = /^\s*test\s+(?:"((?:[^"\\]|\\.)*)"|([A-Za-z_]\w*))\s*\{/.exec(line);
+    if (test) {
+      // Unescape for display and for `--test-filter`: the runner reports the raw name.
+      const name = test[1]?.replace(/\\(.)/g, "$1") ?? test[2]!;
+      out.push({ line: i, kind: "test", name, path: [name] });
+    }
+  });
+  return out;
+}
+
+/** Whether the project tests with Mocha or `node --test`, which look in `test/` by default, whatever a file's name. */
+export function testsInTestDirectory(configs: readonly RunConfig[]): boolean {
+  return configs.some((c) => c.isTest && ["mocha", "node-test"].includes(frameworkFor(c)));
+}
+
+/** Whether the project tests with Jasmine, which looks in `spec/` by default (`fooSpec.js` and the like). */
+export function specsInSpecDirectory(configs: readonly RunConfig[]): boolean {
+  return configs.some((c) => c.isTest && frameworkFor(c) === "jasmine");
+}
+
 /**
  * Run targets of a file (relative path picks the language). `django`: a Django project, where
- * `tests.py` (Django's default test module) holds tests too.
+ * `tests.py` (Django's default test module) holds tests too. `testDirectory`: JS files in `test/`
+ * hold tests whatever their name (`testsInTestDirectory`); `specDirectory`: the same for `spec/`
+ * (`specsInSpecDirectory`).
  */
-export function detectRunTargets(text: string, relPath: string, django = false): RunTarget[] {
+export function detectRunTargets(
+  text: string,
+  relPath: string,
+  django = false,
+  testDirectory = false,
+  specDirectory = false,
+): RunTarget[] {
   if (text.length > MAX_SCAN) return [];
   const lines = text.split("\n");
+  if (specDirectory && /(^|\/)spec\//.test(relPath) && targetLanguage(relPath) === "js") return jsTargets(lines);
   switch (targetLanguage(relPath)) {
     case "csharp":
       return csharpTargets(text);
     case "rust":
       return rustTargets(lines, relPath);
     case "js":
-      return /\.(test|spec)\.[cm]?[jt]sx?$|(^|\/)__tests__\//.test(relPath) ? jsTargets(lines) : [];
+      return /\.(test|spec|cy)\.[cm]?[jt]sx?$|(^|\/)__tests__\//.test(relPath) ||
+        (testDirectory && /(^|\/)test\//.test(relPath))
+        ? jsTargets(lines)
+        : [];
     case "python":
       return pythonTargets(lines).filter(
         (t) =>
@@ -399,6 +444,29 @@ function withLast(args: string[], f: (last: string) => string): string[] {
   return args.length ? [...args.slice(0, -1), f(args[args.length - 1]!)] : args;
 }
 
+/**
+ * GoLand's "Run with Fuzzing" of a `Fuzz` function: its `go test` configuration with
+ * `-fuzz` added. Null for other targets, and when the configuration doesn't test one
+ * package (`go test -fuzz` refuses several).
+ */
+export function goFuzzConfig(config: RunConfig, target: RunTarget): RunConfig | null {
+  if (target.kind !== "test" || target.path.length !== 1 || !/^Fuzz/.test(target.name)) return null;
+  if (config.kind !== "go" || config.args[0] !== "test") return null;
+  const parts = goTestParts(config.args);
+  if (parts.targets.length !== 1 || /(^|\/)\.\.\.$/.test(parts.targets[0]!)) return null;
+  const pattern = `^${escapeRegExp(target.name)}$`;
+  const flags = withoutGoSelection(parts.flags);
+  return {
+    ...config,
+    id: `${config.id}:fuzz`,
+    name: `${config.name} (fuzzing)`,
+    args: ["test", ...flags, ...parts.targets, "-run", pattern, "-fuzz", pattern, ...withoutGoSelection(parts.program)],
+    ...(config.params?.goKind
+      ? { params: { ...config.params, pattern, toolArgs: formatArgs([...flags, "-fuzz", pattern]) } }
+      : {}),
+  };
+}
+
 /** Run configuration for one target, or null when the project has no matching runner. */
 export function targetConfig(
   target: RunTarget,
@@ -415,12 +483,12 @@ export function targetConfig(
   }
   const file = testConfigFor(relPath, configs, base, content);
   if (!file) return null;
-  if (target.className && (file.kind === "maven" || file.kind === "gradle"))
-    return jvmTestConfig(
-      file,
-      target.className,
-      target.kind === "test" ? target.path[target.path.length - 1] : undefined,
-    );
+  if (target.className && (file.kind === "maven" || file.kind === "gradle")) {
+    const method = target.kind === "test" ? target.path[target.path.length - 1] : undefined;
+    return runsJunitInIde(file, content)
+      ? junitRunnerConfig(target.className, method, relPath, configs)
+      : jvmTestConfig(file, target.className, method);
+  }
   const shortName = target.kind === "suite" ? target.path[target.path.length - 1]! : target.name;
   const named = (args: string[]): RunConfig => ({
     ...file,
@@ -430,6 +498,16 @@ export function targetConfig(
     env: { ...file.env },
     detected: true,
   });
+  // Cypress has no name filter of its own: `@cypress/grep` reads the full title (see `testing/cypress.ts`).
+  if (frameworkFor(file) === "cypress")
+    return { ...named([]), ...cypressSelection(file, cypressSpecs(file.args), { grep: [target.path.join(" ")] }) };
+  // Playwright selects by declaration line (`file:line`), which also covers a describe block.
+  if (frameworkFor(file) === "playwright") return named(withLast(file.args, (f) => `${f}:${target.line + 1}`));
+  // node:test selects by full name, through NODE_OPTIONS (see `nodeTest.ts`).
+  if (frameworkFor(file) === "node-test")
+    return { ...named(file.args), env: withNodeTestNamePattern(file.env, jsNamePattern(target)) };
+  if (frameworkFor(file) === "mocha") return named([...file.args, "--grep", jsNamePattern(target)]);
+  if (frameworkFor(file) === "jasmine") return named([...file.args, `--filter=${jsNamePattern(target)}`]);
   switch (file.kind) {
     case "dotnet-test": {
       const methods =
@@ -443,6 +521,7 @@ export function targetConfig(
     case "npm":
     case "bun":
     case "deno":
+    case "node":
       return named([...file.args, "-t", jsNamePattern(target)]);
     case "pytest":
     case "python":

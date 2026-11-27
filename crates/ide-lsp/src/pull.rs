@@ -166,13 +166,10 @@ impl LspManager {
             let result_id = report.get("resultId").and_then(Value::as_str).map(str::to_owned);
             let items = match report.get("kind").and_then(Value::as_str) {
                 Some("unchanged") => None,
-                _ => match serde_json::from_value(report.get("items").cloned().unwrap_or(json!([]))) {
-                    Ok(items) => Some(items),
-                    Err(e) => {
-                        tracing::debug!("{}: bad textDocument/diagnostic report: {e}", t.server.name);
-                        return;
-                    }
-                },
+                _ => Some(crate::handler::lenient_diagnostics(
+                    &t.server.name,
+                    report.get("items").cloned().unwrap_or(json!([])),
+                )),
             };
             let shown = t.server.set_pulled(t.path.clone(), result_id, items);
             let enc = t.run.caps.read().encoding;

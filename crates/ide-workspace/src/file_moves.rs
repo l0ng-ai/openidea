@@ -4,19 +4,12 @@
 
 use crate::documents::Documents;
 use crate::history::LocalHistory;
+pub use ide_core::FileMove;
 use ide_core::{FileEdit, IdeError, IdeResult, WorkspaceEdit};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::{Path, PathBuf};
-
-/// One file or folder move.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
-#[serde(rename_all = "camelCase")]
-pub struct FileMove {
-    pub from: ide_core::IpcPath,
-    pub to: ide_core::IpcPath,
-}
 
 /// What [`FileMoves::undo`] did.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]

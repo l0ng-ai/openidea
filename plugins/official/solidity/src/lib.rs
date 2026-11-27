@@ -347,6 +347,8 @@ fn highlights(text: &str) -> Vec<Token> {
 /// An open `{`: the symbol whose body it is, and what may be declared inside.
 struct Frame {
     symbol: Option<usize>,
+    /// The innermost symbol of this frame or the ones around it.
+    parent: Option<usize>,
     body: Body,
 }
 
@@ -366,7 +368,7 @@ fn outline(text: &str) -> Vec<Symbol> {
     let code: Vec<Lexeme> = lex(text).into_iter().filter(|l| !l.is_trivia()).collect();
     let word = |i: usize| code.get(i).map_or("", |l| l.text(text));
     let mut symbols: Vec<Symbol> = Vec::new();
-    let mut frames = vec![Frame { symbol: None, body: Body::File }];
+    let mut frames = vec![Frame { symbol: None, parent: None, body: Body::File }];
     // A declaration waiting for its body (`{`) or its end (`;`).
     let mut pending: Option<(usize, Body)> = None;
     let mut stmt_start = 0usize;
@@ -375,7 +377,9 @@ fn outline(text: &str) -> Vec<Symbol> {
         let l = code[i];
         let w = l.text(text);
         let body = frames.last().map_or(Body::File, |f| f.body);
-        let parent = frames.iter().rev().find_map(|f| f.symbol);
+        // From the top frame alone: walking every open `{` per token is
+        // quadratic in deeply nested code.
+        let parent = frames.last().and_then(|f| f.parent);
         let add = |symbols: &mut Vec<Symbol>, name_at: usize, kind: SymbolKind, detail: Option<&str>| {
             let name = code[name_at];
             symbols.push(Symbol {
@@ -395,7 +399,7 @@ fn outline(text: &str) -> Vec<Symbol> {
                     Some((s, b)) => (Some(s), b),
                     None => (None, if body == Body::Code || body == Body::Contract { Body::Code } else { body }),
                 };
-                frames.push(Frame { symbol, body: inner });
+                frames.push(Frame { symbol, parent: symbol.or(parent), body: inner });
                 stmt_start = i + 1;
             }
             (Kind::Punct, "}") => {
@@ -512,7 +516,8 @@ fn outline(text: &str) -> Vec<Symbol> {
 
 fn folding(text: &str) -> Vec<Fold> {
     let lexemes = lex(text);
-    let line_of = |offset: usize| text[..offset].bytes().filter(|&b| b == b'\n').count() as u32;
+    let newlines: Vec<usize> = text.bytes().enumerate().filter(|&(_, b)| b == b'\n').map(|(i, _)| i).collect();
+    let line_of = |offset: usize| newlines.partition_point(|&n| n < offset) as u32;
     let skip: Vec<Range<usize>> = lexemes
         .iter()
         .filter(|l| matches!(l.kind, Kind::Str | Kind::Comment | Kind::DocComment))
@@ -685,5 +690,20 @@ function free(uint x) pure returns (uint) { return x; }
             let _ = outline(text);
             let _ = folding(text);
         }
+    }
+
+    /// Deep nesting and many comments stay about linear (both used to be quadratic).
+    #[test]
+    fn large_inputs_stay_linear() {
+        let deep = format!("contract C {{ function f() public {{ {} }} }}", "{".repeat(200_000));
+        let symbols = outline(&deep);
+        assert_eq!(
+            symbols.iter().map(|s| (s.name.as_str(), s.parent)).collect::<Vec<_>>(),
+            [("C", None), ("f", Some(0))]
+        );
+        let comments = "/* a\n */\n".repeat(100_000);
+        let folds = folding(&comments);
+        assert_eq!(folds.len(), 100_000);
+        assert_eq!((folds[99_999].start_line, folds[99_999].end_line), (199_998, 199_999));
     }
 }

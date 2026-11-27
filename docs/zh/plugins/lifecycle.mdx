@@ -43,6 +43,7 @@ impl Plugin for MyPlugin {
 | `file-saved`                                          | `events`       | 文件写入磁盘                                                        |
 | `file-closed`                                         | `events`       | 文件的编辑器关闭（API 1.4）                                         |
 | `files-changed`                                       | `events`       | 打开的项目中有文件创建、修改或删除，已去抖（API 1.3）               |
+| `watched-files-changed`                               | `events`       | 用 `host::watch_paths` 监听的项目外路径有变化（API 1.18）           |
 | `editor-focused`                                      | `events`       | 焦点编辑器变化                                                      |
 | `vcs-changed`                                         | `events`       | 仓库状态变化（提交、检出、fetch 等）                                |
 | `settings-changed`                                    | `events`       | 本插件的某些设置变化（API 1.4）                                     |

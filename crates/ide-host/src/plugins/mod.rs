@@ -17,13 +17,17 @@
 
 mod api;
 mod auth;
+mod build_graph;
+pub mod commands;
 pub mod commit;
+mod console_rules;
 mod database;
 mod dependencies;
 pub(crate) mod diagnostics;
 pub mod endpoints;
 mod event_paths;
 mod execution;
+mod external_watch;
 mod files_changed;
 mod hover;
 mod icon_extensions;
@@ -36,25 +40,31 @@ mod inlay_hints;
 mod install;
 pub mod intellij;
 mod ipc;
+mod java_agents;
 pub mod language_features;
 mod market;
 mod mcp;
 pub mod navigation;
+mod network_inbox;
 mod points;
 mod providers;
 pub mod remote;
 pub mod remote_host;
 mod run_detectors;
 pub mod run_targets;
+pub mod search;
 mod semantic_tokens;
+mod skills;
 mod snippets;
 mod theme;
 mod types;
 pub mod ui_points;
 pub mod views;
 pub mod web;
+mod websocket;
 
-pub use api::{FileSecretStore, HostWorkspace, PluginWorkspace, SecretStore};
+pub use api::{CredentialSecretStore, FileSecretStore, HostWorkspace, PluginWorkspace, SecretStore};
+pub use build_graph::{BuildGraph, GradleModule};
 pub(crate) use hover::merge as merge_hover;
 pub use icons::{
     MAX_PLUGIN_ICON, map_asset as icon_theme_map_asset, plugin_icon, sanitize_svg, svg_prefix as icon_theme_svg_prefix,
@@ -62,7 +72,7 @@ pub use icons::{
 pub(crate) use inlay_hints::merge as merge_inlay_hints;
 pub use market::{
     INDEX_FILE as MARKET_INDEX_FILE, MarketPlugin, OFFICIAL_INDEX as OFFICIAL_MARKET_INDEX, OFFICIAL_PUBLISHER,
-    read_url as read_market_url, resolve as resolve_market_href,
+    reachable_from as market_href_reachable_from, read_url as read_market_url, resolve as resolve_market_href,
 };
 pub use points::{COMMANDS, CommandDecl, register_builtin_points};
 pub use providers::{ProviderKind, set_editor_providers};
@@ -202,6 +212,7 @@ const LATENCY_WINDOW: usize = 128;
 /// Events waiting for one plugin (from one window).
 struct EventQueue {
     since: Instant,
+    last_event: Instant,
     events: Vec<WorkbenchEvent>,
     files_source: Option<files_changed::Source>,
 }
@@ -211,6 +222,8 @@ const MAX_QUEUED_EVENTS: usize = 500;
 /// How long events for a plugin that is not running are collected before it
 /// is activated to receive them.
 const IDLE_BATCH: Duration = Duration::from_secs(2);
+/// Maximum delay for debounced events before forcing delivery.
+const MAX_DEBOUNCE_WAIT: Duration = Duration::from_secs(5);
 
 struct LoadedPlugin {
     pkg: Package,
@@ -375,6 +388,10 @@ pub struct PluginHost {
     ui: Arc<UiStore>,
     languages: Arc<PluginLanguages>,
     run_detectors: Arc<run_detectors::RunDetectors>,
+    /// `[[contributes.javaAgents]]` of enabled plugins.
+    java_agents: Arc<java_agents::JavaAgents>,
+    /// `[[contributes.skills]]` of enabled plugins.
+    skills: Arc<skills::PluginSkills>,
     /// `[[contributes.providers]]` of enabled plugins.
     providers: Arc<providers::Providers>,
     navigation: Mutex<navigation::NavigationIndex>,
@@ -401,6 +418,8 @@ pub struct PluginHost {
     announced_theme: Mutex<Option<ActiveTheme>>,
     /// [`PluginLanguages::revision`] last announced with `LanguagesChanged`.
     announced_languages: AtomicU64,
+    /// [`skills::PluginSkills::revision`] last announced to open projects.
+    announced_skills: AtomicU64,
     /// `PATH` used to resolve `process:` programs at grant time.
     path_var: RwLock<PathVar>,
     /// (plugin id, `process:` capability) → the approved program; read by the
@@ -414,6 +433,8 @@ pub struct PluginHost {
     announced_updates: Mutex<Vec<String>>,
     /// The marketplace used while the user has set none (the app's official one).
     default_market_url: RwLock<Option<String>>,
+    /// Tools › Download sources: where plugin packages are fetched from first.
+    downloads: RwLock<ide_core::settings::ToolDownloadSettings>,
     /// Updates not confirmed yet (the new version hasn't started once): what
     /// to roll back to.
     updates: Mutex<HashMap<String, PendingUpdate>>,
@@ -428,6 +449,11 @@ impl PluginHost {
     /// Current decoration snapshots for windows opening after a plugin published them.
     pub fn decoration_sets(&self) -> std::collections::BTreeMap<String, Vec<DecorationSet>> {
         self.shared.decoration_sets()
+    }
+
+    /// Every plugin's console highlight rules, for windows opening after they were set.
+    pub fn console_rules(&self) -> std::collections::BTreeMap<String, Vec<ide_plugin::ConsoleRule>> {
+        self.shared.console_rules()
     }
 
     /// Creates the host; call [`load_all`](Self::load_all) to load installed plugins.
@@ -454,7 +480,10 @@ impl PluginHost {
         let languages = PluginLanguages::new();
         let run_detectors: Arc<run_detectors::RunDetectors> = Arc::default();
         let providers: Arc<providers::Providers> = Arc::default();
-        register_builtin_points(&registry, &ui, &languages, &run_detectors, &providers).map_err(IdeError::internal)?;
+        let java_agents: Arc<java_agents::JavaAgents> = Arc::default();
+        let skills: Arc<skills::PluginSkills> = Arc::default();
+        register_builtin_points(&registry, &ui, &languages, &run_detectors, &java_agents, &providers, &skills)
+            .map_err(IdeError::internal)?;
         let pins: Arc<RwLock<HashMap<(String, String), ProgramPin>>> = Arc::default();
         let policy_pins = pins.clone();
         languages.set_process_policy(Arc::new(move |plugin, cap| {
@@ -476,6 +505,7 @@ impl PluginHost {
             official_keys: RwLock::new(official_keys),
             announced_updates: Mutex::default(),
             default_market_url: RwLock::new(None),
+            downloads: RwLock::new(Default::default()),
             updates: Mutex::default(),
             project_policy: RwLock::new(Arc::new(|_| false)),
             engine: PluginEngine::new().map_err(IdeError::internal)?,
@@ -488,6 +518,8 @@ impl PluginHost {
             ui,
             languages,
             run_detectors,
+            java_agents,
+            skills,
             providers,
             navigation: Mutex::default(),
             endpoints: Mutex::default(),
@@ -503,6 +535,7 @@ impl PluginHost {
             startup_finished: AtomicBool::new(false),
             announced_theme: Mutex::new(None),
             announced_languages: AtomicU64::new(0),
+            announced_skills: AtomicU64::new(0),
             path_var: RwLock::new(Arc::new(|| std::env::var_os("PATH"))),
             pins,
         };
@@ -907,6 +940,7 @@ impl PluginHost {
                 capabilities.push(CapabilityInfo::new(extra, true, granted(extra)));
             }
         }
+        annotate_java_agent_vm_options(&mut capabilities, m);
         capabilities.sort_by(|a, b| b.risk.cmp(&a.risk).then(a.id.cmp(&b.id)));
         let signer_changed = self.signer_changed(&m.id, src);
         let answered = |c: &CapabilityInfo| {
@@ -988,8 +1022,8 @@ impl PluginHost {
         };
         // Consent covers what the install page showed.
         let request = request_for(&subject, &pkg.manifest, &hash, &set.capabilities);
-        self.record_consent(&request, consent);
         let dir = install::active_dir(&root).ok_or_else(|| IdeError::internal("the installed version is missing"))?;
+        self.record_consent(&request, consent, agent_jar_grant(&pkg.manifest, &dir));
         self.load_dir(&dir, PluginSource::Installed, None);
         if let Some(previous) = previous {
             let failed = self
@@ -1107,7 +1141,7 @@ impl PluginHost {
         let hash = self.package_hash_of(&plugin);
         let extra = plugin.meta.lock().declared_extra.clone();
         let request = request_for(&plugin.subject(), plugin.manifest(), &hash, &extra);
-        self.record_consent(&request, consent);
+        self.record_consent(&request, consent, agent_jar_grant(plugin.manifest(), plugin.dir()));
         self.stop(&plugin);
         if !self.state.lock().disabled.contains(id) {
             self.start(&plugin);
@@ -1140,6 +1174,92 @@ impl PluginHost {
         self.info_of(id)
     }
 
+    /// Approves the host the plugin's `net:setting:<key>` grant derives from
+    /// the setting's value right now: the dialog when the user applies the
+    /// value in Settings, or the pending row's Approve action. `expected` is
+    /// the host the user was shown: when the setting changed since (the plugin
+    /// can write its own settings), nothing is approved. On a remote host the
+    /// approval is kept for the session only, like `net:ask` (#3809).
+    pub fn approve_net_setting(&self, id: &str, setting: &str, http: bool, expected: &str) -> IdeResult<PluginInfo> {
+        let _guard = self.lifecycle.lock();
+        let plugin = self.get(id)?;
+        self.check_not_uninstalling(&plugin)?;
+        let cap = Capability::NetSetting { http, key: setting.to_owned() };
+        if !plugin.manifest().declares(&cap) {
+            return Err(IdeError::invalid(format!("plugin {id:?} does not declare {cap}")));
+        }
+        let api = api::PluginApi { pkg: plugin.pkg.clone(), shared: self.shared.clone() };
+        let value = api
+            .setting_value(setting)
+            .ok_or_else(|| IdeError::invalid(format!("setting {setting:?} holds no value")))?;
+        let host = api::setting_host(&value)
+            .map_err(IdeError::invalid)?
+            .ok_or_else(|| IdeError::invalid(format!("setting {setting:?} holds no host")))?;
+        if host != expected {
+            return Err(IdeError::invalid(format!(
+                "setting {setting:?} now holds {host}, not {expected}: approve the new value instead"
+            )));
+        }
+        let session_only = self.shared.net_hosts_session_only.load(std::sync::atomic::Ordering::Relaxed);
+        if !session_only {
+            let mut ledger = self.ledger.lock();
+            if !ledger.remember_setting_host(&plugin.subject(), &cap, &host) {
+                return Err(IdeError::invalid(format!("plugin {id:?} does not have {cap} granted")));
+            }
+            self.save_ledger(&ledger);
+        }
+        self.stop(&plugin);
+        if session_only {
+            self.shared.session_setting_hosts.lock().entry(id.to_owned()).or_default().insert(cap.to_string(), host);
+        }
+        if !self.state.lock().disabled.contains(id) {
+            self.start(&plugin);
+        }
+        // Plugins that need this one follow it: running again, or blocked while it can't run.
+        self.settle_dependents(id);
+        self.changed();
+        self.info_of(id)
+    }
+
+    /// The host a `net:setting:<key>` grant derives from `value` (a bare host
+    /// or a URL), for the approval dialog; an error refuses the value.
+    pub fn net_setting_host(&self, id: &str, setting: &str, value: &str) -> IdeResult<String> {
+        let plugin = self.get(id)?;
+        let cap = Capability::NetSetting { http: false, key: setting.to_owned() };
+        if !plugin.manifest().declares(&cap)
+            && !plugin.manifest().declares(&Capability::NetSetting { http: true, key: setting.to_owned() })
+        {
+            return Err(IdeError::invalid(format!("plugin {id:?} does not declare a setting grant for {setting:?}")));
+        }
+        api::setting_host(value)
+            .map_err(IdeError::invalid)?
+            .ok_or_else(|| IdeError::invalid(format!("{value:?} holds no host")))
+    }
+
+    /// Drops the approved host of a `net:setting:<key>` grant (its revoke
+    /// action, or the setting's value being cleared). Nothing recorded: still
+    /// fine, the state is already as asked.
+    pub fn forget_net_setting(&self, id: &str, setting: &str, http: bool) -> IdeResult<PluginInfo> {
+        let _guard = self.lifecycle.lock();
+        let plugin = self.get(id)?;
+        self.check_not_uninstalling(&plugin)?;
+        let cap = Capability::NetSetting { http, key: setting.to_owned() };
+        {
+            let mut ledger = self.ledger.lock();
+            ledger.forget_setting_host(&plugin.subject(), &cap);
+            self.save_ledger(&ledger);
+        }
+        self.shared.session_setting_hosts.lock().get_mut(id).map(|hosts| hosts.remove(&cap.to_string()));
+        self.stop(&plugin);
+        if !self.state.lock().disabled.contains(id) {
+            self.start(&plugin);
+        }
+        // Plugins that need this one follow it: running again, or blocked while it can't run.
+        self.settle_dependents(id);
+        self.changed();
+        self.info_of(id)
+    }
+
     /// Grants or revokes one declared capability (Settings › Plugins › Permissions).
     /// Revoking a required one stops the plugin until consent is given again.
     pub fn set_capability(&self, id: &str, capability: &str, granted: bool) -> IdeResult<PluginInfo> {
@@ -1157,6 +1277,16 @@ impl PluginHost {
                 return Err(IdeError::invalid(format!("plugin {id:?} has not been confirmed yet")));
             }
             ledger.set(&subject, &cap, granted);
+            if !granted {
+                // A session-only approval of a setting-derived host goes with its grant.
+                self.shared.session_setting_hosts.lock().get_mut(id).map(|hosts| hosts.remove(&cap.to_string()));
+            }
+            if granted
+                && cap == Capability::JavaAgent
+                && let Some(jar) = agent_jar_grant(plugin.manifest(), plugin.dir())
+            {
+                ledger.set_binary(&subject, &cap, jar);
+            }
             if granted
                 && let Capability::Process(program) = &cap
                 && let Some(bin) = ledger
@@ -1368,8 +1498,137 @@ impl PluginHost {
         arg: Option<&str>,
         invocation: Invocation,
     ) -> IdeResult<Option<String>> {
+        self.run_command_with_cancel(id, command, arg, invocation, None)
+    }
+
+    /// Runs a command with request-scoped cancellation, without cancelling other queued calls.
+    pub fn run_command_with_cancel(
+        &self,
+        id: &str,
+        command: &str,
+        arg: Option<&str>,
+        invocation: Invocation,
+        cancel: Option<&ide_core::CancellationToken>,
+    ) -> IdeResult<Option<String>> {
+        // Queued behind a prompt open in another window, the command would sit there with no
+        // sign of life until that prompt is answered: point the user at it instead.
+        if let Some(client) = invocation.client.as_deref()
+            && let Some(waiting) = self.shared.waiting_elsewhere(id, client)
+        {
+            self.sink.emit(Some(&waiting), PluginEvent::PromptWaiting { plugin_id: id.to_owned() });
+            let name = self.get(id).map(|p| p.manifest().name.clone()).unwrap_or_else(|_| id.to_owned());
+            return Err(IdeError::invalid(format!(
+                "{name} is waiting for your answer in another window. Answer or close it there, then try again."
+            )));
+        }
         let (cmd, arg) = (command.to_owned(), arg.map(str::to_owned));
-        self.code_call(id, invocation, "running the command", move |rt, inv| rt.run_command(&cmd, arg.as_deref(), inv))
+        self.code_call_cancellable(id, invocation, "running the command", cancel, move |rt, inv| {
+            rt.run_command(&cmd, arg.as_deref(), inv)
+        })
+    }
+
+    /// Run Anything entries (API 1.18) of the plugin that declares `prefix`, for the
+    /// field's `text` in `window`'s project: from what it already knows, within 300 ms.
+    pub fn run_anything_suggest(
+        &self,
+        id: &str,
+        window: &str,
+        root: Option<PathBuf>,
+        prefix: &str,
+        text: &str,
+    ) -> IdeResult<Vec<ide_plugin::RunAnythingItem>> {
+        self.declared_run_anything(id, prefix)?;
+        if text.len() > 4096 || !(prefix.starts_with(text) || text.starts_with(prefix)) {
+            return Err(IdeError::invalid("the text doesn't start with the plugin's prefix"));
+        }
+        let invocation = Invocation { client: Some(window.to_owned()), workspace_root: root, ..Default::default() };
+        let (prefix, text) = (prefix.to_owned(), text.to_owned());
+        let budget = Duration::from_millis(300);
+        self.code_call_with_budget(
+            id,
+            invocation,
+            "suggesting Run Anything entries",
+            None,
+            Some(budget),
+            move |rt, inv| rt.run_anything_suggest(&prefix, &text, inv, budget),
+        )
+    }
+
+    /// Runs a Run Anything line whose first word is `prefix` (API 1.18): whether the
+    /// plugin claimed it. A failed call is an error, which the caller treats as claimed.
+    pub fn run_anything_run(
+        &self,
+        id: &str,
+        window: &str,
+        root: Option<PathBuf>,
+        prefix: &str,
+        line: &str,
+    ) -> IdeResult<bool> {
+        self.declared_run_anything(id, prefix)?;
+        if line.len() > 4096 || line.split_whitespace().next() != Some(prefix) {
+            return Err(IdeError::invalid("the line doesn't start with the plugin's prefix"));
+        }
+        let invocation = Invocation { client: Some(window.to_owned()), workspace_root: root, ..Default::default() };
+        let (prefix, line) = (prefix.to_owned(), line.to_owned());
+        let timeout = self.limits.timeout;
+        self.code_call(id, invocation, "running a Run Anything line", move |rt, inv| {
+            rt.run_anything_run(&prefix, &line, inv, timeout)
+        })
+    }
+
+    /// Completions (API 1.18) for `field` of the plugin run configuration `config_id`
+    /// (`plugin:<plugin>:<id>`, also a user's override of one), as `window`'s project
+    /// currently has it, for the field's `text` and UTF-16 `caret`: from what the owning
+    /// plugin already knows, within 300 ms.
+    pub fn run_configuration_complete(
+        &self,
+        window: &str,
+        root: &Path,
+        config_id: &str,
+        field: &str,
+        text: &str,
+        caret: u32,
+    ) -> IdeResult<Vec<ide_plugin::RunConfigCompletion>> {
+        if text.len() > 16 * 1024 || caret as usize > text.encode_utf16().count() || field.len() > 64 {
+            return Err(IdeError::invalid("the field text or caret is out of range"));
+        }
+        if !self.run_detection().detect(root).iter().any(|c| c.id == config_id && c.kind == "plugin") {
+            return Err(IdeError::not_found("this plugin configuration is no longer provided"));
+        }
+        let owner = self
+            .plugins
+            .read()
+            .keys()
+            .filter(|id| {
+                config_id.strip_prefix(ide_run::EXTERNAL_PREFIX).is_some_and(|rest| rest.starts_with(&format!("{id}:")))
+            })
+            .max_by_key(|id| id.len())
+            .cloned()
+            .ok_or_else(|| IdeError::not_found("the plugin owning this configuration is not loaded"))?;
+        let own = config_id[ide_run::EXTERNAL_PREFIX.len() + owner.len() + 1..].to_owned();
+        let invocation = Invocation {
+            client: Some(window.to_owned()),
+            workspace_root: Some(root.to_path_buf()),
+            ..Default::default()
+        };
+        let (field, text) = (field.to_owned(), text.to_owned());
+        let budget = Duration::from_millis(300);
+        self.code_call_with_budget(
+            &owner,
+            invocation,
+            "completing a run configuration field",
+            None,
+            Some(budget),
+            move |rt, inv| rt.run_configuration_complete(&own, &field, &text, caret, inv, budget),
+        )
+    }
+
+    fn declared_run_anything(&self, id: &str, prefix: &str) -> IdeResult<()> {
+        if self.ui.items(ui_points::RUN_ANYTHING, Some(id)).iter().any(|d| d.key == prefix) {
+            Ok(())
+        } else {
+            Err(IdeError::invalid(format!("plugin {id:?} declares no Run Anything prefix {prefix:?}")))
+        }
     }
 
     /// Content of a declared view, or of a custom editor (`invocation.editor`
@@ -1461,9 +1720,8 @@ impl PluginHost {
     }
 
     fn declared_view(&self, id: &str, view: &str) -> IdeResult<()> {
-        let declared = [ui_points::VIEWS, ui_points::CUSTOM_EDITORS]
-            .iter()
-            .any(|point| self.ui.items(point, Some(id)).iter().any(|i| i.key == view));
+        let declared =
+            ui_points::WEB_POINTS.iter().any(|point| self.ui.items(point, Some(id)).iter().any(|i| i.key == view));
         if declared { Ok(()) } else { Err(IdeError::not_found(format!("plugin {id:?} declares no view {view:?}"))) }
     }
 
@@ -1513,6 +1771,9 @@ impl PluginHost {
         budget: Option<Duration>,
         f: impl Fn(&mut Runtime, Invocation) -> Result<R, CallError> + Clone + Send + 'static,
     ) -> IdeResult<R> {
+        if cancel.is_some_and(|token| token.is_cancelled()) {
+            return Err(IdeError::cancelled());
+        }
         let deadline = budget.map(|budget| Instant::now() + budget);
         let fallback = ide_core::CancellationToken::new();
         let plugin = self.get(id)?;
@@ -1549,6 +1810,9 @@ impl PluginHost {
         }
         // Twice at most: the instance may be reclaimed between picking it and queueing the call.
         for attempt in 0..2 {
+            if cancel.is_some_and(|token| token.is_cancelled()) {
+                return Err(IdeError::cancelled());
+            }
             let (actor, activated) = self.ensure_active(&plugin, client.as_deref())?;
             if activated {
                 self.changed();
@@ -1567,6 +1831,10 @@ impl PluginHost {
                 }
                 (None, None) => actor.call(None, move |rt| call(rt, inv)),
             };
+            if cancel.is_some_and(|token| token.is_cancelled()) {
+                self.reap(&plugin, &actor, client.as_deref());
+                return Err(IdeError::cancelled());
+            }
             if deadline.is_some() && matches!(result, Err(ActorError::SoftTimeout)) {
                 self.reap(&plugin, &actor, client.as_deref());
                 return Err(IdeError::new(
@@ -1659,20 +1927,32 @@ impl PluginHost {
         })
     }
 
+    /// Plugins' `javaAgents`, for [`ide_run::java_agent::set_java_agent_source`].
+    pub fn java_agents(&self) -> Arc<dyn ide_run::java_agent::JavaAgentSource> {
+        Arc::new(java_agents::PluginJavaAgents { store: self.java_agents.clone(), pins: self.pins.clone() })
+    }
+
     /// The syntax of plugin languages, for [`ide_language::set_external_syntax`].
     pub fn syntax_provider(self: &Arc<Self>) -> Arc<dyn ide_language::ExternalSyntax> {
         Arc::new(PluginSyntax(Arc::downgrade(self)))
     }
 
     /// The UI reports which file its focused editor shows (`editor-focused`).
-    pub fn set_active_file(&self, client: &str, path: Option<String>) {
-        self.post_events(Some(client), vec![WorkbenchEvent::EditorFocused(path)]);
+    /// The editor snapshot carries the caret so line-scoped features stay current.
+    pub fn set_active_file(&self, client: &str, path: Option<String>, editor: Option<PluginEditor>) {
+        self.post_window_events(client, vec![WorkbenchEvent::EditorFocused(path)], editor);
     }
 
     /// Where plugin secrets are kept (default: files under the plugins
     /// directory; the desktop app uses the OS keychain).
     pub fn set_secret_store(&self, store: Arc<dyn SecretStore>) {
         *self.shared.secrets.write() = store;
+    }
+
+    /// Keeps plugin secrets in the OS credential store, with the owner-only
+    /// files under the plugins directory as the fallback.
+    pub fn use_credential_store(&self) {
+        self.set_secret_store(Arc::new(CredentialSecretStore::new(self.shared.data_dir.clone())));
     }
 
     /// Stores (or, with `None`, deletes) a secret the plugin declares under
@@ -1729,8 +2009,55 @@ impl PluginHost {
     /// events, and ignores context writes of commands still running for it.
     pub fn forget_client(&self, label: &str) {
         self.queues.lock().retain(|(_, client), _| client.as_deref() != Some(label));
+        self.shared.external_watches.remove_client(label);
         self.shared.forget_client(label);
         self.forget_web_ptys(label);
+    }
+
+    /// A project closed (or the last window for it detached). Closes the project
+    /// generation, drops queued events for that window and project, withdraws run
+    /// targets and run configurations, and delivers
+    /// `project-closed` to subscribed plugins.
+    pub fn project_closed(&self, root: &Path, window: &str) {
+        self.shared.close_project_generation(root);
+        self.shared.external_watches.remove_project(root);
+        self.withdraw_project_run_targets(root);
+        self.shared.run_configurations.write().retain(|(_, r), _| r != root);
+
+        let root_ipc = ide_core::ipc_path::to_ipc(root);
+        {
+            let mut queues = self.queues.lock();
+            queues.retain(|(_, client), q| {
+                if client.as_deref() == Some(window) {
+                    return false;
+                }
+                q.events.retain(|e| {
+                    if let WorkbenchEvent::FilesChanged(f) | WorkbenchEvent::WatchedFilesChanged(f) = e
+                        && f.project.as_deref() == Some(&root_ipc)
+                    {
+                        return false;
+                    }
+                    true
+                });
+                !q.events.is_empty()
+            });
+        }
+
+        let plugins = self.plugins.read();
+        for p in plugins.values() {
+            {
+                let mut batches = p.batches.lock();
+                batches.files_pending.retain(|(client, ws_root), _| {
+                    client.as_deref() != Some(window) && ws_root.as_deref() != Some(root)
+                });
+            }
+        }
+        drop(plugins);
+        // In-flight work is not cancelled: an instance serves every project, and its
+        // results for this one are refused now that the project's generation moved on.
+
+        self.post_events(None, vec![WorkbenchEvent::ProjectClosed(root_ipc)]);
+        self.flush_events();
     }
 
     /// The user cancelled a plugin task (`task_id` from `TaskStarted`).
@@ -1748,6 +2075,12 @@ impl PluginHost {
     /// longer waits.
     pub fn answer_command(&self, client: &str, request: &str, answer: CommandAnswer) -> bool {
         request.parse().is_ok_and(|id| self.shared.answer_command(client, id, answer))
+    }
+
+    /// A window answered a plugin's `ClipboardRequested`; false when the call no longer
+    /// waits or asked another window.
+    pub fn answer_clipboard(&self, client: &str, request_id: &str, answer: ClipboardAnswer) -> bool {
+        request_id.parse().is_ok_and(|id| self.shared.answer_clipboard(client, id, answer))
     }
 
     pub fn answer_commit(&self, request_id: &str, answer: CommitAnswer) -> bool {
@@ -1863,6 +2196,36 @@ impl PluginHost {
         );
     }
 
+    /// Queues what `events.watch-paths` watchers saw for their plugin and window,
+    /// while that window still shows the project the watch belongs to.
+    fn queue_watched_changes(&self, now: Instant) {
+        let changes = self.shared.external_watches.take();
+        if changes.is_empty() {
+            return;
+        }
+        let subs = self.shared.subscriptions.lock().clone();
+        let plugins = self.plugins.read();
+        let mut queues = self.queues.lock();
+        for change in changes {
+            let Some(p) = plugins.get(&change.plugin) else { continue };
+            if self.shared.project_of(&change.client).as_deref() != Some(change.project.as_path())
+                || !Self::wants(p, EventKind::WatchedFilesChanged, subs.kinds.get(p.id()))
+            {
+                continue;
+            }
+            let batch =
+                ide_plugin::FilesChanged { project: Some(ide_core::ipc_path::to_ipc(&change.project)), ..change.batch };
+            let queue = queues.entry((change.plugin, Some(change.client))).or_insert_with(|| EventQueue {
+                since: now,
+                last_event: now,
+                events: Vec::new(),
+                files_source: None,
+            });
+            queue.last_event = now;
+            files_changed::append(&mut queue.events, vec![WorkbenchEvent::WatchedFilesChanged(batch)]);
+        }
+    }
+
     pub fn post_events(&self, client: Option<&str>, events: Vec<WorkbenchEvent>) {
         self.post_events_from(client, events, None);
     }
@@ -1885,6 +2248,7 @@ impl PluginHost {
         for p in plugins {
             let wanted: Vec<WorkbenchEvent> = events
                 .iter()
+                .filter(|event| !matches!(event, WorkbenchEvent::WebsocketReady(ready) if ready.plugin_id != p.id()))
                 .filter(|e| Self::wants(&p, e.kind(), subs.kinds.get(p.id())))
                 .filter(|e| {
                     !matches!(e, WorkbenchEvent::FilesChanged(_))
@@ -1915,9 +2279,11 @@ impl PluginHost {
             }
             let queue = queues.entry((p.id().to_owned(), client.map(str::to_owned))).or_insert_with(|| EventQueue {
                 since: now,
+                last_event: now,
                 events: Vec::new(),
                 files_source: None,
             });
+            queue.last_event = now;
             if let Some(source) = &source {
                 if !queue.files_source.as_ref().is_some_and(|old| old.same(source)) {
                     queue.events.retain(|e| !matches!(e, WorkbenchEvent::FilesChanged(_)));
@@ -1932,6 +2298,7 @@ impl PluginHost {
                     && !matches!(
                         event,
                         WorkbenchEvent::FilesChanged(_)
+                            | WorkbenchEvent::WatchedFilesChanged(_)
                             | WorkbenchEvent::RunExited(_)
                             | WorkbenchEvent::TerminalExited(_)
                             | WorkbenchEvent::ContentTabAction(_)
@@ -1956,24 +2323,82 @@ impl PluginHost {
 
     #[doc(hidden)]
     pub fn flush_events_at(&self, now: Instant) {
+        self.queue_watched_changes(now);
         let due: Vec<(QueueKey, EventQueue)> = {
             let mut queues = self.queues.lock();
             let plugins = self.plugins.read();
-            let keys: Vec<_> = queues
-                .iter()
-                .filter(|((id, _), q)| {
-                    let running =
-                        plugins.get(id).is_some_and(|p| p.runtime.lock().as_ref().is_some_and(|a| a.is_alive()));
-                    running
+            let subs = self.shared.subscriptions.lock();
+            let mut due = Vec::new();
+            let mut keys_to_remove = Vec::new();
+
+            for (key, q) in queues.iter_mut() {
+                let (id, _client) = key;
+                let running = plugins.get(id).is_some_and(|p| p.runtime.lock().as_ref().is_some_and(|a| a.is_alive()));
+                let has_files = q.events.iter().any(|e| matches!(e, WorkbenchEvent::FilesChanged(_)));
+                let has_scheduled = q.events.iter().any(|e| matches!(e, WorkbenchEvent::Scheduled));
+                // Already debounced by the watcher, like project file changes.
+                let has_watched = q.events.iter().any(|e| matches!(e, WorkbenchEvent::WatchedFilesChanged(_)));
+                let debounce = subs.paths.get(id).and_then(|p| p.get("files-changed")).and_then(|f| f.debounce);
+
+                let (files_due, files_debouncing) = if has_files {
+                    if let Some(debounce) = debounce {
+                        let elapsed = now.saturating_duration_since(q.last_event) >= debounce
+                            || now.saturating_duration_since(q.since) >= MAX_DEBOUNCE_WAIT;
+                        (elapsed, !elapsed)
+                    } else {
+                        (true, false)
+                    }
+                } else {
+                    (false, false)
+                };
+
+                let other_events_due = (running
+                    || has_watched
+                    || now.saturating_duration_since(q.since) >= IDLE_BATCH
+                    || q.events.len() >= MAX_QUEUED_EVENTS / 2
+                    || has_scheduled)
+                    && q.events.iter().any(|e| !matches!(e, WorkbenchEvent::FilesChanged(_)));
+
+                if files_debouncing {
+                    if other_events_due {
+                        let mut other_events = Vec::new();
+                        q.events.retain(|e| {
+                            if matches!(e, WorkbenchEvent::FilesChanged(_)) {
+                                true
+                            } else {
+                                other_events.push(e.clone());
+                                false
+                            }
+                        });
+                        due.push((
+                            key.clone(),
+                            EventQueue {
+                                since: q.since,
+                                last_event: q.last_event,
+                                events: other_events,
+                                files_source: None,
+                            },
+                        ));
+                    }
+                } else {
+                    let is_due = files_due
+                        || has_watched
+                        || running
                         || now.saturating_duration_since(q.since) >= IDLE_BATCH
                         || q.events.len() >= MAX_QUEUED_EVENTS / 2
-                        || q.events
-                            .iter()
-                            .any(|e| matches!(e, WorkbenchEvent::FilesChanged(_) | WorkbenchEvent::Scheduled))
-                })
-                .map(|(k, _)| k.clone())
-                .collect();
-            keys.into_iter().filter_map(|k| queues.remove(&k).map(|q| (k, q))).collect()
+                        || has_scheduled;
+                    if is_due {
+                        keys_to_remove.push(key.clone());
+                    }
+                }
+            }
+
+            for k in keys_to_remove {
+                if let Some(q) = queues.remove(&k) {
+                    due.push((k, q));
+                }
+            }
+            due
         };
         let mut changed = false;
         for ((id, client), queue) in due {
@@ -1998,9 +2423,10 @@ impl PluginHost {
     pub fn wait_events(&self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         loop {
-            let busy = self.plugins.read().values().any(|p| p.batches.lock().pending > 0);
+            self.flush_events_at(Instant::now());
+            let busy =
+                self.plugins.read().values().any(|p| p.batches.lock().pending > 0) || !self.queues.lock().is_empty();
             if !busy {
-                self.flush_events_at(Instant::now());
                 return true;
             }
             if Instant::now() >= deadline {
@@ -2042,12 +2468,20 @@ impl PluginHost {
             && queue.events.iter().any(|e| !matches!(e, WorkbenchEvent::FilesChanged(_)))
         {
             let (files, other) = queue.events.into_iter().partition(|e| matches!(e, WorkbenchEvent::FilesChanged(_)));
-            let changed =
-                self.deliver(id, client.clone(), EventQueue { since: queue.since, events: other, files_source: None });
+            let changed = self.deliver(
+                id,
+                client.clone(),
+                EventQueue { since: queue.since, last_event: queue.last_event, events: other, files_source: None },
+            );
             return self.deliver(
                 id,
                 client,
-                EventQueue { since: queue.since, events: files, files_source: queue.files_source },
+                EventQueue {
+                    since: queue.since,
+                    last_event: queue.last_event,
+                    events: files,
+                    files_source: queue.files_source,
+                },
             ) | changed;
         }
         let Ok(plugin) = self.get(id) else { return false };
@@ -2157,6 +2591,7 @@ impl PluginHost {
                 if events.is_empty() {
                     return Ok(());
                 }
+                let events = Self::relativize_documents(&shared, invocation.client.as_deref(), events);
                 rt.handle_events(events, invocation)
             },
             move |result| {
@@ -2367,12 +2802,15 @@ impl PluginHost {
             let restricted = p.dev_root.as_deref().is_some_and(|root| !(self.project_policy.read())(root));
             if due && !restricted && self.startup_finished.load(Ordering::Acquire) {
                 // Activates it if needed and calls `handle([scheduled])`.
-                self.queues
-                    .lock()
-                    .entry((p.id().to_owned(), None))
-                    .or_insert_with(|| EventQueue { since: now, events: Vec::new(), files_source: None })
-                    .events
-                    .push(WorkbenchEvent::Scheduled);
+                let mut q = self.queues.lock();
+                let queue = q.entry((p.id().to_owned(), None)).or_insert_with(|| EventQueue {
+                    since: now,
+                    last_event: now,
+                    events: Vec::new(),
+                    files_source: None,
+                });
+                queue.last_event = now;
+                queue.events.push(WorkbenchEvent::Scheduled);
             }
         }
         if changed {
@@ -2406,6 +2844,7 @@ impl PluginHost {
     fn prepare(&self, pkg: &Package) -> Result<ide_extension::PreparedSet, String> {
         plugin_icon(pkg)?;
         let mut set = self.registry.prepare(pkg)?;
+        check_setting_grants(pkg)?;
         for icon in [&pkg.manifest.icon, &pkg.manifest.icon_dark].into_iter().flatten() {
             if !set.files.contains(icon) {
                 set.files.push(icon.clone());
@@ -2564,7 +3003,7 @@ impl PluginHost {
             meta.declared_extra = set.capabilities.clone();
             meta.error = None;
         }
-        let (granted, pending) = match decision {
+        let (mut granted, pending) = match decision {
             Decision::Allowed { granted, pending } => (granted, pending),
             Decision::NeedsConfirmation { new, .. } => {
                 let mut meta = plugin.meta.lock();
@@ -2576,6 +3015,19 @@ impl PluginHost {
         };
         if let Err(e) = self.registry.commit(set) {
             return self.set_failed(plugin, e);
+        }
+        // Setting-derived network grants materialize their approved host while
+        // the setting holds it: `net:setting:server` acts as `net:<host>`, so
+        // the request path keeps its rules (`net_capability` / `covers`).
+        let api = api::PluginApi { pkg: plugin.pkg.clone(), shared: self.shared.clone() };
+        for (cap, approved, _pending) in api.net_setting_hosts(&plugin.subject()) {
+            if let Some(host) = approved {
+                match cap {
+                    Capability::NetSetting { http: false, key: _ } => granted.push(Capability::Net(host)),
+                    Capability::NetSetting { http: true, key: _ } => granted.push(Capability::NetHttp(host)),
+                    _ => {}
+                }
+            }
         }
         {
             let mut meta = plugin.meta.lock();
@@ -2842,6 +3294,16 @@ impl PluginHost {
         if self.announced_languages.swap(languages, Ordering::AcqRel) != languages {
             self.emit(None, PluginEvent::LanguagesChanged);
         }
+        let skills = self.skills.revision();
+        if self.announced_skills.swap(skills, Ordering::AcqRel) != skills
+            && let Some(workspace) = self.shared.workspace.read().clone()
+            && let Some(host) = workspace.database_host()
+        {
+            for p in host.projects() {
+                p.agents.notify_mcp_servers_changed();
+                p.sink.emit(ide_core::IdeEvent::SettingsChanged { key: "agents.skills".into() });
+            }
+        }
         let active = self.active_theme();
         let mut announced = self.announced_theme.lock();
         if *announced != active {
@@ -2895,7 +3357,7 @@ impl PluginHost {
             }
             let declared =
                 plugin.manifest().capabilities.all().cloned().chain(plugin.meta.lock().declared_extra.clone());
-            for cap in declared.filter(|c| matches!(c, Capability::Process(_))) {
+            for cap in declared.filter(|c| matches!(c, Capability::Process(_) | Capability::JavaAgent)) {
                 if let Some(bin) = ledger.pinned_binary(&subject, &cap) {
                     pins.insert(
                         (plugin.id().to_owned(), cap.to_string()),
@@ -2956,7 +3418,9 @@ impl PluginHost {
         self.save_ledger(&ledger);
     }
 
-    fn record_consent(&self, request: &Request<'_>, consent: &Consent) {
+    /// `agent_jar`: the jar of the plugin's `javaAgents` declaration, recorded when
+    /// `java.agent` is accepted.
+    fn record_consent(&self, request: &Request<'_>, consent: &Consent, agent_jar: Option<BinaryGrant>) {
         let accepted: Vec<Capability> = request.optional.iter().filter(|c| consent.accepts(c)).cloned().collect();
         let choices: BTreeMap<_, _> = {
             let ledger = self.ledger.lock();
@@ -2978,6 +3442,7 @@ impl PluginHost {
                     .get(&c.to_string())
                     .map_or_else(|| self.resolve_binary(program), |path| ledger::approve_program(path).ok())
                     .map(|b| (c.to_string(), b)),
+                Capability::JavaAgent => agent_jar.clone().map(|jar| (c.to_string(), jar)),
                 _ => None,
             })
             .collect();
@@ -3011,6 +3476,7 @@ impl PluginHost {
                 capabilities.push(CapabilityInfo::new(extra, true, granted(extra)));
             }
         }
+        annotate_java_agent_vm_options(&mut capabilities, m);
         // Hosts remembered through `net:ask` are grants of their own: listed
         // separately so the user can revoke them one by one.
         let net_hosts = grant
@@ -3018,6 +3484,21 @@ impl PluginHost {
             .filter(|g| g.confirmed && g.has(&Capability::NetAsk) && m.declares(&Capability::NetAsk))
             .map(|g| g.net_hosts.iter().cloned().collect())
             .unwrap_or_default();
+        // Setting-derived hosts, listed next to the `net:ask` ones: the
+        // approved host, and a pending one the setting now holds.
+        let net_settings = if m.capabilities.all().any(|c| matches!(c, Capability::NetSetting { .. })) {
+            let api = api::PluginApi { pkg: p.pkg.clone(), shared: self.shared.clone() };
+            api.net_setting_hosts(&p.subject())
+                .into_iter()
+                .filter(|(cap, ..)| grant.as_ref().is_some_and(|g| g.confirmed && g.has(cap)))
+                .map(|(cap, approved, pending)| {
+                    let Capability::NetSetting { http, key } = cap else { unreachable!() };
+                    types::PluginNetSetting { setting: key, http, host: approved, pending }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         PluginInfo {
             id: m.id.clone(),
             name: m.name.clone(),
@@ -3027,6 +3508,29 @@ impl PluginHost {
             homepage: m.homepage.clone(),
             change_notes: m.change_notes.clone(),
             icon: p.icon.clone(),
+            java_agent: self.java_agents.for_plugin(&m.id).map(|agent| {
+                let pin = self
+                    .ledger
+                    .lock()
+                    .get(&p.subject())
+                    .filter(|grant| grant.has(&Capability::JavaAgent))
+                    .and_then(|grant| grant.binaries.get(&Capability::JavaAgent.to_string()).cloned());
+                let approved = pin.as_ref().is_some_and(|pin| {
+                    pin.path == agent.jar && ledger::file_hash(&pin.path).is_ok_and(|hash| hash == pin.hash)
+                });
+                PluginJavaAgent {
+                    file_name: agent
+                        .jar
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| agent.jar.display().to_string()),
+                    args: agent.args,
+                    vm_options: agent.vm_options,
+                    jdk: agent.jdk,
+                    approved,
+                    executor: agent.executor,
+                }
+            }),
             source: p.source,
             path: p.dir().to_path_buf().into(),
             enabled: !self.state.lock().disabled.contains(&m.id),
@@ -3035,6 +3539,7 @@ impl PluginHost {
             has_code: m.wasm.is_some(),
             capabilities,
             net_hosts,
+            net_settings,
             contributions: self.registry.contributions(&m.id),
             activation: m.activation.iter().map(ToString::to_string).collect(),
             warnings: meta.warnings.clone(),
@@ -3053,6 +3558,58 @@ impl PluginHost {
 impl Drop for PluginHost {
     fn drop(&mut self) {
         self.shutdown();
+    }
+}
+
+/// The jar of a package's `javaAgents` declaration with its hash now, for a `java.agent` grant.
+fn agent_jar_grant(manifest: &Manifest, dir: &Path) -> Option<BinaryGrant> {
+    let path = java_agents::declared_jar(manifest, dir)?;
+    let hash = ledger::file_hash(&path).map_err(|e| tracing::info!("java.agent: {}: {e}", path.display())).ok()?;
+    Some(BinaryGrant { path, hash })
+}
+
+/// `net:setting:<key>` grants name a `string` setting of the plugin's own
+/// settings schema; checked like the other manifest checks, at install and
+/// start (#3809).
+fn check_setting_grants(pkg: &Package) -> Result<(), String> {
+    let derived: Vec<&Capability> =
+        pkg.manifest.capabilities.all().filter(|c| matches!(c, Capability::NetSetting { .. })).collect();
+    if derived.is_empty() {
+        return Ok(());
+    }
+    let mut strings = BTreeSet::new();
+    for decl in pkg.manifest.declarations(ui_points::SETTINGS) {
+        let decl = ui_points::settings(pkg, decl)?;
+        for property in decl.json.get("properties").and_then(|p| p.as_array()).into_iter().flatten() {
+            if property.get("type").and_then(|t| t.as_str()) == Some("string")
+                && let Some(key) = property.get("key").and_then(|k| k.as_str())
+            {
+                strings.insert(key.to_owned());
+            }
+        }
+    }
+    for cap in derived {
+        let Capability::NetSetting { http: _, key } = cap else { continue };
+        if !strings.contains(key.as_str()) {
+            return Err(format!(
+                "capability `{cap}` needs a `string` setting {key:?} in the plugin's own settings schema"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Consent / Settings: surface exact contributed JVM flags on the `java.agent` permission.
+fn annotate_java_agent_vm_options(capabilities: &mut [CapabilityInfo], manifest: &Manifest) {
+    let opts = java_agents::declared_vm_options(manifest);
+    if opts.is_empty() {
+        return;
+    }
+    let flags = opts.join(" ");
+    for cap in capabilities.iter_mut() {
+        if cap.id == "java.agent" {
+            cap.description = format!("{}; JVM options: {flags}", cap.description);
+        }
     }
 }
 

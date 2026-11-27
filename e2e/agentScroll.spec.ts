@@ -40,6 +40,7 @@ const entries: AgentEntry[] = Array.from({ length: 80 }, (_, turn): AgentEntry[]
   },
 ]).flat();
 
+/** Opens the 80-turn chat; each turn's consecutive tool calls and reasoning fold into one row. */
 async function openHistory(page: Page) {
   await page.goto("/");
   await page.getByRole("tree", { name: "Project" }).waitFor();
@@ -61,6 +62,7 @@ async function openHistory(page: Page) {
     { task, entries },
   );
   const stream = page.locator("[class*='_stream_']:visible");
+  // Each turn shows its request, its folded process run and its reply.
   await expect(stream.locator(":scope > *")).toHaveCount(80 * 3);
   await page.evaluate(() => document.fonts.ready);
   return stream;
@@ -83,11 +85,9 @@ for (const placement of ["editor", "toolWindow"] as const) {
       },
       { id: task.id, placement },
     );
-    // The working indicator sits in the tray below the conversation.
-    await expect(
-      page.getByRole("status").getByText("Working…", { exact: true }).filter({ visible: true }),
-    ).toBeVisible();
-    await expect(stream.locator(":scope > *")).toHaveCount(80 * 3);
+    // The working indicator ends the conversation, after its rows; the turn ends with a reply.
+    await expect(stream.getByRole("status").getByText("Writing…", { exact: true })).toBeVisible();
+    await expect(stream.locator(":scope > *")).toHaveCount(80 * 3 + 1);
     await expect.poll(() => stream.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThan(2);
     const timer = await page.evaluate(async (id) => {
       const path = "/src/features/agents/store.ts";
@@ -187,22 +187,20 @@ for (const selected of [false, true]) {
   });
 }
 
-test("opens a folded turn with the keyboard and jumps back to the latest reply", async ({ page }) => {
+test("opens a folded process run with the keyboard and jumps back to the latest reply", async ({ page }) => {
   const stream = await openHistory(page);
   await stream.evaluate((el) => {
     el.scrollTop = 0;
   });
   const jump = page.getByRole("button", { name: "Jump to Latest" });
   await expect(jump).toBeVisible();
-  const fold = stream.locator("[class*='_turnFold_']").first();
+  const fold = stream.locator("[class*='_processRun_']").first();
   const summary = fold.locator(":scope > summary");
   await summary.focus();
   await page.keyboard.press("Enter");
   await expect(fold).toHaveAttribute("open", "");
-  const run = fold.locator("[class*='_processRun_']").first();
-  await expect(run).toBeVisible();
-  await run.locator(":scope > summary").click();
   await expect(fold.getByText("read src/module-0.ts", { exact: true })).toBeVisible();
+  await expect(fold.getByText("execute src/module-0.ts", { exact: true })).toBeVisible();
   await summary.focus();
   await page.keyboard.press("Space");
   await expect(fold).not.toHaveAttribute("open", "");
@@ -210,4 +208,49 @@ test("opens a folded turn with the keyboard and jumps back to the latest reply",
   await page.keyboard.press("Enter");
   await expect(jump).toBeHidden();
   await expect.poll(() => stream.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop)).toBeLessThan(40);
+});
+
+test("paints earlier turns past folded process runs longer than ENTRY_BATCH", async ({ page }) => {
+  const longRun = (prefix: string, count: number): AgentEntry[] =>
+    Array.from({ length: count }, (_, i): AgentEntry => ({
+      type: "tool",
+      id: `${prefix}-${i}`,
+      kind: i % 3 === 0 ? "edit" : i % 2 === 0 ? "execute" : "read",
+      title: `tool ${prefix}-${i}`,
+      status: "completed",
+      locations: [],
+      output: null,
+      diffs: [],
+    }));
+  const longProcessEntries: AgentEntry[] = [
+    { type: "user", text: "Earliest request before long runs", attachments: [], steered: false },
+    { type: "agent", text: "Initial reply" },
+    { type: "user", text: "Split PR into three focused PRs", attachments: [], steered: false },
+    ...longRun("batch-a", 75),
+    { type: "agent", text: "Interim status update" },
+    ...longRun("batch-b", 75),
+  ];
+  await page.goto("/");
+  await page.getByRole("tree", { name: "Project" }).waitFor();
+  await page.evaluate(
+    async ({ task, entries }) => {
+      const path = "/src/features/agents/store.ts";
+      const store = await import(path);
+      store.useAgents.setState({
+        loaded: true,
+        error: null,
+        providers: [],
+        tasks: new Map([[task.id, { ...task, status: "running" }]]),
+        entries: new Map([[task.id, entries]]),
+        unread: new Set(),
+        docked: null,
+      });
+      store.openTaskInEditorLocation(task.id);
+    },
+    { task, entries: longProcessEntries },
+  );
+  const stream = page.locator("[class*='_stream_']:visible");
+  await expect(stream.getByText("Earliest request before long runs")).toBeVisible();
+  await expect(stream.getByText("Split PR into three focused PRs")).toBeVisible();
+  await expect(stream.getByText("Interim status update")).toBeVisible();
 });

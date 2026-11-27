@@ -1,6 +1,7 @@
 /** Installed plugins, their UI contributions, the selected plugin theme, and the operations on them. */
 import { create } from "zustand";
 import { tx } from "@/platform/i18n";
+import { isErrorKind } from "@/platform/ipc";
 import type {
   ActiveTheme,
   CapabilityInfo,
@@ -101,21 +102,33 @@ function askConsent(req: ConsentRequest): Promise<Consent | null> {
 // --- loading ------------------------------------------------------------------
 
 let generation = 0;
+/** Bumped whenever the active theme arrives on its own (a theme event, a theme choice). */
+let themeStamp = 0;
+
+/**
+ * Sets the active plugin theme from a `themeChanged` event or a theme choice. A plugin list
+ * requested before it carries the older theme, so its snapshot no longer overrides this one.
+ */
+export function setActivePluginTheme(activeTheme: ActiveTheme | null) {
+  themeStamp++;
+  usePlugins.setState({ activeTheme });
+}
 
 export async function refreshPlugins(): Promise<void> {
   const gen = ++generation;
+  const stamp = themeStamp;
   usePlugins.setState({ loading: true });
   try {
     const snapshot = await pluginsBackend().list();
     if (gen !== generation) return;
-    usePlugins.setState({
+    usePlugins.setState((s) => ({
       plugins: snapshot.plugins,
       ui: snapshot.ui,
-      activeTheme: snapshot.activeTheme,
+      activeTheme: stamp === themeStamp ? snapshot.activeTheme : s.activeTheme,
       loaded: true,
       loading: false,
       error: null,
-    });
+    }));
   } catch (e) {
     if (gen !== generation) return;
     usePlugins.setState({ loading: false, loaded: true, error: errorText(e) });
@@ -166,6 +179,7 @@ export function uninstallPlugin(id: string): Promise<boolean> {
   return withBusy(id, `Could not uninstall ${name}`, async () => {
     await pluginsBackend().uninstall(id);
     notifications().notify({ group: "plugins", level: "info", title: `Uninstalled ${name}` });
+    await refreshMarket(false);
   });
 }
 
@@ -195,6 +209,20 @@ export function setPluginCapability(id: string, capability: string, granted: boo
 export function revokePluginNetHost(id: string, host: string): Promise<boolean> {
   const name = nameOf(id);
   return withBusy(id, tx`Could not revoke ${host} for ${name}`, () => pluginsBackend().revokeNetHost(id, host));
+}
+
+export function approvePluginNetSetting(id: string, setting: string, http: boolean, host: string): Promise<boolean> {
+  const name = nameOf(id);
+  return withBusy(id, tx`Could not approve the host of the ${setting} setting for ${name}`, () =>
+    pluginsBackend().approveNetSetting(id, setting, http, host),
+  );
+}
+
+export function forgetPluginNetSetting(id: string, setting: string, http: boolean): Promise<boolean> {
+  const name = nameOf(id);
+  return withBusy(id, tx`Could not revoke the host of the ${setting} setting for ${name}`, () =>
+    pluginsBackend().forgetNetSetting(id, setting, http),
+  );
 }
 
 export async function refreshCatalog(): Promise<void> {
@@ -381,8 +409,7 @@ export async function installFromDisk(
 
 export async function selectPluginTheme(pluginId: string | null, themeId: string | null): Promise<void> {
   try {
-    const activeTheme = await pluginsBackend().setTheme(pluginId, themeId);
-    usePlugins.setState({ activeTheme });
+    setActivePluginTheme(await pluginsBackend().setTheme(pluginId, themeId));
   } catch (e) {
     notifications().notify({ group: "plugins", level: "error", title: "Could not apply theme", body: errorText(e) });
   }
@@ -412,7 +439,7 @@ export async function runPluginCommand(
     const status = usePlugins.getState().plugins.find((p) => p.id === pluginId)?.status;
     // A trap disables the plugin and the backend already announced why; a
     // consent request opens its own dialog.
-    const permission = (e as { kind?: string }).kind === "permissionDenied";
+    const permission = isErrorKind(e, "permissionDenied");
     if (status !== "failed" && !permission)
       notifications().notify({ group: "plugins", level: "error", title: `${title} failed`, body: errorText(e) });
     return null;

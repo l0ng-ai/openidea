@@ -50,6 +50,11 @@ export function attachPanZoom(viewport: HTMLElement, options: PanZoomOptions = {
     (e) => {
       if (!(e.metaKey || e.ctrlKey) || !e.deltaY) return;
       e.preventDefault();
+      if (view.z === origin.z && (viewport.scrollLeft || viewport.scrollTop)) {
+        view = { ...view, x: view.x - viewport.scrollLeft, y: view.y - viewport.scrollTop };
+        viewport.scrollLeft = 0;
+        viewport.scrollTop = 0;
+      }
       const rect = viewport.getBoundingClientRect();
       // One wheel notch (~100 px, 3 lines or a page) zooms about 15%; a trackpad
       // sends small pixel deltas, so zooming follows the gesture continuously.

@@ -21,7 +21,8 @@ describe("New keymap", () => {
     const generate = compileWhen(GENERATE_KEY_WHEN);
     expect(generate({ editorLangId: "java" })).toBe(true);
     expect(generate({ editorLangId: "rust" })).toBe(true);
-    expect(generate({ editorLangId: "python" })).toBe(false);
+    expect(generate({ editorLangId: "python" })).toBe(true);
+    expect(generate({ editorLangId: "ruby" })).toBe(false);
     expect(generate({ editorLangId: "markdown" })).toBe(false);
     expect(generate({})).toBe(false);
   });

@@ -1,14 +1,25 @@
 /** Agents of the ACP Registry: listing, install / update / remove (`agent_registry_*`). */
-import { open } from "@tauri-apps/plugin-dialog";
+import { open } from "@/platform/dialog";
+import { choosePath } from "@/platform/choosePath";
+import { readDesktopText } from "@/platform/desktopFiles";
 import { Channel } from "@tauri-apps/api/core";
 import type {
+  AcpImportOutcome,
+  AgentCliOffer,
+  AgentCliUpdateResult,
+  AgentLoginEvent,
+  AgentModelCatalog,
   AgentProvider,
   AgentRegistry,
+  CopilotAuthStatus,
+  CustomAgentInput,
   InstallEvent,
   RegistryAgent,
   RegistryDistribution,
   RequestId,
+  TerminalId,
 } from "@/bindings";
+import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 
 export interface RegistryBackend {
@@ -20,10 +31,22 @@ export interface RegistryBackend {
 
 /** The built-in agents' launch commands: read, and override through an agent file. */
 export interface CommandsBackend {
+  checkCli(id: string, request: RequestId): Promise<AgentCliUpdateResult>;
+  updateCli(id: string, offer: AgentCliOffer, request: RequestId): Promise<AgentCliUpdateResult>;
+  cancel(request: RequestId): void;
   providers(): Promise<AgentProvider[]>;
+  copilotAuthStatus?(): Promise<CopilotAuthStatus>;
+  loginSpawn?(id: string, cols: number, rows: number, onEvent: (e: AgentLoginEvent) => void): Promise<TerminalId>;
+  ghLoginSpawn?(cols: number, rows: number, onEvent: (e: AgentLoginEvent) => void): Promise<TerminalId>;
+  refreshModels?(id: string, model: string | null, force?: boolean): Promise<AgentModelCatalog>;
   set(id: string, command: string | null): Promise<void>;
+  setAdditionalArgs(id: string, args: string[]): Promise<void>;
   setEnv(id: string, env: Record<string, string>): Promise<void>;
-  chooseExecutable(title: string, current?: string): Promise<string | null>;
+  chooseExecutable(title: string, current?: string, location?: "desktop"): Promise<string | null>;
+  saveCustom(input: CustomAgentInput): Promise<void>;
+  removeCustom(id: string): Promise<void>;
+  importAcp(text: string): Promise<AcpImportOutcome[]>;
+  pickAcpJson(): Promise<string | null>;
 }
 
 export const tauriRegistry: RegistryBackend = {
@@ -40,16 +63,54 @@ export const tauriRegistry: RegistryBackend = {
 };
 
 export const tauriCommands: CommandsBackend = {
+  checkCli: (id, request) => call(commands.agentCliUpdateCheck(id, request)),
+  updateCli: (id, offer, request) => call(commands.agentCliUpdate(id, offer, request)),
+  cancel: tauriRegistry.cancel,
   providers: () => call(commands.agentProviders()),
-  chooseExecutable: async (title, current) => {
+  copilotAuthStatus: () => call(commands.agentCopilotAuthStatus()),
+  loginSpawn: async (id, cols, rows, onEvent) => {
+    const channel = new Channel<AgentLoginEvent>();
+    channel.onmessage = onEvent;
+    const info = await call(commands.agentLoginSpawn(id, cols, rows, channel));
+    return info.id;
+  },
+  ghLoginSpawn: async (cols, rows, onEvent) => {
+    const channel = new Channel<AgentLoginEvent>();
+    channel.onmessage = onEvent;
+    const info = await call(commands.agentGhLoginSpawn(cols, rows, channel));
+    return info.id;
+  },
+  refreshModels: (id, model, force = false) => call(commands.agentRefreshModels(id, force, model)),
+  chooseExecutable: async (title, current, location) => {
+    if (location !== "desktop") return choosePath({ title, defaultPath: current, directory: false });
     const picked = await open({ title, defaultPath: current || undefined, directory: false, multiple: false });
     return typeof picked === "string" ? picked : null;
   },
   set: async (id, command) => {
     await call(commands.agentSetCommand(id, command));
   },
+  setAdditionalArgs: async (id, args) => {
+    await call(commands.agentSetAdditionalArgs(id, args));
+  },
   setEnv: async (id, env) => {
     await call(commands.agentSetEnv(id, env));
+  },
+  saveCustom: async (input) => {
+    await call(commands.agentCustomSave(input));
+  },
+  removeCustom: async (id) => {
+    await call(commands.agentCustomRemove(id));
+  },
+  importAcp: (text) => call(commands.agentCustomImport(text)),
+  pickAcpJson: async () => {
+    const picked = await open({
+      title: tx("Select acp.json"),
+      directory: false,
+      multiple: false,
+      filters: [{ name: tx("ACP config"), extensions: ["json"] }],
+    });
+    if (typeof picked !== "string") return null;
+    return readDesktopText(picked);
   },
 };
 

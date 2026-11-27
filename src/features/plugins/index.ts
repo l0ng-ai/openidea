@@ -16,63 +16,23 @@ import { pluginLanguageVisuals } from "./languageVisuals";
  * `line-markers` providers (`lineMarkerGutter.ts`).
  */
 import { registerEditorContribution } from "@/editor/api";
-import { lazyComponent, lazyWhen } from "@/ui";
 import { executeAction, registerActions } from "@/platform/actions";
 import { useProject } from "@/platform/project";
-import { editorService, registerOverlay, registerSettingsPage } from "@/workbench/contributions";
-import {
-  followPluginChanges,
-  providePluginThemePreviews,
-  startPluginBridge,
-  syncProjection,
-  trackPluginTheme,
-} from "./bridge";
+import { editorService, registerOverlay } from "@/workbench/contributions";
+import { providePluginThemePreviews, startPluginBridge } from "./bridge";
 import { ConsentDialogHost, provideConsentDialog } from "./consent";
-import { trackIconTheme } from "./iconThemes";
 import { pluginLineMarkerGutter } from "./lineMarkerGutter";
-import { defineBuiltinUiPoints } from "./points";
 import { startViewUi } from "./uiPoints";
-import { showInstalledIntellijThemes, useIntellijThemesDialog } from "./intellijThemesDialogStore";
+import { syncPluginExecutors } from "./executors";
+import { showInstalledIntellijThemes } from "./intellijThemesDialogStore";
 import { startWorkspaceContains } from "./workspaceContains";
 import { startPluginDecorations } from "./decorations";
+import { startPluginConsoleRules } from "./consoleRules";
+import { startOneDarkNotice } from "./oneDarkNotice";
 import { startIndexedMarkers } from "./indexedMarkers";
-import { startRunTargets } from "./runTargets";
 import { startPluginNavigation } from "./navigation";
+import { IntellijThemesDialogHost, registerPluginsPage } from "./settingsPages";
 import { installFromDisk, refreshPlugins, reloadPlugin, SETTINGS_PAGE_ID, updateAllPlugins, usePlugins } from "./store";
-
-function registerPluginsPage(): () => void {
-  return registerSettingsPage({
-    id: SETTINGS_PAGE_ID,
-    title: "Plugins",
-    // After Editor, as in IntelliJ IDEA.
-    order: 250,
-    keywords: ["plugin", "extension", "wasm", "install", "theme", "marketplace"],
-    component: lazyComponent(() => import("./PluginsPage").then((m) => m.PluginsPage)),
-  });
-}
-
-/** Settings › Plugins for the Settings window: the page plus the plugin theme. */
-const useIntellijThemesOpen = () => useIntellijThemesDialog((s) => s.open);
-const IntellijThemesDialogHost = lazyWhen(useIntellijThemesOpen, () =>
-  import("./IntellijThemesDialog").then((m) => m.IntellijThemesDialogHost),
-);
-
-export function activateSettingsPages(): () => void {
-  const disposers = [
-    registerPluginsPage(),
-    registerOverlay({ id: "plugins.consent", component: ConsentDialogHost }),
-    registerOverlay({ id: "plugins.intellijThemes", component: IntellijThemesDialogHost }),
-    provideConsentDialog(),
-    defineBuiltinUiPoints(),
-    followPluginChanges(),
-    startRunTargets(false),
-    syncProjection(),
-    trackPluginTheme(),
-    trackIconTheme(),
-  ];
-  void refreshPlugins();
-  return () => disposers.reverse().forEach((d) => d());
-}
 
 export function activate(): () => void {
   const disposers = [
@@ -154,10 +114,14 @@ export function activate(): () => void {
     ]),
     startPluginBridge(),
     startPluginNavigation(),
+    startOneDarkNotice(),
     startIndexedMarkers(),
     startPluginDecorations(),
+    startPluginConsoleRules(),
     // Plugin custom editors (tab kind) and context menu entries.
     startViewUi((input) => void editorService().openInput(input)),
+    // "Run/Debug with <title>" of plugins whose Java agent is bound to an executor.
+    syncPluginExecutors(),
     startWorkspaceContains(),
     // Gutter icons from plugins' `line-markers` providers (next to the LSP ones).
     registerEditorContribution({ id: "plugins.languageFeatures", order: 58, extensions: pluginLanguageVisuals }),

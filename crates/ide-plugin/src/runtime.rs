@@ -16,9 +16,14 @@ use crate::types::{
     FieldValue, ServiceLog, ServiceLogToggle, ServicePane, ServiceTab, TableSort, View, ViewBody, ViewButton,
     ViewEvent, ViewField, ViewListItem, ViewTable, ViewTreeItem, Viewport,
 };
+use crate::wit_host::completion_list_bindings::exports::openidea::plugin::completion_list_provider as wit_cl;
+use crate::wit_host::hover_actions_bindings::exports::openidea::plugin::hover_actions as wit_hia;
 use crate::wit_host::injections_bindings::exports::openidea::plugin::injections as wit_inj;
 use crate::wit_host::language_features_bindings::exports::openidea::plugin::language_features as wit_lf;
+use crate::wit_host::run_anything_bindings::exports::openidea::plugin::run_anything_provider as wit_ra;
+use crate::wit_host::run_config_completion_bindings::exports::openidea::plugin::run_configuration_completion as wit_rcc;
 use crate::wit_host::run_target_validation_bindings::exports::openidea::plugin::run_target_validation as wit_rtv;
+use crate::wit_host::search_bindings::exports::openidea::plugin::search_provider as wit_search;
 use crate::wit_host::{
     bindings, commit_checks_bindings, details_bindings, endpoints_bindings, file_actions_bindings, hover_bindings,
     indexing_bindings, inlay_bindings, providers_bindings, semantic_bindings, syntax_bindings, views_bindings,
@@ -36,9 +41,13 @@ use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder, UpdateDea
 use wasmtime_wasi::p2::pipe::MemoryOutputPipe;
 use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
 
+use crate::wit_host::execution_configurations_bindings::exports::openidea::plugin::execution_configurations as wit_exec;
+use crate::wit_host::execution_configurations_bindings::openidea::plugin::launch_configurations as wit_exec_launch;
+use crate::wit_host::launch_configurations_bindings::exports::openidea::plugin::launch_configurations as wit_launch;
 use crate::wit_host::run_configurations_bindings::exports::openidea::plugin::run_configurations as wit_configs;
 use crate::wit_host::test_results_bindings::exports::openidea::plugin::test_results as wit_tests;
 use bindings::openidea::plugin::events as wit_events;
+use bindings::openidea::plugin::run as wit_run;
 use bindings::openidea::plugin::types as wit_types;
 use commit_checks_bindings::exports::openidea::plugin::commit_checker as wit_cc;
 use details_bindings::exports::openidea::plugin::detail_provider as wit_detail;
@@ -55,9 +64,11 @@ use views_bindings::exports::openidea::plugin::view_provider as wit_view;
 use views_bindings::openidea::plugin::view_types as wit_vt;
 
 /// The API version of the world above, `major.minor` of [`host_api`].
-pub const API_VERSION: &str = "1.5";
+pub const API_VERSION: &str = "1.18";
 const EPOCH_TICK: Duration = Duration::from_millis(10);
 pub(crate) const MAX_TEXT: usize = 1 << 20;
+/// The most text, and the most PNG bytes, `ui.read-clipboard` returns.
+pub const MAX_CLIPBOARD_BYTES: usize = 16 << 20;
 pub(crate) const MAX_TITLE: usize = 256;
 const STDERR_CAPACITY: usize = 256 << 10;
 /// Message of a call interrupted through [`Runtime::cancel_handle`].
@@ -68,25 +79,13 @@ pub const CANCELLED: &str = "was cancelled";
 /// documents. Capabilities are already checked when these are called.
 pub trait HostApi: Send + Sync {
     /// Creates/replaces this plugin's non-secret project connection settings.
-    fn database_upsert(&self, root: &Path, source: crate::PluginDataSource) -> Result<(), HostError> {
-        let _ = (root, source);
-        Err(HostError::Invalid("Database subsystem is unavailable on this host".into()))
-    }
+    fn database_upsert(&self, root: &Path, source: crate::PluginDataSource) -> Result<(), HostError>;
     /// Removes only an owned data source and its credentials.
-    fn database_remove(&self, root: &Path, id: &str) -> Result<(), HostError> {
-        let _ = (root, id);
-        Err(HostError::Invalid("Database subsystem is unavailable on this host".into()))
-    }
+    fn database_remove(&self, root: &Path, id: &str) -> Result<(), HostError>;
     /// Private ids of only this plugin's sources.
-    fn database_sources(&self, root: &Path) -> Result<Vec<String>, HostError> {
-        let _ = root;
-        Err(HostError::Invalid("Database subsystem is unavailable on this host".into()))
-    }
+    fn database_sources(&self, root: &Path) -> Result<Vec<String>, HostError>;
     /// Writes a password to the Database credential store, without a read path.
-    fn database_credential(&self, root: &Path, id: &str, password: String) -> Result<(), HostError> {
-        let _ = (root, id, password);
-        Err(HostError::Invalid("Database subsystem is unavailable on this host".into()))
-    }
+    fn database_credential(&self, root: &Path, id: &str, password: String) -> Result<(), HostError>;
     /// Requests normal connection/introspection in the invoking project's window.
     fn database_connect(
         &self,
@@ -95,31 +94,40 @@ pub trait HostApi: Send + Sync {
         id: &str,
         cancel: &CancellationToken,
         timeout: Duration,
-    ) -> Result<(), HostError> {
-        let _ = (root, client, id, cancel, timeout);
-        Err(HostError::Invalid("Database subsystem is unavailable on this host".into()))
-    }
+    ) -> Result<(), HostError>;
+    /// Sends `method` to the running language server named `server` of the project at
+    /// `root`: a request (the result as JSON), or with `notify` a notification (`null`).
+    /// `params` is JSON. Never starts a server.
+    #[allow(clippy::too_many_arguments)]
+    fn lsp_request(
+        &self,
+        root: &Path,
+        server: &str,
+        method: &str,
+        params: Option<String>,
+        notify: bool,
+        cancel: &CancellationToken,
+        timeout: Duration,
+    ) -> Result<String, HostError>;
+    /// The flat dependency graph of the Maven / Gradle builds of the project at `root`
+    /// (of the module `module` only, when given), as the IDE last resolved it; never runs
+    /// a build tool.
+    fn build_dependencies(&self, root: &Path, module: Option<&str>) -> Result<Vec<crate::DependencyNode>, HostError>;
     /// Stdio argv only; no URL or bearer token.
-    fn mcp_stdio_command(&self, client: &str) -> Option<Vec<String>> {
-        let _ = client;
-        None
-    }
+    fn mcp_stdio_command(&self, client: &str) -> Option<Vec<String>>;
     /// What other plugins contributed to `point`, as (plugin id, JSON). Only the
     /// plugin that declares the point may read it.
-    fn extension_contributions(&self, point: &str) -> Result<Vec<(String, String)>, HostError> {
-        let _ = point;
-        Err(HostError::NotFound("extension points are unavailable on this host".into()))
-    }
+    fn extension_contributions(&self, point: &str) -> Result<Vec<(String, String)>, HostError>;
 
     /// Registers a project-scoped wrapper after validating its process grant and pin.
-    fn register_run_target(&self, root: &Path, target: crate::PluginRunTarget) -> Result<(), HostError> {
-        let _ = (root, target);
-        Err(HostError::Failed("run targets unavailable".into()))
-    }
+    fn register_run_target(
+        &self,
+        root: &Path,
+        target: crate::PluginRunTarget,
+        generation: Option<u64>,
+    ) -> Result<(), HostError>;
     /// Withdraws this plugin's target, preserving the user's remembered prompt answer.
-    fn unregister_run_target(&self, root: &Path, id: &str) {
-        let _ = (root, id);
-    }
+    fn unregister_run_target(&self, root: &Path, id: &str);
 
     /// Starts one of this plugin's configurations in a window.
     fn start_run(
@@ -127,26 +135,23 @@ pub trait HostApi: Send + Sync {
         client: &str,
         config: &str,
         args: Vec<String>,
-        debug: bool,
+        options: crate::PluginRunStartOptions,
         cancel: &CancellationToken,
         timeout: Duration,
-    ) -> Result<String, HostError> {
-        let _ = (client, config, args, debug, cancel, timeout);
-        Err(HostError::Failed("runs unavailable".into()))
-    }
-    /// Opens/reuses a keyed terminal, retained across idle instance reclamation.
+    ) -> Result<String, HostError>;
+    /// Opens/reuses a keyed terminal, retained across idle instance reclamation; `cwd`
+    /// (API 1.18) is a directory relative to the window's project root.
+    #[allow(clippy::too_many_arguments)]
     fn open_terminal_session(
         &self,
         client: &str,
         key: String,
         title: String,
         cmd: ProcessCommand,
+        cwd: Option<String>,
         cancel: &CancellationToken,
         timeout: Duration,
-    ) -> Result<String, HostError> {
-        let _ = (client, key, title, cmd, cancel, timeout);
-        Err(HostError::Failed("terminals unavailable".into()))
-    }
+    ) -> Result<String, HostError>;
     /// Writes only to an owned, live terminal.
     fn write_terminal(
         &self,
@@ -155,10 +160,7 @@ pub trait HostApi: Send + Sync {
         text: String,
         cancel: &CancellationToken,
         timeout: Duration,
-    ) -> Result<(), HostError> {
-        let _ = (client, key, text, cancel, timeout);
-        Err(HostError::Failed("terminals unavailable".into()))
-    }
+    ) -> Result<(), HostError>;
     /// Opens a content tab through the shared editor implementation.
     fn open_content_tab(
         &self,
@@ -166,25 +168,15 @@ pub trait HostApi: Send + Sync {
         tab: crate::ContentTab,
         cancel: &CancellationToken,
         timeout: Duration,
-    ) -> Result<(), HostError> {
-        let _ = (client, tab, cancel, timeout);
-        Err(HostError::Failed("content tabs unavailable".into()))
-    }
+    ) -> Result<(), HostError>;
+    /// Opens a diff of two texts in the invoking window; a `None` side doesn't exist.
+    fn open_diff(&self, client: &str, diff: crate::FileDiff, file_name: Option<String>) -> Result<(), HostError>;
     /// Answers a content action in the invoking window.
-    fn reply_content_tab(&self, client: &str, request: &str, reply: crate::ContentTabReply) -> Result<(), HostError> {
-        let _ = (client, request, reply);
-        Err(HostError::Failed("content tabs unavailable".into()))
-    }
+    fn reply_content_tab(&self, client: &str, request: &str, reply: crate::ContentTabReply) -> Result<(), HostError>;
     /// The invoking window's editors.
-    fn open_editors(&self, client: &str) -> Result<Vec<crate::OpenEditor>, HostError> {
-        let _ = client;
-        Ok(Vec::new())
-    }
+    fn open_editors(&self, client: &str) -> Result<Vec<crate::OpenEditor>, HostError>;
     /// Opens a validated file and optionally selects a range.
-    fn editor_open(&self, client: &str, path: &Path, selection: Option<ide_core::Range>) -> Result<(), HostError> {
-        let _ = (client, path, selection);
-        Err(HostError::Failed("editor unavailable".into()))
-    }
+    fn editor_open(&self, client: &str, path: &Path, selection: Option<ide_core::Range>) -> Result<(), HostError>;
     /// Changes the selections, or reveals a range, only in an editor of this window.
     fn editor_ranges(
         &self,
@@ -192,10 +184,7 @@ pub trait HostApi: Send + Sync {
         path: &Path,
         ranges: Vec<ide_core::Range>,
         reveal: bool,
-    ) -> Result<(), HostError> {
-        let _ = (client, path, ranges, reveal);
-        Err(HostError::Failed("editor unavailable".into()))
-    }
+    ) -> Result<(), HostError>;
     /// Find in Files with the project's document overlay.
     fn search_text(
         &self,
@@ -205,30 +194,23 @@ pub trait HostApi: Send + Sync {
         limit: u32,
         cancel: &CancellationToken,
         deadline: Instant,
-    ) -> Result<crate::TextSearch, HostError> {
-        let _ = (client, root, query, limit, cancel, deadline);
-        Err(HostError::Failed("search unavailable".into()))
-    }
+    ) -> Result<crate::TextSearch, HostError>;
     /// Window-reported Problems view snapshot.
-    fn problems(&self, client: &str, path: Option<&Path>) -> Result<Vec<crate::FileProblems>, HostError> {
-        let _ = (client, path);
-        Ok(Vec::new())
-    }
+    fn problems(&self, client: &str, path: Option<&Path>) -> Result<Vec<crate::FileProblems>, HostError>;
     /// Replace or clear an editor decoration set.
-    fn decorations(&self, path: Option<&Path>, set: &str, items: Vec<crate::Decoration>) -> Result<(), HostError> {
-        let _ = (path, set, items);
-        Err(HostError::Failed("decorations unavailable".into()))
-    }
+    fn decorations(&self, path: Option<&Path>, set: &str, items: Vec<crate::Decoration>) -> Result<(), HostError>;
     /// Replace or clear a tree decoration set.
     fn file_decorations(
         &self,
         path: Option<&Path>,
         set: &str,
         item: Option<crate::FileDecoration>,
-    ) -> Result<(), HostError> {
-        let _ = (path, set, item);
-        Err(HostError::Failed("decorations unavailable".into()))
-    }
+    ) -> Result<(), HostError>;
+    /// Replace all `(path, icon)` entries of a tree decoration set at once (API 1.8).
+    fn file_icon_decorations(&self, set: &str, items: Vec<(PathBuf, String)>) -> Result<(), HostError>;
+    /// Fork a recorded native agent session into a new task in the invoking
+    /// window's project, returning the new task id (API 1.18).
+    fn fork_agent_session(&self, client: &str, agent: &str, session_id: &str, cwd: &Path) -> Result<String, HostError>;
     /// Trusted repository history.
     fn vcs_log(
         &self,
@@ -236,15 +218,9 @@ pub trait HostApi: Send + Sync {
         path: Option<&str>,
         limit: u32,
         cancel: &CancellationToken,
-    ) -> Result<Vec<crate::CommitInfo>, HostError> {
-        let _ = (root, path, limit, cancel);
-        Err(HostError::Failed("git unavailable".into()))
-    }
+    ) -> Result<Vec<crate::CommitInfo>, HostError>;
     /// Trusted repository attribution, including unsaved documents.
-    fn vcs_blame(&self, client: Option<&str>, root: &Path, path: &str) -> Result<Vec<crate::BlameLine>, HostError> {
-        let _ = (client, root, path);
-        Err(HostError::Failed("git unavailable".into()))
-    }
+    fn vcs_blame(&self, client: Option<&str>, root: &Path, path: &str) -> Result<Vec<crate::BlameLine>, HostError>;
     /// Trusted repository working-tree patch, bounded to 4 MiB.
     fn vcs_diff(
         &self,
@@ -252,10 +228,7 @@ pub trait HostApi: Send + Sync {
         path: Option<&str>,
         against: Option<&str>,
         cancel: &CancellationToken,
-    ) -> Result<Option<String>, HostError> {
-        let _ = (root, path, against, cancel);
-        Err(HostError::Failed("git unavailable".into()))
-    }
+    ) -> Result<Option<String>, HostError>;
 
     /// Shows a notification; `actions` name commands the plugin declares.
     fn notify(
@@ -275,22 +248,13 @@ pub trait HostApi: Send + Sync {
         title: String,
         body: String,
         actions: Vec<crate::NotificationAction>,
-    ) -> Result<(), HostError> {
-        let _ = (root, level, title, body, actions);
-        Err(HostError::NotFound("project notifications unavailable".into()))
-    }
-    fn copy_to_clipboard(&self, client: Option<&str>, text: String) -> Result<(), HostError> {
-        let _ = (client, text);
-        Ok(())
-    }
-    fn open_url(&self, client: Option<&str>, url: String) -> Result<(), HostError> {
-        let _ = (client, url);
-        Ok(())
-    }
-    fn open_project(&self, client: Option<&str>, path: String, new_window: bool) -> Result<(), HostError> {
-        let _ = (client, path, new_window);
-        Err(HostError::Invalid("opening projects is unavailable".into()))
-    }
+    ) -> Result<(), HostError>;
+    fn copy_to_clipboard(&self, client: Option<&str>, text: String) -> Result<(), HostError>;
+    /// The clipboard of the machine `client`'s window runs on, as that window reads it;
+    /// waits for the window until `cancel` fires.
+    fn read_clipboard(&self, client: &str, cancel: &CancellationToken) -> Result<crate::ClipboardContent, HostError>;
+    fn open_url(&self, client: Option<&str>, url: String) -> Result<(), HostError>;
+    fn open_project(&self, client: Option<&str>, path: String, new_window: bool) -> Result<(), HostError>;
     /// Shows `prompt` in `client`'s window and waits for the answer until the
     /// user gives one or `cancel` fires: the chosen keys (`QuickPick`), the
     /// text (`Input`, one element) or any value (`Confirm`: OK); `None` when
@@ -300,20 +264,11 @@ pub trait HostApi: Send + Sync {
         client: Option<&str>,
         prompt: Prompt,
         cancel: &CancellationToken,
-    ) -> Result<Option<Vec<String>>, HostError> {
-        let _ = (client, prompt, cancel);
-        Ok(None)
-    }
+    ) -> Result<Option<Vec<String>>, HostError>;
     /// Brings the plugin's declared view to the front in `client`'s window.
-    fn reveal_view(&self, client: Option<&str>, view: &str) -> Result<(), HostError> {
-        let _ = (client, view);
-        Ok(())
-    }
+    fn reveal_view(&self, client: Option<&str>, view: &str) -> Result<(), HostError>;
     /// Whether this stable id is a command declared by this plugin.
-    fn owns_command(&self, id: &str) -> bool {
-        let _ = id;
-        false
-    }
+    fn owns_command(&self, id: &str) -> bool;
     /// Executes a stable command in the invoking window and waits for its result.
     fn execute_command(
         &self,
@@ -322,50 +277,33 @@ pub trait HostApi: Send + Sync {
         arg: Option<String>,
         cancel: &CancellationToken,
         timeout: Duration,
-    ) -> Result<Option<String>, HostError> {
-        let _ = (invocation, id, arg, cancel, timeout);
-        Err(HostError::NotFound("command".into()))
-    }
+    ) -> Result<Option<String>, HostError>;
     /// Appends text, or clears (`None`), in a plugin-owned output channel.
-    fn output_write(&self, channel: &str, text: Option<&str>) -> Result<(), HostError> {
-        let _ = (channel, text);
-        Err(HostError::Failed("output unavailable".into()))
-    }
+    fn output_write(&self, channel: &str, text: Option<&str>) -> Result<(), HostError>;
     /// Reveals an output channel in the invoking window.
-    fn output_reveal(&self, client: &str, channel: &str) -> Result<(), HostError> {
-        let _ = (client, channel);
-        Err(HostError::Failed("output unavailable".into()))
-    }
+    fn output_reveal(&self, client: &str, channel: &str) -> Result<(), HostError>;
     /// Checks manifest minimum API requirements for new declarations or subscriptions.
-    fn require_api(&self, what: &str, minor: u64) -> Result<(), HostError> {
-        let _ = (what, minor);
-        Ok(())
-    }
+    fn require_api(&self, what: &str, minor: u64) -> Result<(), HostError>;
     /// Sets (`Some`) or removes the plugin's status bar item `id`.
     fn status_item(&self, id: &str, item: Option<StatusItem>);
+    /// Checks a status item menu before it is set: its actions name commands the plugin declares.
+    fn check_status_menu(&self, menu: &[crate::StatusMenuEntry]) -> Result<(), HostError>;
     /// Sets or removes the status override in the invoking window.
-    fn window_status_item(&self, client: &str, id: &str, item: Option<StatusItem>) -> Result<(), HostError> {
-        let _ = (client, id, item);
-        Err(HostError::Invalid("window status unavailable".into()))
-    }
+    fn window_status_item(&self, client: &str, id: &str, item: Option<StatusItem>) -> Result<(), HostError>;
+    /// Replaces the plugin's console highlight rules (API 1.12); empty removes them.
+    fn console_rules(&self, rules: Vec<crate::ConsoleRule>) -> Result<(), HostError>;
     /// Sets (`Some`, validated JSON text) or removes the plugin's context key,
     /// for window `client` (every window if `None`).
-    fn set_context(&self, client: Option<&str>, key: &str, value: Option<String>) -> Result<(), HostError> {
-        let _ = (client, key, value);
-        Ok(())
-    }
+    fn set_context(&self, client: Option<&str>, key: &str, value: Option<String>) -> Result<(), HostError>;
     /// Roots of the open projects.
     fn projects(&self) -> Vec<std::path::PathBuf>;
+    /// Roots of the workspace members attached to the project at `root` (a
+    /// project window group's folders, as the editor and LSP resolve them).
+    /// Empty for a plain project.
+    fn member_roots(&self, root: &Path) -> Vec<std::path::PathBuf>;
     /// The most specific open project containing a document (including a new file).
     fn project_of(&self, path: &Path) -> Option<std::path::PathBuf> {
-        if !path.is_absolute() {
-            return None;
-        }
-        let real = crate::resolve_real(path);
-        self.projects()
-            .into_iter()
-            .filter(|root| real.starts_with(crate::resolve_real(root)))
-            .max_by_key(|root| root.components().count())
+        crate::sandbox::innermost_root(self.projects(), path)
     }
 
     /// Searches the current in-memory index of an open project.
@@ -376,10 +314,7 @@ pub trait HostApi: Send + Sync {
         limit: usize,
         cancel: &CancellationToken,
         deadline: Instant,
-    ) -> Result<Vec<crate::SymbolInfo>, HostError> {
-        let _ = (root, query, limit, cancel, deadline);
-        Err(HostError::NotFound("no project index is available".into()))
-    }
+    ) -> Result<Vec<crate::SymbolInfo>, HostError>;
     /// Unsaved text of an open editor's file.
     fn buffer_text(&self, path: &Path) -> Option<String>;
     /// Version and text of the open document at `path`.
@@ -397,10 +332,9 @@ pub trait HostApi: Send + Sync {
     fn storage_set(&self, key: &str, value: Option<String>) -> Result<(), HostError>;
     fn storage_keys(&self, prefix: &str) -> Result<Vec<String>, HostError>;
     fn vcs_status(&self, root: &Path) -> Result<Option<RepositoryStatus>, HostError>;
-    fn vcs_remotes(&self, root: &Path) -> Result<Vec<(String, String)>, HostError> {
-        let _ = root;
-        Ok(Vec::new())
-    }
+    fn vcs_remotes(&self, root: &Path) -> Result<Vec<(String, String)>, HostError>;
+    fn vcs_roots(&self, root: &Path) -> Result<Vec<String>, HostError>;
+    fn vcs_repository_at(&self, root: &Path, path: &str) -> Result<Option<crate::RepositoryInfo>, HostError>;
     fn vcs_fetch(&self, root: &Path, cancel: &CancellationToken) -> Result<(), HostError>;
     /// The commit being prepared in `client`'s window (`None`: no repository),
     /// waiting for the window until `cancel` fires.
@@ -408,16 +342,10 @@ pub trait HostApi: Send + Sync {
         &self,
         client: Option<&str>,
         cancel: &CancellationToken,
-    ) -> Result<Option<CommitDraft>, HostError> {
-        let _ = (client, cancel);
-        Ok(None)
-    }
+    ) -> Result<Option<CommitDraft>, HostError>;
     /// Replaces the commit message of `client`'s window if its draft is still at
     /// `revision` (else [`HostError::Stale`]).
-    fn set_commit_message(&self, client: Option<&str>, revision: u64, message: String) -> Result<(), HostError> {
-        let _ = (client, revision, message);
-        Err(HostError::Invalid("no commit is being prepared".into()))
-    }
+    fn set_commit_message(&self, client: Option<&str>, revision: u64, message: String) -> Result<(), HostError>;
     /// Subscribes to (or unsubscribes from) a kind of workbench event.
     /// Project files matching `glob` (root-relative), at most `limit`.
     fn find_files(&self, root: &Path, glob: &str, limit: usize) -> Result<Vec<String>, HostError>;
@@ -425,6 +353,16 @@ pub trait HostApi: Send + Sync {
     fn publish_diagnostics(&self, path: &Path, items: Vec<ide_core::Diagnostic>) -> Result<(), HostError>;
     /// Performs `request` (its host is granted), filling in secret placeholders.
     fn fetch(&self, request: HttpRequest, cancel: &CancellationToken) -> Result<HttpResponse, HostError>;
+
+    fn websocket_connect(
+        &self,
+        root: &Path,
+        request: crate::WebSocketRequest,
+        timeout: Duration,
+    ) -> Result<u64, HostError>;
+    fn websocket_send(&self, connection: u64, bytes: Vec<u8>) -> Result<(), HostError>;
+    fn websocket_drain(&self, connection: u64, limit: usize) -> Result<crate::WebSocketBatch, HostError>;
+    fn websocket_close(&self, connection: u64);
     /// The `net:ask` answer for a request to HTTPS host `host` of this plugin
     /// (`subject`): `Some(true)` allowed and remembered (a host the user
     /// already allowed connects without asking again, also in the background),
@@ -436,41 +374,24 @@ pub trait HostApi: Send + Sync {
         client: Option<&str>,
         host: &str,
         cancel: &CancellationToken,
-    ) -> Result<Option<bool>, HostError> {
-        let _ = (subject, client, host, cancel);
-        Ok(None)
-    }
+    ) -> Result<Option<bool>, HostError>;
     fn secret_is_set(&self, name: &str) -> bool;
 
     /// Stores or deletes a secret declared by this plugin; never returns its value.
-    fn secret_set(&self, name: &str, value: Option<&str>) -> Result<(), HostError> {
-        let _ = (name, value);
-        Err(HostError::NotFound("secret".into()))
-    }
+    fn secret_set(&self, name: &str, value: Option<&str>) -> Result<(), HostError>;
     /// Creates a desktop loopback listener and returns its handle and redirect URI.
-    fn begin_loopback(&self, client: &str, path: &str) -> Result<(u64, String), HostError> {
-        let _ = (client, path);
-        Err(HostError::Failed("loopback unavailable".into()))
-    }
+    fn begin_loopback(&self, client: &str, path: &str) -> Result<(u64, String), HostError>;
     /// Awaits a browser redirect, excluded from the caller's execution budget.
     fn wait_loopback(
         &self,
         id: u64,
         timeout: Duration,
         cancel: &CancellationToken,
-    ) -> Result<Option<String>, HostError> {
-        let _ = (id, timeout, cancel);
-        Err(HostError::NotFound("loopback".into()))
-    }
+    ) -> Result<Option<String>, HostError>;
     /// Releases a desktop listener when its resource or plugin stops.
-    fn close_loopback(&self, id: u64) {
-        let _ = id;
-    }
+    fn close_loopback(&self, id: u64);
     /// Connects to an approved host-local socket; owned by this plugin instance.
-    fn ipc_connect(&self, name: &str, cancel: &CancellationToken, timeout: Duration) -> Result<u64, HostError> {
-        let _ = (name, cancel, timeout);
-        Err(HostError::Failed("IPC unavailable".into()))
-    }
+    fn ipc_connect(&self, name: &str, cancel: &CancellationToken, timeout: Duration) -> Result<u64, HostError>;
     /// Writes to an owned IPC connection.
     fn ipc_write(
         &self,
@@ -478,10 +399,7 @@ pub trait HostApi: Send + Sync {
         bytes: Vec<u8>,
         cancel: &CancellationToken,
         timeout: Duration,
-    ) -> Result<(), HostError> {
-        let _ = (id, bytes, cancel, timeout);
-        Err(HostError::NotFound("connection".into()))
-    }
+    ) -> Result<(), HostError>;
     /// Reads from an owned IPC connection, empty on timeout or EOF.
     fn ipc_read(
         &self,
@@ -489,14 +407,9 @@ pub trait HostApi: Send + Sync {
         max: usize,
         timeout: Duration,
         cancel: &CancellationToken,
-    ) -> Result<Vec<u8>, HostError> {
-        let _ = (id, max, timeout, cancel);
-        Err(HostError::NotFound("connection".into()))
-    }
+    ) -> Result<Vec<u8>, HostError>;
     /// Closes an owned IPC connection, including when its resource is dropped.
-    fn ipc_close(&self, id: u64) {
-        let _ = id;
-    }
+    fn ipc_close(&self, id: u64);
     /// Runs the approved file of `process:<program>` with `cmd.env` added to
     /// the inherited environment, and waits.
     fn run_process(
@@ -507,13 +420,48 @@ pub trait HostApi: Send + Sync {
         cancel: &CancellationToken,
         timeout: Duration,
     ) -> Result<ProcessOutput, HostError>;
+    /// Runs `cmd` with configurable capture options (API 1.15).
+    fn run_process_with_options(
+        &self,
+        cmd: ProcessCommand,
+        cwd: Option<&Path>,
+        stdin: Option<String>,
+        cancel: &CancellationToken,
+        timeout: Duration,
+        options: Option<crate::types::ProcessOptions>,
+    ) -> Result<ProcessOutput, HostError>;
     /// Delivers every event of `kind`, dropping its path filter.
     fn subscribe(&self, kind: EventKind);
     /// Delivers `kind` (`file-opened`, `file-saved`, `files-changed`) only for matching paths.
-    fn subscribe_paths(&self, kind: &str, globs: Vec<String>) -> Result<(), HostError>;
+    fn subscribe_paths(&self, kind: &str, globs: Vec<String>) -> Result<(), HostError> {
+        self.subscribe_paths_with_options(kind, globs, None)
+    }
+    /// Delivers `kind` with optional debounce window in milliseconds (API 1.18).
+    fn subscribe_paths_with_options(
+        &self,
+        kind: &str,
+        globs: Vec<String>,
+        debounce_ms: Option<u32>,
+    ) -> Result<(), HostError>;
+    /// Monotonically increasing project generation (API 1.18).
+    fn project_generation(&self, root: &Path) -> Result<u64, HostError>;
+    /// Replaces what this plugin watches outside `project` for the window `client`
+    /// (API 1.18): `paths` are real paths an `fs.read` grant covers, already checked.
+    /// Empty stops watching.
+    fn watch_paths(&self, _client: &str, _project: &Path, _paths: Vec<PathBuf>) -> Result<(), HostError> {
+        Err(HostError::Failed("watching paths is unavailable here".into()))
+    }
     fn unsubscribe(&self, kind: &str);
     /// Starts `cmd` and returns the handle to it without waiting.
     fn start_process(&self, cmd: ProcessCommand, cwd: Option<&Path>, client: Option<&str>) -> Result<u64, HostError>;
+    /// Starts `cmd` with streaming options (API 1.15).
+    fn start_process_stream(
+        &self,
+        cmd: ProcessCommand,
+        cwd: Option<&Path>,
+        client: Option<&str>,
+        options: Option<crate::types::ProcessOptions>,
+    ) -> Result<u64, HostError>;
     /// What process `id` printed since the last call, each stream at most
     /// `max` bytes (the rest waits for the next call), and its status once it
     /// ended.
@@ -573,9 +521,9 @@ pub trait HostApi: Send + Sync {
     /// `max` bounds the bytes read.
     fn read_text_file(&self, real: &Path, max: usize) -> Result<String, HostError>;
     /// The plugin's private directory, independent of the current invocation.
-    fn plugin_dir(&self) -> Result<PathBuf, HostError> {
-        Err(HostError::Failed("private plugin storage is unavailable".into()))
-    }
+    fn plugin_dir(&self) -> Result<PathBuf, HostError>;
+    /// The plugin's install / package directory (read-only for the guest).
+    fn install_dir(&self) -> Result<PathBuf, HostError>;
     /// Replaces the text of a file whose real path the caller already checked:
     /// in one step, keeping its encoding and BOM (a new file is UTF-8). Refused
     /// while an editor holds unsaved changes for it.
@@ -599,6 +547,10 @@ impl PluginEngine {
         let mut linker = Linker::new(&engine);
         wasmtime_wasi::p2::add_to_linker_sync(&mut linker).map_err(|e| e.to_string())?;
         bindings::Plugin::add_to_linker::<_, HasSelf<_>>(&mut linker, |s| s).map_err(|e| e.to_string())?;
+        // Cranelift caches fuel in a JIT local across `new_epoch` yields and only
+        // reloads `VMStoreContext::fuel_consumed` across host import calls, so
+        // `tasks` host calls refill `StoreContextMut::set_fuel` directly on return.
+        bind_task_fuel_refill(&mut linker).map_err(|e| e.to_string())?;
 
         let weak = engine.weak();
         std::thread::Builder::new()
@@ -792,7 +744,7 @@ impl CallCancel {
         self.token.lock().clone()
     }
 
-    fn is_set(&self) -> bool {
+    pub(crate) fn is_set(&self) -> bool {
         self.flag.load(Ordering::Acquire)
     }
 
@@ -822,12 +774,18 @@ pub struct StoreData {
     pub(crate) invocation: Invocation,
     /// The running call is a command or an event.
     pub(crate) interactive: bool,
-    pub(crate) net_interactive: bool,
+    /// The user ran it: a command, or a view action other than a web view message.
+    /// Gates what must not happen unattended (`net:ask` prompts, reading the clipboard).
+    pub(crate) user_invoked: bool,
     /// Editor window for pick, pick-many, input and confirm during action resolution.
     pub(crate) action_prompt_client: Option<String>,
     /// Tasks begun by the running call and not ended yet.
     pub(crate) open_tasks: Vec<u64>,
     pub(crate) last_report: Option<Instant>,
+    /// One-shot unwind window after a blocking host I/O call times out.
+    pub(crate) host_io_grace_used: bool,
+    /// Fuel budget active for the running call (scales when a background task begins).
+    pub(crate) active_fuel: u64,
 }
 
 impl WasiView for StoreData {
@@ -953,6 +911,8 @@ pub struct Runtime {
 /// What the component exports: the `plugin` world, plus optional interfaces.
 struct Exports {
     run_target_validation: Option<wit_rtv::Guest>,
+    run_anything: Option<wit_ra::Guest>,
+    run_config_completion: Option<wit_rcc::Guest>,
     language_features: Option<wit_lf::Guest>,
     injections: Option<wit_inj::Guest>,
     plugin: bindings::Plugin,
@@ -968,7 +928,12 @@ struct Exports {
     commit_checks: Option<wit_cc::Guest>,
     inlay: Option<wit_inlay::Guest>,
     endpoints: Option<wit_endpoints::Guest>,
+    search: Option<wit_search::Guest>,
+    hover_actions: Option<wit_hia::Guest>,
+    completion_list: Option<wit_cl::Guest>,
     run_configurations: Option<wit_configs::Guest>,
+    launch_configurations: Option<wit_launch::Guest>,
+    execution_configurations: Option<wit_exec::Guest>,
     test_results: Option<wit_tests::Guest>,
     mcp: Option<crate::wit_host::mcp_bindings::exports::openidea::plugin::mcp_provider::Guest>,
 }
@@ -980,6 +945,14 @@ const MAX_BATCH: usize = 1000;
 
 fn event_to_wit(e: WorkbenchEvent) -> wit_events::Event {
     match e {
+        WorkbenchEvent::DocumentChanged(value) => wit_events::Event::Other(wit_types::Extension {
+            kind: "document-changed".into(),
+            data: serde_json::to_string(&value).expect("document change serializes"),
+        }),
+        WorkbenchEvent::WebsocketReady(value) => wit_events::Event::Other(wit_types::Extension {
+            kind: "websocket-ready".into(),
+            data: serde_json::to_string(&value).expect("WebSocket ready event serializes"),
+        }),
         WorkbenchEvent::RunExited(value) => wit_events::Event::Other(wit_types::Extension {
             kind: "run-exited".into(),
             data: serde_json::to_string(&value).unwrap(),
@@ -1008,14 +981,35 @@ fn event_to_wit(e: WorkbenchEvent) -> wit_events::Event {
             kind: "input-mode-changed".into(),
             data: serde_json::to_string(&mode).expect("mode serializes"),
         }),
+        WorkbenchEvent::CaretMoved(caret) => wit_events::Event::Other(wit_types::Extension {
+            kind: "caret-moved".into(),
+            data: serde_json::json!({
+                "path": caret.path,
+                "line": caret.line,
+                "col": caret.col,
+                "settled": caret.settled,
+            })
+            .to_string(),
+        }),
         WorkbenchEvent::FileOpened(p) => wit_events::Event::FileOpened(p),
         WorkbenchEvent::FileSaved(p) => wit_events::Event::FileSaved(p),
         WorkbenchEvent::FilesChanged(batch) => wit_events::Event::Other(wit_types::Extension {
             kind: "files-changed".into(),
             data: serde_json::to_string(&batch).expect("file paths serialize"),
         }),
+        WorkbenchEvent::WatchedFilesChanged(batch) => wit_events::Event::Other(wit_types::Extension {
+            kind: "watched-files-changed".into(),
+            data: serde_json::to_string(&batch).expect("file paths serialize"),
+        }),
         WorkbenchEvent::EditorFocused(p) => wit_events::Event::EditorFocused(p),
         WorkbenchEvent::VcsChanged(p) => wit_events::Event::VcsChanged(p),
+        WorkbenchEvent::ProblemsChanged => {
+            wit_events::Event::Other(wit_types::Extension { kind: "problems-changed".into(), data: "{}".into() })
+        }
+        WorkbenchEvent::ProjectClosed(p) => wit_events::Event::Other(wit_types::Extension {
+            kind: "project-closed".into(),
+            data: serde_json::to_string(&p).expect("path serializes"),
+        }),
         WorkbenchEvent::Scheduled => wit_events::Event::Scheduled,
         WorkbenchEvent::ActionPerformed(a) => wit_events::Event::ActionPerformed(wit_events::ActionPerformed {
             action: a.action,
@@ -1056,10 +1050,12 @@ impl Runtime {
             host: setup.host,
             invocation: Invocation::default(),
             interactive: false,
-            net_interactive: false,
+            user_invoked: false,
             action_prompt_client: None,
             open_tasks: Vec::new(),
             last_report: None,
+            host_io_grace_used: false,
+            active_fuel: setup.limits.fuel,
         };
         let mut store = Store::new(&engine.engine, data);
         store.limiter(|d| &mut d.store_limits);
@@ -1076,7 +1072,7 @@ impl Runtime {
         });
         arm(&mut store, &setup.limits, setup.limits.timeout).map_err(|e| e.to_string())?;
         let api_hint = |e: wasmtime::Error| {
-            let msg = describe_trap(&e, &setup.limits);
+            let msg = describe_trap(&e, &setup.limits, setup.limits.fuel);
             if msg.contains("openidea:plugin/") { link_error(&msg) } else { msg }
         };
         let pre = engine.linker.instantiate_pre(component).map_err(api_hint)?;
@@ -1094,9 +1090,16 @@ impl Runtime {
         let commit_check_indices = wit_cc::GuestIndices::new(&pre).ok();
         let inlay_indices = wit_inlay::GuestIndices::new(&pre).ok();
         let endpoint_indices = wit_endpoints::GuestIndices::new(&pre).ok();
+        let search_indices = wit_search::GuestIndices::new(&pre).ok();
+        let hover_actions_indices = wit_hia::GuestIndices::new(&pre).ok();
+        let completion_list_indices = wit_cl::GuestIndices::new(&pre).ok();
         let configs_indices = wit_configs::GuestIndices::new(&pre).ok();
+        let launch_indices = wit_launch::GuestIndices::new(&pre).ok();
+        let exec_indices = wit_exec::GuestIndices::new(&pre).ok();
         let tests_indices = wit_tests::GuestIndices::new(&pre).ok();
         let validation_indices = wit_rtv::GuestIndices::new(&pre).ok();
+        let run_anything_indices = wit_ra::GuestIndices::new(&pre).ok();
+        let run_config_completion_indices = wit_rcc::GuestIndices::new(&pre).ok();
         let lf_indices = wit_lf::GuestIndices::new(&pre).ok();
         let inj_indices = wit_inj::GuestIndices::new(&pre).ok();
         let mcp_indices =
@@ -1105,11 +1108,18 @@ impl Runtime {
         let mcp = mcp_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let run_configurations =
             configs_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
+        let launch_configurations =
+            launch_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
+        let execution_configurations =
+            exec_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let test_results = tests_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let language_features = lf_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let injections = inj_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let run_target_validation =
             validation_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
+        let run_anything = run_anything_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
+        let run_config_completion =
+            run_config_completion_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let plugin = plugin_indices.load(&mut store, &instance).map_err(api_hint)?;
         let syntax = match syntax_indices {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
@@ -1155,6 +1165,11 @@ impl Runtime {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
             None => None,
         };
+        let search = search_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
+        let hover_actions =
+            hover_actions_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
+        let completion_list =
+            completion_list_indices.map(|i| i.load(&mut store, &instance)).transpose().map_err(api_hint)?;
         let endpoints = match endpoint_indices {
             Some(indices) => Some(indices.load(&mut store, &instance).map_err(api_hint)?),
             None => None,
@@ -1163,6 +1178,8 @@ impl Runtime {
             store,
             exports: Exports {
                 run_target_validation,
+                run_anything,
+                run_config_completion,
                 language_features,
                 injections,
                 plugin,
@@ -1177,7 +1194,12 @@ impl Runtime {
                 commit_checks,
                 inlay,
                 endpoints,
+                search,
+                hover_actions,
+                completion_list,
                 run_configurations,
+                launch_configurations,
+                execution_configurations,
                 test_results,
                 mcp,
                 file_actions,
@@ -1185,6 +1207,84 @@ impl Runtime {
             limits: setup.limits,
             version: setup.version,
         })
+    }
+
+    pub fn has_run_anything(&self) -> bool {
+        self.exports.run_anything.is_some()
+    }
+
+    /// Run Anything entries for `text` (API 1.18); none without the export.
+    pub fn run_anything_suggest(
+        &mut self,
+        prefix: &str,
+        text: &str,
+        invocation: Invocation,
+        timeout: Duration,
+    ) -> Result<Vec<crate::RunAnythingItem>, CallError> {
+        if self.exports.run_anything.is_none() {
+            return Ok(Vec::new());
+        }
+        let root = invocation.workspace_root.as_deref().map(to_ipc).unwrap_or_default();
+        let items = self.call(invocation, timeout, |e, store| {
+            e.run_anything.as_ref().unwrap().call_suggest(store, &root, prefix, text)
+        })?;
+        Ok(items
+            .into_iter()
+            .take(crate::MAX_RUN_ANYTHING_ITEMS)
+            .map(|i| crate::RunAnythingItem {
+                label: clip(i.label, MAX_TITLE),
+                detail: i.detail.map(|d| clip(d, MAX_TITLE)),
+                line: i.line.map(|l| clip(l, 4096)),
+            })
+            .collect())
+    }
+
+    /// Runs a Run Anything line (API 1.18): whether the plugin claimed it.
+    pub fn run_anything_run(
+        &mut self,
+        prefix: &str,
+        line: &str,
+        invocation: Invocation,
+        timeout: Duration,
+    ) -> Result<bool, CallError> {
+        if self.exports.run_anything.is_none() {
+            return Ok(false);
+        }
+        let root = invocation.workspace_root.as_deref().map(to_ipc).unwrap_or_default();
+        self.call(invocation, timeout, |e, store| e.run_anything.as_ref().unwrap().call_run(store, &root, prefix, line))
+    }
+
+    /// Completions for `field` of this plugin's configuration `config` (API 1.18); none
+    /// without the export. Items whose range falls outside `text` are dropped.
+    pub fn run_configuration_complete(
+        &mut self,
+        config: &str,
+        field: &str,
+        text: &str,
+        caret: u32,
+        invocation: Invocation,
+        timeout: Duration,
+    ) -> Result<Vec<crate::RunConfigCompletion>, CallError> {
+        if self.exports.run_config_completion.is_none() {
+            return Ok(Vec::new());
+        }
+        let root = invocation.workspace_root.as_deref().map(to_ipc).unwrap_or_default();
+        let items = self.call(invocation, timeout, |e, store| {
+            e.run_config_completion.as_ref().unwrap().call_complete(store, &root, config, field, text, caret)
+        })?;
+        let len = text.encode_utf16().count() as u32;
+        Ok(items
+            .into_iter()
+            .filter(|i| i.replace_start <= i.replace_end && i.replace_end <= len)
+            .take(crate::MAX_RUN_CONFIG_COMPLETIONS)
+            .map(|i| crate::RunConfigCompletion {
+                insert: clip(i.insert.unwrap_or_else(|| i.label.clone()), 4096),
+                label: clip(i.label, MAX_TITLE),
+                detail: i.detail.map(|d| clip(d, MAX_TITLE)),
+                replace_start: i.replace_start,
+                replace_end: i.replace_end,
+            })
+            .collect())
     }
 
     pub fn has_run_target_validation(&self) -> bool {
@@ -1217,34 +1317,102 @@ impl Runtime {
         .map(|r| r.map_err(|message| clip(message, 4096)))
     }
 
-    /// Complete configurations from the optional API 1.4 export.
+    /// Complete configurations from the optional API 1.18 export, else API 1.9, else API 1.4.
     pub fn run_configurations(
         &mut self,
         root: String,
         timeout: Duration,
     ) -> Result<Vec<crate::PluginRunConfiguration>, CallError> {
-        if self.exports.run_configurations.is_none() {
-            return Err(CallError::missing_export("run-configurations"));
-        }
         let invocation = Invocation { workspace_root: Some(root.clone().into()), ..Default::default() };
-        let items = self.call(invocation, timeout, |e, store| {
-            e.run_configurations.as_ref().unwrap().call_configurations(store, &root)
-        })?;
-        if items.len() > 1000 {
-            return Err(CallError::Guest(GuestError::Invalid("too many run configurations".into())));
-        }
-        Ok(items
-            .into_iter()
-            .map(|c| crate::PluginRunConfiguration {
-                id: c.id,
-                name: c.name,
-                program: c.program,
-                args: c.args,
-                cwd: c.cwd,
-                test: c.test,
-                framework: c.framework,
-            })
-            .collect())
+        let items: Vec<crate::PluginRunConfiguration> = if self.exports.execution_configurations.is_some() {
+            let items = self.call(invocation, timeout, |e, store| {
+                e.execution_configurations.as_ref().unwrap().call_configurations(store, &root)
+            })?;
+            if items.len() > 1000 {
+                return Err(CallError::Guest(GuestError::Invalid("too many run configurations".into())));
+            }
+            items
+                .into_iter()
+                .map(|c| crate::PluginRunConfiguration {
+                    id: c.id,
+                    name: c.name,
+                    program: c.program,
+                    args: c.args,
+                    cwd: c.cwd,
+                    test: c.test,
+                    framework: c.framework,
+                    env: c.env,
+                    debugger: match c.debugger {
+                        Some(wit_exec_launch::Debugger::Launch(language)) => {
+                            Some(crate::PluginDebugger::Launch { language })
+                        }
+                        Some(wit_exec_launch::Debugger::AttachChild(a)) => Some(crate::PluginDebugger::AttachChild {
+                            kind: a.kind,
+                            command_contains: a.command_contains,
+                        }),
+                        Some(wit_exec_launch::Debugger::Other(_)) | None => None,
+                    },
+                    output_mode: match c.output_mode {
+                        wit_run::OutputMode::Pipes => crate::PluginOutputMode::Pipes,
+                        wit_run::OutputMode::Pty => crate::PluginOutputMode::Pty,
+                    },
+                })
+                .collect()
+        } else if self.exports.launch_configurations.is_some() {
+            let items = self.call(invocation, timeout, |e, store| {
+                e.launch_configurations.as_ref().unwrap().call_configurations(store, &root)
+            })?;
+            if items.len() > 1000 {
+                return Err(CallError::Guest(GuestError::Invalid("too many run configurations".into())));
+            }
+            items
+                .into_iter()
+                .map(|c| crate::PluginRunConfiguration {
+                    id: c.id,
+                    name: c.name,
+                    program: c.program,
+                    args: c.args,
+                    cwd: c.cwd,
+                    test: c.test,
+                    framework: c.framework,
+                    env: c.env,
+                    debugger: match c.debugger {
+                        Some(wit_launch::Debugger::Launch(language)) => {
+                            Some(crate::PluginDebugger::Launch { language })
+                        }
+                        Some(wit_launch::Debugger::AttachChild(a)) => Some(crate::PluginDebugger::AttachChild {
+                            kind: a.kind,
+                            command_contains: a.command_contains,
+                        }),
+                        Some(wit_launch::Debugger::Other(_)) | None => None,
+                    },
+                    output_mode: crate::PluginOutputMode::Pipes,
+                })
+                .collect()
+        } else if self.exports.run_configurations.is_some() {
+            let items = self.call(invocation, timeout, |e, store| {
+                e.run_configurations.as_ref().unwrap().call_configurations(store, &root)
+            })?;
+            if items.len() > 1000 {
+                return Err(CallError::Guest(GuestError::Invalid("too many run configurations".into())));
+            }
+            items
+                .into_iter()
+                .map(|c| crate::PluginRunConfiguration {
+                    id: c.id,
+                    name: c.name,
+                    program: c.program,
+                    args: c.args,
+                    cwd: c.cwd,
+                    test: c.test,
+                    framework: c.framework,
+                    ..Default::default()
+                })
+                .collect()
+        } else {
+            return Err(CallError::missing_export("run-configurations"));
+        };
+        Ok(items)
     }
     /// Selects tests under the same budget as the test parser.
     pub fn select_tests(
@@ -1390,11 +1558,6 @@ impl Runtime {
         })
     }
 
-    /// The component exports `providers`.
-    pub fn has_providers(&self) -> bool {
-        self.exports.providers.is_some()
-    }
-
     fn provider_call<R>(
         &mut self,
         timeout: Duration,
@@ -1413,29 +1576,57 @@ impl Runtime {
         trigger: Option<&str>,
         timeout: Duration,
     ) -> Result<Vec<CompletionItem>, CallError> {
+        Ok(self.provide_completion_list(doc, at, trigger, timeout)?.0)
+    }
+
+    /// Completion items and whether the plugin marked them incomplete: from the
+    /// `completion-list-provider` export (API 1.16) when the plugin has it, else
+    /// from `providers.completion`, which is never incomplete.
+    pub fn provide_completion_list(
+        &mut self,
+        doc: &ProviderDocument,
+        at: ide_core::Pos,
+        trigger: Option<&str>,
+        timeout: Duration,
+    ) -> Result<(Vec<CompletionItem>, bool), CallError> {
+        macro_rules! item {
+            ($i:expr) => {{
+                let i = $i;
+                CompletionItem {
+                    label: clip(i.label, MAX_TITLE),
+                    detail: i.detail.map(|d| clip(d, MAX_TITLE)),
+                    kind: i.kind.map(|k| clip(k, 32)),
+                    insert_text: clip(i.insert_text, 64 << 10),
+                    snippet: i.snippet,
+                    replace: i.replace.map(range_from_wit),
+                    sort_text: i.sort_text.map(|t| clip(t, 64)),
+                    filter_text: i.filter_text.map(|t| clip(t, MAX_TITLE)),
+                    documentation: i.documentation.map(|d| clip(d, 16 << 10)),
+                    additional_edits: i
+                        .additional_edits
+                        .into_iter()
+                        .take(MAX_ADDITIONAL_EDITS)
+                        .map(edit_from_wit)
+                        .collect(),
+                }
+            }};
+        }
+        if self.exports.completion_list.is_some() {
+            let d = wit_cl::Document {
+                path: to_ipc(&doc.path),
+                language: doc.language.clone(),
+                version: doc.version,
+                text: doc.text.clone(),
+            };
+            let list = self.call(Invocation::default(), timeout, |exports, store| {
+                exports.completion_list.as_ref().expect("checked").call_completion(store, &d, pos_to_wit(at), trigger)
+            })?;
+            let items = list.items.into_iter().take(MAX_PROVIDER_ITEMS).map(|i| item!(i)).collect();
+            return Ok((items, list.incomplete));
+        }
         let d = doc_to_wit(doc);
         let items = self.provider_call(timeout, |p, s| p.call_completion(s, &d, pos_to_wit(at), trigger))?;
-        Ok(items
-            .into_iter()
-            .take(MAX_PROVIDER_ITEMS)
-            .map(|i| CompletionItem {
-                label: clip(i.label, MAX_TITLE),
-                detail: i.detail.map(|d| clip(d, MAX_TITLE)),
-                kind: i.kind.map(|k| clip(k, 32)),
-                insert_text: clip(i.insert_text, 64 << 10),
-                snippet: i.snippet,
-                replace: i.replace.map(range_from_wit),
-                sort_text: i.sort_text.map(|t| clip(t, 64)),
-                filter_text: i.filter_text.map(|t| clip(t, MAX_TITLE)),
-                documentation: i.documentation.map(|d| clip(d, 16 << 10)),
-                additional_edits: i
-                    .additional_edits
-                    .into_iter()
-                    .take(MAX_ADDITIONAL_EDITS)
-                    .map(edit_from_wit)
-                    .collect(),
-            })
-            .collect())
+        Ok((items.into_iter().take(MAX_PROVIDER_ITEMS).map(|i| item!(i)).collect(), false))
     }
 
     pub fn provide_inline_completion(
@@ -1668,7 +1859,7 @@ impl Runtime {
         let result = self.call(invocation, self.limits.timeout, |e, store| {
             let ctx = store.data_mut().new_invocation()?;
             store.data_mut().interactive = true;
-            store.data_mut().net_interactive = true;
+            store.data_mut().user_invoked = true;
             let r = e.plugin.openidea_plugin_commands().call_run(
                 &mut *store,
                 id,
@@ -1679,11 +1870,6 @@ impl Runtime {
             r
         })?;
         result.map_err(|e| CallError::Guest(e.into()))
-    }
-
-    /// The component exports `view-provider`.
-    pub fn has_views(&self) -> bool {
-        self.exports.views.is_some()
     }
 
     /// Content of a view or custom editor (`invocation.editor`: its document).
@@ -1709,6 +1895,55 @@ impl Runtime {
             Ok(v) => Ok(view_from_wit(v)),
             Err(e) => Err(CallError::Guest(e.into())),
         }
+    }
+
+    /// An on-demand category query, always non-interactive and bounded.
+    pub fn search(
+        &mut self,
+        category: &str,
+        query: &str,
+        limit: u32,
+        invocation: Invocation,
+    ) -> Result<crate::search::SearchPage, CallError> {
+        if self.exports.search.is_none() {
+            return Err(CallError::missing_export("search-provider"));
+        }
+        let result = self.call(invocation, Duration::from_secs(2), |e, store| {
+            let ctx = store.data_mut().new_invocation()?;
+            let r = e.search.as_ref().expect("checked").call_search(
+                &mut *store,
+                category,
+                query,
+                limit,
+                wasmtime::component::Resource::new_borrow(ctx.rep()),
+            );
+            store.data_mut().drop_invocation(ctx);
+            r
+        })?;
+        let page = result.map_err(|e| CallError::Guest(e.into()))?;
+        if page.items.len() > limit as usize {
+            return Err(CallError::Guest(GuestError::Invalid("too many search results".into())));
+        }
+        Ok(crate::search::SearchPage {
+            has_more: page.has_more,
+            items: page
+                .items
+                .into_iter()
+                .map(|i| crate::search::SearchItem {
+                    id: i.id,
+                    title: i.title,
+                    description: i.description,
+                    target: match i.target {
+                        wit_search::SearchTarget::Location(l) => {
+                            crate::search::SearchTarget::Location(location_from_wit(l))
+                        }
+                        wit_search::SearchTarget::Command(c) => {
+                            crate::search::SearchTarget::Command { id: c.id, arg: c.arg }
+                        }
+                    },
+                })
+                .collect(),
+        })
     }
 
     /// Project routes, with an explicit project invocation and background budget.
@@ -1794,12 +2029,12 @@ impl Runtime {
         if self.exports.views.is_none() {
             return Err(CallError::missing_export("view-provider"));
         }
-        let net_interactive = !matches!(&event, ViewEvent::Message { .. });
+        let user_invoked = !matches!(&event, ViewEvent::Message { .. });
         let event = event_to_wit_view(event);
         let result = self.call(invocation, self.limits.timeout, |e, store| {
             let ctx = store.data_mut().new_invocation()?;
             store.data_mut().interactive = true;
-            store.data_mut().net_interactive = net_interactive;
+            store.data_mut().user_invoked = user_invoked;
             let views = e.views.as_ref().expect("checked");
             let r = views.call_handle(&mut *store, view, &event, wasmtime::component::Resource::new_borrow(ctx.rep()));
             store.data_mut().drop_invocation(ctx);
@@ -1851,7 +2086,7 @@ impl Runtime {
         let data = self.store.data_mut();
         data.invocation = Invocation::default();
         data.interactive = false;
-        data.net_interactive = false;
+        data.user_invoked = false;
         data.action_prompt_client = None;
         // Tasks don't outlive the call that began them.
         for id in std::mem::take(&mut data.open_tasks) {
@@ -1861,10 +2096,11 @@ impl Runtime {
         if !stderr.trim().is_empty() {
             tracing::info!(plugin = %data.plugin_id, "stderr: {}", stderr.trim_end());
         }
+        let active_fuel = data.active_fuel;
         match result {
             Ok(r) => Ok(r),
             Err(e) => {
-                let mut msg = describe_trap(&e, &self.limits);
+                let mut msg = describe_trap(&e, &self.limits, active_fuel);
                 // Typically the panic message: "panicked at src/lib.rs:1:2:\nboom".
                 let detail: Vec<&str> =
                     stderr.lines().filter(|l| !l.trim().is_empty() && !l.starts_with("note:")).collect();
@@ -1916,15 +2152,55 @@ fn arm(store: &mut Store<StoreData>, limits: &Limits, timeout: Duration) -> wasm
     data.deadline = now + timeout;
     data.timeout = timeout;
     data.last_report = None;
+    data.host_io_grace_used = false;
+    data.active_fuel = limits.fuel;
     data.cancel.reset();
     // The callback above runs every tick and decides.
     store.set_epoch_deadline(1);
     Ok(())
 }
 
-fn describe_trap(e: &wasmtime::Error, limits: &Limits) -> String {
+fn bind_task_fuel_refill(linker: &mut Linker<StoreData>) -> wasmtime::Result<()> {
+    use crate::wit_host::TaskRes;
+    use crate::wit_host::bindings::openidea::plugin::tasks::{Host, HostTask};
+    use wasmtime::StoreContextMut;
+    use wasmtime::component::Resource;
+
+    linker.allow_shadowing(true);
+    let tasks_iface = format!("openidea:plugin/tasks@{}", ide_extension::ENGINE_VERSION);
+    let mut inst = linker.instance(&tasks_iface)?;
+    inst.func_wrap("begin", |mut caller: StoreContextMut<'_, StoreData>, (title, cancellable): (String, bool)| {
+        let task = Host::begin(caller.data_mut(), title, cancellable)?;
+        let fuel = caller.data().active_fuel;
+        caller.set_fuel(fuel)?;
+        Ok((task,))
+    })?;
+    inst.func_wrap(
+        "[method]task.report",
+        |mut caller: StoreContextMut<'_, StoreData>,
+         (this, done, total, message): (Resource<TaskRes>, u32, Option<u32>, Option<String>)| {
+            HostTask::report(caller.data_mut(), this, done, total, message)?;
+            let fuel = caller.data().active_fuel;
+            caller.set_fuel(fuel)?;
+            Ok(())
+        },
+    )?;
+    inst.func_wrap(
+        "[method]task.is-cancelled",
+        |mut caller: StoreContextMut<'_, StoreData>, (this,): (Resource<TaskRes>,)| {
+            let cancelled = HostTask::is_cancelled(caller.data_mut(), this)?;
+            let fuel = caller.data().active_fuel;
+            caller.set_fuel(fuel)?;
+            Ok((cancelled,))
+        },
+    )?;
+    linker.allow_shadowing(false);
+    Ok(())
+}
+
+fn describe_trap(e: &wasmtime::Error, limits: &Limits, active_fuel: u64) -> String {
     match e.downcast_ref::<wasmtime::Trap>() {
-        Some(wasmtime::Trap::OutOfFuel) => format!("exceeded its CPU budget ({} fuel per call)", limits.fuel),
+        Some(wasmtime::Trap::OutOfFuel) => format!("exceeded its CPU budget ({active_fuel} fuel per call)"),
         Some(wasmtime::Trap::Interrupt) => CANCELLED.to_owned(),
         Some(wasmtime::Trap::UnreachableCodeReached) => "crashed (panic / unreachable)".to_owned(),
         Some(trap) => format!("trapped: {trap}"),
@@ -2283,6 +2559,7 @@ fn event_to_wit_view(e: ViewEvent) -> wit_vt::ViewEvent {
             kind: "sort".into(),
             data: format!(r#"{{"column":{column},"descending":{descending}}}"#),
         }),
+        ViewEvent::Closed => W::Other(wit_types::Extension { kind: "closed".into(), data: "{}".into() }),
     }
 }
 
@@ -2391,6 +2668,19 @@ fn gutter_action_from(v: wit_lf::GutterAction) -> crate::language_features::Gutt
         argument: v.argument.map(|v| crate::runtime::clip(v, 65536)),
     }
 }
+fn hover_action_from(v: wit_hia::HoverAction) -> crate::language_features::HoverAction {
+    crate::language_features::HoverAction {
+        line: v.line,
+        start_line: v.start_line,
+        end_line: v.end_line,
+        icon: v.icon.map(|v| crate::runtime::clip(v, 65536)),
+        label: crate::runtime::clip(v.label, 65536),
+        tooltip: v.tooltip.map(|v| crate::runtime::clip(v, 65536)),
+        command: crate::runtime::clip(v.command, 65536),
+        argument: v.argument.map(|v| crate::runtime::clip(v, 65536)),
+    }
+}
+
 fn parameter_label_from(v: wit_lf::ParameterLabel) -> crate::language_features::ParameterLabel {
     use crate::language_features::ParameterLabel as P;
     match v {
@@ -2404,10 +2694,21 @@ impl Runtime {
         timeout: Duration,
         f: impl FnOnce(&wit_lf::Guest, &mut Store<StoreData>) -> wasmtime::Result<R>,
     ) -> Result<R, CallError> {
+        self.language_feature_call_in(None, timeout, f)
+    }
+    /// [`Self::language_feature_call`] for an editor of the project at `project`, which the
+    /// call has as its invocation's project (`workspace.project-of` prefers it).
+    fn language_feature_call_in<R>(
+        &mut self,
+        project: Option<&Path>,
+        timeout: Duration,
+        f: impl FnOnce(&wit_lf::Guest, &mut Store<StoreData>) -> wasmtime::Result<R>,
+    ) -> Result<R, CallError> {
         if self.exports.language_features.is_none() {
             return Err(CallError::missing_export("language-features"));
         }
-        self.call(Invocation::default(), timeout, |e, s| f(e.language_features.as_ref().expect("checked"), s))
+        let invocation = Invocation { workspace_root: project.map(Path::to_path_buf), ..Default::default() };
+        self.call(invocation, timeout, |e, s| f(e.language_features.as_ref().expect("checked"), s))
     }
     pub fn language_format(
         &mut self,
@@ -2605,9 +2906,11 @@ impl Runtime {
         let result = self.language_feature_call(timeout, |p, s| p.call_type_definition(s, &d, pos_to_wit(at)))?;
         Ok(result.into_iter().take(10000).map(location_from_wit).collect())
     }
+    /// Gutter actions of `doc`, open in an editor of the project at `project`.
     pub fn language_gutter_actions(
         &mut self,
         doc: &ProviderDocument,
+        project: Option<&Path>,
         timeout: Duration,
     ) -> Result<Vec<crate::language_features::GutterAction>, CallError> {
         let d = wit_lf::Document {
@@ -2616,9 +2919,33 @@ impl Runtime {
             version: doc.version,
             text: doc.text.clone(),
         };
-        let result = self.language_feature_call(timeout, |p, s| p.call_gutter_actions(s, &d))?;
+        let result = self.language_feature_call_in(project, timeout, |p, s| p.call_gutter_actions(s, &d))?;
         Ok(result.into_iter().take(10000).map(gutter_action_from).collect())
     }
+
+    /// Hover actions of `doc`, open in an editor of the project at `project`.
+    pub fn language_hover_actions(
+        &mut self,
+        doc: &ProviderDocument,
+        project: Option<&Path>,
+        timeout: Duration,
+    ) -> Result<Vec<crate::language_features::HoverAction>, CallError> {
+        if self.exports.hover_actions.is_none() {
+            return Err(CallError::missing_export("hover-actions"));
+        }
+        let d = wit_hia::Document {
+            path: to_ipc(&doc.path),
+            language: doc.language.clone(),
+            version: doc.version,
+            text: doc.text.clone(),
+        };
+        let invocation = Invocation { workspace_root: project.map(Path::to_path_buf), ..Default::default() };
+        let result = self.call(invocation, timeout, |exports, store| {
+            exports.hover_actions.as_ref().expect("checked").call_hover_actions(store, &d)
+        })?;
+        Ok(result.into_iter().take(10_000).map(hover_action_from).collect())
+    }
+
     pub fn provide_injections(
         &mut self,
         doc: &ProviderDocument,
@@ -2700,6 +3027,12 @@ mod tests {
         assert_eq!(fields[0].value, FieldValue::Label("Title \"quoted\"".into()));
         assert_eq!(fields[1].value, FieldValue::ReadonlyText { text: "one\ntwo".into(), multiline: true });
         assert_eq!(fields[2].value, FieldValue::ReadonlyText { text: "author".into(), multiline: false });
+    }
+
+    #[test]
+    fn a_closed_dialog_leaves_as_an_other_event() {
+        let wit_vt::ViewEvent::Other(extension) = event_to_wit_view(ViewEvent::Closed) else { panic!("other") };
+        assert_eq!((extension.kind.as_str(), extension.data.as_str()), ("closed", "{}"));
     }
 
     #[test]

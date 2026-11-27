@@ -47,6 +47,10 @@ pub fn github_latest_url(repo: &str) -> String {
     format!("https://api.github.com/repos/{repo}/releases/latest")
 }
 
+pub fn github_tag_url(repo: &str, tag: &str) -> String {
+    format!("https://api.github.com/repos/{repo}/releases/tags/{tag}")
+}
+
 /// The latest release's web page; it redirects to `…/releases/tag/<tag>`. Web pages don't
 /// count against the API's rate limit for unauthenticated clients (60 requests an hour).
 pub fn github_latest_page(repo: &str) -> String {
@@ -143,6 +147,11 @@ fn pick_release(
         let checksum_url = assets
             .iter()
             .find(|c| c.name == format!("{name}.sha256") || c.name == format!("{name}.sha256sum"))
+            .or_else(|| {
+                assets
+                    .iter()
+                    .find(|c| c.name.eq_ignore_ascii_case("checksums.txt") || c.name.ends_with("_checksums.txt"))
+            })
             .map(|c| c.url.clone());
         return Ok(Download {
             version,
@@ -618,6 +627,28 @@ mod tests {
         let sums = format!("{}  other.zip\n{}  *wanted.zip\n", "b".repeat(64), "C".repeat(64));
         assert_eq!(parse_checksum(&sums, "wanted.zip"), Some("c".repeat(64)));
         assert_eq!(parse_checksum(&sums, "missing.zip"), None);
+
+        let gh = serde_json::json!({
+            "tag_name": "v2.106.0",
+            "assets": [
+                {
+                    "name": "gh_2.106.0_macOS_arm64.zip",
+                    "browser_download_url": "https://github.com/cli/cli/releases/download/v2.106.0/gh_2.106.0_macOS_arm64.zip"
+                },
+                {
+                    "name": "gh_2.106.0_checksums.txt",
+                    "browser_download_url": "https://github.com/cli/cli/releases/download/v2.106.0/gh_2.106.0_checksums.txt"
+                }
+            ]
+        })
+        .to_string();
+        let dl = github_pick(&gh, find("gh").unwrap().asset_rules(), MAC_ARM).unwrap();
+        assert_eq!(dl.version, "2.106.0");
+        assert_eq!(dl.name, "gh_2.106.0_macOS_arm64.zip");
+        assert_eq!(
+            dl.checksum_url.as_deref(),
+            Some("https://github.com/cli/cli/releases/download/v2.106.0/gh_2.106.0_checksums.txt")
+        );
     }
 
     #[test]

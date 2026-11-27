@@ -143,6 +143,8 @@ struct Raw {
     visibility: Option<Visibility>,
     /// Rust `impl Trait for Type`: members take the trait's visibility.
     trait_impl: bool,
+    /// Base names of a class definition (empty where the grammar has none).
+    bases: Vec<String>,
 }
 
 struct Built {
@@ -221,6 +223,13 @@ fn collect(g: &Grammar, q: &OutlineQuery, tree: &Tree, text: &str) -> Vec<Built>
             detail: detail.map(|d| clean(node_text(&d, text), 80)).filter(|d| !d.is_empty()),
             visibility: explicit_visibility(&node, text),
             trait_impl,
+            // The index needs every class's bases; Python is the grammar that has them.
+            bases: match kind {
+                ItemKind::Symbol(SymbolKind::Class) if g.spec.name == "python" => {
+                    super::inheritance::class_base_names(node, text)
+                }
+                _ => Vec::new(),
+            },
         };
         match by_node.get(&raw.node_id) {
             Some(existing) if existing.pattern <= raw.pattern => {}
@@ -369,6 +378,7 @@ pub(crate) fn tags(g: &Grammar, q: &OutlineQuery, tree: &Tree, text: &str) -> Ve
                     kind: b.kind,
                     container: own_container.map(str::to_owned),
                     range: b.raw.sel,
+                    bases: b.raw.bases.clone(),
                 });
             }
             let next = if b.raw.tag || matches!(b.raw.kind, ItemKind::Impl | ItemKind::Extension) {
@@ -474,6 +484,36 @@ pub fn merge_visibility(target: &mut [OutlineItem], source: &[OutlineItem]) {
         for i in items {
             if i.visibility.is_none() {
                 i.visibility = map.get(&(i.selection_range.start, i.name.clone())).copied();
+            }
+            apply(&mut i.children, map);
+        }
+    }
+    let mut map = HashMap::new();
+    index(source, &mut map);
+    if !map.is_empty() {
+        apply(target, &map);
+    }
+}
+
+/// Takes the syntax tree's kind where a server reported a declared type as a value or a type
+/// parameter: LSP has no kind for type aliases, so servers fall back to one of those
+/// (typescript-language-server: Variable; rust-analyzer, sourcekit-lsp: TypeParameter).
+/// Matched by name and position like [`merge_visibility`].
+pub fn merge_kinds(target: &mut [OutlineItem], source: &[OutlineItem]) {
+    fn index(items: &[OutlineItem], out: &mut HashMap<(ide_core::Pos, String), SymbolKind>) {
+        for i in items {
+            if i.kind.is_type_like() {
+                out.insert((i.selection_range.start, i.name.clone()), i.kind);
+            }
+            index(&i.children, out);
+        }
+    }
+    fn apply(items: &mut [OutlineItem], map: &HashMap<(ide_core::Pos, String), SymbolKind>) {
+        for i in items {
+            if matches!(i.kind, SymbolKind::Variable | SymbolKind::TypeParameter)
+                && let Some(&kind) = map.get(&(i.selection_range.start, i.name.clone()))
+            {
+                i.kind = kind;
             }
             apply(&mut i.children, map);
         }

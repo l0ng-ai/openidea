@@ -1,6 +1,7 @@
+import type { Page } from "@playwright/test";
 import { expect, ipcCalls, stubDesktop, test } from "./fixtures";
 
-test("opens a commit's branch menu and acts in its linked repository", async ({ workbench: page }) => {
+async function openGitLog(page: Page) {
   await stubDesktop(page);
   await page.evaluate(async () => {
     const primary = "/dev/acme-api";
@@ -20,12 +21,13 @@ test("opens a commit's branch menu and acts in its linked repository", async ({ 
       behind: 0,
       operation: null,
     });
+    const refs = (repo: unknown) => (repo === linked ? ["origin/dev", "topic", "release"] : ["origin/other"]);
     h.vcs_branches = ({ repo }) =>
-      [repo === linked ? "origin/dev" : "origin/other"].map((name) => ({
+      refs(repo).map((name) => ({
         name,
         commit: tip,
-        remote: true,
-        current: false,
+        remote: name.startsWith("origin/"),
+        current: name === "release",
         upstream: null,
         ahead: 0,
         behind: 0,
@@ -38,7 +40,7 @@ test("opens a commit's branch menu and acts in its linked repository", async ({ 
           id: tip,
           shortId: tip.slice(0, 8),
           parents: [],
-          refs: [repo === linked ? "origin/dev" : "origin/other"],
+          refs: refs(repo),
           author: "A",
           email: "a@example.com",
           timeMs: 0,
@@ -61,7 +63,8 @@ test("opens a commit's branch menu and acts in its linked repository", async ({ 
     h.vcs_config_get = () => null;
     h.vcs_tags = () => [];
     h.vcs_status = () => [];
-    h.vcs_create_branch = () => null;
+    h.vcs_checkout = () => ({ kind: "done" });
+    h.vcs_create_branch = () => ({ checkout: { kind: "done" }, created: { tip: "1111111", previousTip: null } });
     const vcsModule = "/src/features/vcs/store.ts";
     const { useVcs, refreshNow } = await import(/* @vite-ignore */ vcsModule);
     useVcs.setState({ available: true, root: primary, repo: primary });
@@ -73,7 +76,10 @@ test("opens a commit's branch menu and acts in its linked repository", async ({ 
     const { executeAction } = await import(/* @vite-ignore */ actionsModule);
     await executeAction("vcs.showLog");
   });
+}
 
+test("opens a commit's branch menu and acts in its linked repository", async ({ workbench: page }) => {
+  await openGitLog(page);
   await page.getByRole("option", { name: /Linked repository commit/ }).click({ button: "right" });
   const menu = page.getByRole("menu", { name: "Context menu" });
   await expect(menu.getByRole("menuitem", { name: "Branch 'origin/other'" })).toHaveCount(0);
@@ -86,5 +92,29 @@ test("opens a commit's branch menu and acts in its linked repository", async ({ 
   await dialog.getByRole("button", { name: "Create", exact: true }).click();
   await expect
     .poll(() => ipcCalls(page, "vcs_create_branch"))
-    .toMatchObject([{ repo: "/dev/acme-web", name: "test-branch", start: "origin/dev", checkout: true }]);
+    .toMatchObject([{ repo: "/dev/acme-web", name: "test-branch", start: "refs/remotes/origin/dev", checkout: true }]);
+});
+
+test("checks out either a local branch or the detached revision from a commit", async ({ workbench: page }) => {
+  await openGitLog(page);
+  const linked = page.getByRole("option", { name: /Linked repository commit/ });
+  await linked.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Checkout", exact: true }).hover();
+  const branch = page.getByRole("menuitem", { name: "topic", exact: true });
+  await expect(branch).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "release", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("menuitem", { name: "origin/dev", exact: true })).toHaveCount(0);
+  await branch.click();
+  await linked.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Checkout", exact: true }).hover();
+  await page.getByRole("menuitem", { name: "Revision '11111111'", exact: true }).click();
+  await expect
+    .poll(() => ipcCalls(page, "vcs_checkout"))
+    .toMatchObject([
+      { repo: "/dev/acme-web", branch: "refs/heads/topic" },
+      { repo: "/dev/acme-web", branch: `${"1".repeat(40)}^{commit}` },
+    ]);
+
+  await page.getByRole("option", { name: /Primary repository commit/ }).click({ button: "right" });
+  await expect(page.getByRole("menuitem", { name: "Checkout Revision '11111111'", exact: true })).toBeVisible();
 });

@@ -1,12 +1,17 @@
-/** Picks an SSH configuration and a folder on that host, then opens it in this or a new window. */
-import { useEffect, useState } from "react";
+/**
+ * Picks an SSH configuration and a folder on that host, then opens it in this or a new window.
+ * In the desktop app it has its own window (`connectWindow.tsx`).
+ */
+import { useEffect, useState, type ReactNode } from "react";
 import { executeAction } from "@/platform/actions";
 import { useTx } from "@/platform/i18n";
 import { call, commands, isCancelled, onIdeEvent, type RemoteEntry, type RemoteTarget } from "@/platform/ipc";
-import { useRemoteProgress } from "@/platform/remote";
+import { localGlobalSettings, useRemoteProgress } from "@/platform/remote";
 import { sshLabel, type SshConfigValid, validateRemote } from "@/platform/remoteSettings";
-import { Button, Dialog, Icon, Input, ProgressBar, Select, Spinner } from "@/ui";
+import { Button, Dialog, Icon, Input, ProgressBar, Select, Spinner, type DialogButton } from "@/ui";
 import { openRemoteProject } from "@/workbench/projectWindow";
+import { windowBackgroundHex } from "@/workbench/theme";
+import { WindowDialogFrame } from "@/workbench/WindowDialogFrame";
 import {
   browsableFolders,
   closeConnectDialog,
@@ -33,7 +38,7 @@ function useLocalSshConfigs(): SshConfigValid[] {
   useEffect(() => {
     let live = true;
     const load = () =>
-      void commands.settingsGetGlobal().then(
+      void localGlobalSettings().then(
         (s) => live && setConfigs(validateRemote(s).ssh.configs),
         () => {},
       );
@@ -47,7 +52,44 @@ function useLocalSshConfigs(): SshConfigValid[] {
   return configs;
 }
 
-function ConnectDialog() {
+function Frame({
+  standalone,
+  onClose,
+  buttons,
+  children,
+}: {
+  standalone: boolean;
+  onClose: () => void;
+  buttons: readonly DialogButton[];
+  children: ReactNode;
+}) {
+  const tx = useTx();
+  if (standalone)
+    return (
+      <WindowDialogFrame title="Remote Development" buttons={buttons} onCancel={onClose}>
+        {children}
+      </WindowDialogFrame>
+    );
+  return (
+    <Dialog open title={tx("Remote Development")} onClose={onClose} width={560} buttons={buttons}>
+      {children}
+    </Dialog>
+  );
+}
+
+/**
+ * `standalone`: fills the Remote Development window, whose project window connects
+ * (`onConnect`: true once the project is open).
+ */
+export function ConnectDialog({
+  standalone = false,
+  onClose = closeConnectDialog,
+  onConnect,
+}: {
+  standalone?: boolean;
+  onClose?: () => void;
+  onConnect?: (target: RemoteTarget, path: string) => Promise<boolean>;
+}) {
   const tx = useTx();
   const configs = useLocalSshConfigs();
   const [picked, setSsh] = useState("");
@@ -99,7 +141,8 @@ function ConnectDialog() {
     setError(null);
     setBusy(true);
     try {
-      if (await openRemoteProject(target, path.trim() || "~")) closeConnectDialog();
+      const dir = path.trim() || "~";
+      if (await (onConnect ? onConnect(target, dir) : openRemoteProject(target, dir))) onClose();
       else setBusy(false);
     } catch (e) {
       if (!isCancelled(e)) setError(e instanceof Error ? e.message : String(e));
@@ -107,16 +150,25 @@ function ConnectDialog() {
     }
   };
 
-  const options = configs.map((c) => ({ value: c.id, label: c.name.trim() || sshLabel(c), detail: sshLabel(c) }));
+  const options = configs.map((c) => ({
+    value: c.id,
+    verbatim: true,
+    verbatimDetail: true,
+    label: c.name.trim() || sshLabel(c),
+    detail: sshLabel(c),
+  }));
   const ready = !!name && !busy && !!path.trim();
   const connecting = useRemoteProgress((s) => s.progress !== null);
 
+  const configure = () =>
+    standalone
+      ? void call(commands.windowOpenSettings(SSH_SETTINGS_PAGE, false, windowBackgroundHex())).catch(() => {})
+      : void executeAction("file.settings", SSH_SETTINGS_PAGE);
+
   return (
-    <Dialog
-      open
-      title={tx("Remote Development")}
-      onClose={closeConnectDialog}
-      width={560}
+    <Frame
+      standalone={standalone}
+      onClose={onClose}
       buttons={[
         {
           label: connecting ? "Connecting…" : "Open",
@@ -128,7 +180,7 @@ function ConnectDialog() {
       ]}
     >
       <form
-        className={styles.form}
+        className={standalone ? `${styles.form} ${styles.windowForm}` : styles.form}
         onSubmit={(e) => {
           e.preventDefault();
           if (ready) void connect();
@@ -159,7 +211,7 @@ function ConnectDialog() {
             <label className={styles.label}>{tx("WSL distribution:")}</label>
             <Select
               value={distro || null}
-              options={distros.map((d) => ({ value: d, label: d }))}
+              options={distros.map((d) => ({ value: d, verbatim: true, label: d }))}
               onChange={setDistro}
               aria-label={tx("WSL distribution")}
             />
@@ -179,7 +231,7 @@ function ConnectDialog() {
                 }}
                 aria-label={tx("SSH configuration")}
               />
-              <Button onClick={() => void executeAction("file.settings", SSH_SETTINGS_PAGE)}>{tx("Configure…")}</Button>
+              <Button onClick={configure}>{tx("Configure…")}</Button>
             </div>
           </>
         )}
@@ -229,7 +281,7 @@ function ConnectDialog() {
           </div>
         )}
       </form>
-    </Dialog>
+    </Frame>
   );
 }
 

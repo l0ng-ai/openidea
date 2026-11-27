@@ -4,8 +4,15 @@ import { resolveJavaCommand } from "@/platform/javaLaunch";
 
 const ipc = vi.hoisted(() => ({
   javaResolveLaunch: vi.fn(),
+  javaDebugAdapter: vi.fn(async () => ({ status: "ok", data: "java-debug" })),
   javaDebugServer: vi.fn(async () => ({ status: "ok", data: 5005 })),
   fsReadDir: vi.fn(async () => ({ status: "ok", data: [] })),
+}));
+vi.mock("@tauri-apps/api/core", async (original) => ({
+  ...(await original<typeof import("@tauri-apps/api/core")>()),
+  Channel: class {
+    onmessage = null;
+  },
 }));
 vi.mock("@/platform/ipc", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/platform/ipc")>()),

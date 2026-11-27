@@ -26,6 +26,7 @@ import { boundedLog, type PluginLogEditorData } from "./logTab";
 import { logTabPtyBackend, webPtyBackend } from "./ptyBackend";
 import { outputKey, usePluginOutput } from "./outputStore";
 import { ptyBridge } from "./ptyBridge";
+import { wheelZoomStep } from "@/platform/wheelZoom";
 
 export const PLUGIN_LOG_EDITOR_KIND = "pluginLog";
 
@@ -42,9 +43,10 @@ function isActionStroke(stroke: string | null, actionId: string): boolean {
 
 const wheelZoom = EditorView.domEventHandlers({
   wheel(e, view) {
-    if (!e.metaKey && !e.ctrlKey) return false;
+    const step = wheelZoomStep(e);
+    if (step === null) return false;
     e.preventDefault();
-    stepFontZoom(view, e.deltaY < 0 ? 1 : -1);
+    if (step) stepFontZoom(view, step);
     return true;
   },
 });

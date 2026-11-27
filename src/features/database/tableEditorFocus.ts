@@ -6,11 +6,37 @@
 import { flushSync } from "react-dom";
 import { setContext } from "@/platform/context";
 
+/** Toolbar and row commands of a table editor or result grid, run as `db.*` actions. */
+export type TableCommand =
+  | "reload"
+  | "firstPage"
+  | "previousPage"
+  | "nextPage"
+  | "lastPage"
+  | "addRow"
+  | "exportData"
+  | "deleteRows"
+  | "restoreRows";
+
+export interface TableCommandHandler {
+  enabled(rows: number[]): boolean;
+  /** `rows`: the grid's selected rows (row commands). */
+  run(rows: number[]): void;
+}
+
+/** What a row menu passes to a `db.*` row action: the menu holds focus, not the grid. */
+export interface TableCommandTarget {
+  rows: number[];
+  editor: TableEditorHandle | null;
+}
+
 export interface TableEditorHandle {
   dirty: boolean;
   submit(): void;
   revert(): void;
   showColumns(): void;
+  /** The commands this view has; one it lacks is disabled. */
+  commands?: Partial<Record<TableCommand, TableCommandHandler>>;
 }
 
 const handles = new WeakMap<Element, TableEditorHandle>();
@@ -53,6 +79,11 @@ export function registerTableEditor(root: Element, handle: TableEditorHandle): (
 /** The handle's state changed (pending edits). */
 export function tableEditorChanged(handle: TableEditorHandle) {
   if (active === handle) update();
+}
+
+/** The active editor as is, for enablement checks (no side effects). */
+export function focusedTableEditor(): TableEditorHandle | null {
+  return active;
 }
 
 /** The active editor, after confirming the cell being edited so its value counts. */

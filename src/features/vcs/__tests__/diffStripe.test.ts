@@ -64,15 +64,10 @@ describe("diff overview stripe (#1505)", () => {
     expect(mv.b.state.facet(scrollbarMarks)).toEqual([]);
   });
 
-  it("draws the aligned view's lane in the right pane over the shared scroller", () => {
-    const mv = splitView([], diffOverview("aligned"));
-    const lane = mv.b.dom.firstElementChild as HTMLElement;
-    expect(lane.classList.contains("cm-openidea-overview-sticky")).toBe(true);
-    expect(mv.dom.classList.contains("cm-openidea-overviewScroller")).toBe(true);
-    expect(mv.a.dom.querySelector(".cm-openidea-overview")).toBeNull();
-    mv.destroy();
-    expect(mv.dom.classList.contains("cm-openidea-overviewScroller")).toBe(false);
-    merge = null;
+  it("gives every split pane its own overview lane", () => {
+    const mv = splitView();
+    expect(mv.a.dom.querySelector(".cm-openidea-overview")).not.toBeNull();
+    expect(mv.b.dom.querySelector(".cm-openidea-overview")).not.toBeNull();
   });
 });
 

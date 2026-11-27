@@ -196,6 +196,16 @@ describe("fileIconName", () => {
     ["schema.graphql", "file-graphql"],
     ["api.proto", "file-proto"],
     ["main.go", "file-go"],
+    ["cart_test.go", "file-go-test"],
+    // Only what `go test` builds as a test file: case-sensitive, not a file it ignores (`_…`, `.…`).
+    ["Cart_TEST.go", "file-go"],
+    ["_test.go", "file-go"],
+    [".cart_test.go", "file-go"],
+    ["test.go", "file-go"],
+    ["cart_test.go.tmpl", "file-go"],
+    ["page.gotmpl", "file-go"],
+    ["message.tmpl", "file-go"],
+    ["docker-stack.yaml.go.tmpl", "file-go"],
     ["main.c", "file-c"],
     ["util.h", "file-h"],
     ["util.hpp", "file-h"],
@@ -218,6 +228,7 @@ describe("fileIconName", () => {
     ["index.jsp", "file-jsp"],
     ["footer.jspf", "file-jsp"],
     ["card.tag", "file-jsp"],
+    ["orders.ftl", "file-freemarker"],
     ["styles.scss", "file-scss"],
     ["styles.sass", "file-sass"],
     ["styles.less", "file-less"],
@@ -254,7 +265,7 @@ describe("fileIconName", () => {
     expect(fileIconName(file)).toBe(icon);
   });
 
-  it("gives every detected language file a specific icon", () => {
+  it("gives every built-in filename and extension association a specific icon", () => {
     const dir = path.join(process.cwd(), "languages");
     const list = (src: string, key: string) =>
       [...(new RegExp(`^${key}\\s*=\\s*\\[([^\\]]*)\\]`, "m").exec(src)?.[1] ?? "").matchAll(/"([^"]+)"/g)].map(
@@ -264,7 +275,8 @@ describe("fileIconName", () => {
     const misses: string[] = [];
     for (const file of fs.readdirSync(dir).filter((f) => f.endsWith(".toml"))) {
       if (file === "plaintext.toml") continue;
-      const src = fs.readFileSync(path.join(dir, file), "utf8");
+      // Framework tables describe associations that require project context.
+      const src = fs.readFileSync(path.join(dir, file), "utf8").split(/^\[/m, 1)[0]!;
       const names = [
         ...list(src, "extensions").map((e) => `name.${e}`),
         ...list(src, "filenames").map((n) => n.replace("*", "x")),
@@ -281,6 +293,33 @@ describe("fileIconName", () => {
       const markup = iconMarkup(name)!.replace(/\bm\d+-/g, "");
       expect(seen.get(markup), name).toBeUndefined();
       seen.set(markup, name);
+    }
+  });
+});
+
+describe("image icons", () => {
+  const png =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
+
+  it("renders a raster data URI as an image of the icon's size", () => {
+    const { container } = render(<Icon name={png} size={14} />);
+    const img = container.querySelector("img")!;
+    expect(img.getAttribute("src")).toBe(png);
+    expect([img.width, img.height]).toEqual([14, 14]);
+    expect(container.querySelector("svg")).toBeNull();
+  });
+
+  it("falls back to the file icon for other URIs and oversized images", () => {
+    for (const name of [
+      "https://example.com/avatar.png",
+      "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=",
+      `data:image/png;base64,${"A".repeat(70 * 1024)}`,
+      "data:image/png;base64,not base64!",
+    ]) {
+      const { container, unmount } = render(<Icon name={name} />);
+      expect(container.querySelector("img")).toBeNull();
+      expect(container.querySelector("svg")).toBeTruthy();
+      unmount();
     }
   });
 });

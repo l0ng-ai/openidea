@@ -67,13 +67,13 @@ test("plugin markers render names and package SVG variants and keep the indexed 
     );
     await editorService().openFile(source);
   });
-  const markers = page.locator(".cm-openidea-gutter-pluginMarkers");
+  const markers = page.locator(".cm-openidea-iconArea");
   await expect(markers.locator('[title="Run marker"] svg')).toHaveAttribute("data-icon", "gutter-run");
   await expect(markers.locator('[title="Database marker"] svg')).toHaveAttribute("data-icon", "database");
   const custom = markers.locator('[title="Package marker"] svg');
   await expect(custom).toHaveAttribute("data-icon", /^ext:pluginIcon\/hello\//);
   // CodeMirror clips every gutter column to its width (`overflow: hidden`), so an icon wider than
-  // the column loses its edges: each line-marker icon stays inside the 14px column.
+  // the column loses its edges: each line-marker icon stays inside the shared icon area.
   const outside = await markers.evaluate((column) => {
     const bounds = column.getBoundingClientRect();
     return [...column.querySelectorAll("svg")].filter((svg) => {
@@ -96,7 +96,7 @@ test("plugin markers render names and package SVG variants and keep the indexed 
   await expect(custom.locator("rect")).toBeVisible();
   await expect(custom.locator("circle")).toBeHidden();
   await page.screenshot({ path: test.info().outputPath("markers-light.png"), animations: "disabled" });
-  await page.locator(".cm-plugin-mapping-gutter button").click();
+  await markers.locator('button[aria-label^="Go to mapping:"]').click();
   const chooser = page.getByRole("dialog", { name: "Choose Mapping Target" });
   await expect(chooser.getByRole("option")).toHaveCount(2);
   await page.screenshot({ path: test.info().outputPath("markers-chooser.png"), animations: "disabled" });

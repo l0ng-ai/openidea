@@ -5,9 +5,9 @@ wit_bindgen::generate!({
     inline: "
         package fixture:misbehave;
         world misbehave {
-            include openidea:plugin/plugin-syntax@1.5.0;
-            export openidea:plugin/providers@1.5.0;
-            export openidea:plugin/file-actions@1.5.0;
+            include openidea:plugin/plugin-syntax@1.18.0;
+            export openidea:plugin/providers@1.18.0;
+            export openidea:plugin/file-actions@1.18.0;
         }
     ",
     path: "../../../../../wit",
@@ -180,8 +180,18 @@ impl commands::Guest for Misbehave {
                     env: Vec::new(),
                 };
                 let child = process::start(&cmd, None)?;
+                // CPU work per step (loop iterations), for fuel budget tests.
+                let arg = arg.as_deref().unwrap_or("");
+                let report = !arg.starts_with("quiet:");
+                let work: u64 = arg.strip_prefix("quiet:").unwrap_or(arg).parse().unwrap_or(0);
                 for step in 0..25 {
-                    task.report(step, Some(25), Some("waiting"));
+                    if report {
+                        task.report(step, Some(25), Some("waiting"));
+                    }
+                    let mut x: u64 = 0;
+                    for _ in 0..work {
+                        x = std::hint::black_box(x.wrapping_add(1));
+                    }
                     // Waiting blocks in the host for 100 ms: wall time passes
                     // while the plugin itself is not running.
                     let _ = child.wait(100);
@@ -189,13 +199,25 @@ impl commands::Guest for Misbehave {
                 // Let it finish on its own: no kill, no slow teardown.
                 child.close_stdin()?;
                 let _ = child.wait(5_000);
-                task.report(25, Some(25), Some("done"));
+                if report {
+                    task.report(25, Some(25), Some("done"));
+                }
                 Ok(Some("still here".into()))
             }
             // `editor.write` is not granted: an error, not a trap.
             "insert" => {
                 let editor = ctx.editor().ok_or_else(|| failed("no editor"))?;
                 editor.apply_edits(0, &[]).map(|_| None)
+            }
+            // `agents.fork-session`: arg is "agent session-id cwd". Without the
+            // `agents` grant this is `denied`, not a trap.
+            "fork-session" => {
+                let arg = arg.unwrap_or_default();
+                let mut parts = arg.splitn(3, ' ');
+                let agent = parts.next().unwrap_or_default();
+                let session_id = parts.next().unwrap_or_default();
+                let cwd = parts.next().unwrap_or_default();
+                openidea::plugin::agents::fork_session(agent, session_id, cwd).map(Some)
             }
             // The user gave up: not the plugin failing.
             "cancel" => Err(types::Error::Cancelled),

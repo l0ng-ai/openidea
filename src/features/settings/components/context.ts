@@ -33,6 +33,15 @@ export function useSetting<T>(key: string, scopeOverride?: Scope): [T, (value: T
   return [value, set];
 }
 
+/** The value of a settings key as last applied, without this dialog's staged edits. */
+export function useAppliedSetting<T>(key: string, scopeOverride?: Scope): T {
+  const { scope: pageScope } = usePageContext();
+  const scope = scopeOverride ?? pageScope;
+  const base = useSettingsDialog((s) => s.base);
+  const globalBase = useSettingsDialog((s) => s.globalBase);
+  return useMemo(() => stagedValue({ base, globalBase, staged: {} }, scope, key), [base, globalBase, scope, key]) as T;
+}
+
 /** `stagedValue` for components; recomputed only when the base or the staged edits change. */
 export function useStagedValue(scope: Scope, key: string): unknown {
   const base = useSettingsDialog((s) => (scope === "global" ? s.globalBase : s.base));

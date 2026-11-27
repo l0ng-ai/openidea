@@ -1,0 +1,10 @@
+id = "java-agent"
+name = "Java agent tests"
+version = "0.1.0"
+engines.openidea = "^1.10"
+
+# Contribution only: the host loads the agent into Java run configurations once the user
+# grants the `java.agent` capability this declaration derives.
+[[contributes.javaAgents]]
+path = "agent/fixture agent.jar"
+args = "mode=test"

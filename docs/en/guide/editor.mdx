@@ -24,6 +24,8 @@ The editor follows IntelliJ IDEA's behaviour and default keymap. Shortcuts below
 - **Add Selection for Next Occurrence** selects the word at the caret first, then adds the next match on every press. When nothing more is found, a hint appears; press again to continue from the top of the file.
 - Drag with `⌥` / `Alt` held (or with the middle mouse button on macOS and Windows) to make a rectangular selection without switching modes.
 - **Extend Selection** grows the selection to the enclosing word, expression, statement and block, using the syntax tree.
+- **Swap Selection Boundaries** moves the caret of each selection to its other end and keeps the text selected, so `⇧` / `Shift` with the arrow keys then extends or shrink it from that side. It has no default shortcut.
+- **Select Line at Caret** selects the whole line at each caret together with its line break; a selection grows to the whole lines it touches. It has no default shortcut.
 
 ## Editing lines and code
 
@@ -31,6 +33,7 @@ The editor follows IntelliJ IDEA's behaviour and default keymap. Shortcuts below
 | ----------------------------------------------- | --------------- | ---------------------------------------------- |
 | **Duplicate Line or Selection**                 | `⌘D`            | `Ctrl+D`                                       |
 | **Delete Line**                                 | `⌘⌫`            | `Ctrl+Y`                                       |
+| **Cut up to Line End**                          | `⌃K`            | —                                              |
 | **Move Line Up** / **Move Line Down**           | `⌥⇧↑` / `⌥⇧↓`   | `Alt+Shift+Up` / `Alt+Shift+Down`              |
 | **Move Statement Up** / **Move Statement Down** | `⇧⌘↑` / `⇧⌘↓`   | `Ctrl+Shift+Up` / `Ctrl+Shift+Down`            |
 | **Move Element Left** / **Move Element Right**  | `⌥⇧⌘←` / `⌥⇧⌘→` | `Ctrl+Alt+Shift+Left` / `Ctrl+Alt+Shift+Right` |
@@ -45,11 +48,28 @@ The editor follows IntelliJ IDEA's behaviour and default keymap. Shortcuts below
 | **Unwrap/Remove…**                              | `⇧⌘⌦`           | `Ctrl+Shift+Delete`                            |
 | **Move Caret to Matching Brace**                | `⌃M`            | `Ctrl+Shift+M`                                 |
 | **Move Caret to Code Block Start** / **End**    | `⌥⌘[` / `⌥⌘]`   | `Ctrl+[` / `Ctrl+]`                            |
+| **Move Caret to Page Top** / **Bottom**         | `⌘⇞` / `⌘⇟`     | `Ctrl+PageUp` / `Ctrl+PageDown`                |
 | **Toggle Insert/Overwrite**                     | `Insert`        | `Insert`                                       |
 
-**Edit › Sort Lines** and **Edit › Reverse Lines** reorder the selected lines; they have no default shortcut.
+**Move Caret to Page Top** / **Bottom** put the caret on the first / last line the editor shows in full, in the same column, without scrolling; with `⇧` / `Shift` added they select up to it.
 
-Brackets and quotes are paired as you type, and typing a quote or bracket over a selection surrounds it. These and other typing aids (smart Home, Tab out of a closing bracket, smart indent on Enter, documentation comment stubs, what Backspace does with indentation, reformat on paste) are under **Settings › Editor › General › Smart Keys**.
+**Move Caret Forward a Paragraph** / **Backward a Paragraph** jump each caret over a run of non-blank lines to the blank line after or before it (a line of only spaces or tabs counts as blank), or to the end or start of the file; their **with Selection** variants select up to there. They have no default shortcut.
+
+**Move Caret to Next Word** / **Previous Word in Different "CamelHumps" Mode** (and their **with Selection** variants), **Delete to Word Start** and **Delete to Word End in Different "CamelHumps" Mode** move or delete by word the other way from **Settings › Editor › General › Smart Keys › Use "CamelHumps" words**: by hump (`parse|HTML|Document`) while it is off, by whole word while it is on. They have no default shortcut.
+
+**Edit › Sort Lines** and **Edit › Reverse Lines** reorder the selected lines (the whole file without a selection); they have no default shortcut. Sort Lines orders by character code, so uppercase letters come before lowercase ones.
+
+**Cut up to Line End** cuts from each caret to the end of its line, together with the line break when only whitespace is left (or the caret is already at the line end), so pressing it again on the same caret cuts the next line too; those repeated cuts collect into one clipboard entry. **Delete to Line Start** and **Delete to Line End** delete the same way without copying (to the line start, or the line break before the caret at the line start), or delete the selection. They have no default shortcut except in the Eclipse keymaps (`⇧⌘⌦` / `Ctrl+Shift+Delete` for Delete to Line End).
+
+**Hungry Backspace** deletes all the spaces, tabs and line breaks before each caret in one go, up to the previous non-whitespace character; after anything else, or with a selection, it works like `⌫` / `Backspace`. It has no default shortcut.
+
+**Duplicate Entire Lines** copies every line touched by a caret or selection below itself, even when only part of a line is selected, and keeps the selection on the copy. It has no default shortcut; run it from **Find Action** or assign one in **Settings › Keymap**.
+
+**Fill Paragraph** re-wraps the paragraph at the caret to the hard wrap column (**Settings › Editor › Code Style**): a run of line comments, the `*` lines of a documentation comment up to the next blank line or `@` tag, or the lines between blank lines of a plain text file. In code it does nothing. It has no default shortcut.
+
+**Convert Indents to Spaces** and **Convert Indents to Tabs** rewrite the leading whitespace of the selected lines (the whole file without a selection) using the editor's tab size; when converting to tabs, indentation that does not reach the next tab stop stays as spaces. They have no default shortcut; run them from **Find Action** or assign one in **Settings › Keymap**.
+
+Brackets and quotes are paired as you type, and typing a quote or bracket over a selection surrounds it. These and other typing aids (smart Home, Tab out of a closing bracket, a `;` typed before a closing `)` moving to the end of the statement, smart indent on Enter, documentation comment stubs, what Backspace does with indentation, reformat on paste) are under **Settings › Editor › General › Smart Keys**.
 
 ## Clipboard
 
@@ -62,7 +82,7 @@ Brackets and quotes are paired as you type, and typing a quote or bracket over a
 
 **Paste from History…** lists the last 30 pieces of text you copied or cut in the window, newest first. Pick one with `↵` / `Enter`; `⌫` / `Delete` removes the selected entries. The history lives in memory and is cleared when the window closes.
 
-Copying from the editor puts rich text (with syntax colours) on the clipboard as well; turn this off in **Settings › Editor › General › Rich-Text Copy**.
+Copying from the editor puts rich text (with syntax colours) on the clipboard as well; turn this off in **Settings › Editor › General › Rich-Text Copy**. **Copy as Plain Text** and **Copy as Rich Text** copy the selection once in the other format without changing the setting; the editor's **Copy / Paste Special** menu shows the one the setting does not already give. They have no default shortcut.
 
 ## Folding
 
@@ -79,6 +99,8 @@ Copying from the editor puts rich text (with syntax colours) on the clipboard as
 
 All folding commands are also in **Code › Folding**. Fold regions come from the language's syntax and from region comments; **Custom Folding…** jumps to one of the file's custom regions. Choose what is folded when a file opens (file header, imports, documentation comments) in **Settings › Editor › General › Code Folding**.
 
+**Expand Doc Comments** / **Collapse Doc Comments** unfold or fold every documentation comment in the file at once (the same comments as the **Documentation comments** option there; the file header is left alone). They have no default shortcut.
+
 ## Formatting
 
 | Action                | macOS  | Windows / Linux    |
@@ -88,9 +110,11 @@ All folding commands are also in **Code › Folding**. Fold regions come from th
 | **Auto-Indent Lines** | `⌃⌥I`  | `Ctrl+Alt+I`       |
 | **Optimize Imports**  | `⌃⌥O`  | `Ctrl+Alt+O`       |
 
-**Reformat Code** formats the selection, or the whole file when nothing is selected, as one undo step. The formatting comes from the file's language server or from the formatter the language is configured with (for example Ruff for Python, Prettier or oxfmt for web languages; find their commands as **Reformat with …** in Find Action). **Reformat File…** also lets you choose the scope and optimize imports.
+**Reformat Code** formats the selection, or the whole file when nothing is selected, as one undo step. The formatting comes from the file's language server or from the formatter the language is configured with (for example Ruff for Python, Prettier, oxfmt or Biome for web languages, dprint in dprint projects; find their commands as **Reformat with …** in Find Action). **Reformat File…** also lets you choose the scope and optimize imports.
 
 Indentation and other style options are under **Settings › Editor › Code Style**, with a page per language. `.editorconfig` files in the project are read too.
+
+Java has an **Imports** tab for IntelliSort-style options: **Class count to use import with '\*'** switches to a wildcard import once that many classes of one package are used, and **Names count to use static import with '\*'** does the same for statically imported names (999 keeps single imports). Both are passed through to the Java language server, whose defaults are 5 and 3, as in IDEA.
 
 To format on every save, enable **Reformat code** (and optionally **Optimize imports**) in **Settings › Tools › Actions on Save**. Trailing spaces and the final line break on save are set in **Settings › Editor › General**, section **Save Files**.
 
@@ -105,7 +129,11 @@ To format on every save, enable **Reformat code** (and optionally **Optimize imp
 
 **Window › Editor Tabs** also has **Pin Tab**, **Close Other Tabs**, **Close All Tabs** and **Reopen Closed Tab**, all without default shortcuts. **Window › Move Tab to New Window** detaches the current tab into its own window.
 
+The tab context menu's **Close Unmodified Tabs**, **Close All but Pinned**, **Close Tabs to the Left**, **Close Tabs to the Right** and **Close All Read-Only Tabs** are also actions on the current tab and its group: run them from **Find Action** or assign a shortcut in **Settings › Keymap**. Pinned tabs stay open.
+
 Tab placement, the tab limit and what happens when it is reached, the preview tab, sorting, and which tab is activated after one closes are set in **Settings › Editor › General › Editor Tabs**.
+
+With tabs placed left or right, the tab column is as wide as its longest name, up to a limit. Drag the column's inner edge (or focus it and press `←` / `→`) to change the limit; it applies to every editor group and is remembered.
 
 ## Split editors
 
@@ -115,24 +143,38 @@ Tab placement, the tab limit and what happens when it is reached, the preview ta
 | **Go to Next Splitter**     | `⌥⇥`  | `Alt+Tab`       |
 | **Go to Previous Splitter** | `⌥⇧⇥` | `Alt+Shift+Tab` |
 
-**Window › Editor Tabs** also offers **Split Down**, **Unsplit**, **Unsplit All**, **Move to Opposite Group**, **Open in Opposite Group** and **Change Splitter Orientation**. You can also drag a tab to an edge of the editor area to split it.
+**Window › Editor Tabs** also offers **Split Down**, **Unsplit**, **Unsplit All**, **Move to Opposite Group**, **Open in Opposite Group** and **Change Splitter Orientation**. The tab context menu's **Split and Move Right** and **Split and Move Down**, which move the current tab into a new split, are also actions: run them from **Find Action** or assign a shortcut in **Settings › Keymap**. They need at least two tabs in the group. You can also drag a tab to an edge of the editor area to split it. In the Project view, **Open in Right Split** (`⇧↵` / `Shift+Enter`, also in the context menu) opens the selected file in the split to the right.
 
 ## View options
 
-| Action                 | macOS | Windows / Linux |
-| ---------------------- | ----- | --------------- |
-| **Increase Font Size** | `⌥⇧.` | `Alt+Shift+.`   |
-| **Decrease Font Size** | `⌥⇧,` | `Alt+Shift+,`   |
-| **Scroll to Center**   | `⌃L`  | `Ctrl+M`        |
+| Action                                | macOS | Windows / Linux |
+| ------------------------------------- | ----- | --------------- |
+| **Increase Font Size**                | `⌥⇧.` | `Alt+Shift+.`   |
+| **Decrease Font Size**                | `⌥⇧,` | `Alt+Shift+,`   |
+| **Scroll to Center**                  | `⌃L`  | `Ctrl+M`        |
+| **Scroll Up**                         | —     | `Ctrl+Up`       |
+| **Scroll Down**                       | —     | `Ctrl+Down`     |
+| **Scroll Up and Move if Necessary**   | —     | —               |
+| **Scroll Down and Move if Necessary** | —     | —               |
+| **Move Up and Scroll**                | —     | —               |
+| **Move Down and Scroll**              | —     | —               |
+| **Scroll to Top**                     | —     | —               |
+| **Scroll to Bottom**                  | —     | —               |
+
+**Scroll Up** and **Scroll Down** move the view by one line and leave the caret where it is, even when it scrolls out of sight. **Scroll Up and Move if Necessary** and **Scroll Down and Move if Necessary** also move the view by one line, but bring a caret the view doesn't show to its first or last line. **Move Up and Scroll** and **Move Down and Scroll** move the caret one line and the view with it, so the caret stays in the same place on screen; their **with Selection** variants select as they go. **Scroll to Top** and **Scroll to Bottom** show the start and the end of the file; the caret stays where it is too. They have no default shortcut: run them from Find Action or assign one in **Settings › Keymap**.
 
 - **View › Active Editor › Soft-Wrap** wraps long lines in the current editor. To wrap some file types by default, use **Settings › Editor › General**, section **Soft Wraps**.
-- **View › Reset Font Size in All Editors** undoes font zoom. Changing the font size with `⌘` / `Ctrl` + mouse wheel can be turned on in **Settings › Editor › General**, section **Mouse Control**.
+- **View › Reset Font Size** undoes font zoom in the active editor or focused surface (**View › Reset Font Size in All Editors** resets every open editor). Changing the font size with `⌘` / `Ctrl` + mouse wheel (scoped to **Active editor** by default, or **All editors**) can be turned on in **Settings › Editor › General**, section **Mouse Control**.
 - **View › Appearance › Enter Distraction Free Mode** hides tool windows, tabs, the status bar and the gutter and centres the text. Run the same command again to leave.
+- **View › Appearance › Enter Zen Mode** turns on Distraction Free Mode and full screen together; **Exit Zen Mode** turns both off.
+- **Show Line Numbers**, **Show Indent Guides**, **Show Sticky Lines** and **Show Whitespaces** turn these on or off in every editor. Run them from Find Action, or right-click the gutter and open **Appearance**.
 - Line numbers, whitespace, indent guides, caret style and the intention bulb are in **Settings › Editor › General › Appearance**. Breadcrumbs and sticky lines (the enclosing declarations pinned at the top while you scroll) have their own pages under **Settings › Editor › General**.
 
 ## Saving
 
 As in IntelliJ IDEA, there is no per-file save: files are saved when you switch to another application or to the built-in terminal, and **File › Save All** (`⌘S` / `Ctrl+S`) saves everything at once. **Settings › Appearance & Behavior › System Settings**, section **Autosave**, can also save after the IDE has been idle for a while.
+
+If you keep typing during a save, edits not included in that write stay marked as unsaved.
 
 Changes made outside the IDE are picked up when you switch back to its window. **Reload from Disk** (`⌥⌘Y` / `Ctrl+Alt+Y`) reloads the current file now.
 

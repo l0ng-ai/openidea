@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import type * as EditorBackend from "../src/editor/core/backend";
 import { expect, test } from "./fixtures";
 
 const xml = readFileSync(
@@ -10,13 +11,14 @@ test("imported PHP colours stay separate from Java and preserve regular text on 
   workbench: page,
 }, info) => {
   await page.evaluate(async (xml) => {
+    // Load the workbench modules in the browser's Vite realm.
     const iclsPath = "/src/platform/icls.ts";
     const projectPath = "/src/platform/project.ts";
     const backendPath = "/src/editor/core/backend.ts";
     const contributionsPath = "/src/workbench/contributions.ts";
     const { parseIcls } = await import(iclsPath);
     const { useProject } = await import(projectPath);
-    const { docBackend } = await import(backendPath);
+    const { docBackend }: typeof EditorBackend = await import(backendPath);
     const { editorService } = await import(contributionsPath);
     const previous = useProject.getState().settings ?? {};
     useProject.setState({
@@ -31,10 +33,11 @@ test("imported PHP colours stay separate from Java and preserve regular text on 
       },
     });
     const backend = docBackend();
+    if (!("files" in backend) || !(backend.files instanceof Map)) throw new Error("Expected the in-memory backend");
     const open = backend.open.bind(backend);
-    backend.open = async (...args: Parameters<typeof open>) => {
-      const result = await open(...args);
-      return args[0].endsWith(".php") ? { ...result, language: "php", uiMode: "PHP" } : result;
+    backend.open = async (path) => {
+      const result = await open(path);
+      return path.endsWith(".php") ? { ...result, language: "php", uiMode: "PHP" } : result;
     };
     backend.files.set(
       "/dev/acme-api/palette.php",
@@ -54,7 +57,7 @@ test("imported PHP colours stay separate from Java and preserve regular text on 
   await expect(token("'Palette'")).toHaveCSS("color", "rgb(255, 231, 146)");
   await expect(token("'Palette'")).toHaveCSS("font-weight", "400");
   await expect(token("class").first()).toHaveCSS("color", "rgb(249, 38, 114)");
-  await expect(token("Plain PHP documentation")).toHaveCSS("font-style", "normal");
+  await expect(token("Plain PHP documentation").first()).toHaveCSS("font-style", "normal");
   await expect(token("BasePalette")).toHaveCSS("color", "rgb(174, 129, 255)");
   await expect(token(";").first()).toHaveCSS("color", "rgb(255, 255, 255)");
   await expect(token("example")).toHaveCSS("color", "rgb(141, 225, 45)");

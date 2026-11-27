@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import { create } from "zustand";
 import { registerActions } from "@/platform/actions";
-import { call, commands, isCancelled, nextRequestId, type RequestId } from "@/platform/ipc";
+import { choosePath } from "@/platform/choosePath";
+import { call, commands, isCancelled, nextRequestId, onIdeEvent, type RequestId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
 import { useProject } from "@/platform/project";
-import { invalidateVirtualDocument } from "@/platform/virtualDocs";
+import { invalidateVirtualDocument, invalidateVirtualDocuments } from "@/platform/virtualDocs";
 import { maybeEditorService, notifications } from "@/workbench/contributions";
 
 interface SourceState {
@@ -26,8 +27,8 @@ async function retrieve(path: string, choose: boolean) {
   try {
     let sources: string | null = null;
     if (choose) {
-      const { open } = await import("@tauri-apps/plugin-dialog");
-      const selected = await open({
+      const selected = await choosePath({
+        directory: false,
         title: tx("Choose Sources…"),
         filters: [{ name: tx("Source archives"), extensions: ["jar", "zip"] }],
       });
@@ -82,6 +83,9 @@ export function registerLibrarySourcesActions(): () => void {
   const offProject = useProject.subscribe((state, previous) => {
     if (state.project !== previous.project) clear();
   });
+  // A reload may have replaced a library jar in place (a SNAPSHOT installed again): reopened
+  // classes fetch their contents again (the backend refreshes the open ones).
+  const offRoots = onIdeEvent("projectRootsChanged", () => invalidateVirtualDocuments());
   const offActions = registerActions([
     {
       id: "editor.downloadSources",
@@ -118,6 +122,7 @@ export function registerLibrarySourcesActions(): () => void {
   return () => {
     offActions();
     offProject();
+    offRoots();
     clear();
   };
 }

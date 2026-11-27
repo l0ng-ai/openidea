@@ -31,6 +31,20 @@ export function affectsWorkspaceContains(
   return changed.some((p) => targets.some((t) => t === p || t.startsWith(`${p}/`)));
 }
 
+/** Whether `path` (relative) exists under any of `roots`. */
+async function existsUnder(roots: readonly string[], path: string, list: (dir: string) => Promise<string[]>) {
+  const slash = path.lastIndexOf("/");
+  const parent = slash < 0 ? "" : path.slice(0, slash);
+  const name = path.slice(slash + 1);
+  const found = await Promise.all(
+    roots.map(async (root) => {
+      const names: string[] = await list(parent ? `${root}/${parent}` : root).catch(() => []);
+      return names.includes(name);
+    }),
+  );
+  return found.some(Boolean);
+}
+
 export async function refreshWorkspaceContains(
   roots: readonly string[],
   keys: readonly string[],
@@ -40,19 +54,7 @@ export async function refreshWorkspaceContains(
   const results = await Promise.all(
     keys.map(async (key) => {
       const path = relativePath(key);
-      if (path === null) {
-        return [key, false] as const;
-      }
-      const slash = path.lastIndexOf("/");
-      const parent = slash < 0 ? "" : path.slice(0, slash);
-      const name = path.slice(slash + 1);
-      const found = await Promise.all(
-        roots.map(async (root) => {
-          const names: string[] = await list(parent ? `${root}/${parent}` : root).catch(() => []);
-          return names.includes(name);
-        }),
-      );
-      return [key, found.some(Boolean)] as const;
+      return [key, path !== null && (await existsUnder(roots, path, list))] as const;
     }),
   );
   if (!isCurrent()) {
@@ -61,6 +63,17 @@ export async function refreshWorkspaceContains(
   for (const [key, value] of results) {
     setContext(key, value);
   }
+}
+
+/** Which of the relative `paths` the open project has. */
+export async function projectHas(
+  paths: readonly string[],
+  list: (dir: string) => Promise<string[]> = listNames,
+): Promise<Set<string>> {
+  const roots = projectRoots();
+  const valid = paths.filter((p) => relativePath(`${PREFIX}${p}`) !== null);
+  const found = await Promise.all(valid.map(async (p) => [p, await existsUnder(roots, p, list)] as const));
+  return new Set(found.filter(([, ok]) => ok).map(([p]) => p));
 }
 
 const listNames = (dir: string) => call(commands.fsReadDir(dir)).then((entries) => entries.map((e) => e.name));

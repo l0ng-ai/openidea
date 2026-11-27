@@ -5,6 +5,15 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::BTreeMap;
 
+/// Why a task needs the user's attention (native / in-app notify).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentAttentionReason {
+    Finished,
+    Input,
+    Failed,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum AgentStatus {
@@ -36,14 +45,17 @@ pub struct AgentCapabilities {
     pub steer: bool,
     /// It reports its background tasks and stops them one by one.
     pub background_tasks: bool,
+    /// The connected agent can report a breakdown of its context window.
+    pub context_usage: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum Isolation {
     /// A new git worktree on its own branch.
     Worktree,
     /// The project's own checkout.
+    #[default]
     Local,
 }
 
@@ -95,6 +107,35 @@ pub struct AgentTask {
     // Boxed so that `AgentEvent::Task` stays within clippy's `large_enum_variant` bound on Windows.
     #[serde(default)]
     pub background: Box<Vec<AgentBackgroundTask>>,
+    /// Per-session MCP server enable/disable overrides (`server_name` -> `enabled`), including `"openidea"`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub mcp_overrides: BTreeMap<String, bool>,
+    /// Per-session skill modes (`skill name` -> mode), on top of the settings' policies.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub skill_overrides: BTreeMap<String, AgentSkillMode>,
+    /// Token counts of the last turn and context compressions, when the agent reports them.
+    // Boxed so that `AgentEvent::Task` stays within clippy's `large_enum_variant` bound on Windows.
+    #[serde(default)]
+    pub stats: Box<AgentSessionStats>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSessionStats {
+    /// The last turn's tokens (`session/prompt` result `usage`).
+    #[serde(default)]
+    pub tokens: Option<AgentTokens>,
+    /// How many times the agent compressed the conversation (Hermes `compressionDepth`).
+    #[serde(default)]
+    pub compressions: u32,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTokens {
+    pub input: u32,
+    pub cached: u32,
+    pub output: u32,
 }
 
 /// A task the agent runs in the background while the conversation goes on.
@@ -120,6 +161,40 @@ pub struct AgentRetry {
     pub error: Option<String>,
 }
 
+/// Token pricing (Credits per 1M tokens) and context window capacity for one tier.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTokenPricing {
+    pub input: f64,
+    pub output: f64,
+    #[serde(default)]
+    #[specta(optional)]
+    pub cache_read: Option<f64>,
+    #[serde(default)]
+    #[specta(optional)]
+    pub cache_write: Option<f64>,
+    #[serde(default)]
+    #[specta(optional)]
+    pub context_tokens: Option<u32>,
+}
+
+/// Pricing and context-tier metadata attached to a model [`AgentConfigValue`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentModelPricing {
+    /// `"low"`, `"medium"`, `"high"`, or `"very_high"`.
+    #[serde(default)]
+    #[specta(optional)]
+    pub cost_tier: Option<String>,
+    /// Request-based billing multiplier (e.g. `1.0`, `0.33`, `3.0`), when applicable.
+    #[serde(default)]
+    #[specta(optional)]
+    pub multiplier: Option<f64>,
+    /// Token pricing keyed by context tier (`"default"`, `"long_context"`).
+    #[serde(default)]
+    pub tiers: BTreeMap<String, AgentTokenPricing>,
+}
+
 /// One value of a select-type session setting.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -127,6 +202,18 @@ pub struct AgentConfigValue {
     pub value: String,
     pub name: String,
     pub description: Option<String>,
+    /// Relative cost category from ACP `_meta` (`copilotPriceCategory`, e.g. `low`, `medium`, `high`, `very_high`).
+    #[serde(default)]
+    #[specta(optional)]
+    pub cost_category: Option<String>,
+    /// Usage multiplier from ACP `_meta` (`copilotUsage`, e.g. `1x`, `0x`, `3x`).
+    #[serde(default)]
+    #[specta(optional)]
+    pub usage_multiplier: Option<String>,
+    /// Detailed per-tier token pricing from `_meta.pricing` when available.
+    #[serde(default)]
+    #[specta(optional)]
+    pub pricing: Option<Box<AgentModelPricing>>,
 }
 
 /// How a setting is changed.
@@ -152,6 +239,10 @@ pub struct AgentConfigOption {
     /// ACP category: `model`, `mode`, `thought_level`, or agent-specific.
     pub category: Option<String>,
     pub current: Option<String>,
+    /// Initial default value reported by the agent, preserved across session updates for Reset.
+    #[serde(default)]
+    #[specta(optional)]
+    pub default_value: Option<String>,
     pub values: Vec<AgentConfigValue>,
     pub via: AgentConfigVia,
 }
@@ -191,6 +282,24 @@ pub struct AgentUsage {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
+pub struct AgentContextUsage {
+    pub categories: Vec<AgentContextCategory>,
+    pub total_tokens: u32,
+    pub max_tokens: u32,
+    pub model: String,
+    pub is_auto_compact_enabled: Option<bool>,
+    pub auto_compact_threshold: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+pub struct AgentContextCategory {
+    pub name: String,
+    pub tokens: u32,
+    pub kind: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentCost {
     pub amount: f64,
     /// ISO 4217 code, e.g. `USD`.
@@ -216,6 +325,22 @@ pub struct AgentImage {
     /// Base64, without a `data:` prefix.
     pub data: String,
     pub name: Option<String>,
+}
+
+impl AgentImage {
+    /// The type the bytes are in. Agents reject an image whose declared type doesn't match its
+    /// bytes, and a pasted image's declared type can be wrong (a browser's JPEG or WebP copied as
+    /// `image/png`). Falls back to `mime_type` for formats not recognised here.
+    pub fn media_type(&self) -> &str {
+        let head = crate::acp::normalize_base64(&self.data[..self.data.len().min(16)]);
+        match head.as_slice() {
+            [0x89, b'P', b'N', b'G', ..] => "image/png",
+            [0xFF, 0xD8, 0xFF, ..] => "image/jpeg",
+            [b'G', b'I', b'F', b'8', ..] => "image/gif",
+            [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => "image/webp",
+            _ => &self.mime_type,
+        }
+    }
 }
 
 /// A message to the agent: text, plus files to look at and images.
@@ -313,6 +438,59 @@ pub struct AgentQuestionOption {
     pub preview: Option<String>,
 }
 
+/// A form the agent asks the user to fill in (ACP `elicitation/create`, form mode).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentForm {
+    pub fields: Vec<AgentFormField>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentFormField {
+    /// The property name the answer is keyed by.
+    pub name: String,
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub required: bool,
+    pub kind: AgentFormFieldKind,
+    /// The choices of a `choice` or `choices` field.
+    #[serde(default)]
+    pub options: Vec<AgentFormOption>,
+    /// The initial answer: option values, a text, a number, or `true` / `false`.
+    #[serde(default)]
+    pub default: Vec<String>,
+    /// Bounds: the number of a `number` / `integer`, the length of a `text`, the count of `choices`.
+    #[serde(default)]
+    pub min: Option<f64>,
+    #[serde(default)]
+    pub max: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentFormFieldKind {
+    Text,
+    Number,
+    Integer,
+    Boolean,
+    /// One of `options`.
+    Choice,
+    /// Any of `options`.
+    Choices,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentFormOption {
+    pub value: String,
+    pub label: String,
+    #[serde(default)]
+    pub description: String,
+}
+
 /// One item of a task's conversation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -337,8 +515,19 @@ pub enum AgentEntry {
     Agent {
         text: String,
     },
+    /// A question that can be answered while the agent keeps working, or after the turn ends.
+    Question {
+        id: String,
+        title: String,
+        questions: Vec<AgentQuestion>,
+        /// The submitted answers, or `Skipped`; `None` while unanswered.
+        chosen: Option<String>,
+    },
     Thought {
         text: String,
+        /// When the reasoning started (ms since the epoch); `None` in tasks saved before.
+        #[serde(default)]
+        started_ms: Option<f64>,
     },
     Tool {
         id: String,
@@ -347,9 +536,17 @@ pub enum AgentEntry {
         kind: String,
         status: AgentToolStatus,
         locations: Vec<IpcPath>,
+        /// Images returned by the tool, kept separately from its truncated text.
+        #[serde(default)]
+        images: Vec<AgentImage>,
         /// Text the tool reported (command output…), truncated.
         output: Option<String>,
         diffs: Vec<AgentToolDiff>,
+        /// When the call started and ended (ms since the epoch); `None` in tasks saved before.
+        #[serde(default)]
+        started_ms: Option<f64>,
+        #[serde(default)]
+        ended_ms: Option<f64>,
     },
     Plan {
         items: Vec<AgentPlanItem>,
@@ -384,11 +581,19 @@ pub enum AgentEntry {
     Permission {
         id: u32,
         title: String,
+        /// The shell command the request asks to run, from its structured input; `None` for
+        /// any other request, whatever its title says.
+        #[serde(default)]
+        command: Option<String>,
         options: Vec<AgentPermissionOption>,
         /// Set when the request asks `AskUserQuestion`'s questions; answered with a JSON object
         /// of question to answer instead of an option.
         #[serde(default)]
         questions: Vec<AgentQuestion>,
+        /// Set when the agent asks for a form (ACP elicitation); answered with a JSON object of
+        /// field name to its values, `decline`, or nothing to cancel.
+        #[serde(default)]
+        form: Option<AgentForm>,
         /// Name of the chosen option, or `None` while pending. Cancelled requests read "Cancelled".
         chosen: Option<String>,
     },
@@ -407,6 +612,9 @@ pub struct AgentProvider {
     /// Executable and arguments actually launched, without flattening paths containing spaces.
     pub program: String,
     pub args: Vec<String>,
+    /// Settings-managed suffix of `args`; absent for launches that cannot be edited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub additional_args: Option<Vec<String>>,
     pub default_program: Option<String>,
     pub default_args: Vec<String>,
     pub login_hint: Option<String>,
@@ -415,6 +623,12 @@ pub struct AgentProvider {
     pub command_read_only_reason: Option<AgentCommandReadOnlyReason>,
     /// Whether the command was found (on `PATH`).
     pub installed: bool,
+    /// Whether OpenIDEA can run this agent's sign-in flow directly in an embedded terminal.
+    #[serde(default)]
+    pub can_sign_in: bool,
+    /// The built-in command can be owned by a global npm package.
+    #[serde(default)]
+    pub can_check_cli_update: bool,
     /// Environment variables it starts with (from its agent file).
     pub env: BTreeMap<String, String>,
     /// Settings (models, modes…) the agent offered last time it ran; empty before its first session.
@@ -434,6 +648,34 @@ pub enum AgentCommandReadOnlyReason {
     PackageRunner,
     Registry,
     CustomAgent,
+}
+
+/// An authenticated `github.com` account stored in GitHub CLI (`gh`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct GhAuthAccount {
+    pub login: String,
+    pub active: bool,
+}
+
+/// GitHub Copilot's default sign-in status alongside the accounts available through `gh`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CopilotAuthStatus {
+    pub authenticated: bool,
+    pub login: Option<String>,
+    pub auth_type: Option<String>,
+    pub status_message: Option<String>,
+    pub gh_installed: bool,
+    pub gh_accounts: Vec<GhAuthAccount>,
+}
+
+/// Output and completion of an interactive sign-in PTY started by the IDE.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum AgentLoginEvent {
+    Output { data: String },
+    Exited { code: Option<i32> },
 }
 
 /// Where an agent comes from.
@@ -469,7 +711,7 @@ pub struct AgentProbe {
     pub error: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct NewAgentTask {
     /// Validated by the host; defaults to the window project root.
@@ -482,9 +724,24 @@ pub struct NewAgentTask {
     pub isolation: Isolation,
     /// Branch to start the worktree from; the current branch when `None`.
     pub base: Option<String>,
+    /// Per-session MCP server enable/disable overrides (`server_name` -> `enabled`).
+    #[serde(default)]
+    pub mcp_overrides: BTreeMap<String, bool>,
+    /// Per-session skill modes (`skill name` -> mode).
+    #[serde(default)]
+    pub skill_overrides: BTreeMap<String, AgentSkillMode>,
+    /// Creates the task without sending `prompt` (it only names the task): the composer's
+    /// `!` command runs in it first.
+    #[serde(default)]
+    pub idle: bool,
+    /// A throwaway task (Generate Commit Message): it isn't saved, so it doesn't outlive a
+    /// restart, and the agent keeps no session history of its own for it.
+    #[serde(default)]
+    pub ephemeral: bool,
 }
 
-/// A file the task changed, relative to [`AgentTask::base_commit`].
+/// A file the task changed: against [`AgentTask::base_commit`], or against `HEAD` in the
+/// grouped view.
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentChange {
@@ -493,15 +750,70 @@ pub struct AgentChange {
     pub kind: ide_vcs::ChangeKind,
     pub added: u32,
     pub removed: u32,
+    /// Path before a rename; the left side of its diff reads this path.
+    pub old_path: Option<String>,
+    /// The repository the file is in, when the task's project holds nested repositories.
+    pub repo: Option<IpcPath>,
 }
 
-/// Streamed to the window that subscribed (`AgentManager::subscribe`).
+/// A commit made while the task ran, with the files it changed against its first parent.
+#[derive(Clone, Debug, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCommit {
+    pub id: String,
+    pub short_id: String,
+    pub summary: String,
+    pub message: String,
+    pub time_ms: f64,
+    /// First parent, or `None` for a root commit.
+    pub parent: Option<String>,
+    pub files: Vec<AgentChange>,
+}
+
+/// Which comparison a rollback of the task's changes uses.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentChangesView {
+    /// Everything since the commit the task started from.
+    #[default]
+    SinceStart,
+    /// The uncommitted files against `HEAD`; commits made since the start stay.
+    Group,
+    /// What the last turn changed, against the checkout as that turn started.
+    LastTurn,
+}
+
+/// A task's uncommitted files and the commits made since it started.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentChanges {
+    /// Files changed against `HEAD`, less those changed before the task started and untouched since.
+    pub uncommitted: Vec<AgentChange>,
+    /// Commits from the task's start (exclusive) to `HEAD` (inclusive), newest first. Empty
+    /// for tasks working in the project's own checkout.
+    pub commits: Vec<AgentCommit>,
+}
+
+/// Authoritative choices for new tasks, independent of any running session's settings.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentModelCatalog {
+    pub provider: String,
+    pub config: Vec<AgentConfigOption>,
+    pub thought_levels: BTreeMap<String, Vec<AgentConfigOption>>,
+    pub refreshing: bool,
+    pub refreshed_at_ms: Option<f64>,
+    pub retry_at_ms: Option<f64>,
+    pub error: Option<String>,
+}
+
+/// Streamed to the window that subscribed (`AgentManager::subscribe_as`).
 #[derive(Clone, Debug, Serialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum AgentEvent {
     /// A task was created or its metadata changed.
     Task {
-        task: AgentTask,
+        task: Box<AgentTask>,
     },
     Removed {
         id: String,
@@ -527,13 +839,33 @@ pub enum AgentEvent {
         from: u32,
         text: String,
     },
+    /// Text was appended to the output of tool entry `index`: it read the first `from` UTF-16
+    /// units of its output when the previous event for it was sent. Any other change of the
+    /// tool (status, title, diffs…) arrives as an `Entry`.
+    ToolOutput {
+        task: String,
+        subagent: Option<String>,
+        index: u32,
+        from: u32,
+        text: String,
+    },
     /// An agent reported the usage limits of its account (shared by every task of `provider`).
     Limits {
         provider: String,
         limits: Vec<AgentLimit>,
     },
+    /// A model lookup started or completed, including unsuccessful lookups.
+    ModelCatalog {
+        catalog: AgentModelCatalog,
+    },
     /// The installed or configured agent providers changed.
     Providers,
+    /// The task needs attention once (finished turn, explicit input, or failure).
+    Attention {
+        task: String,
+        event_id: String,
+        reason: AgentAttentionReason,
+    },
 }
 
 pub use ide_core::settings::{AgentMcpServer, McpTransport};
@@ -571,6 +903,9 @@ pub struct McpServer {
     /// Agent provider ids this server is enabled for; empty means enabled for all agents.
     #[serde(default)]
     pub agents: Vec<String>,
+    /// True when this Workspace server was added outside OpenIDEA and has not been approved yet.
+    #[serde(default)]
+    pub unapproved: bool,
 }
 
 /// Payload for creating or updating a user or workspace MCP server.
@@ -601,4 +936,211 @@ pub struct McpServerInput {
 
 fn default_true() -> bool {
     true
+}
+
+pub use ide_core::settings::{AgentSkillMode, AgentSkillPolicy};
+
+/// Which CLI's own folders a skill was discovered in (Settings › Agents › Skills groups by it).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentSkillSource {
+    /// The project's `.agents/skills` and `.openidea/skills`.
+    #[default]
+    Workspace,
+    /// The user's `~/.agents/skills` (what `npx skills add` fills).
+    User,
+    /// Contributed by an enabled OpenIDEA plugin (`[[contributes.skills]]`).
+    Plugin,
+    /// The project's `.claude/skills`.
+    ClaudeWorkspace,
+    /// `~/.claude/skills`.
+    ClaudeUser,
+    /// The project's `.github/skills` (Copilot's repository skills).
+    GithubWorkspace,
+    /// `~/.copilot/skills` and `~/.copilot/installed-plugins/*`.
+    CopilotUser,
+    /// The project's `.codex/skills`.
+    CodexWorkspace,
+    /// `~/.codex/skills`.
+    CodexUser,
+    /// The project's `.cursor/skills`.
+    CursorWorkspace,
+    /// `~/.cursor/skills`.
+    CursorUser,
+}
+
+impl AgentSkillSource {
+    /// Whether skills of this source are only read, never delivered by OpenIDEA: the CLI
+    /// discovers them itself, so "off" holds only where the CLI supports a native disable.
+    pub fn discovered(&self) -> bool {
+        !matches!(self, Self::Workspace | Self::User | Self::Plugin)
+    }
+}
+
+/// One discovered skill: a folder with a `SKILL.md`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSkill {
+    /// The frontmatter `name`, else the folder's name.
+    pub name: String,
+    pub description: String,
+    /// Optional `argument-hint` from frontmatter, completed in the `/` menu.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+    /// Canonical folder holding `SKILL.md` (symlinks resolved, so duplicates collapse).
+    pub path: IpcPath,
+    pub source: AgentSkillSource,
+    /// Other skill roots whose symlinked entry resolved to this same canonical `path`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub also_in: Vec<AgentSkillSource>,
+    /// False when frontmatter sets `user-invocable: false` (omitted from `/` completion).
+    #[serde(default = "default_true")]
+    pub user_invocable: bool,
+    /// True when frontmatter sets `disable-model-invocation: true` (defaults to `slashOnly`).
+    #[serde(default)]
+    pub disable_model_invocation: bool,
+    /// True when frontmatter sets `context: fork` (passed through natively to supporting CLIs).
+    #[serde(default)]
+    pub context_fork: bool,
+    /// Optional `paths` / `globs` patterns from frontmatter (passed through natively to supporting CLIs).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
+    /// The `SKILL.md` passes validation (`name` matches its folder, `description` present).
+    pub valid: bool,
+    /// What validation found (`name` mismatch, missing or over-long description…).
+    pub warnings: Vec<String>,
+}
+
+/// A skill as Settings › Agents › Skills shows it: discovery plus the effective mode and
+/// which layer decided it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSkillState {
+    pub skill: AgentSkill,
+    pub mode: AgentSkillMode,
+    /// What set `mode`: a session override, the workspace, the user's settings, workspace
+    /// trust, or nothing (the default `auto`).
+    pub origin: AgentSkillOrigin,
+}
+
+/// Which layer decided a skill's [`AgentSkillState::mode`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentSkillOrigin {
+    #[default]
+    None,
+    Session,
+    Workspace,
+    User,
+    /// An untrusted workspace's skills and policies may only turn skills off.
+    Trust,
+}
+
+/// An external MCP configuration file discovered on disk (user CLI config or workspace file).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct McpExternalSource {
+    /// Stable source identifier (e.g. `"copilot-cli"`, `"jetbrains-air"`, `"claude-code"`, `"cursor"`, `"workspace-mcp"`, `"vscode-mcp"`).
+    pub id: String,
+    /// Human-readable source label (e.g. `"GitHub Copilot CLI"`).
+    pub label: String,
+    /// Absolute path of the discovered configuration file.
+    pub path: IpcPath,
+    /// Suggested target scope when importing this source into OpenIDEA settings.
+    pub suggested_scope: McpScope,
+    /// Agent provider ID this external CLI reads natively (`Some("copilot")`, `Some("claude")`, `Some("cursor")`, or `None`).
+    pub native_provider: Option<String>,
+    /// Servers found inside this external configuration file (values omitted for safety; imported directly on the host).
+    pub servers: Vec<McpDiscoveredServer>,
+}
+
+/// Summary of one server discovered inside an external MCP configuration file.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct McpDiscoveredServer {
+    pub name: String,
+    pub transport: McpTransport,
+    pub enabled: bool,
+    pub command: Option<String>,
+    pub args: Vec<String>,
+    pub url: Option<String>,
+    /// Environment variable names declared on this server (values stay on the host).
+    pub env_keys: Vec<String>,
+    /// HTTP header names declared on this server (values stay on the host).
+    pub header_keys: Vec<String>,
+}
+
+/// Selection of one server from an external MCP configuration source to import.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct McpImportSelection {
+    pub source_id: String,
+    pub name: String,
+}
+
+/// One tool advertised by an MCP server during `tools/list`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct McpToolSummary {
+    pub name: String,
+    pub description: Option<String>,
+}
+
+/// Result of testing/probing an MCP server (`initialize` + `tools/list`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct McpProbeResult {
+    pub ok: bool,
+    pub server_name: Option<String>,
+    pub server_version: Option<String>,
+    pub protocol_version: Option<String>,
+    pub tools: Vec<McpToolSummary>,
+    pub duration_ms: u32,
+    pub error: Option<String>,
+}
+
+/// Payload for creating a custom ACP agent (always the ACP driver); the id
+/// becomes the `<config>/agents/<id>.toml` file name.
+#[derive(Clone, Debug, Deserialize, Type)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CustomAgentInput {
+    pub id: String,
+    pub name: String,
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+}
+
+/// What importing one entry of a JetBrains `acp.json` file did.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpImportOutcome {
+    /// The `agent_servers` key the entry was imported from.
+    pub name: String,
+    /// The id its agent file would get (also when skipped).
+    pub id: String,
+    pub saved: bool,
+    /// Why the entry was skipped; empty when it was saved.
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// What accepting a worktree task's changes copied into the local checkout.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentAcceptOutcome {
+    /// Relative paths copied into the checkout (uncommitted), including ones already identical.
+    pub accepted: Vec<String>,
+    /// Files left alone because the checkout has its own edits to them.
+    pub skipped: Vec<AgentAcceptSkipped>,
+}
+
+/// A file accept left alone, with why.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentAcceptSkipped {
+    pub path: String,
+    pub reason: String,
 }

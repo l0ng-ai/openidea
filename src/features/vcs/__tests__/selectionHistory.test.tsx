@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { EditorState } from "@codemirror/state";
 import type { BlockHistory, BlockRevision } from "@/bindings";
 
@@ -92,6 +92,18 @@ describe("rows", () => {
     expect(edited).toHaveLength(3);
     expect(historyRows({ headLines: null, revisions: [] }, "new\n")).toEqual([]);
   });
+
+  it("compares with HEAD's block, not the newest row, when that row is a merge without a diff", () => {
+    // `git log -L` prints no patch for a merge, so its row has empty sides.
+    const merge = revision("m", "Merge branch 'side'", "", "");
+    const merged: BlockHistory = { headLines: [1, 2], head: "TWO\nTHREE\n", revisions: [merge, ...history.revisions] };
+    expect(historyRows(merged, "TWO\nTHREE\n").map((r) => r.kind)).toEqual(["revision", "revision", "revision"]);
+    expect(historyRows(merged, "TWO\nTHREE!\n")[0]).toEqual({
+      kind: "local",
+      head: "TWO\nTHREE\n",
+      current: "TWO\nTHREE!\n",
+    });
+  });
 });
 
 describe("History for Selection tab", () => {
@@ -108,7 +120,12 @@ describe("History for Selection tab", () => {
     await waitFor(() =>
       expect(screen.getByTestId("diff").textContent).toBe("bbbbbbb^: two\nthree\n| bbbbbbb: TWO\nthree\n"),
     );
-    expect(screen.getByText(/^bbbbbbb · Ada · /)).toBeTruthy();
+    const row = screen.getByRole("row", { name: /bbbbbbb.*Ada.*Shout two/ });
+    expect(
+      within(row)
+        .getAllByRole("gridcell")
+        .map((cell) => cell.textContent),
+    ).toEqual(["bbbbbbb", expect.any(String), "Ada", "Shout two"]);
   });
 
   it("says why there is nothing to show", async () => {

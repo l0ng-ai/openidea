@@ -23,7 +23,7 @@ import {
   type RequestId,
   unavailableText,
 } from "@/platform/ipc";
-import { activeEditor } from "@/editor/api";
+import { activeEditor, focusedCellEditor } from "@/editor/api";
 import { docOf, isUnavailable, lspRequest } from "./lsp";
 import { offsetToPos, rangeToOffsets } from "./positions";
 import { showHint } from "./hint";
@@ -288,7 +288,8 @@ const VISIBLE = `editorTextFocus && ${CONTEXT_KEY}`;
 
 function onView(run: (view: EditorView) => unknown): Action["run"] {
   return () => {
-    const view = activeEditor()?.view;
+    // A focused notebook cell editor is the editor (the notebook publishes the editor keys).
+    const view = focusedCellEditor() ?? activeEditor()?.view;
     if (view) void run(view);
   };
 }

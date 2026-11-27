@@ -84,6 +84,10 @@ Main fields:
 
 Run actions with `executeAction(id, arg?)`. `registerAction` returns a disposer.
 
+### Context-menu owners
+
+`showContextMenu(at, items, { owner })` can associate a menu with its target element without selecting it. `ContextMenuHost` marks that element with `data-context-menu-open` while the menu is open and removes the marker on dismissal, replacement or unmount. Shared Tabs styles use the marker to retain the target's hover appearance without overriding selected or tinted tabs. Ownership is opt-in; database result tabs supply it for pointer and keyboard menu gestures.
+
 ## Keymaps and the dispatcher
 
 Default shortcuts live in `src/platform/keymaps/`, never on the action. A keymap maps action ids to bindings:
@@ -103,6 +107,10 @@ Presets: `intellij-macos` (default on macOS), `intellij-windows` (default on Win
 Binding syntax: modifiers `Meta Ctrl Alt Shift` joined with `+` to a key (`Meta+Shift+O`); a space separates chord strokes (`Meta+K Meta+C`); a doubled modifier is `Shift Shift`; mouse buttons are `Button1`…`Button5`. Keys are matched by physical position (`KeyboardEvent.code`).
 
 `installKeyboardDispatcher` listens to `keydown` in the capture phase so IDE shortcuts win over CodeMirror's defaults, resolves the stroke against the active keymap plus the user's overrides, and runs the first enabled action (`when` and `keyWhen`). A component that needs a keystroke for itself registers a key claim (`registerKeyClaim`), e.g. Vim mode for its shortcut conflicts.
+
+Blocking prompts (`promptInput`, `chooseItem`, `pickItems` and message dialogs) opt into `<Dialog blockWorkbenchShortcuts>`. Its effect acquires the reference-counted `suspendKeyboardDispatch()` guard and releases it on cleanup, so closing a nested prompt does not resume background shortcuts while another prompt is open. Native field editing and dialog-local keys still work. This is opt-in: non-modal workbench popups such as Search Everywhere keep their existing routing.
+
+Suspended keyboard and mouse dispatch clears pending chords and modifier taps, preventing a stale shortcut from firing after dismissal. Plain text fields also retain native, unshifted `Backspace`/`Delete` combinations; Shift-modified bindings and terminal inputs keep their existing routing.
 
 ## Context keys and `when` clauses
 

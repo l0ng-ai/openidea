@@ -4,7 +4,7 @@ import { IconButton, Input } from "@/ui";
 import { Row, Section, Select, Toggle } from "../components/Form";
 import { useSetting } from "../components/context";
 import { DEFAULT_LANGUAGES } from "@/platform/languageSettings";
-import { choosePath } from "./api";
+import { choosePath } from "@/platform/choosePath";
 import styles from "./Sdk.module.css";
 
 const names: Record<string, string> = {
@@ -31,6 +31,7 @@ interface FormatterPageProps {
   pathLabel: string;
   pathHint?: string;
   configurationDirectory?: boolean;
+  autoLabel?: string;
   providerHint?: string;
   saveHint: string;
 }
@@ -41,6 +42,7 @@ function FormatterPage({
   pathLabel,
   pathHint = "Auto: nearest project node_modules, managed installation, then PATH. An explicit path overrides auto detection.",
   configurationDirectory = false,
+  autoLabel = "Automatic (language server first)",
   providerHint,
   saveHint,
 }: FormatterPageProps) {
@@ -62,25 +64,27 @@ function FormatterPage({
             onChange={(v) => setPrefer(v === tool)}
             aria-label="Formatting provider"
             options={[
-              { value: "auto", label: "Automatic (language server first)" },
+              { value: "auto", label: autoLabel },
               { value: tool, label: name },
             ]}
           />
         </Row>
         <Toggle label="Run on save" checked={save} onChange={setSave} hint={saveHint} />
       </Section>
-      <Section title="Enabled languages">
-        {DEFAULT_LANGUAGES[tool].languages.map((language) => (
-          <Toggle
-            key={language}
-            label={names[language]!}
-            checked={languages.includes(language)}
-            onChange={(checked) =>
-              setLanguages(checked ? [...languages, language] : languages.filter((l) => l !== language))
-            }
-          />
-        ))}
-      </Section>
+      {DEFAULT_LANGUAGES[tool].languages.length > 0 && (
+        <Section title="Enabled languages">
+          {DEFAULT_LANGUAGES[tool].languages.map((language) => (
+            <Toggle
+              key={language}
+              label={names[language]!}
+              checked={languages.includes(language)}
+              onChange={(checked) =>
+                setLanguages(checked ? [...languages, language] : languages.filter((l) => l !== language))
+              }
+            />
+          ))}
+        </Section>
+      )}
     </>
   );
 }
@@ -145,6 +149,31 @@ export function OxfmtPage() {
   );
 }
 
+export function BiomePage() {
+  return (
+    <FormatterPage
+      tool="biome"
+      name="Biome"
+      pathLabel="Biome path"
+      providerHint="Biome formats an enabled language instead of Prettier and oxfmt below a Biome configuration file (biome.json, biome.jsonc) or installation, or when it is the selected provider."
+      saveHint="Run Biome on save for enabled languages when it is the selected formatting provider."
+    />
+  );
+}
+
+export function DprintPage() {
+  return (
+    <FormatterPage
+      tool="dprint"
+      name="dprint"
+      pathLabel="dprint path"
+      autoLabel="Automatic (projects with dprint)"
+      providerHint="dprint formats every file its plugins cover, before the other formatters, below a dprint configuration file (dprint.json, .dprint.json, dprint.jsonc) or installation, or when it is the selected provider. Other files keep their usual formatter."
+      saveHint="Run dprint on save for the files it formats. Format on save also runs it."
+    />
+  );
+}
+
 export function RuffPage() {
   return (
     <FormatterPage
@@ -155,6 +184,20 @@ export function RuffPage() {
       configurationDirectory
       providerHint="Ruff reads the nearest pyproject.toml ([tool.ruff]), ruff.toml, or .ruff.toml. Use it before the language server when preferred."
       saveHint="Run Ruff on save for enabled languages when it is the selected formatting provider."
+    />
+  );
+}
+
+export function BlackPage() {
+  return (
+    <FormatterPage
+      tool="black"
+      name="Black formatter"
+      pathLabel="Black path"
+      pathHint="Auto: the project interpreter's environment, managed installation, then PATH. An explicit path overrides auto detection."
+      autoLabel="Automatic (projects with [tool.black])"
+      providerHint="Black formats Python instead of Ruff below a pyproject.toml with [tool.black], or when it is the selected provider."
+      saveHint="Run Black on save for enabled languages when it is the selected formatting provider. Reformat code in Actions on Save also runs it."
     />
   );
 }

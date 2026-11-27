@@ -47,7 +47,7 @@ it("starts PageUp on a completion rather than a section", () => {
   render(<ExecutePopupHost />);
   const input = screen.getByRole("textbox");
   fireEvent.keyDown(input, { key: "PageUp" });
-  fireEvent.keyDown(input, { key: "Enter" });
+  fireEvent.keyDown(input, { key: "Tab" });
   expect(input).toHaveValue("clean ");
 });
 
@@ -96,8 +96,19 @@ it("PageDown selects a completion rather than a section at its landing position"
   const input = screen.getByRole("textbox");
   fireEvent.keyDown(input, { key: "ArrowDown" });
   fireEvent.keyDown(input, { key: "PageDown" });
-  fireEvent.keyDown(input, { key: "Enter" });
+  fireEvent.keyDown(input, { key: "Tab" });
   expect(input).toHaveValue(`${goalCompletions("", [])[0]!.line} `);
+});
+
+it("shows a clicked completion in the input instead of appending it", () => {
+  render(<ExecutePopupHost />);
+  const input = screen.getByRole("textbox");
+  const options = screen.getAllByRole("option");
+  fireEvent.click(options[0]!);
+  expect(input).toHaveValue("clean");
+  fireEvent.click(options[1]!);
+  expect(input).toHaveValue("validate");
+  expect(screen.getAllByRole("option")).toHaveLength(options.length);
 });
 
 it("resets selection when changing the Gradle build used for completion", () => {
@@ -129,4 +140,27 @@ it("resets selection when changing the Gradle build used for completion", () => 
   act(() => useBuild.setState({ model: { maven: null, gradle: [] } }));
   fireEvent.keyDown(input, { key: "Tab" });
   expect(input).toHaveValue("build ");
+});
+
+it("shows Gradle and Maven project names as written in Chinese", async () => {
+  const { _resetI18nForTests, setLocale, tx } = await import("@/platform/i18n");
+  await setLocale("zh");
+  try {
+    // Precondition: the zh catalog translates the word, so a translated label would differ.
+    expect(tx("dev")).not.toBe("dev");
+    const gradle = { dir: "", projects: [{ path: ":", name: "dev", dir: "", buildFile: null, tasks: [] }] };
+    useBuild.setState({ executeOpen: "gradle", model: { maven: null, gradle: [gradle as unknown as GradleModel] } });
+    const { unmount } = render(<ExecutePopupHost />);
+    expect(screen.getByRole("button", { name: tx("Project to run in") })).toHaveTextContent(/^dev$/);
+    unmount();
+
+    const maven = { pom: "test/pom.xml", dir: "test", displayName: "dev", projects: [] };
+    useBuild.setState({ executeOpen: "maven", model: { maven: { projects: [maven] } as never, gradle: [] } });
+    render(<ExecutePopupHost />);
+    fireEvent.click(screen.getByRole("button", { name: tx("Project to run in") }));
+    const option = within(screen.getByRole("listbox", { name: tx("Project to run in") })).getByRole("option");
+    expect(option).toHaveTextContent(/^devtest$/);
+  } finally {
+    _resetI18nForTests();
+  }
 });

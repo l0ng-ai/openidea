@@ -1,6 +1,6 @@
 //! Local deployment uses the service entry points used by SFTP and save hooks.
 use ide_core::CancellationToken;
-use ide_core::remote_settings::{AutoUpload, DeploymentMapping, DeploymentServer, DeploymentType};
+use ide_core::remote_settings::{AutoUpload, DeploymentGroup, DeploymentMapping, DeploymentServer, DeploymentType};
 use ide_core::settings::Settings;
 use ide_remote::{RemoteService, SyncAction, SyncStatus, SyncStep};
 use ide_ssh::{FsConnection, SshFiles, SshManager};
@@ -318,4 +318,132 @@ async fn browser_mappings_resolve_symlinks_and_download_to_the_project() {
     assert_eq!(report.files, 1);
     assert!(report.errors.is_empty());
     assert_eq!(std::fs::read_to_string(local).unwrap(), "from the server");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn deployment_downloads_never_write_through_links_out_of_the_mapping() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("project");
+    let target = tmp.path().join("mounted");
+    let outside = tmp.path().join("outside");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(target.join("app/config")).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(target.join("app/config/keys"), "from the server").unwrap();
+    std::fs::write(target.join("app/note.txt"), "from the server").unwrap();
+    std::fs::write(outside.join("keys"), "kept").unwrap();
+    std::fs::write(outside.join("other"), "kept").unwrap();
+    std::os::unix::fs::symlink(&outside, root.join("config")).unwrap();
+    std::os::unix::fs::symlink(outside.join("other"), root.join("note.txt")).unwrap();
+    let service = service(tmp.path());
+    let settings = settings(&target);
+    let cancel = CancellationToken::new();
+
+    let report = service
+        .download(&settings, &root, None, std::slice::from_ref(&root), cancel.clone(), &mut |_, _, _| {})
+        .await
+        .unwrap();
+    assert_eq!(report.files, 0, "{report:?}");
+    assert_eq!(report.errors.len(), 2, "{report:?}");
+    let steps = [
+        SyncStep { path: "config/keys".into(), action: SyncAction::Download },
+        SyncStep { path: "note.txt".into(), action: SyncAction::Download },
+        SyncStep { path: "config/keys".into(), action: SyncAction::DeleteLocal },
+    ];
+    let report = service.sync(&settings, &root, None, &steps, cancel, &mut |_, _, _| {}).await.unwrap();
+    assert_eq!(report.files, 0, "{report:?}");
+    assert_eq!(report.errors.len(), 3, "{report:?}");
+    assert_eq!(std::fs::read_to_string(outside.join("keys")).unwrap(), "kept");
+    assert_eq!(std::fs::read_to_string(outside.join("other")).unwrap(), "kept");
+}
+
+#[tokio::test]
+async fn download_into_copies_only_the_selected_items() {
+    let tmp = tempfile::tempdir().unwrap();
+    let server = tmp.path().join("srv/www/site/current");
+    let project = tmp.path().join("project");
+    std::fs::create_dir_all(server.join("drush/sub")).unwrap();
+    std::fs::create_dir_all(server.join("drush/empty")).unwrap();
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(server.join("drush/a.txt"), "a").unwrap();
+    std::fs::write(server.join("drush/sub/b.txt"), "b").unwrap();
+    std::fs::write(server.join("index.php"), "php").unwrap();
+    std::fs::write(project.join("index.php"), "old").unwrap();
+    let service = service(tmp.path());
+    // Remote paths use `/`, as the local file system lists them on Windows too.
+    let remotes = [server.join("drush"), server.join("index.php")].map(|p| p.to_str().unwrap().replace('\\', "/"));
+    let report = service
+        .download_into(&FsConnection::Local, &remotes, &project, &CancellationToken::new(), &mut |_, _, _| {})
+        .await
+        .unwrap();
+    assert_eq!(report.files, 3, "{report:?}");
+    assert!(report.errors.is_empty(), "{report:?}");
+    assert_eq!(std::fs::read_to_string(project.join("drush/a.txt")).unwrap(), "a");
+    assert_eq!(std::fs::read_to_string(project.join("drush/sub/b.txt")).unwrap(), "b");
+    assert!(project.join("drush/empty").is_dir());
+    assert_eq!(std::fs::read_to_string(project.join("index.php")).unwrap(), "php");
+    assert!(!project.join("srv").exists() && !project.join("www").exists());
+
+    // A link already in the folder doesn't take the download elsewhere.
+    #[cfg(unix)]
+    {
+        let elsewhere = tmp.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::remove_dir_all(project.join("drush/sub")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, project.join("drush/sub")).unwrap();
+        std::fs::remove_file(project.join("drush/a.txt")).unwrap();
+        std::os::unix::fs::symlink(elsewhere.join("a.txt"), project.join("drush/a.txt")).unwrap();
+        let report = service
+            .download_into(&FsConnection::Local, &remotes[..1], &project, &CancellationToken::new(), &mut |_, _, _| {})
+            .await
+            .unwrap();
+        // The linked folder, the file below it, and the linked file.
+        assert_eq!((report.files, report.errors.len()), (0, 3), "{report:?}");
+        assert!(std::fs::read_dir(&elsewhere).unwrap().next().is_none(), "nothing written through the links");
+    }
+
+    let missing = [server.join("gone").to_str().unwrap().replace('\\', "/")];
+    let report = service
+        .download_into(&FsConnection::Local, &missing, &project, &CancellationToken::new(), &mut |_, _, _| {})
+        .await
+        .unwrap();
+    assert_eq!((report.files, report.errors.len()), (0, 1), "{report:?}");
+}
+
+#[tokio::test]
+async fn automatic_upload_to_a_default_group_reaches_each_of_its_servers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("project");
+    let (staging, live) = (tmp.path().join("staging"), tmp.path().join("live"));
+    for dir in [root.join("src"), staging.clone(), live.clone()] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    std::fs::write(root.join("src/a.txt"), "v1").unwrap();
+    let mut settings = settings(&staging);
+    settings.deployment.servers.push(DeploymentServer {
+        id: "live".into(),
+        kind: DeploymentType::Local,
+        root_path: live.to_string_lossy().into_owned(),
+        mappings: vec![DeploymentMapping { deployment: "app".into(), ..Default::default() }],
+        ..Default::default()
+    });
+    settings.deployment.groups.push(DeploymentGroup {
+        id: "all".into(),
+        name: "All".into(),
+        servers: vec!["local".into(), "live".into(), "gone".into()],
+    });
+    settings.deployment.default_server = "all".into();
+    assert_eq!(ide_remote::default_targets(&settings), ["local", "live"]);
+
+    let service = service(tmp.path());
+    let saved = service.on_saved(&settings, &root, &root.join("src/a.txt")).await.unwrap().unwrap();
+    assert_eq!((saved.files, saved.errors.len()), (2, 0), "{saved:?}");
+    for target in [&staging, &live] {
+        assert_eq!(std::fs::read_to_string(target.join("app/src/a.txt")).unwrap(), "v1");
+    }
+    std::fs::remove_file(root.join("src/a.txt")).unwrap();
+    let deleted = service.on_deleted(&settings, &root, &[root.join("src/a.txt")]).await.unwrap().unwrap();
+    assert!(deleted.errors.is_empty(), "{deleted:?}");
+    assert!(!staging.join("app/src/a.txt").exists() && !live.join("app/src/a.txt").exists());
 }

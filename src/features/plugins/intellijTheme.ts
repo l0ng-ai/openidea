@@ -4,10 +4,13 @@
  * plugin into an OpenIDEA theme plugin package. The mapping covers the main
  * keys only; anything unmapped keeps the built-in value of the base (`kind`).
  *
- * Pure functions without imports: Settings › Plugins › Import IntelliJ Theme
+ * Pure functions, importing only data: Settings › Plugins › Import IntelliJ Theme
  * uses them on what the host read from the plugin (`plugin_read_intellij_theme`),
  * and so does the command line (`scripts/theme/import-intellij-theme.ts`).
  */
+
+import { iclsColor } from "../../platform/iclsColor.ts";
+import { DARCULA_TOKENS } from "./intellijDarcula.ts";
 
 /** OpenIDEA token ← IntelliJ `ui` keys, first present wins. `*.prop` wildcards apply too. */
 export const UI_KEYS: Record<string, string[]> = {
@@ -55,6 +58,12 @@ export const UI_KEYS: Record<string, string[]> = {
   "--bg-tab-selected": ["EditorTabs.underlinedTabBackground", "EditorTabs.selectedBackground"],
   // Islands paints the selected tab's border with `underlinedBorderColor`; the classic tabs underline with `underlineColor`.
   "--border-tab-selected": ["EditorTabs.underlinedBorderColor", "EditorTabs.underlineColor"],
+  // The selected tab of a part without focus (src/ui/focusScope.ts).
+  "--bg-tab-selected-inactive": ["EditorTabs.inactiveUnderlinedTabBackground"],
+  "--border-tab-selected-inactive": [
+    "EditorTabs.inactiveUnderlinedTabBorderColor",
+    "EditorTabs.inactiveUnderlineColor",
+  ],
   "--bg-tab-hover": ["EditorTabs.hoverBackground"],
   "--border-editor-tabs": ["EditorTabs.borderColor"],
   "--bg-toolbar-hover": ["ActionButton.hoverBackground"],
@@ -108,6 +117,8 @@ export const ICLS_COLORS: Record<string, string[]> = {
   MODIFIED_LINES_COLOR: ["--gutter-modified"],
   ADDED_LINES_COLOR: ["--gutter-added"],
   DELETED_LINES_COLOR: ["--gutter-deleted"],
+  CONSOLE_BACKGROUND_KEY: ["--bg-console"],
+  DIFF_SEPARATOR_WAVE: ["--diff-separator-wave"],
 };
 
 type Part = "FOREGROUND" | "BACKGROUND" | "EFFECT_COLOR" | "ERROR_STRIPE_COLOR";
@@ -152,6 +163,12 @@ export const ICLS_ATTRIBUTES: Record<string, Array<[Part, string]>> = {
   DEFAULT_PARAMETER: [["FOREGROUND", "--syn-param"]],
   DEFAULT_GLOBAL_VARIABLE: [["FOREGROUND", "--syn-global"]],
   DEFAULT_PREDEFINED_SYMBOL: [["FOREGROUND", "--syn-builtin"]],
+  // Java annotations (drawn with --syn-decorator, as decorators are) take the annotation key; DEFAULT_METADATA
+  // only stands in for it (see `convertIcls`).
+  ANNOTATION_NAME_ATTRIBUTES: [
+    ["FOREGROUND", "--syn-annotation"],
+    ["FOREGROUND", "--syn-decorator"],
+  ],
   DEFAULT_METADATA: [
     ["FOREGROUND", "--syn-annotation"],
     ["FOREGROUND", "--syn-decorator"],
@@ -171,10 +188,16 @@ export const ICLS_ATTRIBUTES: Record<string, Array<[Part, string]>> = {
   WARNING_ATTRIBUTES: [["EFFECT_COLOR", "--wave-warning"]],
   NOT_USED_ELEMENT_ATTRIBUTES: [["FOREGROUND", "--fg-unused"]],
   MATCHED_BRACE_ATTRIBUTES: [["BACKGROUND", "--bg-matched-brace"]],
-  SEARCH_RESULT_ATTRIBUTES: [["BACKGROUND", "--bg-search-match"]],
+  SEARCH_RESULT_ATTRIBUTES: [["BACKGROUND", "--bg-search-result"]],
   TEXT_SEARCH_RESULT_ATTRIBUTES: [["BACKGROUND", "--bg-text-search-result"]],
-  IDENTIFIER_UNDER_CARET_ATTRIBUTES: [["BACKGROUND", "--bg-identifier-under-caret"]],
-  WRITE_IDENTIFIER_UNDER_CARET_ATTRIBUTES: [["BACKGROUND", "--bg-identifier-under-caret-write"]],
+  IDENTIFIER_UNDER_CARET_ATTRIBUTES: [
+    ["FOREGROUND", "--fg-identifier-under-caret"],
+    ["BACKGROUND", "--bg-identifier-under-caret"],
+  ],
+  WRITE_IDENTIFIER_UNDER_CARET_ATTRIBUTES: [
+    ["FOREGROUND", "--fg-identifier-under-caret-write"],
+    ["BACKGROUND", "--bg-identifier-under-caret-write"],
+  ],
   FOLDED_TEXT_ATTRIBUTES: [
     ["FOREGROUND", "--fg-fold-placeholder"],
     ["BACKGROUND", "--bg-fold-placeholder"],
@@ -191,25 +214,74 @@ export const ICLS_ATTRIBUTES: Record<string, Array<[Part, string]>> = {
   "PY.DOC_COMMENT_TAG": [["FOREGROUND", "--syn-python-docstring-tag"]],
   OPENIDEA_pyDocstringKeyword: [["FOREGROUND", "--syn-python-docstring-keyword"]],
   "PY.BUILTIN_NAME": [["FOREGROUND", "--syn-predefined"]],
+  "BASH.EXTERNAL_COMMAND": [["FOREGROUND", "--syn-shell-command"]],
   MARKDOWN_HEADER_LEVEL_1: [["FOREGROUND", "--syn-markup-heading"]],
   MARKDOWN_CODE_SPAN: [["FOREGROUND", "--syn-markup-code"]],
   MARKDOWN_LINK_TEXT: [["FOREGROUND", "--syn-link"]],
-  CONSOLE_BLACK_OUTPUT: [["FOREGROUND", "--ansi-black"]],
-  CONSOLE_RED_OUTPUT: [["FOREGROUND", "--ansi-red"]],
-  CONSOLE_GREEN_OUTPUT: [["FOREGROUND", "--ansi-green"]],
-  CONSOLE_YELLOW_OUTPUT: [["FOREGROUND", "--ansi-yellow"]],
-  CONSOLE_BLUE_OUTPUT: [["FOREGROUND", "--ansi-blue"]],
-  CONSOLE_MAGENTA_OUTPUT: [["FOREGROUND", "--ansi-magenta"]],
-  CONSOLE_CYAN_OUTPUT: [["FOREGROUND", "--ansi-cyan"]],
-  CONSOLE_GRAY_OUTPUT: [["FOREGROUND", "--ansi-white"]],
-  CONSOLE_DARKGRAY_OUTPUT: [["FOREGROUND", "--ansi-bright-black"]],
-  CONSOLE_RED_BRIGHT_OUTPUT: [["FOREGROUND", "--ansi-bright-red"]],
-  CONSOLE_GREEN_BRIGHT_OUTPUT: [["FOREGROUND", "--ansi-bright-green"]],
-  CONSOLE_YELLOW_BRIGHT_OUTPUT: [["FOREGROUND", "--ansi-bright-yellow"]],
-  CONSOLE_BLUE_BRIGHT_OUTPUT: [["FOREGROUND", "--ansi-bright-blue"]],
-  CONSOLE_MAGENTA_BRIGHT_OUTPUT: [["FOREGROUND", "--ansi-bright-magenta"]],
-  CONSOLE_CYAN_BRIGHT_OUTPUT: [["FOREGROUND", "--ansi-bright-cyan"]],
-  CONSOLE_WHITE_OUTPUT: [["FOREGROUND", "--ansi-bright-white"]],
+  CONSOLE_BLACK_OUTPUT: [
+    ["FOREGROUND", "--ansi-black"],
+    ["FOREGROUND", "--terminal-ansi-black"],
+  ],
+  CONSOLE_RED_OUTPUT: [
+    ["FOREGROUND", "--ansi-red"],
+    ["FOREGROUND", "--terminal-ansi-red"],
+  ],
+  CONSOLE_GREEN_OUTPUT: [
+    ["FOREGROUND", "--ansi-green"],
+    ["FOREGROUND", "--terminal-ansi-green"],
+  ],
+  CONSOLE_YELLOW_OUTPUT: [
+    ["FOREGROUND", "--ansi-yellow"],
+    ["FOREGROUND", "--terminal-ansi-yellow"],
+  ],
+  CONSOLE_BLUE_OUTPUT: [
+    ["FOREGROUND", "--ansi-blue"],
+    ["FOREGROUND", "--terminal-ansi-blue"],
+  ],
+  CONSOLE_MAGENTA_OUTPUT: [
+    ["FOREGROUND", "--ansi-magenta"],
+    ["FOREGROUND", "--terminal-ansi-magenta"],
+  ],
+  CONSOLE_CYAN_OUTPUT: [
+    ["FOREGROUND", "--ansi-cyan"],
+    ["FOREGROUND", "--terminal-ansi-cyan"],
+  ],
+  CONSOLE_GRAY_OUTPUT: [
+    ["FOREGROUND", "--ansi-white"],
+    ["FOREGROUND", "--terminal-ansi-white"],
+  ],
+  CONSOLE_DARKGRAY_OUTPUT: [
+    ["FOREGROUND", "--ansi-bright-black"],
+    ["FOREGROUND", "--terminal-ansi-bright-black"],
+  ],
+  CONSOLE_RED_BRIGHT_OUTPUT: [
+    ["FOREGROUND", "--ansi-bright-red"],
+    ["FOREGROUND", "--terminal-ansi-bright-red"],
+  ],
+  CONSOLE_GREEN_BRIGHT_OUTPUT: [
+    ["FOREGROUND", "--ansi-bright-green"],
+    ["FOREGROUND", "--terminal-ansi-bright-green"],
+  ],
+  CONSOLE_YELLOW_BRIGHT_OUTPUT: [
+    ["FOREGROUND", "--ansi-bright-yellow"],
+    ["FOREGROUND", "--terminal-ansi-bright-yellow"],
+  ],
+  CONSOLE_BLUE_BRIGHT_OUTPUT: [
+    ["FOREGROUND", "--ansi-bright-blue"],
+    ["FOREGROUND", "--terminal-ansi-bright-blue"],
+  ],
+  CONSOLE_MAGENTA_BRIGHT_OUTPUT: [
+    ["FOREGROUND", "--ansi-bright-magenta"],
+    ["FOREGROUND", "--terminal-ansi-bright-magenta"],
+  ],
+  CONSOLE_CYAN_BRIGHT_OUTPUT: [
+    ["FOREGROUND", "--ansi-bright-cyan"],
+    ["FOREGROUND", "--terminal-ansi-bright-cyan"],
+  ],
+  CONSOLE_WHITE_OUTPUT: [
+    ["FOREGROUND", "--ansi-bright-white"],
+    ["FOREGROUND", "--terminal-ansi-bright-white"],
+  ],
 };
 
 export interface ConvertedTheme {
@@ -239,19 +311,15 @@ function resolveColor(value: string, named: Map<string, string>, depth = 0): str
   return ref !== undefined && depth < 8 ? resolveColor(ref, named, depth + 1) : null;
 }
 
-/** `.icls` hex: RGB without `#`, leading zeros dropped (`"0"` is black, `"ff"` is #0000ff). */
-function iclsColor(value: string): string | null {
-  const v = value.trim().toLowerCase();
-  if (!/^[0-9a-f]{1,8}$/.test(v)) return null;
-  return `#${v.length <= 6 ? v.padStart(6, "0") : v.padStart(8, "0")}`;
-}
+/** IntelliJ's bundled schemes, which set ANNOTATION_NAME_ATTRIBUTES themselves. */
+const BUNDLED_PARENTS = new Set(["Default", "Darcula"]);
 
 const attr = (tag: string, name: string) => new RegExp(`${name}="([^"]*)"`).exec(tag)?.[1];
 
 /** Parses the colours and attributes of an `.icls` file into tokens. */
 export function convertIcls(xml: string): { name: string; dark: boolean | null; tokens: Record<string, string> } {
   const tokens: Record<string, string> = {};
-  const set = (names: string[], color: string | null) => {
+  const set = (names: string[], color: string | undefined) => {
     if (color) for (const n of names) tokens[n] ??= color;
   };
   const schemeTag = /<scheme\b[^>]*>/.exec(xml)?.[0] ?? "";
@@ -281,20 +349,31 @@ export function convertIcls(xml: string): { name: string; dark: boolean | null; 
     }
     attributes.set(m[1]!, parts);
   }
-  const textForeground = iclsColor(attributes.get("TEXT")?.get("FOREGROUND") ?? "");
+  // The annotation key falls back to DEFAULT_METADATA only where neither the file nor its bundled parent
+  // (both set it) defines it, as for imported schemes (`platform/icls.ts`).
+  const metadataUnused = attributes.has("ANNOTATION_NAME_ATTRIBUTES") || BUNDLED_PARENTS.has(parent);
+  const textForeground = iclsColor(attributes.get("TEXT")?.get("FOREGROUND"));
   for (const [key, parts] of attributes) {
     const map = ICLS_ATTRIBUTES[key];
-    if (!map) continue;
+    if (!map || (key === "DEFAULT_METADATA" && metadataUnused)) continue;
     // `<value />` defines the key without colours, so the parent scheme's don't apply: it shows as plain text.
     if (empty.has(key)) {
       for (const [part, token] of map) if (part === "FOREGROUND") set([token], textForeground);
       continue;
     }
-    for (const [part, token] of map) set([token], iclsColor(parts.get(part) ?? ""));
+    for (const [part, token] of map) set([token], iclsColor(parts.get(part)));
     // FONT_TYPE: 1 bold, 2 italic, 3 bold italic.
     if (key === "DEFAULT_LINE_COMMENT" && parts.has("FONT_TYPE")) {
       tokens["--syn-comment-style"] = Number(parts.get("FONT_TYPE")) & 2 ? "italic" : "normal";
     }
+  }
+  if (parent === "Darcula") {
+    // IntelliJ replaces a parent's attribute as a whole: what the file names, even empty or by baseAttributes, wins.
+    const keys = [...body.matchAll(/<option name="([^"]+)"/g)]
+      .map((m) => m[1]!)
+      .filter((key) => key !== "DEFAULT_METADATA");
+    const own = new Set(keys.flatMap((key) => (ICLS_ATTRIBUTES[key] ?? []).map(([, t]) => t)));
+    for (const [token, value] of Object.entries(DARCULA_TOKENS)) if (!own.has(token)) tokens[token] ??= value;
   }
   if (tokens["--wave-error"]) tokens["--editor-error-decoration"] = `underline wavy ${tokens["--wave-error"]}`;
   if (tokens["--bg-editor"]) tokens["--bg-editor-gutter"] ??= tokens["--bg-editor"];

@@ -1,7 +1,19 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunConfig } from "@/platform/ipc";
 import { usePlatform } from "@/platform/platformInfo";
-import { debugUnsupportedReason, launchConfigFor } from "../launch";
+import { useFlutterDevices } from "@/workbench/flutterDevices";
+import { debugUnsupportedReason, launchConfigFor, withEnvFiles } from "../launch";
+
+const ipc = vi.hoisted(() => {
+  const ok = <T>(data: T) => Promise.resolve({ status: "ok" as const, data });
+  return { ok, runEnvFiles: vi.fn((_files: string[]) => ok({} as Record<string, string>)) };
+});
+
+vi.mock("@/platform/ipc", async (importOriginal) => {
+  const real = await importOriginal<typeof import("@/platform/ipc")>();
+  const { ok: _ok, ...cmds } = ipc;
+  return { ...real, commands: { ...real.commands, ...cmds } };
+});
 
 const rc = (p: Partial<RunConfig>): RunConfig => ({
   id: "x",
@@ -20,8 +32,97 @@ const rc = (p: Partial<RunConfig>): RunConfig => ({
 const extra = (l: { extraJson: string | null } | null) => JSON.parse(l?.extraJson ?? "{}");
 
 const originalPlatform = usePlatform.getState();
-beforeEach(() => usePlatform.setState({ os: "linux" }));
+beforeEach(() => {
+  usePlatform.setState({ os: "linux" });
+  vi.clearAllMocks();
+});
 afterEach(() => usePlatform.setState(originalPlatform));
+
+describe("Flutter device", () => {
+  const device = { platformType: null, category: "desktop", emulator: false, unavailable: null };
+  const flutter = (p: Partial<RunConfig> = {}) =>
+    rc({ kind: "flutter", command: "flutter", args: ["run", "-t", "lib/main.dart"], debugAdapter: "dart", ...p });
+
+  beforeEach(() =>
+    useFlutterDevices.setState({
+      preferred: "macos",
+      list: {
+        status: { kind: "ready" },
+        devices: [
+          { ...device, id: "chrome", name: "Chrome" },
+          { ...device, id: "macos", name: "macOS" },
+        ],
+      },
+    }),
+  );
+  afterEach(() => useFlutterDevices.setState({ preferred: null, list: null }));
+
+  it("debugs on the toolbar's device, through the backend's Flutter check", () => {
+    const launch = launchConfigFor(flutter({ args: ["run", "-t", "lib/app.dart", "--flavor", "dev"] }), "/p");
+    expect(launch?.program).toBe("/p/lib/app.dart");
+    expect(extra(launch)).toEqual({ toolArgs: ["--flavor", "dev"], __flutterDevice: "macos" });
+  });
+
+  it("takes the entry point from the target option, not from any argument ending in .dart", () => {
+    const debug = (...args: string[]) => launchConfigFor(flutter({ args: ["run", ...args] }), "/p");
+    expect(debug("--target=lib/app.dart")?.program).toBe("/p/lib/app.dart");
+    expect(debug("--target", "lib/app.dart")?.program).toBe("/p/lib/app.dart");
+    const define = debug("-t", "lib/main.dart", "--dart-define=CFG=dev.dart");
+    expect(define?.program).toBe("/p/lib/main.dart");
+    expect(extra(define).toolArgs).toEqual(["--dart-define=CFG=dev.dart"]);
+    expect(debug("--dart-define=CFG=dev.dart")?.program).toBe("/p/lib/main.dart");
+  });
+
+  it("keeps a file-scoped Dart configuration's last .dart argument as its entry point", () => {
+    const file = rc({ kind: "dart", command: "dart", args: ["run", "bin/tool.dart"], debugAdapter: "dart" });
+    expect(launchConfigFor(file, "/p")?.program).toBe("/p/bin/tool.dart");
+  });
+
+  it("reads the pinned device from every spelling of the option", () => {
+    const pinned = flutter({ args: ["run", "--device-id=chrome"] });
+    expect(extra(launchConfigFor(pinned, "/p"))).toEqual({ __flutterDevice: "chrome" });
+  });
+
+  it("prefers the device the configuration pins", () => {
+    const pinned = flutter({ args: ["run", "-t", "lib/main.dart", "-d", "chrome"] });
+    expect(extra(launchConfigFor(pinned, "/p"))).toEqual({ __flutterDevice: "chrome" });
+  });
+
+  it("falls back to a connected device when the chosen one is gone", () => {
+    useFlutterDevices.setState({ preferred: "R5C" });
+    expect(extra(launchConfigFor(flutter(), "/p")).__flutterDevice).toBe("chrome");
+  });
+
+  it("attaches on the pinned device, else the toolbar's", () => {
+    const attach = (params: Record<string, string>) =>
+      extra(launchConfigFor(rc({ debugAdapter: "dart", params: { request: "attach", ...params } }), "/p"));
+    expect(attach({}).toolArgs).toEqual(["-d", "macos"]);
+    expect(attach({ device: "chrome" }).toolArgs).toEqual(["-d", "chrome"]);
+  });
+
+  it("debugs the build mode and flavor of the command line", () => {
+    const launch = launchConfigFor(
+      flutter({ args: ["run", "-t", "lib/main.dart", "--profile", "--flavor=dev"] }),
+      "/p",
+    );
+    expect(extra(launch).toolArgs).toEqual(["--profile", "--flavor=dev"]);
+  });
+
+  it("attaches a Flutter configuration with its entry point and attach args", () => {
+    const config = flutter({
+      args: ["run", "-t", "lib/dev.dart", "--flavor=dev"],
+      params: { entry: "lib/dev.dart", flavor: "dev", attachArgs: "--debug-port 9000", request: "attach" },
+    });
+    const launch = launchConfigFor(config, "/p");
+    expect(launch).toMatchObject({ request: "attach", program: "/p/lib/dev.dart" });
+    expect(extra(launch)).toEqual({ __flutter: true, toolArgs: ["-d", "macos", "--debug-port", "9000"] });
+  });
+
+  it("leaves the choice to flutter without a device list", () => {
+    useFlutterDevices.setState({ list: null });
+    expect(launchConfigFor(flutter(), "/p")?.extraJson).toBeNull();
+  });
+});
 
 describe("run config → launch config", () => {
   it("returns null without an adapter", () => {
@@ -84,6 +185,15 @@ describe("run config → launch config", () => {
     });
   });
 
+  it("cargo run under lldb-dap builds the same way and passes the environment as strings", () => {
+    const l = launchConfigFor(
+      rc({ kind: "cargo", command: "cargo", args: ["run"], env: { RUST_LOG: "debug" }, debugAdapter: "lldb-dap" }),
+      "/p",
+    )!;
+    expect(l.adapter).toBe("lldb-dap");
+    expect(extra(l)).toEqual({ cargo: { args: ["build"], filter: { kind: "bin" } }, env: ["RUST_LOG=debug"] });
+  });
+
   it("cargo test builds test binaries without running", () => {
     const l = launchConfigFor(
       rc({ kind: "cargo", command: "cargo", args: ["test", "--workspace"], debugAdapter: "codelldb" }),
@@ -99,7 +209,7 @@ describe("run config → launch config", () => {
     )!;
     expect(script.program).toBe("/p/manage.py");
     expect(script.args).toEqual(["runserver"]);
-    expect(extra(script)).toMatchObject({ python: "/p/.venv/bin/python", django: true, console: "internalConsole" });
+    expect(extra(script)).toMatchObject({ python: "/p/.venv/bin/python", django: true, console: "integratedTerminal" });
 
     const mod = launchConfigFor(
       rc({ kind: "python", command: "python3", args: ["-m", "app", "-v"], debugAdapter: "debugpy" }),
@@ -139,6 +249,19 @@ describe("run config → launch config", () => {
 
     const django = debug("pdm", ["run", "python", "manage.py", "runserver"]);
     expect(extra(django)).toMatchObject({ django: true, python: ["pdm", "run", "python"] });
+
+    // The manager's own options stay with it; `uv run app.py` / `-m app` start Python directly (#5874).
+    const withOptions = debug("uv", ["run", "--with", "rich", "--no-sync", "main.py", "-v"]);
+    expect(withOptions.program).toBe("/p/main.py");
+    expect(withOptions.args).toEqual(["-v"]);
+    expect(extra(withOptions)).toMatchObject({ python: ["uv", "run", "--with", "rich", "--no-sync", "python"] });
+    expect(extra(withOptions).module).toBeUndefined();
+    const member = debug("uv", ["run", "--project", "member", "--module", "app", "x"]);
+    expect(extra(member)).toMatchObject({ module: "app", python: ["uv", "run", "--project", "member", "python"] });
+    expect(member.args).toEqual(["x"]);
+    const toolWithOptions = debug("uv", ["run", "--frozen", "pytest", "-x"]);
+    expect(extra(toolWithOptions)).toMatchObject({ module: "pytest", python: ["uv", "run", "--frozen", "python"] });
+    expect(toolWithOptions.args).toEqual(["-x"]);
   });
 
   it("debugpy: Windows falls back to python, not the python3 Store alias", () => {
@@ -151,6 +274,24 @@ describe("run config → launch config", () => {
       "/p",
     )!;
     expect(extra(uv)).toMatchObject({ python: ["uv", "run", "python"], debugLauncherPython: "python" });
+  });
+
+  it("debugpy: a Windows venv interpreter or tool path debugs with that interpreter", () => {
+    usePlatform.setState({ os: "windows" });
+    const venv = "C:\\work\\app\\.venv\\Scripts\\";
+    const script = launchConfigFor(
+      rc({ kind: "python", command: `${venv}python.exe`, args: ["main.py"], debugAdapter: "debugpy" }),
+      "C:/work/app",
+    )!;
+    expect(extra(script).python).toBe(`${venv}python.exe`);
+    expect(extra(script).module).toBeUndefined();
+    expect(script.program).toBe("C:/work/app/main.py");
+
+    const pytest = launchConfigFor(
+      rc({ kind: "pytest", command: `${venv}pytest.exe`, args: ["-x"], debugAdapter: "debugpy" }),
+      "C:/work/app",
+    )!;
+    expect(extra(pytest)).toMatchObject({ module: "pytest", python: `${venv}python.exe` });
   });
 
   it("js-debug: npm scripts run through the package manager, node scripts directly", () => {
@@ -349,6 +490,31 @@ describe("run config → launch config", () => {
     },
   );
 
+  it("Zig under CodeLLDB: no source-language mode, so evaluation stays LLDB's own", () => {
+    const exe = launchConfigFor(
+      rc({ kind: "zig-application", command: "./zig-out/bin/app", debugAdapter: "codelldb" }),
+      "/p",
+    )!;
+    expect(exe.adapter).toBe("codelldb");
+    expect(extra(exe)).toEqual({ sourceLanguages: [] });
+    const single = launchConfigFor(
+      rc({
+        kind: "native",
+        command: "/tmp/openidea-run/calc-1",
+        debugAdapter: "codelldb",
+        params: { language: "zig" },
+      }),
+      "/p",
+    )!;
+    expect(extra(single)).toEqual({ sourceLanguages: [] });
+    // Rust-compiled binaries keep CodeLLDB's default (Rust) source mode.
+    const rust = launchConfigFor(
+      rc({ kind: "native", command: "/tmp/openidea-run/app-1", debugAdapter: "codelldb" }),
+      "/p",
+    )!;
+    expect(rust.extraJson).toBeNull();
+  });
+
   it("Godot: the editor's adapter plays the main scene or the chosen one of the project", () => {
     const project = rc({
       kind: "godot",
@@ -493,4 +659,19 @@ it("raw and typed Go debug configurations inherit custom tags unless explicitly 
       expect(extra(launch).__goUseTags).toBe(useTags !== "false");
     }
   }
+});
+
+describe("withEnvFiles", () => {
+  it("leaves configurations without .env files alone (no backend call)", async () => {
+    const config = rc({ env: { A: "1" } });
+    await expect(withEnvFiles(config, "/p")).resolves.toBe(config);
+    expect(ipc.runEnvFiles).not.toHaveBeenCalled();
+  });
+
+  it("loads .env files under the explicit variables, resolved against the project root", async () => {
+    ipc.runEnvFiles.mockResolvedValueOnce({ status: "ok", data: { FROM_FILE: "file", A: "file" } });
+    const out = await withEnvFiles(rc({ env: { A: "explicit" }, envFiles: [".env", "env/local.env"] }), "/p");
+    expect(ipc.runEnvFiles).toHaveBeenCalledWith(["/p/.env", "/p/env/local.env"]);
+    expect(out.env).toEqual({ FROM_FILE: "file", A: "explicit" });
+  });
 });

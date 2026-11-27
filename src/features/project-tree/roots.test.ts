@@ -45,11 +45,50 @@ describe("New › Package", () => {
     expect(packageKindAt("src/test/resources", MAVEN)).toBeNull();
     expect(packageKindAt("target", MAVEN)).toBeNull();
     expect(packageKindAt("gen/kotlin/x", [root("gen/kotlin", "source", null)])).toBe("jvm");
+    // Source sets reported by a Gradle sync, including ones outside `src/*/java`.
+    expect(packageKindAt("src/gen/com", [root("src/gen", "source", "Gradle")])).toBe("jvm");
+    expect(packageKindAt("lib/src/gen/com", [root("lib/src/gen", "source", "lib/Gradle")])).toBe("jvm");
+    expect(packageKindAt("app/source/com", [root("app/source", "source", "app/.classpath")])).toBe("jvm");
     expect(packageKindAt("py/src/app", py)).toBe("python");
     expect(packageKindAt("py", py)).toBe("python");
     expect(packageKindAt("web", py)).toBeNull();
     // An unmarked Python root still leaves the module a Python module.
     expect(packageKindAt("py/src", [], py)).toBe("python");
+  });
+
+  it("keeps the default layout a Gradle sync reports", () => {
+    // Package in java roots, Directory in resources, as before.
+    const synced = [
+      root("src/main/java", "source", "Gradle"),
+      root("src/main/resources", "resources", "Gradle"),
+      root("src/test/java", "test", "Gradle"),
+      root("src/test/resources", "testResources", "Gradle"),
+      root("build", "excluded", "Gradle"),
+    ];
+    expect(packageKindAt("src/main/java/com", synced)).toBe("jvm");
+    expect(packageKindAt("src/test/java/com", synced)).toBe("jvm");
+    expect(packageKindAt("src/main/resources/com", synced)).toBeNull();
+    expect(packageKindAt("src/test/resources/com", synced)).toBeNull();
+    expect(packageKindAt("build/classes", synced)).toBeNull();
+  });
+
+  it("keeps a nested non-Python module out of a root-level Python project", () => {
+    // The roots detection reports for a root `pyproject.toml` next to `frontend/package.json`.
+    const mixed = [
+      root("src", "source", "pyproject.toml"),
+      root("frontend/src", "source", "frontend/package.json"),
+      root("frontend/node_modules", "excluded", "frontend/package.json"),
+    ];
+    expect(packageKindAt("frontend/src/components", mixed)).toBeNull();
+    expect(packageKindAt("src/app", mixed)).toBe("python");
+    expect(packageKindAt("scripts", mixed)).toBe("python");
+  });
+
+  it("keeps Python packages next to a nested package.json outside its roots", () => {
+    // A Django app folder with its own `package.json` for front-end tooling.
+    const django = [root("", "source", "pyproject.toml"), root("web/node_modules", "excluded", "web/package.json")];
+    expect(packageKindAt("web/blog", django)).toBe("python");
+    expect(packageKindAt("web", django)).toBe("python");
   });
 
   it("validates dotted package names", () => {

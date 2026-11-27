@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { HierarchyItem, OutlineItem, Pos } from "@/platform/ipc";
+import type { ClassInheritance, HierarchyItem, OutlineItem, Pos } from "@/platform/ipc";
+import { pythonHierarchy, pythonSupertypeItems } from "@/editor/navigation/pythonHierarchy";
 import { inheritedMembers, typeKey, typesIn } from "../structure/inherited";
 import { keyOutline, symbolPathAt, withInherited } from "../structure/outline";
 
@@ -73,5 +74,30 @@ describe("Show Inherited", () => {
     const bare = withInherited(keyOutline([empty]), new Map([[typeKey(empty), members]]));
     expect(bare[0]!.children).toHaveLength(3);
     expect(symbolPathAt(bare, { line: 3, col: 0 })).toEqual([bare[0]!.key]);
+  });
+});
+
+// Python servers declare no `typeHierarchyProvider`: the IDE's inheritance graph answers instead.
+const PY_GRAPH: ClassInheritance[] = [
+  { path: "/p/dog.py", line: 0, col: 6, name: "Dog", bases: ["Animal"] },
+  { path: "/p/animal.py", line: 0, col: 6, name: "Animal", bases: ["Living"] },
+  { path: "/p/living.py", line: 0, col: 6, name: "Living", bases: [] },
+];
+const pyHierarchy = pythonHierarchy(PY_GRAPH, { readFiles: async () => new Map() });
+const pyOutlines: Record<string, OutlineItem[]> = {
+  "/p/animal.py": [item("Animal", "class", 0, [item("eat", "method", 2), item("sleep", "method", 3)])],
+  "/p/living.py": [item("Living", "class", 0, [item("age", "field", 1)])],
+};
+const pyDeps = {
+  supertypes: (path: string, pos: Pos) => pythonSupertypeItems(pyHierarchy, path, pos),
+  outline: async (path: string) => pyOutlines[path] ?? [],
+};
+
+describe("Show Inherited without a type hierarchy (Python)", () => {
+  it("collects supertype members from the IDE's inheritance graph", async () => {
+    const pyDog = item("Dog", "class", 0, [item("bark", "method", 1)]);
+    const members = await inheritedMembers("/p/dog.py", pyDog, pyDeps);
+    expect(members.map((m) => `${m.owner}.${m.item.name}`)).toEqual(["Animal.eat", "Animal.sleep", "Living.age"]);
+    expect(members[0]!.path).toBe("/p/animal.py");
   });
 });

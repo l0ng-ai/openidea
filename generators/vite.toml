@@ -1,0 +1,61 @@
+id = "vite"
+name = "Vite"
+group = "JavaScript"
+icon = "project-vite"
+order = 1
+description = "A front-end app from create-vite: React, Vue, Svelte, Solid and more."
+
+[[requires]]
+program = "node"
+min = "20.19"
+hint = "Install Node.js 20.19 or later: https://nodejs.org"
+
+[[requires]]
+program = "{{pm}}"
+when = { pm = ["pnpm", "yarn", "bun"] }
+hint = "Install it, or choose npm."
+
+[[fields]]
+id = "template"
+label = "Template:"
+type = "choice"
+options = [
+    { value = "react-ts", label = "React + TypeScript" },
+    { value = "react", label = "React" },
+    { value = "vue-ts", label = "Vue + TypeScript" },
+    { value = "vue", label = "Vue" },
+    { value = "svelte-ts", label = "Svelte + TypeScript" },
+    { value = "svelte", label = "Svelte" },
+    { value = "solid-ts", label = "Solid + TypeScript" },
+    { value = "preact-ts", label = "Preact + TypeScript" },
+    { value = "lit-ts", label = "Lit + TypeScript" },
+    { value = "vanilla-ts", label = "Vanilla + TypeScript" },
+    { value = "vanilla", label = "Vanilla" },
+]
+default = "react-ts"
+
+[[fields]]
+id = "pm"
+label = "Package manager:"
+type = "choice"
+segmented = true
+options = ["npm", "pnpm", "yarn", "bun"]
+default = "npm"
+
+[[fields]]
+id = "install"
+label = "Install dependencies"
+type = "checkbox"
+default = "true"
+
+[[steps]]
+label = "Running create-vite"
+package = "create-vite@latest"
+args = ["{{name}}", "--template", "{{template}}", "--no-interactive"]
+cwd = "parent"
+
+[[after]]
+label = "Installing dependencies"
+program = "{{pm}}"
+args = ["install"]
+when = { install = "true" }

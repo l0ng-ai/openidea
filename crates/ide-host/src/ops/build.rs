@@ -1,34 +1,87 @@
 //! Maven / Gradle tool windows (the build model and its background sync) and
 //! Build › Build Project (compiling with the project's build system).
-mod workspace;
+pub(super) mod workspace;
 
+use super::dependencies::{MavenCentralArtifacts, MavenCentralGroups, MavenCentralVersions};
+use super::{blocking, blocking_value};
 use crate::ops::Channel;
-use crate::rpc::Dispatcher;
-use crate::{Host, Project, apply_workspace_edit};
+use crate::{Host, Project};
+use ide_command::command;
 
 use ide_build::compile::{self, BuildEvent, BuildKind, BuildResult};
-use ide_build::maven::PomGoto;
+use ide_build::jbuild::Target;
+use ide_build::maven::completion::{PomCompletion, PomCompletionOption};
+use ide_build::maven::sources;
+use ide_build::maven::{PomGoto, PomManagedDeclaration, PomNavigationOptions};
 use ide_build::pom_edit::{ArtifactKey, Exclusion};
 use ide_build::{BuildModel, BuildTool, SyncOptions, SyncProgress};
 use ide_core::settings::Settings;
-use ide_core::{FileEdit, IdeError, IdeEvent, IdeResult, Location, Pos, Range, RequestId, WorkspaceEdit};
-use std::path::Path;
+use ide_core::{
+    CancellationToken, DocId, FileEdit, IdeError, IdeEvent, IdeResult, Location, Pos, Range, RequestId, WorkspaceEdit,
+};
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
-fn join_err(e: tokio::task::JoinError) -> IdeError {
-    IdeError::internal(e.to_string())
+/// POM gutters in several editors refresh together. A very short cache lets those
+/// requests share one reactor scan without serving a stale module list after edits settle.
+const MAVEN_MODULE_CACHE_TTL: Duration = Duration::from_millis(250);
+type MavenModuleCache = HashMap<String, (Instant, Vec<ide_build::maven::ModulePom>)>;
+static MAVEN_MODULES: OnceLock<Mutex<MavenModuleCache>> = OnceLock::new();
+
+fn maven_modules(
+    project: &Project,
+    settings: &Settings,
+    options: &PomNavigationOptions,
+) -> Vec<ide_build::maven::ModulePom> {
+    let key = format!(
+        "{}\0{:?}\0{:?}\0{:?}\0{:?}",
+        project.root.display(),
+        project.build_cache_dir(),
+        settings.languages.java.maven.linked_projects,
+        options.profiles,
+        options.jdk_version
+    );
+    let cache = MAVEN_MODULES.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some((_at, modules)) = cache.lock().ok().and_then(|mut cache| {
+        let fresh = cache.get(&key).filter(|(at, _)| at.elapsed() < MAVEN_MODULE_CACHE_TTL).cloned();
+        if fresh.is_none() {
+            cache.remove(&key);
+        }
+        fresh
+    }) {
+        return modules;
+    }
+    let model = load(&project.root, &project.build_cache_dir(), settings).maven.unwrap_or_default();
+    let modules = model
+        .projects
+        .into_iter()
+        .map(|p| ide_build::maven::ModulePom {
+            group_id: p.group_id,
+            artifact_id: p.artifact_id,
+            version: p.version,
+            pom: project.root.join(&p.pom),
+        })
+        .collect::<Vec<_>>();
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(key, (Instant::now(), modules.clone()));
+    }
+    modules
 }
 
 /// The build model with the launch settings applied: the JDK (`JAVA_HOME`), and
 /// the Maven home and options from Settings › Maven.
 pub fn load(root: &Path, cache: &Path, settings: &Settings) -> BuildModel {
-    let mut model = ide_build::load_linked(
+    let jdk = ide_sdk::apply::project_jdk(root, settings);
+    let mut model = ide_build::load_linked_with_jdk(
         root,
         cache,
         ide_sdk::apply::maven_local_repository(root, settings),
         &settings.languages.java.maven,
         &settings.languages.java.gradle,
+        ide_sdk::apply::maven_jdk(root, settings, None).map(|jdk| jdk.major),
     );
-    let jdk = ide_sdk::apply::project_jdk(root, settings);
     if let Some(m) = &mut model.maven {
         let mvn = ide_sdk::apply::maven_command(root, settings);
         let options = ide_sdk::apply::maven_options(root, settings);
@@ -74,6 +127,23 @@ pub fn load(root: &Path, cache: &Path, settings: &Settings) -> BuildModel {
     model
 }
 
+/// POM navigation follows the same profile choices as the last Maven sync and
+/// resolves JDK-activated profiles with the project's selected Maven runtime.
+fn pom_navigation_options(project: &Project, settings: &Settings) -> PomNavigationOptions {
+    let mut profiles = settings.languages.java.maven.profiles(&[]);
+    for profile in ide_build::maven_profiles(&project.build_cache_dir()) {
+        if !profiles.contains(&profile) {
+            profiles.push(profile);
+        }
+    }
+    PomNavigationOptions {
+        local_repo: ide_sdk::apply::maven_local_repository(&project.root, settings)
+            .or_else(ide_build::maven::default_local_repo),
+        profiles,
+        jdk_version: ide_sdk::apply::maven_jdk(&project.root, settings, None).map(|jdk| jdk.major),
+    }
+}
+
 /// Build and Run use the same selected toolchain and module-local runtime discovery.
 fn prepare_plan(mut plan: compile::BuildPlan, root: &Path, settings: &Settings) -> compile::BuildPlan {
     let kind = match plan.system {
@@ -112,7 +182,7 @@ fn prepare_plan(mut plan: compile::BuildPlan, root: &Path, settings: &Settings) 
 
 /// `model` building with the Maven profiles of the last sync (`-P`), as Maven runs from
 /// the tool window do.
-fn with_profiles(mut model: BuildModel, cache: &Path) -> BuildModel {
+pub(super) fn with_profiles(mut model: BuildModel, cache: &Path) -> BuildModel {
     let profiles = ide_build::maven_profiles(cache);
     if let (Some(m), false) = (&mut model.maven, profiles.is_empty()) {
         for p in &mut m.projects {
@@ -123,11 +193,12 @@ fn with_profiles(mut model: BuildModel, cache: &Path) -> BuildModel {
 }
 
 /// Maven and Gradle projects of the window's project, from the build files plus the last sync.
+#[command(trust = trusted)]
 pub async fn build_model(host: &Host, window: &str) -> IdeResult<BuildModel> {
     host.require_trust(window)?;
     let project = host.project(window)?;
     let config = host.config_dir.clone();
-    tokio::task::spawn_blocking(move || workspace::load_project(&project, &config)).await.map_err(join_err)?
+    blocking(move || workspace::load_project(&project, &config)).await
 }
 
 fn linked_gradle_paths(
@@ -180,7 +251,7 @@ fn linked_gradle_paths(
 async fn set_gradle_projects(host: &Host, window: &str, paths: Vec<String>, link: bool) -> IdeResult<BuildModel> {
     host.require_trust(window)?;
     let project = host.project(window)?;
-    tokio::task::spawn_blocking(move || {
+    blocking(move || {
         if ide_workspace::workspace::Workspace::load(&project.root)?.is_some() {
             return Err(IdeError::invalid("Open a workspace member as a project to link Gradle builds"));
         }
@@ -196,23 +267,54 @@ async fn set_gradle_projects(host: &Host, window: &str, paths: Vec<String>, link
         Ok::<BuildModel, IdeError>(load(&project.root, &project.build_cache_dir(), &settings))
     })
     .await
-    .map_err(join_err)?
 }
 
-/// Links independent builds without changing their Gradle scripts.
+#[command(trust = trusted)]
 pub async fn gradle_link_projects(host: &Host, window: &str, paths: Vec<String>) -> IdeResult<BuildModel> {
+    // Links independent builds without changing their Gradle scripts.
     set_gradle_projects(host, window, paths, true).await
 }
 
-/// Stops importing the selected independent builds; files and saved run configurations stay intact.
+#[command(trust = trusted)]
 pub async fn gradle_unlink_projects(host: &Host, window: &str, paths: Vec<String>) -> IdeResult<BuildModel> {
+    // Stops importing the selected independent builds; files and saved run configurations stay intact.
     set_gradle_projects(host, window, paths, false).await
+}
+
+struct MavenSourceRefresh {
+    root: PathBuf,
+    repository: PathBuf,
+    candidates: Vec<(usize, sources::Artifact)>,
+}
+
+fn cached_maven_sources(
+    model: &BuildModel,
+    scopes: Vec<workspace::Scope>,
+    window_root: &Path,
+    build_dir: Option<&str>,
+) -> Vec<MavenSourceRefresh> {
+    let Some(maven) = &model.maven else { return Vec::new() };
+    scopes
+        .into_iter()
+        .filter(|scope| workspace::selected(scope, window_root, BuildTool::Maven, build_dir))
+        .filter_map(|scope| {
+            let repository = ide_sdk::apply::maven_local_repository(&scope.root, &scope.settings)
+                .or_else(ide_build::maven::default_local_repo)?;
+            let projects = maven.projects.iter().enumerate().filter(|(_, project)| {
+                Path::new(project.project_root.as_deref().unwrap_or_default()) == scope.root
+                    || (project.project_root.is_none() && scope.root == window_root)
+            });
+            let candidates = sources::cached_snapshots(&repository, projects);
+            (!candidates.is_empty()).then_some(MavenSourceRefresh { root: scope.root, repository, candidates })
+        })
+        .collect()
 }
 
 /// Runs Maven (`help:effective-pom dependency:tree`) or Gradle (`tasks --all`) in the
 /// background, reporting progress on `on_progress`; cancellable with `cancel_request(request)`.
 /// Returns the refreshed model; a failed build is reported in its `syncError`.
 #[allow(clippy::too_many_arguments)]
+#[command(trust = trusted)]
 pub async fn build_sync(
     host: &Host,
     window: &str,
@@ -230,7 +332,7 @@ pub async fn build_sync(
     let bridge_profiles = profiles.clone();
     let p = project.clone();
     let config = host.config_dir.clone();
-    let result = tokio::task::spawn_blocking(move || {
+    let result = blocking(move || {
         let scopes = workspace::scopes(&p, &config)?;
         let selected: Vec<_> =
             scopes.iter().filter(|scope| workspace::selected(scope, &p.root, tool, build_dir.as_deref())).collect();
@@ -238,6 +340,7 @@ pub async fn build_sync(
             return Err(IdeError::not_found("Build project is no longer linked"));
         }
         let mut profiles_changed = false;
+        let mut offline_changed = false;
         for scope in selected {
             if token.is_cancelled() {
                 return Err(IdeError::cancelled());
@@ -253,6 +356,10 @@ pub async fn build_sync(
                     p.sink.emit(IdeEvent::ProjectRootsChanged { root: p.root.clone().into() });
                 }
                 profiles_changed |= changed;
+                offline_changed |= ide_build::save_maven_offline(cache, offline).unwrap_or_else(|e| {
+                    tracing::warn!("Maven offline mode not saved: {e}");
+                    false
+                });
             }
             let env = current
                 .maven
@@ -299,47 +406,135 @@ pub async fn build_sync(
         let scopes = workspace::scopes(&p, &config)?;
         let model = workspace::load_scopes(&p.root, &scopes);
         let updates = workspace::update_files(&p.root, &scopes, &model, tool);
-        Ok::<_, IdeError>((model, profiles_changed, updates))
+        let snapshots = if tool == BuildTool::Maven && !offline {
+            cached_maven_sources(&model, scopes, &p.root, build_dir.as_deref())
+        } else {
+            Vec::new()
+        };
+        Ok::<_, IdeError>((model, profiles_changed || offline_changed, updates, snapshots))
     })
-    .await
-    .map_err(join_err);
-    host.end_request(request);
-    let (model, profiles_changed, updates) = result??;
-    if completion_token.is_cancelled() {
-        return Err(IdeError::cancelled());
-    }
-    if tool == BuildTool::Gradle {
-        // The sync may report project folders outside the project (`includeFlat`): index and list them.
+    .await;
+    let result = async {
+        let (mut model, reconfigure, updates, snapshots) = result?;
+        if completion_token.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        // A reactor or Gradle build may have changed its external project folders.
         project.refresh_index_scope();
-        project.sink.emit(ide_core::IdeEvent::ProjectRootsChanged { root: project.root.clone().into() });
         let p = project.clone();
         tokio::task::spawn_blocking(move || p.refresh_repositories());
-    }
-    if tool == BuildTool::Maven
-        && model.maven.is_some()
-        && let Some(bridge) = &project.kotlin_bridge
-    {
-        bridge.configure_maven(offline, bridge_profiles);
-    }
-    // jdtls re-imports on pom changes but misses artifacts added to ~/.m2
-    // meanwhile ("missing artifact" stays until Invalidate Caches); asking it
-    // to update the project configurations re-resolves them (#436). The same
-    // holds for Gradle: it reuses its cached classpath on restart, so a
-    // dependency added to `build.gradle` stays unresolved until told to sync.
-    let lsp = project.lsp.clone();
-    tokio::spawn(async move {
-        if profiles_changed {
-            // jdtls takes the profiles from its Maven settings (see `ide_sdk::maven_profiles`).
-            lsp.reconfigure().await;
+        project.sink.emit(IdeEvent::ProjectRootsChanged { root: project.root.clone().into() });
+        if tool == BuildTool::Maven
+            && model.maven.is_some()
+            && let Some(bridge) = &project.kotlin_bridge
+        {
+            bridge.configure_maven(offline, bridge_profiles.clone());
         }
-        for file in updates {
-            let uri = ide_lsp::path_to_uri_string(&file);
-            if let Err(e) = lsp.java_update_project_configs(&file, vec![uri]).await {
-                tracing::debug!("java/projectConfigurationsUpdate: {e}");
+        let lsp = project.lsp.clone();
+        let documents = project.documents.clone();
+        if snapshots.is_empty() {
+            tokio::spawn(async move {
+                update_java_projects(&lsp, &updates, reconfigure, None).await;
+                refresh_library_archives(&lsp, &documents, &updates, Vec::new()).await;
+            });
+        } else {
+            // JDT LS resolves the binary jars while importing Maven projects.
+            update_java_projects(&lsp, &updates, reconfigure, Some(&completion_token)).await;
+            let cancel = completion_token.clone();
+            let (updated, refreshed) = blocking_value(move || {
+                let mut refreshed = Vec::new();
+                if let Some(maven) = &model.maven {
+                    for batch in snapshots {
+                        if cancel.is_cancelled() {
+                            break;
+                        }
+                        refreshed.extend(sources::refresh_snapshots(
+                            &batch.root,
+                            &maven.projects,
+                            &batch.repository,
+                            &batch.candidates,
+                            &bridge_profiles,
+                            &cancel,
+                        ));
+                    }
+                }
+                (model, refreshed)
+            })
+            .await?;
+            model = updated;
+            tokio::spawn(async move {
+                refresh_library_archives(&lsp, &documents, &updates, refreshed).await;
+            });
+        }
+        if completion_token.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        Ok(model)
+    }
+    .await;
+    host.end_request(request);
+    result
+}
+
+async fn update_java_projects(
+    lsp: &ide_lsp::LspManager,
+    updates: &[PathBuf],
+    reconfigure: bool,
+    wait: Option<&CancellationToken>,
+) {
+    if reconfigure {
+        // jdtls takes the profiles and offline mode from its Maven settings.
+        lsp.reconfigure().await;
+    }
+    // JDT LS caches its classpath and re-imports on build-file changes. Ask it to
+    // re-resolve dependencies even when the build files stayed the same (#436).
+    if let Err(e) = lsp.java_update_project_configs(updates, wait).await {
+        tracing::debug!("Updating Java project configurations: {e}");
+    }
+}
+
+/// Re-read open library classes whose binary or attached sources changed in place.
+async fn refresh_library_archives(
+    lsp: &Arc<ide_lsp::LspManager>,
+    documents: &Arc<ide_workspace::Documents>,
+    updates: &[PathBuf],
+    refreshed: Vec<PathBuf>,
+) {
+    let changed = {
+        let lsp = lsp.clone();
+        tokio::task::spawn_blocking(move || lsp.changed_library_archives()).await.unwrap_or_default()
+    };
+    let archives: HashSet<_> = changed.into_iter().chain(refreshed).collect();
+    if let Err(e) = lsp.java_refresh_archives(updates, &archives).await {
+        tracing::debug!("openidea.java.refreshArchives: {e}");
+    }
+    let changed = {
+        let (lsp, documents) = (lsp.clone(), documents.clone());
+        tokio::task::spawn_blocking(move || {
+            lsp.invalidate_library_archives(&archives);
+            documents
+                .open_documents()
+                .into_iter()
+                .filter_map(|doc| Some((doc, documents.virtual_uri(doc).ok().flatten()?)))
+                .filter(|(_, uri)| {
+                    lsp.library_class_changed(uri)
+                        || ide_lsp::LspManager::library_archive(uri).is_some_and(|archive| archives.contains(&archive))
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default()
+    };
+    for (doc, uri) in changed {
+        match lsp.virtual_document(&uri).await {
+            Ok(vd) => {
+                if let Err(e) = documents.replace_virtual(doc, &vd.text, &vd.encoding, vd.has_bom) {
+                    tracing::debug!("refreshing {uri}: {e}");
+                }
             }
+            Err(e) => tracing::debug!("refreshing {uri}: {e}"),
         }
-    });
-    Ok(model)
+    }
 }
 
 /// The POM declaring `dependency` for the Maven module `pom` (project-relative): the
@@ -376,23 +571,23 @@ fn declaring_pom(
 }
 
 /// The `.toml` of a version catalog the build imports as `group:artifact:version`, once a
-/// build has downloaded it (`ide_sdk::libraries::published_version_catalog`).
+/// build has downloaded it.
+#[command(trust = trusted)]
 pub async fn gradle_published_catalog(
     host: &Host,
     window: &str,
     coordinates: String,
 ) -> IdeResult<Option<ide_core::IpcPath>> {
     let project = host.project(window)?;
-    tokio::task::spawn_blocking(move || {
+    blocking_value(move || {
         ide_sdk::libraries::published_version_catalog(&project.root, &project.settings.effective(), &coordinates)
             .map(Into::into)
     })
     .await
-    .map_err(join_err)
 }
 
-/// The resolved dependency tree of the Gradle project `gradle_path` (`:`, `:app`) for
-/// `configuration`, from Gradle's `dependencies` report; cancellable with `cancel_request(request)`.
+/// The resolved dependency tree of a Gradle project for one configuration (Dependency Analyzer).
+#[command(trust = trusted)]
 pub async fn gradle_dependencies(
     host: &Host,
     window: &str,
@@ -402,11 +597,12 @@ pub async fn gradle_dependencies(
     request: RequestId,
     build_dir: Option<String>,
 ) -> IdeResult<Vec<ide_build::GradleDependency>> {
+    // `gradle_path` is `:`, `:app`…; the tree comes from Gradle's `dependencies` report.
     host.require_trust(window)?;
     let project = host.project(window)?;
     let config = host.config_dir.clone();
     let token = host.begin_project_request(window, request);
-    let result = tokio::task::spawn_blocking(move || {
+    let result = blocking(move || {
         let scopes = workspace::scopes(&project, &config)?;
         let scope = scopes
             .iter()
@@ -424,15 +620,57 @@ pub async fn gradle_dependencies(
             gradle_command: Some(gradle.command.clone()),
             ..Default::default()
         };
-        ide_build::gradle_dependencies(&scope.root, gradle, &options, &gradle_path, &configuration, &token)
+        let dependencies =
+            ide_build::gradle_dependencies(&scope.root, gradle, &options, &gradle_path, &configuration, &token)?;
+        // What plugins read of the build (`build.dependencies`) instead of running Gradle.
+        let report = ide_build::GradleReport { project: gradle_path, configuration, dependencies };
+        let cache = ide_build::gradle::cache_dir(&scope.cache, &gradle.dir);
+        if let Err(e) = ide_build::save_gradle_report(&scope.root, &cache, gradle, &report) {
+            tracing::debug!("keeping the dependencies report of {}: {e}", report.project);
+        }
+        Ok(report.dependencies)
     })
-    .await
-    .map_err(join_err);
+    .await;
     host.end_request(request);
-    result?
+    result
+}
+
+/// What the Dependency Analyzer has of the builds of `project` at `root` (the project, or one
+/// of its workspace members), without running a build tool: the Maven modules as last synced
+/// and the Gradle reports read since the build files last changed.
+pub(crate) fn analyzed_dependencies(
+    project: &Project,
+    config: &Path,
+    root: &Path,
+) -> IdeResult<crate::plugins::BuildGraph> {
+    let mut graph = crate::plugins::BuildGraph::default();
+    for scope in workspace::scopes(project, config)?.iter().filter(|s| root == project.root || s.root == root) {
+        let settings = &scope.settings;
+        let model = ide_build::load_linked(
+            &scope.root,
+            &scope.cache,
+            ide_sdk::apply::maven_local_repository(&scope.root, settings),
+            &settings.languages.java.maven,
+            &settings.languages.java.gradle,
+        );
+        graph.maven.extend(model.maven.into_iter().flat_map(|m| m.projects));
+        for build in &model.gradle {
+            let reports =
+                ide_build::gradle_reports(&scope.root, &ide_build::gradle::cache_dir(&scope.cache, &build.dir), build);
+            // buildSrc can't be analyzed from the build, as in the Dependency Analyzer.
+            for p in build.projects.iter().filter(|p| !p.build.as_deref().is_some_and(|b| b.ends_with(":buildSrc"))) {
+                graph.gradle.push(crate::plugins::GradleModule {
+                    path: p.path.clone(),
+                    reports: reports.iter().filter(|r| r.project == p.path).cloned().collect(),
+                });
+            }
+        }
+    }
+    Ok(graph)
 }
 
 /// Where the direct dependency `dependency` of the Maven module `pom` is declared.
+#[command(trust = trusted)]
 pub async fn maven_dependency_declaration(
     host: &Host,
     window: &str,
@@ -441,38 +679,165 @@ pub async fn maven_dependency_declaration(
 ) -> IdeResult<Location> {
     let project = host.project(window)?;
     let config = host.config_dir.clone();
-    tokio::task::spawn_blocking(move || {
+    blocking(move || {
         let (path, _, range) = declaring_pom(&project, &config, &pom, &dependency)?;
         Ok(Location::file(path, range))
     })
     .await
-    .map_err(join_err)?
 }
 
-/// The go-to-declaration target at `pos` of the Maven POM `pom` (project-relative, or
-/// absolute for a parent POM opened from the local repository): the definition of the
-/// `${property}` at the caret, or the `<dependencyManagement>` / `<pluginManagement>`
-/// entry providing the dependency's / plugin's version, along the parent chain (into
-/// the local repository when a parent is not in the project). `None` when nothing
-/// resolvable is under the caret.
+/// The go-to-declaration target at `pos` of a Maven POM: the definition of the
+/// `${property}` at the caret, the parent POM, or the dependency / plugin's own POM
+/// (a project module first, then the local repository). A dependency without a
+/// resolvable artifact POM falls back to its management entry.
+#[command(trust = trusted)]
 pub async fn maven_goto_declaration(host: &Host, window: &str, pom: String, pos: Pos) -> IdeResult<Option<PomGoto>> {
+    // `pom` is project-relative, or absolute for a parent POM opened from the local repository.
+    // The parent chain reaches into the local repository when a parent is not in the project;
+    // without a managed version the target is the artifact's own POM (a project module's, or the
+    // local repository's). `None` when nothing resolvable is under the caret.
     let project = host.project(window)?;
-    tokio::task::spawn_blocking(move || {
+    blocking(move || {
         let given = Path::new(&pom);
         let path = if given.is_absolute() { given.to_path_buf() } else { project.root.join(given) };
         let text = project.text_of(&path)?;
         let settings = project.settings.effective();
-        let repo = ide_sdk::apply::maven_local_repository(&project.root, &settings)
-            .or_else(ide_build::maven::default_local_repo);
-        Ok(ide_build::maven::goto_declaration(&text, &path, pos, repo))
+        let options = pom_navigation_options(&project, &settings);
+        let module_options = options.clone();
+        let modules = || maven_modules(&project, &settings, &module_options);
+        Ok(ide_build::maven::goto_declaration_with(&text, &path, pos, options, modules))
     })
     .await
-    .map_err(join_err)?
+}
+
+/// Gutter targets of the unversioned dependencies and plugins in a Maven POM:
+/// the management declarations that actually supply their versions, including
+/// parent POMs and imported BOMs. Cancel with `cancel_request(request)`.
+#[command(trust = trusted)]
+pub async fn maven_managed_declarations(
+    host: &Host,
+    window: &str,
+    pom: String,
+    request: RequestId,
+) -> IdeResult<Vec<PomManagedDeclaration>> {
+    let project = host.project(window)?;
+    let cancel = host.begin_project_read_request(window, request);
+    let result = blocking(move || {
+        if cancel.is_cancelled() {
+            return Err(IdeError::cancelled());
+        }
+        let given = Path::new(&pom);
+        let path = if given.is_absolute() { given.to_path_buf() } else { project.root.join(given) };
+        let text = project.text_of(&path)?;
+        let settings = project.settings.effective();
+        let options = pom_navigation_options(&project, &settings);
+        let cancelled = cancel.clone();
+        let module_options = options.clone();
+        let modules = || {
+            if cancelled.is_cancelled() {
+                return Vec::new();
+            }
+            maven_modules(&project, &settings, &module_options)
+        };
+        let declarations = ide_build::maven::managed_declarations_with(&text, &path, options, modules);
+        if cancel.is_cancelled() { Err(IdeError::cancelled()) } else { Ok(declarations) }
+    })
+    .await;
+    host.end_request(request);
+    result
+}
+
+/// How long completion waits for Maven Central before answering from the local repository.
+const CENTRAL_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Completion of the `<dependency>` coordinate the caret (`offset`, UTF-16) sits
+/// in the value of in the POM `doc`, from the local repository and Maven Central.
+#[command(trust = trusted)]
+pub async fn maven_dependency_completion(
+    host: &Host,
+    window: &str,
+    doc: DocId,
+    offset: u32,
+    request: RequestId,
+) -> IdeResult<Option<PomCompletion>> {
+    // The local repository is Settings › Maven's, else `~/.m2/repository` (group ids, the chosen
+    // group's artifacts, the chosen artifact's versions), topped up with Maven Central's (the search
+    // endpoint's popular coordinates, the published version metadata), which the shared version
+    // cache keeps for the session. `None` when the caret is not in a `<dependency>` coordinate element.
+    use ide_build::maven::completion::{PomCompletionKind, local_options};
+    let project = host.project(window)?;
+    let cache = host.dependency_versions.clone();
+    let central = !host.configured_registries_only();
+    let cancel = host.begin_project_read_request(window, request);
+    let result = host
+        .blocking(move || {
+            let snap = project.documents.snapshot(doc)?;
+            if snap.large || snap.read_only || !snap.path.file_name().is_some_and(|name| name == "pom.xml") {
+                return Ok(None);
+            }
+            let Some(target) = ide_build::maven::completion::completion_target(&snap.text, offset) else {
+                return Ok(None);
+            };
+            let settings = project.settings.effective();
+            let repo = ide_sdk::apply::maven_local_repository(&project.root, &settings)
+                .or_else(ide_build::maven::default_local_repo);
+            let mut options = repo.map_or_else(Vec::new, |repo| local_options(&repo, &target));
+            // Central's answers are cached for the session (the shared version cache).
+            // The local repository answers at once: Central gets `CENTRAL_WAIT`, then the
+            // lookup finishes in the background and fills the cache for the next request.
+            // Offline, behind a proxy or rate-limited, a failed fetch never fails completion.
+            // Only the configured package registries: the local repository alone.
+            let remote = if !central {
+                Vec::new()
+            } else {
+                let (cache, target) = (cache.clone(), target.clone());
+                let (tx, rx) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let detached = ide_core::CancellationToken::new();
+                    let found = match target.kind {
+                        PomCompletionKind::GroupId if !target.typed.is_empty() => {
+                            cache.versions(&MavenCentralGroups, &target.typed, &detached).unwrap_or_default()
+                        }
+                        PomCompletionKind::ArtifactId => match &target.group {
+                            Some(group) => cache
+                                .versions(&MavenCentralArtifacts { group: group.clone() }, &target.typed, &detached)
+                                .unwrap_or_default(),
+                            None => Vec::new(),
+                        },
+                        PomCompletionKind::Version => match (&target.group, &target.artifact) {
+                            (Some(group), Some(artifact)) => cache
+                                .versions(&MavenCentralVersions, &format!("{group}:{artifact}"), &detached)
+                                .unwrap_or_default(),
+                            _ => Vec::new(),
+                        },
+                        _ => Vec::new(), // A group id from nothing: the search endpoint has no such query.
+                    };
+                    let _ = tx.send(found);
+                });
+                rx.recv_timeout(CENTRAL_WAIT).unwrap_or_default()
+            };
+            if cancel.is_cancelled() {
+                return Err(IdeError::cancelled());
+            }
+            let known: std::collections::HashSet<String> = options.iter().map(|o| o.label.clone()).collect();
+            options.extend(
+                remote
+                    .into_iter()
+                    .filter(|label| !known.contains(label))
+                    .map(|label| PomCompletionOption { label, detail: None }),
+            );
+            options.truncate(ide_build::maven::completion::MAX_OPTIONS);
+            Ok(Some(PomCompletion { from: target.from, to: target.to, kind: target.kind, options }))
+        })
+        .await;
+    host.end_request(request);
+    result
 }
 
 /// Adds an `<exclusion>` of `exclusion` to the declaration of the direct dependency
 /// `dependency` of the Maven module `pom`, through the open document when there is one
 /// (saved). Returns the declaration; nothing changes when it already excludes it.
+#[command(trust = trusted)]
 pub async fn maven_exclude_dependency(
     host: &Host,
     window: &str,
@@ -482,7 +847,7 @@ pub async fn maven_exclude_dependency(
 ) -> IdeResult<Location> {
     let project = host.project(window)?;
     let config = host.config_dir.clone();
-    tokio::task::spawn_blocking(move || {
+    blocking(move || {
         let (path, text, range) = declaring_pom(&project, &config, &pom, &dependency)?;
         match ide_build::pom_edit::add_exclusion(&text, &dependency, &exclusion) {
             Some(Exclusion::Edit(edit)) => {
@@ -490,7 +855,7 @@ pub async fn maven_exclude_dependency(
                     files: vec![FileEdit::Edit { path: path.clone().into(), edits: vec![edit], version: None }],
                     ..Default::default()
                 };
-                apply_workspace_edit(&project.documents, &edit)?;
+                project.documents.apply_workspace_edit(&edit)?;
             }
             Some(Exclusion::Present) => {}
             None => return Err(IdeError::not_found(format!("{dependency} is not declared in {}", path.display()))),
@@ -498,7 +863,82 @@ pub async fn maven_exclude_dependency(
         Ok(Location::file(path, range))
     })
     .await
-    .map_err(join_err)?
+}
+
+/// Build / Rebuild / Build Artifacts of a Java project without a build tool, from its
+/// Project Structure; `None` when it has no Java sources under its source roots.
+fn structure_plan(
+    root: &Path,
+    settings: &Settings,
+    detected: &[ide_workspace::roots::SourceFolder],
+    kind: BuildKind,
+    cache: &Path,
+) -> IdeResult<Option<compile::BuildPlan>> {
+    let (ps, roots, jdk) = structure_inputs(root, settings, detected);
+    compile::structure_plan(root, &ps, &roots, jdk.as_ref(), &settings.languages.java.language_level, kind, cache)
+}
+
+/// The Project Structure, roots and JDK a build of a project without a build tool uses.
+/// An Eclipse project's `.classpath` libraries and its web content folder count as if they
+/// were configured, and a web project with no artifacts gets IDEA's `<name>:war exploded`.
+pub(crate) fn structure_inputs(
+    root: &Path,
+    settings: &Settings,
+    detected: &[ide_workspace::roots::SourceFolder],
+) -> (ide_core::settings::ProjectStructureSettings, compile::StructureRoots, Option<compile::StructureJdk>) {
+    use ide_core::settings::{ArtifactConfig, ArtifactKind, FacetConfig, ProjectLibrary};
+    use ide_workspace::roots::{ProjectRoots, RootKind, eclipse};
+    let mut ps = settings.project_structure.clone();
+    let mut included = Vec::new();
+    if let Some(cp) = eclipse::classpath(root).filter(|cp| !cp.libraries.is_empty()) {
+        let name = "Eclipse classpath".to_owned();
+        if !ps.libraries.iter().any(|l| l.name == name) {
+            ps.libraries.push(ProjectLibrary { name: name.clone(), classes: cp.libraries, ..Default::default() });
+        }
+        included.push(name);
+    }
+    if !ps.facets.iter().any(|f| f.kind == "web")
+        && let Some(web) = eclipse::web_root(root)
+    {
+        ps.facets.push(FacetConfig {
+            kind: "web".into(),
+            module: ".".into(),
+            descriptor: format!("{web}/WEB-INF/web.xml"),
+            web_root: web,
+        });
+        if ps.artifacts.is_empty() {
+            let name = root.file_name().map_or_else(|| "app".into(), |n| n.to_string_lossy().into_owned());
+            ps.artifacts.push(ArtifactConfig {
+                name: format!("{name}:war exploded"),
+                kind: ArtifactKind::WarExploded,
+                module: ".".into(),
+                include_libraries: included,
+                ..Default::default()
+            });
+        }
+    }
+    let roots = ProjectRoots::compute(detected.to_vec(), &ps);
+    let of = |kind: RootKind| roots.roots.iter().filter(|r| r.kind == kind).map(|r| root.join(&r.path)).collect();
+    let module = ps.module_settings(root, root);
+    let level = module
+        .map(|m| m.language_level.as_str())
+        .filter(|l| !l.trim().is_empty())
+        .unwrap_or(&settings.languages.java.language_level);
+    // Without a configured SDK, an installed JDK that can compile the language level.
+    let jdk = ide_sdk::apply::module_jdk(root, root, settings)
+        .or_else(|| {
+            let installed = ide_sdk::java::installed_jdks();
+            ide_sdk::java::pick_jdk(&installed, compile::language_release(level)).cloned()
+        })
+        .map(|j| compile::StructureJdk { home: j.home, major: j.major });
+    let roots = compile::StructureRoots {
+        sources: of(RootKind::Source),
+        tests: of(RootKind::Test),
+        resources: of(RootKind::Resources),
+        test_resources: of(RootKind::TestResources),
+        excluded: of(RootKind::Excluded),
+    };
+    (ps, roots, jdk)
 }
 
 fn cmake_plan(root: &Path, kind: BuildKind, configs: &[ide_run::RunConfig], id: &str) -> IdeResult<compile::BuildPlan> {
@@ -521,6 +961,7 @@ fn cmake_plan(root: &Path, kind: BuildKind, configs: &[ide_run::RunConfig], id: 
 /// with `cancel_request(request)`. Diagnostics of `clear` (the files of the previous build)
 /// are cleared first; the new messages are published as `build` diagnostics.
 #[allow(clippy::too_many_arguments)]
+#[command(trust = trusted)]
 pub async fn build_run(
     host: &Host,
     window: &str,
@@ -534,10 +975,77 @@ pub async fn build_run(
     host.require_trust(window)?;
     let project = host.project(window)?;
     let (root, cache, sink) = (project.root.clone(), project.build_cache_dir(), project.sink.clone());
+    let file = file.map(|f| ide_core::project_roots::resolve(&root, &f));
     let settings = project.settings.effective();
+    let detected = project.detected_roots.read().clone();
     let config_dir = host.config_dir.clone();
     let token = host.begin_project_request(window, request);
-    let result = tokio::task::spawn_blocking(move || {
+    let launch_project = project.clone();
+    let (service, data_dir) = (host.java_build.clone(), host.local_data_dir.clone());
+    let result = blocking(move || {
+        let single = cmake.is_none() && ide_workspace::workspace::Workspace::load(&root)?.is_none();
+        // A Maven or Gradle project builds with the IDE's Java build (#4078), unless its
+        // settings ask for the build tool, or it can't.
+        if single {
+            let model = with_profiles(load(&root, &cache, &settings), &cache);
+            let served = match file.as_deref() {
+                Some(module) => super::java::served_by_service(&root, &model, &settings, module),
+                None => super::java::project_served_by_service(&model, &settings),
+            };
+            if served {
+                let service = super::java::ServiceBuild {
+                    service: &service,
+                    data_dir: &data_dir,
+                    root: &root,
+                    cache: &cache,
+                    settings: &settings,
+                    model: &model,
+                };
+                let target = match file.as_deref() {
+                    Some(file) => Target::Module(file),
+                    None => Target::Project,
+                };
+                if let Some(result) = service_build_result(&service, target, kind, &clear, &sink, &token, &on_event)? {
+                    return Ok(result);
+                }
+            }
+        }
+        // Fast path (#2476): an unchanged single-project Maven build skips
+        // Maven entirely. Previous diagnostics stay: nothing changed, so they
+        // are still accurate.
+        if single && kind == BuildKind::Build {
+            let model = with_profiles(load(&root, &cache, &settings), &cache);
+            if compile::menu_up_to_date(&cache, &root, &model, file.as_deref(), &token) {
+                let started = std::time::Instant::now();
+                let plan = prepare_plan(
+                    compile::plan(
+                        &root,
+                        &model,
+                        kind,
+                        file.as_deref(),
+                        settings.cmake.profiles.as_deref(),
+                        None,
+                        &token,
+                    )?,
+                    &root,
+                    &settings,
+                );
+                let _ = on_event.send(BuildEvent::Started { system: plan.system, title: plan.title.clone() });
+                let _ = on_event.send(BuildEvent::Output {
+                    text: "Up to date: no changes, build skipped.\n".into(),
+                    stderr: false,
+                });
+                return Ok(BuildResult {
+                    system: plan.system,
+                    title: plan.title,
+                    success: true,
+                    errors: 0,
+                    warnings: 0,
+                    duration_ms: started.elapsed().as_secs_f64() * 1000.0,
+                    messages: Vec::new(),
+                });
+            }
+        }
         for path in clear {
             sink.emit(IdeEvent::Diagnostics {
                 path: path.into(),
@@ -545,18 +1053,28 @@ pub async fn build_run(
                 items: Vec::new(),
             });
         }
+        let mut launch_caches = Vec::new();
         let plan = if let Some(id) = cmake {
+            launch_caches.push(cache.clone());
             let configs = super::run::project_configs(&root, &settings, &config_dir)?;
             cmake_plan(&root, kind, &configs, &id)?
         } else if let Some(workspace) = ide_workspace::workspace::Workspace::load(&root)? {
             let mut combined: Option<compile::BuildPlan> = None;
             for member in workspace.projects.iter().filter(|p| file.as_ref().is_none_or(|f| f.starts_with(p))) {
                 let settings = ide_workspace::SettingsStore::load(&config_dir, Some(member)).effective();
-                let member_cache =
-                    if member == &root { cache.clone() } else { cache.join(crate::project::project_key(member)) };
+                let member_cache = workspace::cache_at(&root, &cache, member);
                 let model = with_profiles(load(member, &member_cache, &settings), &member_cache);
+                launch_caches.push(member_cache);
                 let plan = prepare_plan(
-                    compile::plan(member, &model, kind, file.as_deref(), settings.cmake.profiles.as_deref())?,
+                    compile::plan(
+                        member,
+                        &model,
+                        kind,
+                        file.as_deref(),
+                        settings.cmake.profiles.as_deref(),
+                        None,
+                        &token,
+                    )?,
                     member,
                     &settings,
                 );
@@ -569,90 +1087,211 @@ pub async fn build_run(
             plan.title = workspace.name;
             plan
         } else {
-            prepare_plan(
-                compile::plan(
-                    &root,
-                    &with_profiles(load(&root, &cache, &settings), &cache),
-                    kind,
-                    file.as_deref(),
-                    settings.cmake.profiles.as_deref(),
-                )?,
+            let model = with_profiles(load(&root, &cache, &settings), &cache);
+            launch_caches.push(cache.clone());
+            match compile::plan(
                 &root,
-                &settings,
-            )
+                &model,
+                kind,
+                file.as_deref(),
+                settings.cmake.profiles.as_deref(),
+                Some(&cache),
+                &token,
+            ) {
+                Ok(plan) => prepare_plan(plan, &root, &settings),
+                // No build tool: a Java project builds from its Project Structure.
+                Err(e) if e.kind == ide_core::error::ErrorKind::NotFound => {
+                    structure_plan(&root, &settings, &detected, kind, &cache)?.ok_or(e)?
+                }
+                Err(e) => return Err(e),
+            }
         };
         let result = compile::run(&root, &plan, &token, &|e| {
+            let _ = on_event.send(e);
+        });
+        if kind == BuildKind::Rebuild {
+            // The clean removed outputs that earlier launch snapshots still hold.
+            for cache in launch_caches {
+                launch_project.java_launches.for_cache(&cache).snapshots.lock().forget_reusable_snapshots();
+            }
+        }
+        let result = result?;
+        if result.success && single && kind == BuildKind::Build {
+            let model = with_profiles(load(&root, &cache, &settings), &cache);
+            compile::record_menu_build(&cache, &root, &model, file.as_deref(), &token);
+            // Only a project build covers every changed module; after Build Module the
+            // others may still be stale.
+            if file.is_none() {
+                compile::record_module_build(&cache, &root, &model, &token);
+            }
+        }
+        for (path, items) in compile::diagnostics(&result.messages) {
+            sink.emit(IdeEvent::Diagnostics { path: path.into(), source: compile::DIAGNOSTICS_SOURCE.into(), items });
+        }
+        Ok::<_, IdeError>(result)
+    })
+    .await;
+    host.end_request(request);
+    let outcome = result?;
+    // Maven generated sources (protobuf, gRPC) stay invisible to jdtls until the
+    // folders the build wrote are attached. An up-to-date build skips Maven and
+    // still needs this: the classes can already be on disk. The IDE's Java build
+    // generates them with Maven too.
+    if matches!(outcome.system, ide_build::compile::BuildSystem::Maven | ide_build::compile::BuildSystem::Javac) {
+        project.lsp.sync_maven_generated_sources(&project.root).await;
+    }
+    Ok(outcome)
+}
+
+/// A menu build by the IDE's Java build, as the Build window shows it; `None` when Maven builds.
+/// Diagnostics of `clear` are cleared once the service builds; its messages are published.
+#[allow(clippy::too_many_arguments)]
+fn service_build_result(
+    service: &super::java::ServiceBuild,
+    target: Target,
+    kind: BuildKind,
+    clear: &[std::path::PathBuf],
+    sink: &ide_core::SharedSink,
+    token: &CancellationToken,
+    on_event: &Channel<BuildEvent>,
+) -> IdeResult<Option<BuildResult>> {
+    let started = std::time::Instant::now();
+    let title = std::sync::Mutex::new(String::new());
+    let forward = |event: BuildEvent| {
+        if let BuildEvent::Started { title: t, .. } = &event {
+            *title.lock().unwrap() = t.clone();
+        }
+        let _ = on_event.send(event);
+    };
+    let built = service.build(target, kind, token, &forward)?;
+    let Some(outputs) = built else { return Ok(None) };
+    for path in clear {
+        sink.emit(IdeEvent::Diagnostics {
+            path: path.clone().into(),
+            source: compile::DIAGNOSTICS_SOURCE.into(),
+            items: Vec::new(),
+        });
+    }
+    for (path, items) in compile::diagnostics(&outputs.messages) {
+        sink.emit(IdeEvent::Diagnostics { path: path.into(), source: compile::DIAGNOSTICS_SOURCE.into(), items });
+    }
+    let count =
+        |severity: ide_core::Severity| outputs.messages.iter().filter(|m| m.severity == severity).count() as u32;
+    Ok(Some(BuildResult {
+        system: compile::BuildSystem::Javac,
+        title: title.into_inner().unwrap(),
+        success: outputs.failure.is_none(),
+        errors: count(ide_core::Severity::Error),
+        warnings: count(ide_core::Severity::Warning),
+        duration_ms: started.elapsed().as_secs_f64() * 1000.0,
+        messages: outputs.messages,
+    }))
+}
+
+fn plan_compile_file(
+    root: &Path,
+    cache: &Path,
+    settings: &Settings,
+    detected: &[ide_workspace::roots::SourceFolder],
+    file: &Path,
+    cancel: &CancellationToken,
+    on_progress: &dyn Fn(String),
+) -> IdeResult<compile::BuildPlan> {
+    if file.extension().is_none_or(|ext| !ext.eq_ignore_ascii_case("java")) {
+        return Err(IdeError::invalid("only Java sources can be compiled as a single file"));
+    }
+    if !file.is_file() {
+        return Err(IdeError::not_found("no Java source found for single-file compilation"));
+    }
+    let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let model = with_profiles(load(root, cache, settings), cache);
+    if compile::single_file_target(root, &model, file).is_ok() {
+        on_progress(format!("Resolving classpath for {name}…"));
+        return compile::compile_file_plan_cancellable(root, &model, file, cancel);
+    }
+    if compile::has_gradle_file_target(root, &model, file) {
+        on_progress(format!("Resolving classpath for {name}…"));
+        return compile::gradle_compile_file_plan(root, &model, file, cache, cancel);
+    }
+    let (ps, roots, jdk) = structure_inputs(root, settings, detected);
+    compile::structure_compile_file_plan(root, &ps, &roots, jdk.as_ref(), &settings.languages.java.language_level, file)
+}
+
+/// Build › Recompile: compiles one Java source file with `javac`, streaming the
+/// console and messages on `on_event`; cancellable with `cancel_request(request)`.
+/// Diagnostics of `clear` (the files of the previous build) are cleared first;
+/// the new messages are published as `build` diagnostics.
+#[command(trust = trusted)]
+pub async fn build_compile_file(
+    host: &Host,
+    window: &str,
+    file: std::path::PathBuf,
+    request: RequestId,
+    clear: Vec<std::path::PathBuf>,
+    on_event: Channel<BuildEvent>,
+) -> IdeResult<BuildResult> {
+    host.require_trust(window)?;
+    let project = host.project(window)?;
+    let file = ide_core::project_roots::resolve(&project.root, &file);
+    let scope = {
+        let (project, file) = (project.clone(), file.clone());
+        blocking(move || workspace::scope_for(&project, &file)).await?
+    };
+    let scope_root = scope.root.clone();
+    let detected = if scope.root == project.root {
+        project.detected_roots.read().clone()
+    } else {
+        let root = scope.root.clone();
+        blocking_value(move || ide_workspace::roots::detect(&root)).await?
+    };
+    let sink = project.sink.clone();
+    let token = host.begin_project_request(window, request);
+    let (service, data_dir) = (host.java_build.clone(), host.local_data_dir.clone());
+    let result = blocking(move || {
+        {
+            let model = with_profiles(load(&scope.root, &scope.cache, &scope.settings), &scope.cache);
+            if super::java::served_by_service(&scope.root, &model, &scope.settings, &file) {
+                let service = super::java::ServiceBuild {
+                    service: &service,
+                    data_dir: &data_dir,
+                    root: &scope.root,
+                    cache: &scope.cache,
+                    settings: &scope.settings,
+                    model: &model,
+                };
+                let target = Target::File(&file);
+                let kind = BuildKind::Build;
+                if let Some(result) = service_build_result(&service, target, kind, &clear, &sink, &token, &on_event)? {
+                    return Ok(result);
+                }
+            }
+        }
+        for path in clear {
+            sink.emit(IdeEvent::Diagnostics {
+                path: path.into(),
+                source: compile::DIAGNOSTICS_SOURCE.into(),
+                items: Vec::new(),
+            });
+        }
+        let plan =
+            plan_compile_file(&scope.root, &scope.cache, &scope.settings, &detected, &file, &token, &|message| {
+                let _ = on_event.send(BuildEvent::Progress { message, fraction: None });
+            })?;
+        let result = compile::run(&scope.root, &plan, &token, &|e| {
             let _ = on_event.send(e);
         })?;
         for (path, items) in compile::diagnostics(&result.messages) {
             sink.emit(IdeEvent::Diagnostics { path: path.into(), source: compile::DIAGNOSTICS_SOURCE.into(), items });
         }
-        Ok(result)
+        Ok::<_, IdeError>(result)
     })
-    .await
-    .map_err(join_err);
+    .await;
     host.end_request(request);
-    result?
-}
-
-/// Commands of this module the remote server answers.
-pub(crate) fn register(d: &mut Dispatcher) {
-    d.add("build_model", |c| async move { build_model(&c.host, &c.window).await });
-    d.add("gradle_link_projects", |c| async move { gradle_link_projects(&c.host, &c.window, c.arg("paths")?).await });
-    d.add(
-        "gradle_unlink_projects",
-        |c| async move { gradle_unlink_projects(&c.host, &c.window, c.arg("paths")?).await },
-    );
-    d.add("build_sync", |c| async move {
-        build_sync(
-            &c.host,
-            &c.window,
-            c.arg("tool")?,
-            c.arg("request")?,
-            c.arg("offline")?,
-            c.arg("profiles")?,
-            c.arg("buildDir")?,
-            c.sender("onProgress")?,
-        )
-        .await
-    });
-    d.add("gradle_published_catalog", |c| async move {
-        gradle_published_catalog(&c.host, &c.window, c.arg("coordinates")?).await
-    });
-    d.add("gradle_dependencies", |c| async move {
-        gradle_dependencies(
-            &c.host,
-            &c.window,
-            c.arg("gradlePath")?,
-            c.arg("configuration")?,
-            c.arg("offline")?,
-            c.arg("request")?,
-            c.arg("buildDir")?,
-        )
-        .await
-    });
-    d.add("maven_dependency_declaration", |c| async move {
-        maven_dependency_declaration(&c.host, &c.window, c.arg("pom")?, c.arg("dependency")?).await
-    });
-    d.add("maven_goto_declaration", |c| async move {
-        maven_goto_declaration(&c.host, &c.window, c.arg("pom")?, c.arg("pos")?).await
-    });
-    d.add("maven_exclude_dependency", |c| async move {
-        maven_exclude_dependency(&c.host, &c.window, c.arg("pom")?, c.arg("dependency")?, c.arg("exclusion")?).await
-    });
-    d.add("build_run", |c| async move {
-        build_run(
-            &c.host,
-            &c.window,
-            c.arg("kind")?,
-            c.arg("file")?,
-            c.arg("cmake")?,
-            c.arg("request")?,
-            c.arg("clear")?,
-            c.sender("onEvent")?,
-        )
-        .await
-    });
+    let outcome = result?;
+    if matches!(outcome.system, ide_build::compile::BuildSystem::Maven | ide_build::compile::BuildSystem::Javac) {
+        project.lsp.sync_maven_generated_sources(&scope_root).await;
+    }
+    Ok(outcome)
 }
 
 #[cfg(test)]
@@ -723,7 +1362,16 @@ mod build_tool_settings_tests {
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join(marker), source).unwrap();
             let plan = prepare_plan(
-                compile::plan(&dir, &Default::default(), BuildKind::Artifacts, None, None).unwrap(),
+                compile::plan(
+                    &dir,
+                    &Default::default(),
+                    BuildKind::Artifacts,
+                    None,
+                    None,
+                    None,
+                    &ide_core::CancellationToken::new(),
+                )
+                .unwrap(),
                 root,
                 &settings,
             );
@@ -797,7 +1445,43 @@ mod build_tool_settings_tests {
             let expected = root.join(if runner.is_empty() { "project-jdk" } else { runner });
             let model = load(&root, &root.join("cache"), &settings);
             assert_eq!(model.maven.as_ref().unwrap().projects[0].env["JAVA_HOME"], expected.to_string_lossy());
-            let plan = compile::plan(&root, &model, BuildKind::Build, None, None).unwrap();
+            let plan =
+                compile::plan(&root, &model, BuildKind::Build, None, None, None, &ide_core::CancellationToken::new())
+                    .unwrap();
+            assert!(!plan.steps.is_empty());
+            for step in plan.steps {
+                assert_eq!(step.env["JAVA_HOME"], expected.to_string_lossy());
+            }
+        }
+    }
+
+    /// Changing Project JDK updates the next Maven build without reopening the project.
+    #[test]
+    fn changing_project_jdk_updates_the_next_maven_build() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(tmp.path()).unwrap();
+        std::fs::write(
+            root.join("pom.xml"),
+            r#"<project><modelVersion>4.0.0</modelVersion><groupId>test</groupId><artifactId>app</artifactId><version>1</version></project>"#,
+        )
+        .unwrap();
+        for (name, version) in [("jdk8", "1.8"), ("jdk21", "21")] {
+            let home = root.join(name);
+            std::fs::create_dir_all(home.join("bin")).unwrap();
+            std::fs::write(home.join("bin").join(if cfg!(windows) { "java.exe" } else { "java" }), "").unwrap();
+            std::fs::write(home.join("release"), format!("JAVA_VERSION=\"{version}\"\n")).unwrap();
+        }
+
+        let mut settings = Settings::default();
+        settings.languages.java.maven.runner_jre.clear();
+        for name in ["jdk8", "jdk21"] {
+            settings.languages.java.jdk = name.into();
+            let expected = root.join(name);
+            let model = load(&root, &root.join("cache"), &settings);
+            assert_eq!(model.maven.as_ref().unwrap().projects[0].env["JAVA_HOME"], expected.to_string_lossy());
+            let plan =
+                compile::plan(&root, &model, BuildKind::Build, None, None, None, &ide_core::CancellationToken::new())
+                    .unwrap();
             assert!(!plan.steps.is_empty());
             for step in plan.steps {
                 assert_eq!(step.env["JAVA_HOME"], expected.to_string_lossy());
@@ -830,4 +1514,182 @@ mod build_tool_settings_tests {
         assert_eq!(model.env["JAVA_HOME"], root.join("jdk21").to_string_lossy());
         assert_eq!(model.env["GRADLE_USER_HOME"], root.join("user-home").to_string_lossy());
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn single_file_plan_falls_back_to_project_structure_and_resolves_workspace_scope() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(tmp.path()).unwrap();
+        let plain = base.join("plain");
+        let java_file = plain.join("src/Main.java");
+        std::fs::create_dir_all(java_file.parent().unwrap()).unwrap();
+        std::fs::write(&java_file, "class Main {}").unwrap();
+        let detected = ide_workspace::roots::detect(&plain);
+        let plan = plan_compile_file(
+            &plain,
+            &base.join("cache"),
+            &Settings::default(),
+            &detected,
+            &java_file,
+            &ide_core::CancellationToken::new(),
+            &|_| {},
+        )
+        .unwrap();
+        assert_eq!(plan.system, compile::BuildSystem::Javac);
+        assert_eq!(plan.title, "Compile Main.java");
+
+        let txt = plain.join("notes.txt");
+        std::fs::write(&txt, "hi").unwrap();
+        assert!(
+            plan_compile_file(
+                &plain,
+                &base.join("cache"),
+                &Settings::default(),
+                &detected,
+                &txt,
+                &ide_core::CancellationToken::new(),
+                &|_| {},
+            )
+            .is_err()
+        );
+
+        let host =
+            Host::new(crate::HostConfig { local_data_dir: base.join("local"), ..crate::HostConfig::for_test(&base) });
+        let member_a = base.join("member-a");
+        let member_b = base.join("member-b");
+        for m in [&member_a, &member_b] {
+            std::fs::create_dir_all(m.join("src")).unwrap();
+            std::fs::write(m.join("src/App.java"), "class App {}").unwrap();
+        }
+        let ws = base.join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        ide_workspace::workspace::Workspace::save(&ws, "WS", vec![member_a.clone(), member_b.clone()], true).unwrap();
+        let project = host.open_project("win", &ws).unwrap();
+        let scope = workspace::scope_for(&project, &member_b.join("src/App.java")).unwrap();
+        assert_eq!(scope.root, member_b);
+        host.close_project("win");
+    }
 }
+
+#[cfg(test)]
+mod maven_completion_tests {
+    use super::*;
+    use crate::ops::dependencies::hashed_key;
+    use ide_build::maven::completion::PomCompletionKind;
+    use ide_core::CancellationToken;
+    use ide_workspace::dependencies::DependencyVersionSource;
+
+    /// Cache answers the test plants before completing, so the op's Central
+    /// lookups hit the session cache and the network is never reached.
+    struct FakeSource(&'static str, Vec<&'static str>);
+    impl DependencyVersionSource for FakeSource {
+        fn id(&self) -> &'static str {
+            self.0
+        }
+        fn cache_key(&self, package: &str) -> Option<String> {
+            Some(hashed_key(self.0, package))
+        }
+        fn fetch(&self, _: &str, _: &CancellationToken) -> IdeResult<Vec<String>> {
+            Ok(self.1.iter().map(|s| (*s).to_owned()).collect())
+        }
+    }
+
+    const GROUPS: &str = "maven-central-groups";
+    const ARTIFACTS: &str = "maven-central-artifacts";
+    const VERSIONS: &str = "maven-central-versions";
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn completes_dependency_coordinates_from_the_local_repository_then_central() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = dunce::canonicalize(temp.path()).unwrap();
+        let (root, repo) = (base.join("project"), base.join("repository"));
+        std::fs::create_dir_all(&root).unwrap();
+        // Settings › Maven's local repository points at the fixture, so the
+        // test machine's own ~/.m2 is never read.
+        std::fs::create_dir_all(base.join("config")).unwrap();
+        std::fs::write(
+            base.join("config/settings.toml"),
+            format!("[languages.java.maven]\nlocalRepository = \"{}\"\n", repo.to_string_lossy().replace('\\', "/")),
+        )
+        .unwrap();
+        for file in [
+            "org/apache/maven/maven-core/4.0.0-rc-5/maven-core-4.0.0-rc-5.jar",
+            "org/example/lib/2.0/lib-2.0.jar",
+            "org/lib/1.0/lib-1.0.jar",
+        ] {
+            let path = repo.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"").unwrap();
+        }
+        let text = "<project>\n  <dependencies>\n    <dependency>\n      <groupId>org</groupId>\n      <artifactId>lib</artifactId>\n      <version>1.0</version>\n    </dependency>\n    <dependency>\n      <groupId>org.example</groupId>\n      <artifactId></artifactId>\n    </dependency>\n    <dependency>\n      <groupId>org.example</groupId>\n      <artifactId>lib</artifactId>\n      <version></version>\n    </dependency>\n  </dependencies>\n</project>\n";
+        let path = root.join("pom.xml");
+        std::fs::write(&path, text).unwrap();
+
+        let host =
+            Host::new(crate::HostConfig { local_data_dir: base.join("local"), ..crate::HostConfig::for_test(&base) });
+        let project = host.open_project("main", &root).unwrap();
+        let info = project.documents.open(&path).unwrap();
+
+        let token = CancellationToken::new();
+        host.dependency_versions.versions(&FakeSource(GROUPS, vec!["org.zzz"]), "org", &token).unwrap();
+        host.dependency_versions.versions(&FakeSource(ARTIFACTS, vec!["api"]), "org.example\u{1}", &token).unwrap();
+        host.dependency_versions.versions(&FakeSource(VERSIONS, vec!["9.9"]), "org.example:lib", &token).unwrap();
+
+        let at = |needle: &str| (text.find(needle).unwrap() + needle.len()) as u32;
+        let next = std::sync::atomic::AtomicU32::new(500);
+        let complete = |offset: u32| {
+            maven_dependency_completion(
+                &host,
+                "main",
+                info.id,
+                offset,
+                RequestId(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)),
+            )
+        };
+        fn labels(c: &PomCompletion) -> Vec<&str> {
+            c.options.iter().map(|o| o.label.as_str()).collect()
+        }
+
+        let group =
+            complete(text.find("<groupId>org").unwrap() as u32 + "<groupId>org".len() as u32).await.unwrap().unwrap();
+        assert_eq!(group.kind, PomCompletionKind::GroupId);
+        // The installed groups first, Central's cached suggestions behind them.
+        assert_eq!(labels(&group), ["org", "org.apache.maven", "org.example", "org.zzz"]);
+        // Nothing outside a dependency's coordinates.
+        let outside = complete(at("<dependencies>")).await;
+        assert!(matches!(outside, Ok(None)), "{outside:?}");
+
+        let empty_artifact = text.find("<artifactId></artifactId>").unwrap() as u32 + "<artifactId>".len() as u32;
+        let artifact = complete(empty_artifact).await;
+        let artifact = match artifact {
+            Ok(Some(a)) => a,
+            other => panic!("artifact completion: {other:?}"),
+        };
+        assert_eq!(artifact.kind, PomCompletionKind::ArtifactId);
+        let installed = artifact.options.first().unwrap();
+        assert_eq!((installed.label.as_str(), installed.detail.as_deref()), ("lib", Some("2.0")));
+        assert_eq!(labels(&artifact), ["lib", "api"]);
+
+        let empty_version = text.find("<version></version>").unwrap() as u32 + "<version>".len() as u32;
+        let version = complete(empty_version).await.unwrap().unwrap();
+        assert_eq!(version.kind, PomCompletionKind::Version);
+        assert_eq!(labels(&version), ["2.0", "9.9"]);
+        host.close_project("main");
+    }
+}
+
+ide_command::domain!(
+    build:
+    build_compile_file,
+    build_model,
+    build_run,
+    build_sync,
+    gradle_dependencies,
+    gradle_link_projects,
+    gradle_published_catalog,
+    gradle_unlink_projects,
+    maven_dependency_completion,
+    maven_dependency_declaration,
+    maven_exclude_dependency,
+    maven_goto_declaration,
+    maven_managed_declarations,
+);

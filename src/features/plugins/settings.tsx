@@ -1,9 +1,14 @@
 /** IDE-rendered plugin settings; every control edits the dialog's staged form. */
-import { useRef, useState } from "react";
-import { tx } from "@/platform/i18n";
+import { useMemo, useRef, useState } from "react";
+import { tx, VerbatimTextContext } from "@/platform/i18n";
+import { ask } from "@/workbench/messages";
 import { Button, Checkbox, IconButton, Input, Select, T } from "@/ui";
-import { registerSettingsPage, useSettingsForm } from "@/workbench/contributions";
+import { registerSettingsPages, useSettingsForm } from "@/workbench/contributions";
 import { pluginsBackend } from "./backend";
+import { localizeContributions, usePluginCatalogs } from "./pluginText";
+import { itemsOf } from "./projection";
+import { SecretsDetails, type SecretDecl } from "./secrets";
+import { usePlugins } from "./store";
 import styles from "./PluginSettings.module.css";
 
 export interface SettingSchema {
@@ -15,6 +20,8 @@ export interface SettingSchema {
   options?: string[] | null;
   multiline?: boolean;
   group?: string | null;
+  /** A sample drawn in the setting's own style, e.g. the message a severity produces. */
+  example?: { text: string; style: string } | null;
   items?: SettingSchema | null;
   properties?: SettingSchema[];
 }
@@ -67,6 +74,27 @@ function ValueControl({
   cell?: boolean;
 }) {
   if (s.type === "array") return <ArrayControl s={s} value={value as unknown[]} set={set} />;
+  // Titles and options come from the plugin, already in its own translation.
+  return (
+    <VerbatimTextContext.Provider value={true}>
+      <ScalarControl s={s} value={value} set={set} label={label} cell={cell} />
+    </VerbatimTextContext.Provider>
+  );
+}
+
+function ScalarControl({
+  s,
+  value,
+  set,
+  label,
+  cell,
+}: {
+  s: SettingSchema;
+  value: unknown;
+  set(value: unknown): void;
+  label: string;
+  cell: boolean;
+}) {
   if (s.type === "boolean")
     return <Checkbox checked={value === true} label={cell ? undefined : s.title} aria-label={label} onChange={set} />;
   if (s.options)
@@ -74,7 +102,7 @@ function ValueControl({
       <Select
         aria-label={label}
         value={String(value)}
-        options={s.options.map((o) => ({ value: o, label: o }))}
+        options={s.options.map((o) => ({ value: o, label: o, verbatim: true }))}
         onChange={set}
       />
     );
@@ -209,30 +237,144 @@ function accepts(s: SettingSchema, value: unknown): boolean {
 
 function SettingControl({ pluginId, s }: { pluginId: string; s: SettingSchema }) {
   const [invalid, setInvalid] = useState(false);
+  const [hostInvalid, setHostInvalid] = useState(false);
   const form = useSettingsForm();
   const all = form.useValue("plugins") as PluginSettings | undefined;
   const stored = all?.[pluginId]?.[s.key];
   const value = accepts(s, stored) ? stored : s.default;
+  // A `net:setting:<key>` grant takes its host from this setting: the value is
+  // checked when it is staged, and its host is asked about when it is applied
+  // (#3809). Only granted transports are asked about.
+  const transports = netSettingTransports(pluginId, s.key);
+  const [initialRaw] = useState(() => (typeof stored === "string" ? stored : ""));
+  const applied = form.useExternal(`net-setting:${s.key}`, initialRaw, (raw) =>
+    applyNetSettingValue(pluginId, s.key, transports, raw),
+  );
+  const control = (
+    <ValueControl
+      s={s}
+      value={value}
+      set={(v) => {
+        const valid = accepts(s, v);
+        setInvalid(!valid);
+        // Keep the chosen value even when it equals the default: false and ""
+        // are real plugin settings, not "remove the override".
+        if (!valid) return;
+        if (!transports.length || typeof v !== "string") {
+          setHostInvalid(false);
+          form.setMapEntry("plugins", [pluginId, s.key], v);
+          if (transports.length && v === null) applied.set(""); // cleared: forget on apply
+          return;
+        }
+        if (v.trim() === "") {
+          setHostInvalid(false);
+          form.setMapEntry("plugins", [pluginId, s.key], v);
+          applied.set(v); // cleared: forget on apply
+          return;
+        }
+        // A host value is refused before it is staged.
+        void pluginsBackend()
+          .netSettingHost(pluginId, s.key, v.trim())
+          .then(() => {
+            setHostInvalid(false);
+            form.setMapEntry("plugins", [pluginId, s.key], v);
+            applied.set(v);
+          })
+          .catch(() => setHostInvalid(true));
+      }}
+    />
+  );
+  const example = s.example ? (
+    <span className={styles.example} data-style={s.example.style}>
+      {s.example.text}
+    </span>
+  ) : null;
   return (
     <div className={styles.field}>
       {s.type !== "boolean" && <span>{s.title}</span>}
-      <ValueControl
-        s={s}
-        value={value}
-        set={(v) => {
-          const valid = accepts(s, v);
-          setInvalid(!valid);
-          if (valid) form.setMapEntry("plugins", [pluginId, s.key], v === s.default ? null : v);
-        }}
-      />
+      {/* A sample sits in a second column, one row per setting, the way PyCharm previews a severity. */}
+      {example ? (
+        <div className={styles.exampleRow}>
+          {control}
+          {example}
+        </div>
+      ) : (
+        control
+      )}
       {s.description && <div className={styles.description}>{s.description}</div>}
       {invalid && (
         <p role="alert" className={styles.error}>
           <T>The value exceeds this setting’s limits.</T>
         </p>
       )}
+      {hostInvalid && (
+        <p role="alert" className={styles.error}>
+          <T>Enter a host (example.com) or a URL (https://example.com/).</T>
+        </p>
+      )}
     </div>
   );
+}
+
+/** The transports (`false`: HTTPS/loopback, `true`: plain HTTP) of the
+ * plugin's granted `net:setting:<key>` grants for this settings key. */
+function netSettingTransports(pluginId: string, key: string): boolean[] {
+  const plugin = usePlugins.getState().plugins.find((p) => p.id === pluginId);
+  const transports: boolean[] = [];
+  for (const cap of plugin?.capabilities ?? []) {
+    const match = /^(net(?:\.http)?):setting:(.+)$/.exec(cap.id);
+    if (match?.[2] === key && cap.granted) transports.push(match[1] === "net.http");
+  }
+  return transports;
+}
+
+/**
+ * The value was applied in Settings: the host it names is approved here or
+ * never — Deny is the default, and a value that arrives any other way stays
+ * pending in the plugin's permissions. Clearing the setting forgets the
+ * approval (#3809).
+ */
+async function applyNetSettingValue(
+  pluginId: string,
+  key: string,
+  transports: boolean[],
+  raw: unknown,
+): Promise<string> {
+  const value = typeof raw === "string" ? raw.trim() : "";
+  const backend = pluginsBackend();
+  if (!value || !transports.length) {
+    for (const http of transports) await backend.forgetNetSetting(pluginId, key, http);
+    return value;
+  }
+  const host = await backend.netSettingHost(pluginId, key, value);
+  const name = usePlugins.getState().plugins.find((p) => p.id === pluginId)?.name ?? pluginId;
+  for (const http of transports) {
+    const entry = usePlugins
+      .getState()
+      .plugins.find((p) => p.id === pluginId)
+      ?.netSettings.find((n) => n.setting === key && n.http === http);
+    if (entry?.host === host) continue; // the host is already the approved one
+    const answer = await ask({
+      title: tx`Allow ${name} to connect to ${host}?`,
+      body: [
+        tx`This host comes from the plugin's “${key}” setting.`,
+        " ",
+        http
+          ? tx("The connection is unencrypted HTTP: anyone on the network can read it.")
+          : tx("This allows this exact host on any port; subdomains need separate permission."),
+        " ",
+        tx("Deny leaves the host unapproved; you can approve it any time in the plugin's permissions."),
+      ],
+      buttons: [
+        { id: "allow", label: http ? tx("Allow unencrypted HTTP") : tx("Allow") },
+        { id: "deny", label: tx("Deny"), primary: true },
+      ],
+      cancel: false,
+      icon: "question",
+    });
+    if (answer.button === "allow") await backend.approveNetSetting(pluginId, key, http, host);
+  }
+  return value;
 }
 
 function PageAction({ pluginId, action }: { pluginId: string; action: SettingsAction }) {
@@ -302,6 +444,7 @@ function settingsPage(pluginId: string, page: Pick<SettingsPage, "properties" | 
             </div>
           </>
         )}
+        <PluginSecrets pluginId={pluginId} />
       </div>
     );
   };
@@ -320,27 +463,47 @@ function keywords(page: Pick<SettingsPage, "properties" | "actions">): string[] 
   return [...page.properties.flatMap(fieldWords), ...(page.actions ?? []).map((a) => a.title)];
 }
 
+/**
+ * The plugin's `[[contributes.secrets]]` on its Settings page: a password
+ * field per secret, which is where users look for an API key. The plugin
+ * details page lists the same fields.
+ */
+function PluginSecrets({ pluginId }: { pluginId: string }) {
+  const ui = usePlugins((s) => s.ui);
+  const catalogs = usePluginCatalogs((s) => s.catalogs);
+  const plugin = usePlugins((s) => s.plugins.find((p) => p.id === pluginId));
+  const items = useMemo(
+    () => (plugin ? itemsOf<SecretDecl>(localizeContributions(ui, catalogs), "secrets", pluginId) : []),
+    [ui, catalogs, pluginId, plugin],
+  );
+  if (!plugin || !items.length) return null;
+  return (
+    <section className={styles.group}>
+      <h3>
+        <T>Secrets</T>
+      </h3>
+      <SecretsDetails plugin={plugin} items={items} />
+    </section>
+  );
+}
+
 export function projectSettings(pluginId: string, decl: SettingsDecl): () => void {
   const id = pluginSettingsPageId(pluginId);
   const pages = decl.pages ?? [];
-  const dispose = [
-    registerSettingsPage({
+  return registerSettingsPages([
+    {
       id,
       title: decl.title,
       projectScope: true,
       keywords: ["plugin", pluginId, ...keywords(decl)],
       component: pages.length ? undefined : settingsPage(pluginId, decl),
-    }),
-  ];
-  for (const p of pages)
-    dispose.push(
-      registerSettingsPage({
-        id: `${id}.settings:${p.id}`,
-        title: p.title,
-        projectScope: true,
-        keywords: [pluginId, decl.title, ...keywords(p)],
-        component: settingsPage(pluginId, p),
-      }),
-    );
-  return () => dispose.forEach((d) => d());
+    },
+    ...pages.map((p) => ({
+      id: `${id}.settings:${p.id}`,
+      title: p.title,
+      projectScope: true,
+      keywords: [pluginId, decl.title, ...keywords(p)],
+      component: settingsPage(pluginId, p),
+    })),
+  ]);
 }

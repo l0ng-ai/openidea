@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { ChangeSet, Text } from "@codemirror/state";
-import type { TextChange } from "@/platform/ipc";
+import type { IdeError, TextChange } from "@/platform/ipc";
 import { DocSync, toTextChanges } from "./DocSync";
 import { minimalChanges } from "./diff";
 
@@ -19,7 +19,7 @@ function numberedLines(count: number) {
 }
 
 class OutOfSync extends Error {
-  kind = "outOfSync";
+  readonly kind: IdeError["kind"] = "outOfSync";
 }
 
 /** Backend double: requests are queued and processed explicitly, in order. */
@@ -28,6 +28,8 @@ class FakeServer {
   edits: Array<{ base: number; changes: TextChange[] }> = [];
   private queue: Array<() => void> = [];
   snapshots = 0;
+  /** Snapshots still to reject (a transient IPC or remote-host failure). */
+  failSnapshots = 0;
   failNext: unknown = null;
   constructor(public text: string) {}
 
@@ -52,6 +54,10 @@ class FakeServer {
       }),
     snapshot: async () => {
       this.snapshots++;
+      if (this.failSnapshots > 0) {
+        this.failSnapshots--;
+        throw { kind: "unavailable", message: "snapshot failed" };
+      }
       return { text: this.text, version: this.version };
     },
   };
@@ -76,12 +82,14 @@ class FakeServer {
   async processAll() {
     while (this.queue.length) {
       this.queue.shift()!();
+      // oxlint-disable-next-line no-await-in-loop -- queued edits are ordered: each reply must land before the next request is processed
       await flushMicrotasks();
     }
   }
 }
 
 async function flushMicrotasks() {
+  // oxlint-disable-next-line no-await-in-loop -- each await is a separate microtask turn, flushing replies chained by earlier ones
   for (let i = 0; i < 5; i++) await Promise.resolve();
 }
 
@@ -218,6 +226,82 @@ describe("DocSync", () => {
     }
   });
 
+  it("keeps syncing when the snapshot of a rebase fails once", async () => {
+    vi.useFakeTimers();
+    try {
+      const { server, view, sync, type, frame, host } = setup("one\ntwo\n");
+      type(8, 8, "three\n");
+      frame();
+      server.patch([{ from: 0, to: 3, insert: "ONE" }]); // event lost
+      server.failSnapshots = 1;
+      let idle = false;
+      void sync.whenIdle().then(() => (idle = true));
+      for (let i = 0; i < 4; i++) {
+        // oxlint-disable-next-line no-await-in-loop -- the queued reply must land before fake time triggers the retry timer
+        await server.processAll();
+        // oxlint-disable-next-line no-await-in-loop -- advancing time after the reply schedules the next snapshot attempt
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      expect(server.snapshots).toBe(2);
+      expect(host.onError).toHaveBeenCalledWith(expect.objectContaining({ kind: "unavailable" }));
+      expect(server.text).toBe("ONE\ntwo\nthree\n");
+      expect(view.text.toString()).toBe(server.text);
+      expect(sync.idle).toBe(true);
+      expect(idle).toBe(true);
+      expect(host.onDiscarded).not.toHaveBeenCalled();
+
+      // Later typing still reaches the backend.
+      type(0, 0, "#");
+      frame();
+      await server.processAll();
+      expect(server.text).toBe("#ONE\ntwo\nthree\n");
+      expect(sync.idle).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops retrying when every snapshot fails, and keeps the local text to send later", async () => {
+    vi.useFakeTimers();
+    try {
+      const { server, view, sync, type, frame, host } = setup("one\ntwo\n");
+      type(8, 8, "three\n");
+      frame();
+      server.patch([{ from: 0, to: 3, insert: "ONE" }]); // event lost
+      server.failSnapshots = Infinity;
+      let idle = false;
+      void sync.whenIdle().then(() => (idle = true));
+      for (let i = 0; i < 20 && !idle; i++) {
+        // oxlint-disable-next-line no-await-in-loop -- retry loop exits on idle: replies must be processed before time advances
+        await server.processAll();
+        // oxlint-disable-next-line no-await-in-loop -- this tick may settle the retry; the loop condition is checked only afterwards
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      // A save waiting on the document is released instead of hanging, and nothing is in flight.
+      expect(idle).toBe(true);
+      expect(sync.inflight).toBeNull();
+      expect(server.pending()).toBe(0);
+      expect(host.onError).toHaveBeenCalled();
+      expect(view.text.toString()).toBe("one\ntwo\nthree\n");
+
+      // Once the backend answers again, the local text and new typing land where they belong.
+      server.failSnapshots = 0;
+      type(0, 0, "#");
+      frame();
+      for (let i = 0; i < 4; i++) {
+        // oxlint-disable-next-line no-await-in-loop -- queued edits must be answered before fake time moves on
+        await server.processAll();
+        // oxlint-disable-next-line no-await-in-loop -- the timer tick belongs after the reply in this deterministic sequence
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      expect(server.text).toBe("#ONE\ntwo\nthree\n");
+      expect(view.text.toString()).toBe(server.text);
+      expect(sync.idle).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("hard-resyncs on unexpected errors and reports discarded changes", async () => {
     const { server, view, sync, type, frame, host } = setup("abc");
     server.failNext = { kind: "permissionDenied", message: "read-only" };
@@ -307,15 +391,19 @@ describe("DocSync", () => {
           const from = rnd(len + 1);
           sync.remote(server.patch([{ from, to: Math.min(len, from + rnd(2)), insert: "R" }]));
         } else if (action === 3 && server.pending()) {
+          // oxlint-disable-next-line no-await-in-loop -- the pseudorandom action order is the scenario; replies must be processed at this step
           await server.processAll();
         } else {
+          // oxlint-disable-next-line no-await-in-loop -- this step flushes microtasks before the next pseudorandom action runs
           await flushMicrotasks();
         }
       }
       frame();
       for (let i = 0; i < 10 && !sync.idle; i++) {
+        // oxlint-disable-next-line no-await-in-loop -- drain loop exits on idle; each iteration must fully settle before rechecking
         await server.processAll();
         frame();
+        // oxlint-disable-next-line no-await-in-loop -- replies must flush before the idle check on the next iteration
         await flushMicrotasks();
       }
       expect(sync.idle).toBe(true);

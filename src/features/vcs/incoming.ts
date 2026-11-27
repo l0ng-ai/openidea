@@ -1,65 +1,154 @@
-/**
- * Settings › Git › "Explicitly check for incoming commits on remotes": a quiet
- * background fetch (on project open, then every 15 minutes) so the branch
- * widget / Branches popup show incoming commits. `auto` stops for the session
- * after the first failure (credentials needed, offline); `never` disables it.
- */
-import { Channel } from "@tauri-apps/api/core";
-import { call, commands, isTauri, nextRequestId } from "@/platform/ipc";
+import { isCancelled, isTauri } from "@/platform/ipc";
+import { useRemote } from "@/platform/remote";
 import { onWorkflowSettingsChange, workflowSettings } from "@/platform/workflowSettings";
-import { logConsole } from "./ops";
-import { currentRepo, loadBranches, refreshNow, useVcs } from "./store";
+import { cancelIncomingCheck, fetchIncomingRemotes, inspectIncomingRefs } from "./incomingRequest";
+import { errorMessage, logConsole } from "./ops";
+import { refreshNow, useVcs } from "./store";
 
 const FIRST_DELAY = 20_000;
-const INTERVAL = 15 * 60_000;
+
+const intervalMs = () => workflowSettings().vcs.git.incomingCheckInterval * 60_000;
+
+/** Null represents a repository-wide failure, including on hosts without fetch reports. */
+type DeferredRemotes = Map<string, Set<string | null>>;
+
+export async function fetchIncoming(
+  roots: readonly string[],
+  deferred: DeferredRemotes,
+  stale: () => boolean = () => false,
+): Promise<boolean> {
+  let fetched = false;
+  const interrupted = () => stale() || !!useVcs.getState().remoteBusy;
+  for (const root of roots) {
+    if (interrupted()) break;
+    const skipped = deferred.get(root);
+    if (skipped?.has(null)) {
+      deferred.delete(root);
+      continue;
+    }
+    try {
+      // oxlint-disable-next-line no-await-in-loop -- roots are fetched one at a time so cancellation and shared deferred state can stop the loop early
+      const report = await fetchIncomingRemotes(
+        root,
+        [...(skipped ?? [])].filter((remote) => remote !== null),
+      );
+      if (interrupted()) break;
+      deferred.delete(root);
+      if (!report) {
+        fetched = true;
+        continue;
+      }
+      const failures = new Set<string | null>();
+      for (const { remote, error, pruned } of report.remotes) {
+        if (!error || pruned.length) fetched = true;
+        if (error) {
+          failures.add(remote);
+          logConsole("info", `Checking for incoming commits in ${root} (${remote}) failed: ${error.message}`);
+        }
+      }
+      if (failures.size) deferred.set(root, failures);
+    } catch (e) {
+      if (isCancelled(e) || interrupted()) break;
+      deferred.set(root, new Set([null]));
+      logConsole("info", `Checking for incoming commits in ${root} failed: ${errorMessage(e)}`);
+    }
+  }
+  return fetched;
+}
+
+async function checkIncoming(roots: readonly string[], stale: () => boolean) {
+  const remote = useRemote.getState().session;
+  if (remote && !remote.commands.includes("vcs_check_incoming")) return;
+  const interrupted = () => stale() || !!useVcs.getState().remoteBusy;
+  for (const root of roots) {
+    if (interrupted()) break;
+    try {
+      // oxlint-disable-next-line no-await-in-loop -- each root's result updates shared unfetched state before cancellation is checked again
+      const report = await inspectIncomingRefs(root);
+      if (interrupted()) break;
+      useVcs.setState((state) => {
+        const unfetched = new Map(state.unfetched);
+        if (report.branches.length)
+          unfetched.set(root, new Map(report.branches.map((branch) => [branch.branch, branch])));
+        else if (!unfetched.delete(root)) return state;
+        return { unfetched };
+      });
+      for (const { remote, error } of report.errors) {
+        logConsole("info", `Checking for incoming commits in ${root} (${remote}) failed: ${error.message}`);
+      }
+    } catch (e) {
+      if (isCancelled(e) || interrupted()) break;
+      useVcs.setState((state) => {
+        const unfetched = new Map(state.unfetched);
+        return unfetched.delete(root) ? { unfetched } : state;
+      });
+      logConsole("info", `Checking for incoming commits in ${root} failed: ${errorMessage(e)}`);
+    }
+  }
+}
 
 export function installIncomingCheck(): () => void {
   if (!isTauri()) return () => undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let failed = false;
-  let root: string | null = null;
+  let deferred: DeferredRemotes = new Map();
+  let generation = 0;
+  let running = false;
+  let disposed = false;
 
   const schedule = (delay: number) => {
     clearTimeout(timer);
-    const mode = workflowSettings().vcs.git.incomingCheck;
-    if (mode === "never" || (mode === "auto" && failed) || !useVcs.getState().available) return;
-    timer = setTimeout(() => void check(), delay);
+    const { available, hasRemotes } = useVcs.getState();
+    if (!disposed && available && hasRemotes !== false && workflowSettings().vcs.git.incomingCheck !== "never") {
+      timer = setTimeout(() => void check(), delay);
+    }
   };
 
   const check = async () => {
-    const s = useVcs.getState();
-    if (!s.available || !s.branch?.upstream || s.remoteBusy) return schedule(INTERVAL);
-    const channel = new Channel<string>();
-    channel.onmessage = () => undefined;
+    if (running) return;
+    running = true;
+    const started = generation;
+    const stale = () => disposed || generation !== started;
     try {
-      await call(commands.vcsRemote(currentRepo(), nextRequestId(), { op: "fetch" }, channel));
-      await refreshNow();
-      if (useVcs.getState().branchesLoaded) void loadBranches().catch(() => undefined);
-    } catch (e) {
-      failed = true;
-      logConsole("info", `Checking for incoming commits failed: ${e instanceof Error ? e.message : String(e)}`);
+      const s = useVcs.getState();
+      if (!s.available) return;
+      const mode = workflowSettings().vcs.git.incomingCheck;
+      const roots = s.roots.length ? s.roots : s.root ? [s.root] : [];
+      if (mode === "check") await checkIncoming(roots, stale);
+      else if ((await fetchIncoming(roots, mode === "always" ? new Map() : deferred, stale)) && !stale())
+        await refreshNow();
+    } finally {
+      running = false;
+      schedule(stale() ? FIRST_DELAY : intervalMs());
     }
-    schedule(INTERVAL);
+  };
+
+  const restart = () => {
+    generation++;
+    deferred = new Map();
+    if (useVcs.getState().unfetched.size) useVcs.setState({ unfetched: new Map() });
+    void cancelIncomingCheck();
+    schedule(FIRST_DELAY);
   };
 
   const unsubVcs = useVcs.subscribe((s, prev) => {
-    if (s.root === root && s.available === prev.available) return;
-    root = s.root;
-    failed = false;
-    schedule(FIRST_DELAY);
+    if (s.root !== prev.root || s.roots !== prev.roots || s.available !== prev.available) restart();
+    else if (s.hasRemotes !== prev.hasRemotes && (s.hasRemotes === false || prev.hasRemotes === false)) restart();
   });
-  const unsubSettings = onWorkflowSettingsChange(
-    (w) => w.vcs.git.incomingCheck,
+  const unsubMode = onWorkflowSettingsChange((w) => w.vcs.git.incomingCheck, restart);
+  const unsubInterval = onWorkflowSettingsChange(
+    (w) => w.vcs.git.incomingCheckInterval,
     () => {
-      failed = false;
-      schedule(FIRST_DELAY);
+      if (!running) schedule(intervalMs());
     },
   );
-  root = useVcs.getState().root;
   schedule(FIRST_DELAY);
   return () => {
+    disposed = true;
     clearTimeout(timer);
+    if (useVcs.getState().unfetched.size) useVcs.setState({ unfetched: new Map() });
+    void cancelIncomingCheck();
     unsubVcs();
-    unsubSettings();
+    unsubMode();
+    unsubInterval();
   };
 }

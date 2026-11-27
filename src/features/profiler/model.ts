@@ -6,6 +6,11 @@ function programName(command: string): string {
   return name.replace(/\.(exe|cmd|bat)$/i, "");
 }
 
+/** Whether async-profiler's allocation and live-object modes apply: JVM programs only. */
+export function allocationProfilerSupports(config: Pick<RunConfig, "command">): boolean {
+  return programName(config.command) === "java";
+}
+
 /**
  * Whether a profiler is known for `config` (cheap; the backend decides for real):
  * Node.js programs and npm scripts, Python, JVM applications, and on Linux native
@@ -32,8 +37,23 @@ function isLinux(): boolean {
   );
 }
 
-/** `12.3 ms`, `1.2 s`, `340 samples`. */
+const BYTE_UNITS = ["B", "KB", "MB", "GB", "TB"];
+
+/** `0 B`, `1.0 KB`, `512.0 MB`: the Memory view's sizes (it lives in another feature, which this one must not import). */
+function formatBytes(bytes: number): string {
+  let value = bytes;
+  let unit = 0;
+  // Compare the rounded value so 1048575 B becomes "1.0 MB", not "1024.0 KB".
+  while (Math.abs(Number(value.toFixed(1))) >= 1024 && unit < BYTE_UNITS.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  return unit === 0 ? `${Math.round(value)} B` : `${value.toFixed(1)} ${BYTE_UNITS[unit]}`;
+}
+
+/** `12.3 ms`, `1.2 s`, `340 samples`, `1.2 GB`. */
 export function formatWeight(value: number, unit: string): string {
+  if (unit === "bytes") return formatBytes(value);
   if (unit === "ms") {
     if (value >= 1000) return `${(value / 1000).toFixed(value >= 10_000 ? 1 : 2)} s`;
     return `${value >= 100 ? Math.round(value) : value.toFixed(1)} ms`;
@@ -88,6 +108,34 @@ export function flameLayout(profile: Profile, focus = 0, minWidth = 0.002): { re
     }
   }
   return { rects, depth: maxDepth + 1 };
+}
+
+/**
+ * Keyboard moves in the flame graph from the frame `node`: `deeper` to its widest callee,
+ * `shallower` to its caller, `previous` / `next` to the neighbouring frame on its row.
+ */
+export function flameStep(
+  rects: readonly FlameRect[],
+  node: number,
+  move: "deeper" | "shallower" | "previous" | "next",
+): number {
+  const at = rects.find((r) => r.node === node);
+  if (!at) return rects[0]?.node ?? node;
+  switch (move) {
+    case "deeper": {
+      const inside = rects.filter((r) => r.depth === at.depth + 1 && r.x >= at.x && r.x < at.x + at.width);
+      return inside.reduce<FlameRect | undefined>((a, r) => (!a || r.width > a.width ? r : a), undefined)?.node ?? node;
+    }
+    case "shallower":
+      // A callee starts inside its caller's span.
+      return rects.find((r) => r.depth === at.depth - 1 && r.x <= at.x && at.x < r.x + r.width)?.node ?? node;
+    case "previous":
+    case "next": {
+      const row = rects.filter((r) => r.depth === at.depth).sort((a, b) => a.x - b.x);
+      const i = row.indexOf(at) + (move === "next" ? 1 : -1);
+      return row[i]?.node ?? node;
+    }
+  }
 }
 
 const parentCache = new WeakMap<Profile, Int32Array>();

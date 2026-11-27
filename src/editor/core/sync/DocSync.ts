@@ -25,7 +25,7 @@
  * the snapshot, selections mapped).
  */
 import { ChangeSet, Text } from "@codemirror/state";
-import type { TextChange } from "@/platform/ipc";
+import { isErrorKind, type TextChange } from "@/platform/ipc";
 import { minimalChanges } from "./diff";
 
 export interface SyncTransport {
@@ -36,6 +36,10 @@ export interface SyncTransport {
 export interface SyncHost {
   /** Apply a change set (in local-text coordinates) to every view, annotated as remote. */
   applyRemote(changes: ChangeSet, workspaceEdit?: boolean): void;
+  /** A locally produced batch accepted by the versioned backend. */
+  onLocalCommitted?(baseVersion: number, version: number, changes: ChangeSet): void;
+  /** The local buffer has no pending edits or resync. */
+  onSynced?(): void;
   /** Called after a hard resync discarded local changes the backend never saw. */
   onDiscarded?(reason: unknown): void;
   /** Non-recoverable transport errors (logged by default). */
@@ -59,10 +63,6 @@ export const frameScheduler: Scheduler = (fn) => {
   requestAnimationFrame(once);
   setTimeout(once, 50);
 };
-
-function isOutOfSync(e: unknown): boolean {
-  return typeof e === "object" && e !== null && (e as { kind?: string }).kind === "outOfSync";
-}
 
 export function toTextChanges(cs: ChangeSet): TextChange[] {
   const out: TextChange[] = [];
@@ -155,6 +155,7 @@ export class DocSync {
     if (this.disposed || patch.version <= this.serverVersion) return;
     this.pendingRemote.push(patch);
     this.drainRemote();
+    this.resolveIdle();
   }
 
   dispose() {
@@ -190,19 +191,22 @@ export class DocSync {
   }
 
   private onAck(version: number) {
+    const baseVersion = this.serverVersion;
+    const committed = this.inflight!;
     this.confirmed = this.inflight!.apply(this.confirmed);
     this.serverVersion = version;
     this.inflight = null;
     this.inflightStale = false;
     this.rebases = 0;
     this.acked++;
+    this.host.onLocalCommitted?.(baseVersion, version, committed);
     this.drainRemote();
     this.flush();
     this.resolveIdle();
   }
 
   private onReject(error: unknown) {
-    if (!isOutOfSync(error)) {
+    if (!isErrorKind(error, "outOfSync")) {
       this.host.onError?.(error);
       this.hardResync(error);
       return;
@@ -251,9 +255,11 @@ export class DocSync {
     try {
       snap = await this.transport.snapshot();
     } catch (e) {
+      if (gen !== this.generation || this.disposed) return;
       this.host.onError?.(e);
-      this.resyncing = false;
-      this.resolveIdle(true);
+      // Keep the edit going: the backend acks it once it caught up, or rejects it again,
+      // which retries the snapshot (a hard resync after MAX_REBASES).
+      this.resend();
       return;
     }
     if (gen !== this.generation || this.disposed) return;
@@ -313,8 +319,13 @@ export class DocSync {
     } catch (e) {
       if (gen !== this.generation) return;
       this.host.onError?.(e);
+      // Nothing to adopt: keep the local text as pending changes against `confirmed`, so the
+      // next flush sends them in the coordinates the backend knows.
+      const pending = minimalChanges(this.confirmed.toString(), this.localText.toString());
       this.inflight = null;
-      this.buffer = null;
+      this.buffer = pending.length ? ChangeSet.of(pending, this.confirmed.length) : null;
+      this.inflightStale = false;
+      this.rebases = 0;
       this.resyncing = false;
       this.resolveIdle(true);
       return;
@@ -344,6 +355,7 @@ export class DocSync {
 
   private resolveIdle(force = false) {
     if (!force && !this.idle) return;
+    if (this.idle && !this.disposed) this.host.onSynced?.();
     const waiters = this.idleWaiters;
     this.idleWaiters = [];
     waiters.forEach((w) => w());

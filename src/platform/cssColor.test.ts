@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { parseColor, resolveTokenColor, toHex, toRgb } from "./cssColor";
+import { computedTokenColor, parseColor, resolveTokenColor, toHex, toRgb } from "./cssColor";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -31,7 +31,24 @@ describe("css colours", () => {
     expect(resolveTokenColor("--hex", root)).toEqual([7, 54, 66, 1]);
     expect(resolveTokenColor("--hsl", root)).toEqual([33, 37, 43, 1]);
     expect(resolveTokenColor("--none", root)).toBeNull();
-    // The probe element is removed again.
-    expect(root.querySelector("span[hidden]")).toBeNull();
+  });
+
+  it("resolves every token through one probe element, adding none per token", () => {
+    const root = document.documentElement;
+    vi.spyOn(globalThis, "getComputedStyle").mockImplementation(
+      (el) =>
+        (el === root
+          ? { getPropertyValue: () => "hsl(220, 13%, 15%)" }
+          : { color: "rgb(33, 37, 43)" }) as unknown as CSSStyleDeclaration,
+    );
+    root.querySelector("[data-token-probe]")?.remove();
+    const added = vi.spyOn(root, "appendChild");
+    for (const name of ["--a", "--b", "--c"]) expect(resolveTokenColor(name, root)).toEqual([33, 37, 43, 1]);
+    expect(added).toHaveBeenCalledTimes(1);
+    expect(root.querySelectorAll("[data-token-probe]")).toHaveLength(1);
+    // Replaced when something removed it.
+    root.querySelector("[data-token-probe]")!.remove();
+    expect(computedTokenColor("--a", root)).toBe("rgb(33, 37, 43)");
+    expect(root.querySelectorAll("[data-token-probe]")).toHaveLength(1);
   });
 });

@@ -1,12 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import type { AgentProvider, AgentRegistry, InstallEvent, RegistryAgent, RequestId } from "@/bindings";
+import type {
+  AcpImportOutcome,
+  AgentLoginEvent,
+  AgentProvider,
+  AgentRegistry,
+  CopilotAuthStatus,
+  InstallEvent,
+  RegistryAgent,
+  RequestId,
+} from "@/bindings";
 import { IpcError } from "@/platform/ipc";
 import { setLocale, tx } from "@/platform/i18n";
 import { iconMarkup } from "@/ui/icons";
 import { MessagesHost } from "@/workbench/messages";
 import { AgentRegistryPage as RegistryPage } from "./AgentRegistryPage";
-import { SettingsFormContext, registerSettingsPage } from "@/workbench/contributions";
+import { provideEmbeddedTerminal, SettingsFormContext, registerSettingsPage } from "@/workbench/contributions";
 import { useSettingsFormFor } from "@/features/settings/components/context";
 import { closeSettings, openSettings, selectPage } from "@/features/settings/model/staging";
 import { SettingsDialog } from "@/features/settings/dialog/SettingsDialog";
@@ -359,13 +368,69 @@ describe("the ACP Registry in the agent list", () => {
     renderRegistry(backend);
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Cannot load the ACP Registry: offline"));
   });
+
+  it("prefers the live registry update version over a stale cached provider snapshot", async () => {
+    const backend = new FakeBackend();
+    backend.registry = {
+      agents: [
+        agent({ id: "copilot", name: "GitHub Copilot", version: "1.0.114", installed: "1.0.112", update: true }),
+        agent({ id: "cline", name: "Cline", version: "3.0.74", installed: "3.0.70", update: true }),
+      ],
+      warning: null,
+    };
+    const commands = new FakeCommands();
+    commands.list = [
+      {
+        ...claudeProvider("/tools/copilot/1.0.112/copilot"),
+        id: "copilot",
+        name: "GitHub Copilot",
+        commandEditable: false,
+        commandReadOnlyReason: "registry",
+        source: { kind: "registry", version: "1.0.112", update: "1.0.113" },
+      },
+      {
+        ...claudeProvider("/tools/cline/3.0.70/cline"),
+        id: "cline",
+        name: "Cline",
+        commandEditable: false,
+        commandReadOnlyReason: "registry",
+        source: { kind: "registry", version: "3.0.70", update: null },
+      },
+    ];
+    render(
+      <>
+        <AgentRegistryPage backend={backend} commandBackend={commands} />
+        <MessagesHost />
+      </>,
+    );
+
+    await waitFor(() => expect(within(row("GitHub Copilot")).getByText("1.0.114 is available")).toBeInTheDocument());
+    expect(within(row("GitHub Copilot")).queryByText("1.0.113 is available")).toBeNull();
+    expect(within(item("GitHub Copilot")).getByText("Update")).toBeInTheDocument();
+
+    await waitFor(() => expect(within(item("Cline")).getByText("Update")).toBeInTheDocument());
+    expect(within(row("Cline")).getByText("3.0.74 is available")).toBeInTheDocument();
+    expect(within(row("Cline")).getByRole("button", { name: "Update" })).toBeEnabled();
+  });
 });
 
 class FakeCommands implements CommandsBackend {
+  checkCli = vi.fn<CommandsBackend["checkCli"]>();
+  updateCli = vi.fn<CommandsBackend["updateCli"]>();
+  cancel = vi.fn<CommandsBackend["cancel"]>();
   list: AgentProvider[] = [];
   saved: [string, string | null][] = [];
   providers = vi.fn(async () => this.list);
+  copilotAuthStatus?: () => Promise<CopilotAuthStatus>;
+  loginSpawn?: CommandsBackend["loginSpawn"];
+  ghLoginSpawn?: CommandsBackend["ghLoginSpawn"];
+  refreshModels?: CommandsBackend["refreshModels"];
   chooseExecutable = vi.fn(async () => "/chosen/agent");
+  saveCustom = vi.fn(async () => {});
+  setAdditionalArgs = vi.fn<CommandsBackend["setAdditionalArgs"]>();
+  removeCustom = vi.fn(async () => {});
+  importAcp = vi.fn(async (): Promise<AcpImportOutcome[]> => []);
+  pickAcpJson = vi.fn(async (): Promise<string | null> => null);
   savedEnv: [string, Record<string, string>][] = [];
   async setEnv(id: string, env: Record<string, string>) {
     this.savedEnv.push([id, env]);
@@ -400,6 +465,7 @@ const claudeProvider = (command: string): AgentProvider => ({
   commandEditable: true,
   commandReadOnlyReason: null,
   installed: true,
+  canCheckCliUpdate: true,
   env: {},
   config: [],
   commands: [],
@@ -414,7 +480,7 @@ describe("Built-in executable overrides", () => {
     dispose();
   });
 
-  const openCommands = async (commands: FakeCommands, onChanged = vi.fn()) => {
+  const openCommands = async (commands: FakeCommands, onChanged = vi.fn(), name = "Claude Code") => {
     const backend = new FakeBackend();
     dispose = registerSettingsPage({
       id: REGISTRY_PAGE,
@@ -423,10 +489,49 @@ describe("Built-in executable overrides", () => {
       component: () => <RegistryPage backend={backend} commandBackend={commands} onChanged={onChanged} />,
     });
     render(<SettingsDialog />);
-    return screen.findByRole("region", { name: "Claude Code" });
+    return screen.findByRole("region", { name });
   };
   const apply = () => screen.getByRole("button", { name: "Apply" });
   const field = () => screen.getByRole("textbox", { name: "Executable" });
+
+  it("checks only on click and updates only after the user chooses the offered version", async () => {
+    const commands = new FakeCommands();
+    const provider = claudeProvider("claude");
+    const offer = { status: "available" as const, current: "1.0.0", latest: "1.1.0", prefix: "/usr/local" };
+    commands.list = [provider];
+    commands.checkCli.mockResolvedValueOnce(offer);
+    commands.updateCli.mockResolvedValueOnce({ status: "updated", current: "1.1.0" });
+    const panel = within(await openCommands(commands));
+    expect(commands.checkCli).not.toHaveBeenCalled();
+    fireEvent.click(panel.getByRole("button", { name: "Check for updates" }));
+    const update = await panel.findByRole("button", { name: "Update to 1.1.0" });
+    expect(commands.checkCli).toHaveBeenCalledOnce();
+    fireEvent.click(update);
+    await panel.findByText("Updated to 1.1.0. New sessions will use this version.");
+    expect(commands.updateCli).toHaveBeenCalledWith(provider.id, offer, expect.any(Number));
+    expect(commands.saved).toEqual([]);
+  });
+
+  it("cancels the in-progress update by its request id", async () => {
+    const commands = new FakeCommands();
+    commands.list = [claudeProvider("claude")];
+    commands.checkCli.mockResolvedValue({ status: "available", current: "1.0.0", latest: "1.1.0", prefix: "/test" });
+    let cancel!: () => void;
+    commands.updateCli.mockImplementation(
+      () =>
+        new Promise((_, reject) => {
+          cancel = () => reject(new IpcError({ kind: "cancelled", message: "cancelled" }));
+        }),
+    );
+    const panel = within(await openCommands(commands));
+    fireEvent.click(panel.getByRole("button", { name: "Check for updates" }));
+    fireEvent.click(await panel.findByRole("button", { name: "Update to 1.1.0" }));
+    fireEvent.click(panel.getByRole("button", { name: "Cancel" }));
+    expect(commands.cancel).toHaveBeenCalledWith(commands.updateCli.mock.calls[0]![2]);
+    await act(async () => cancel());
+    await waitFor(() => expect(panel.getByRole("button", { name: "Check for updates" })).toBeEnabled());
+    expect(panel.queryByRole("alert")).toBeNull();
+  });
 
   it("follows locale changes and renders login commands as inline code", async () => {
     const commands = new FakeCommands();
@@ -507,6 +612,253 @@ describe("Built-in executable overrides", () => {
     fireEvent.change(env(), { target: { value: "" } });
     await act(async () => fireEvent.click(apply()));
     expect(commands.savedEnv.at(-1)).toEqual(["claude", {}]);
+  });
+
+  it("writes a Copilot GitHub account from the dropdown without storing a token or exposing the control variable", async () => {
+    const commands = new FakeCommands();
+    commands.copilotAuthStatus = vi.fn(async () => ({
+      authenticated: true,
+      login: "alice",
+      authType: "gh-cli",
+      statusMessage: "alice (via gh)",
+      ghInstalled: true,
+      ghAccounts: [
+        { login: "alice", active: true },
+        { login: "alice-work", active: false },
+      ],
+    }));
+    commands.list = [
+      {
+        ...claudeProvider("copilot"),
+        id: "copilot",
+        name: "GitHub Copilot",
+        command: "copilot --acp",
+        defaultProgram: "copilot",
+        commandReadOnlyReason: "registry",
+        env: { COPILOT_TELEMETRY_OPTOUT: "1" },
+      },
+    ];
+    await openCommands(commands, vi.fn(), "GitHub Copilot");
+    const signInSection = screen.getByRole("region", { name: "Sign In" });
+    const launchSection = screen.getByRole("region", { name: "Launch" });
+    const account = await within(signInSection).findByRole("button", { name: "GitHub account" });
+    expect(within(launchSection).queryByRole("button", { name: "GitHub account" })).toBeNull();
+    await waitFor(() => expect(account).toHaveTextContent("Copilot CLI default (alice via GitHub CLI)"));
+    expect(screen.queryByRole("textbox", { name: "Environment variables" })).toBeNull();
+    fireEvent.click(account);
+    fireEvent.click(await screen.findByRole("option", { name: "alice-work" }));
+    expect(account).toHaveTextContent("alice-work");
+    expect(screen.getByText("Click Apply to load the models available for the selected account.")).toBeInTheDocument();
+
+    await act(async () => fireEvent.click(apply()));
+
+    expect(commands.savedEnv).toEqual([
+      [
+        "copilot",
+        {
+          COPILOT_TELEMETRY_OPTOUT: "1",
+          OPENIDEA_COPILOT_GITHUB_ACCOUNT: "alice-work",
+        },
+      ],
+    ]);
+    expect(JSON.stringify(commands.savedEnv)).not.toMatch(/gho_|ghp_|token/i);
+  });
+
+  it("hides stale Copilot models until authenticated and reloads per-account models after Apply", async () => {
+    const staleModel: AgentProvider["config"][number] = {
+      id: "model",
+      name: "Model",
+      description: null,
+      category: "model",
+      current: "gemini-4-neon",
+      values: [
+        { value: "gemini-4-neon", name: "Gemini 4 Neon", description: null },
+        { value: "gpt-5", name: "GPT-5", description: null },
+      ],
+      via: "option",
+    };
+    const personalModel: AgentProvider["config"][number] = {
+      id: "model",
+      name: "Model",
+      description: null,
+      category: "model",
+      current: "claude-sonnet-4.5",
+      values: [
+        { value: "claude-sonnet-4.5", name: "Claude Sonnet 4.5", description: null },
+        { value: "gpt-5", name: "GPT-5", description: null },
+      ],
+      via: "option",
+    };
+    const commands = new FakeCommands();
+    commands.copilotAuthStatus = vi.fn(async () => ({
+      authenticated: false,
+      login: null,
+      authType: null,
+      statusMessage: null,
+      ghInstalled: true,
+      ghAccounts: [
+        { login: "alice", active: true },
+        { login: "alice-work", active: false },
+      ],
+    }));
+    commands.refreshModels = vi.fn(async () => {
+      const currentAccount = commands.list[0]?.env.OPENIDEA_COPILOT_GITHUB_ACCOUNT ?? "";
+      return {
+        provider: "copilot",
+        config: [currentAccount === "alice-work" ? staleModel : personalModel],
+        thoughtLevels: {},
+        refreshing: false,
+        refreshedAtMs: Date.now(),
+        retryAtMs: null,
+        error: null,
+      };
+    });
+    commands.list = [
+      {
+        ...claudeProvider("copilot"),
+        id: "copilot",
+        name: "GitHub Copilot",
+        command: "copilot --headless --no-auto-update --stdio",
+        defaultProgram: "copilot",
+        installed: true,
+        canSignIn: true,
+        commandReadOnlyReason: "registry",
+        config: [staleModel],
+      },
+    ];
+    await openCommands(commands, vi.fn(), "GitHub Copilot");
+
+    // Signed-out default account never leaks cached models from a previous session/account.
+    await screen.findByText("Sign in above to view and choose models available for this account.");
+    expect(screen.queryByRole("button", { name: "Model" })).toBeNull();
+
+    // Selecting `alice` stages the switch and asks for Apply before showing models.
+    const account = screen.getByRole("button", { name: "GitHub account" });
+    fireEvent.click(account);
+    fireEvent.click(await screen.findByRole("option", { name: "alice" }));
+    expect(screen.getByText("Click Apply to load the models available for the selected account.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Model" })).toBeNull();
+
+    // Applying loads `alice`'s subscription models.
+    await act(async () => fireEvent.click(apply()));
+    const modelButton = await screen.findByRole("button", { name: "Model" });
+    expect(modelButton).toHaveTextContent("Agent's default (Claude Sonnet 4.5)");
+
+    // Switching to `alice-work` and applying loads its own subscription models.
+    fireEvent.click(screen.getByRole("button", { name: "GitHub account" }));
+    fireEvent.click(await screen.findByRole("option", { name: "alice-work" }));
+    expect(screen.queryByRole("button", { name: "Model" })).toBeNull();
+    await act(async () => fireEvent.click(apply()));
+    expect(await screen.findByRole("button", { name: "Model" })).toHaveTextContent("Agent's default (Gemini 4 Neon)");
+  });
+
+  it("runs in-IDE Sign In and Add account PTY dialogs and selects the newly added gh account", async () => {
+    const written: string[] = [];
+    provideEmbeddedTerminal(async () => ({
+      write: (d) => written.push(d),
+      clear: vi.fn(),
+      focus: vi.fn(),
+      fit: vi.fn(),
+      dispose: vi.fn(),
+    }));
+    let onLoginEvent: ((e: AgentLoginEvent) => void) | null = null;
+    try {
+      const commands = new FakeCommands();
+      commands.loginSpawn = vi.fn(async (_id, _cols, _rows, cb) => {
+        onLoginEvent = cb;
+        return 101;
+      });
+      commands.ghLoginSpawn = vi.fn(async (_cols, _rows, cb) => {
+        onLoginEvent = cb;
+        return 102;
+      });
+      const refreshModels = vi.fn().mockResolvedValue({
+        provider: "copilot",
+        config: [],
+        thoughtLevels: {},
+        refreshing: false,
+        refreshedAtMs: Date.now(),
+        retryAtMs: null,
+        error: null,
+      });
+      commands.refreshModels = refreshModels;
+      commands.copilotAuthStatus = vi
+        .fn<() => Promise<CopilotAuthStatus>>()
+        .mockResolvedValueOnce({
+          authenticated: false,
+          login: null,
+          authType: null,
+          statusMessage: null,
+          ghInstalled: true,
+          ghAccounts: [{ login: "alice", active: true }],
+        })
+        .mockResolvedValueOnce({
+          authenticated: true,
+          login: "alice",
+          authType: "oauth",
+          statusMessage: "alice",
+          ghInstalled: true,
+          ghAccounts: [{ login: "alice", active: true }],
+        })
+        .mockResolvedValueOnce({
+          authenticated: true,
+          login: "alice",
+          authType: "oauth",
+          statusMessage: "alice",
+          ghInstalled: true,
+          ghAccounts: [
+            { login: "alice", active: true },
+            { login: "alice-work", active: false },
+          ],
+        });
+      commands.list = [
+        {
+          ...claudeProvider("copilot"),
+          id: "copilot",
+          name: "GitHub Copilot",
+          command: "copilot --headless --no-auto-update --stdio",
+          defaultProgram: "copilot",
+          loginHint: "Run `copilot login` in a terminal.",
+          installed: true,
+          canSignIn: true,
+          commandReadOnlyReason: "registry",
+        },
+      ];
+      await openCommands(commands, vi.fn(), "GitHub Copilot");
+
+      // 1) Agent Sign In dialog (`copilot login`)
+      fireEvent.click(await screen.findByRole("button", { name: "Sign In…" }));
+      expect(await screen.findByRole("dialog", { name: "Sign In to GitHub Copilot" })).toBeInTheDocument();
+      await waitFor(() =>
+        expect(commands.loginSpawn).toHaveBeenCalledWith(
+          "copilot",
+          expect.any(Number),
+          expect.any(Number),
+          expect.any(Function),
+        ),
+      );
+      act(() => {
+        onLoginEvent?.({ type: "output", data: "Opening browser…\r\n" });
+        onLoginEvent?.({ type: "exited", code: 0 });
+      });
+      expect(written).toContain("Opening browser…\r\n");
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: "Sign In to GitHub Copilot" })).toBeNull());
+      expect(refreshModels).toHaveBeenCalledWith("copilot", null, true);
+
+      // 2) Add GitHub CLI account (`gh auth login`) auto-selects newly added account
+      fireEvent.click(await screen.findByRole("button", { name: "Add account…" }));
+      expect(await screen.findByRole("dialog", { name: "Sign In to GitHub CLI" })).toBeInTheDocument();
+      await waitFor(() => expect(commands.ghLoginSpawn).toHaveBeenCalled());
+      act(() => {
+        onLoginEvent?.({ type: "exited", code: 0 });
+      });
+      await waitFor(() => expect(screen.queryByRole("dialog", { name: "Sign In to GitHub CLI" })).toBeNull());
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "GitHub account" })).toHaveTextContent("alice-work"),
+      );
+    } finally {
+      provideEmbeddedTerminal(undefined);
+    }
   });
 
   it("Cancel discards command edits without writing", async () => {
@@ -683,7 +1035,7 @@ describe("the agent list", () => {
     closeSettings();
     dispose();
   });
-  const open = async (commands: FakeCommands, backend = new FakeBackend()) => {
+  const open = async (commands: FakeCommands, backend = new FakeBackend(), regionName = "Claude Code") => {
     dispose = registerSettingsPage({
       id: REGISTRY_PAGE,
       title: "Agents",
@@ -695,7 +1047,7 @@ describe("the agent list", () => {
         <MessagesHost />
       </>,
     );
-    await screen.findByRole("region", { name: "Claude Code" });
+    await screen.findByRole("region", { name: regionName });
     return backend;
   };
   const model = {
@@ -776,10 +1128,225 @@ describe("the agent list", () => {
     expect(screen.getByRole("button", { name: "Model" })).toHaveTextContent("Opus");
   });
 
+  it("shows Cursor per-model defaults, prunes stale choices on model switch, and fetches unknown models", async () => {
+    const commands = new FakeCommands();
+    const refreshModels = vi.fn().mockResolvedValue({
+      provider: "cursor",
+      config: [],
+      thoughtLevels: {
+        "gemini-4-neon": [
+          {
+            id: "context",
+            name: "Context",
+            description: null,
+            category: "model_config",
+            current: "300k",
+            defaultValue: "300k",
+            via: "option",
+            values: [
+              { value: "300k", name: "300K", description: null },
+              { value: "1m", name: "1M", description: null },
+            ],
+          },
+        ],
+      },
+      refreshing: false,
+      refreshedAtMs: Date.now(),
+      retryAtMs: null,
+      error: null,
+    });
+    Object.assign(commands, { refreshModels });
+    commands.list = [
+      {
+        ...claudeProvider("cursor"),
+        id: "cursor",
+        name: "Cursor",
+        config: [
+          {
+            id: "model",
+            name: "Model",
+            description: null,
+            category: "model",
+            current: "grok-4.7",
+            defaultValue: "grok-4.7",
+            via: "option",
+            values: [
+              { value: "grok-4.7", name: "Grok 4.7", description: null },
+              { value: "gemini-4-neon", name: "Gemini 4 Neon", description: null },
+            ],
+          },
+          {
+            id: "openidea.cursor.approval",
+            name: "Approvals",
+            description: null,
+            category: "approval",
+            current: "bypass",
+            defaultValue: "ask",
+            via: "option",
+            values: [
+              { value: "ask", name: "Ask for approval", description: null },
+              { value: "bypass", name: "Bypass approvals", description: null },
+            ],
+          },
+        ],
+        thoughtLevels: {
+          "grok-4.7": [
+            {
+              id: "context",
+              name: "Context",
+              description: null,
+              category: "model_config",
+              current: "256k",
+              defaultValue: "256k",
+              via: "option",
+              values: [
+                { value: "256k", name: "256K", description: null },
+                { value: "500k", name: "500K", description: null },
+              ],
+            },
+            {
+              id: "fast",
+              name: "Fast",
+              description: null,
+              category: "model_config",
+              current: "true",
+              defaultValue: "true",
+              via: "option",
+              values: [
+                { value: "false", name: "Off", description: null },
+                { value: "true", name: "Fast", description: null },
+              ],
+            },
+          ],
+        },
+      },
+    ];
+    await open(commands, new FakeBackend(), "Cursor");
+    // Policy-overridden defaults say "Default (...)" rather than claiming to be the agent's own default.
+    expect(screen.getByRole("button", { name: "Approvals" })).toHaveTextContent("Default (Bypass approvals)");
+    expect(screen.getByRole("button", { name: "Fast" })).toHaveTextContent("Default (Off)");
+    expect(screen.getByRole("button", { name: "Context" })).toHaveTextContent("Agent's default (256K)");
+
+    // Pick a Grok-only context value and Fast=On, then switch to Gemini 4 Neon.
+    fireEvent.click(screen.getByRole("button", { name: "Context" }));
+    fireEvent.click(await screen.findByRole("option", { name: "500K" }));
+    expect(screen.getByRole("button", { name: "Context" })).toHaveTextContent("500K");
+
+    // Switch to a model whose per-model options aren't cached yet: Settings fetches them lazily.
+    fireEvent.click(screen.getByRole("button", { name: "Model" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Gemini 4 Neon" }));
+    await waitFor(() => expect(refreshModels).toHaveBeenCalledWith("cursor", "gemini-4-neon"));
+    // The stale Grok-only choice (`500k`) is surfaced clearly as unavailable until reset or changed.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Context" })).toHaveTextContent("500k (unavailable)"),
+    );
+    expect(screen.queryByRole("button", { name: "Fast" })).toBeNull();
+
+    // Switching back to a known model (Grok 4.7) after picking a Gemini-only value (`1m`) prunes the stale choice.
+    fireEvent.click(screen.getByRole("button", { name: "Context" }));
+    fireEvent.click(await screen.findByRole("option", { name: "1M" }));
+    expect(screen.getByRole("button", { name: "Context" })).toHaveTextContent("1M");
+    fireEvent.click(screen.getByRole("button", { name: "Model" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Grok 4.7" }));
+    expect(screen.getByRole("button", { name: "Context" })).toHaveTextContent("Agent's default (256K)");
+  });
+
   it("says when an agent's settings aren't known yet", async () => {
     const commands = new FakeCommands();
     commands.list = [claudeProvider("claude")];
     await open(commands);
     expect(screen.getByText(/after its first session/)).toBeInTheDocument();
+  });
+});
+
+describe("custom agents", () => {
+  let dispose = () => {};
+  beforeEach(() => openSettings(REGISTRY_PAGE));
+  afterEach(() => {
+    closeSettings();
+    dispose();
+  });
+
+  const customProvider = (): AgentProvider => ({
+    ...claudeProvider("/opt/mine"),
+    id: "mine",
+    name: "Mine",
+    args: ["acp"],
+    defaultProgram: null,
+    defaultArgs: [],
+    loginHint: null,
+    commandEditable: false,
+    commandReadOnlyReason: "customAgent",
+    source: { kind: "custom" },
+  });
+
+  const openList = (commands: FakeCommands) => {
+    const backend = new FakeBackend();
+    dispose = registerSettingsPage({
+      id: REGISTRY_PAGE,
+      title: "Agents",
+      group: "Tools",
+      component: () => <RegistryPage backend={backend} commandBackend={commands} />,
+    });
+    render(
+      <>
+        <SettingsDialog />
+        <MessagesHost />
+      </>,
+    );
+  };
+
+  it("adds a custom agent through the modal, suggesting the id", async () => {
+    const commands = new FakeCommands();
+    openList(commands);
+    await waitFor(() => expect(commands.providers).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "Add Custom Agent…" }));
+    const dialog = await screen.findByRole("dialog", { name: "Add Custom Agent" });
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Name" }), { target: { value: "My Agent" } });
+    expect(within(dialog).getByRole("textbox", { name: "ID" })).toHaveValue("my-agent");
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Command" }), {
+      target: { value: "/opt/mine" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add" }));
+    await waitFor(() =>
+      expect(commands.saveCustom).toHaveBeenCalledWith({
+        id: "my-agent",
+        name: "My Agent",
+        command: "/opt/mine",
+        args: [],
+        env: {},
+      }),
+    );
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Add Custom Agent" })).toBeNull());
+    expect(commands.providers.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("removes a custom agent after asking", async () => {
+    const commands = new FakeCommands();
+    commands.list = [customProvider()];
+    openList(commands);
+    await waitFor(() => expect(row("Mine")).toBeInTheDocument());
+    fireEvent.click(within(row("Mine")).getByRole("button", { name: "Remove" }));
+    const dialog = await screen.findByRole("dialog", { name: "Remove Mine" });
+    expect(dialog).toHaveTextContent("Remove Mine and delete its agent file?");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(commands.removeCustom).toHaveBeenCalledWith("mine"));
+    expect(commands.providers.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it("imports acp.json and reports saved and skipped entries", async () => {
+    const commands = new FakeCommands();
+    commands.pickAcpJson.mockResolvedValueOnce('{"agent_servers": {}}');
+    commands.importAcp.mockResolvedValueOnce([
+      { name: "My Agent", id: "my-agent", saved: true, reason: "" },
+      { name: "Taken", id: "taken", saved: false, reason: "there is already a custom agent 'taken'" },
+    ]);
+    openList(commands);
+    await waitFor(() => expect(commands.providers).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: "Import acp.json" }));
+    await screen.findByText(
+      "Imported My Agent from acp.json. Skipped Taken (there is already a custom agent 'taken').",
+    );
+    expect(commands.importAcp).toHaveBeenCalledTimes(1);
   });
 });

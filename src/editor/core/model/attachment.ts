@@ -5,14 +5,14 @@
  */
 import { history, historyField, redo, undo } from "@codemirror/commands";
 import {
+  ChangeSet,
   Compartment,
   EditorState,
   Transaction,
   type Annotation,
-  type ChangeSet,
   type StateCommand,
 } from "@codemirror/state";
-import { EditorView, ViewPlugin } from "@codemirror/view";
+import { EditorView, ViewPlugin, keymap } from "@codemirror/view";
 import {
   _addEditor,
   _removeEditor,
@@ -24,13 +24,16 @@ import {
   type DocumentAttachmentOptions,
   type TextEditorHandle,
 } from "@/editor/api";
-import type { DocAttachmentTarget, DocumentManager } from "./document";
+import { restoresVcsText, useDocMeta, type DocAttachmentTarget, type DocumentManager } from "./document";
+import { saveOnBlur } from "../saveOnBlur";
+import { editorHistoryKeymap } from "../cm/baseKeymap";
 
 class AttachedView implements DocAttachmentTarget {
   view: EditorView | null = null;
   forwarding = false;
   storedState: EditorState | null = null;
   history = new Compartment();
+  readonly listeners = new Set<(changes: ChangeSet) => void>();
   historyState?: () => EditorState | null;
   adoptHistory?: (state: EditorState) => void;
 
@@ -38,6 +41,7 @@ class AttachedView implements DocAttachmentTarget {
     if (this.forwarding) return;
     if (this.view) this.view.dispatch({ changes, annotations });
     else if (this.storedState) this.storedState = this.storedState.update({ changes, annotations }).state;
+    for (const listener of this.listeners) listener(changes);
   }
 }
 
@@ -62,6 +66,7 @@ export async function attachDocument(
   }
   model.attach(target);
   let released = false;
+  let cancelBlurSave: (() => void) | undefined;
   let detachHistory: (() => void) | null = null;
   const historyTarget = {
     path,
@@ -93,6 +98,7 @@ export async function attachDocument(
     return {
       destroy() {
         destroyed = true;
+        cancelBlurSave?.();
         if (!options.sharedHistory) {
           detachHistory?.();
           detachHistory = null;
@@ -121,8 +127,17 @@ export async function attachDocument(
     text: () => model.sync.localText.toString(),
     lineEnding: () => model.getMeta().lineEnding,
     uiMode: () => model.getMeta().uiMode,
+    context: () => model.ctx(),
     get readOnly() {
       return model.getMeta().readOnly || model.virtual;
+    },
+    subscribeReadOnly: (listener) =>
+      useDocMeta.subscribe((state, previous) => {
+        if (state[model.path]?.readOnly !== previous[model.path]?.readOnly) listener();
+      }),
+    subscribeExternalChanges: (listener) => {
+      target.listeners.add(listener);
+      return () => void target.listeners.delete(listener);
     },
     editorState: () => target.view?.state ?? target.storedState,
     dispatchTransactions: (transactions, view) => {
@@ -142,16 +157,38 @@ export async function attachDocument(
       }
     },
     extension: [
+      EditorView.domEventHandlers({
+        blur: (_event, view) => {
+          cancelBlurSave?.();
+          if (view.state.readOnly || !view.state.facet(EditorView.editable)) return;
+          cancelBlurSave = saveOnBlur(
+            () => view.hasFocus,
+            () => {
+              if (released || model.closed || manager.settings()?.files?.autoSave === false) return;
+              void model.save("auto").catch((e) => console.warn(`autosave of ${path} failed`, e));
+            },
+          );
+        },
+      }),
       options.sharedHistory ? target.history.of(history()) : [],
       options.sharedHistory
-        ? EditorView.domEventHandlers({
-            beforeinput: (event) => {
-              if (event.inputType !== "historyUndo" && event.inputType !== "historyRedo") return false;
-              event.preventDefault();
-              historyCommand(event.inputType === "historyUndo" ? undo : redo);
-              return true;
-            },
-          })
+        ? [
+            keymap.of(
+              editorHistoryKeymap.map((binding) => {
+                if (binding.run === undo) return { ...binding, run: () => historyCommand(undo) };
+                if (binding.run === redo) return { ...binding, run: () => historyCommand(redo) };
+                return binding;
+              }),
+            ),
+            EditorView.domEventHandlers({
+              beforeinput: (event) => {
+                if (event.inputType !== "historyUndo" && event.inputType !== "historyRedo") return false;
+                event.preventDefault();
+                historyCommand(event.inputType === "historyUndo" ? undo : redo);
+                return true;
+              },
+            }),
+          ]
         : [],
       EditorState.changeFilter.of((tr) => isExternalChange(tr) || !model.ctx().readOnly),
       options.sharedHistory
@@ -168,7 +205,7 @@ export async function attachDocument(
         if (released || model.closed || target.forwarding) return;
         for (const tr of u.transactions)
           if (tr.docChanged && !isExternalChange(tr) && !tr.annotation(transientChange))
-            model.onLocal(tr.changes, target);
+            model.onLocal(tr.changes, target, restoresVcsText(tr));
       }),
     ],
     save: (options) => model.save(options?.exact ? "exact" : "explicit"),
@@ -177,19 +214,27 @@ export async function attachDocument(
     undo: () => historyCommand(undo),
     redo: () => historyCommand(redo),
     edit: (changes, userEvent = "input") => {
-      if (model.ctx().readOnly) return;
+      if (released || model.closed || model.ctx().readOnly) return;
       // Into the document's history, like a typed edit: the text tab's when there is one.
       const slot = model.primarySlot();
       if (slot) slot.dispatchLocal({ changes, userEvent });
-      else target.view?.dispatch({ changes, userEvent });
+      else if (target.view) target.view.dispatch({ changes, userEvent });
+      else {
+        const edit = ChangeSet.of(changes, model.sync.localText.length);
+        if (edit.empty) return;
+        target.applyExternal(edit, [Transaction.userEvent.of(userEvent)]);
+        model.onLocal(edit, target, restoresVcsText(userEvent));
+      }
     },
     release: () => {
       if (released) return;
       released = true;
+      cancelBlurSave?.();
       detachHistory?.();
       detachHistory = null;
       target.view = null;
       target.storedState = null;
+      target.listeners.clear();
       model.detach(target);
     },
   };

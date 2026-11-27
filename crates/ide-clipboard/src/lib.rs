@@ -16,10 +16,41 @@
 //! thread: AppKit and WebKit also access the general pasteboard there, and its
 //! mutable type cache cannot be protected by a mutex in this crate.
 //!
-//! Other platforms (`text/uri-list` on X11) are not wired up: [`files`] is
-//! empty and [`set_files`] fails there.
+//! Linux keeps it as `text/uri-list` (Dolphin, Nautilus and most file
+//! managers) or GNOME's `x-special/gnome-copied-files` (`copy` or `cut`, then
+//! one URI per line), read and written through the GTK clipboard on X11 and
+//! Wayland alike; [`request_files`] reads it without blocking the main loop.
+//! Other platforms are not wired up: [`files`] is empty and [`set_files`]
+//! fails there.
+//!
+//! [`png`] reads an image (a screenshot) for the project view's Paste, which
+//! saves it as a file: `public.png` or `public.tiff` on macOS, the registered
+//! `PNG` format or `CF_DIB` on Windows. Linux reads it through GTK in the app.
 
 use std::path::PathBuf;
+
+#[cfg(any(windows, test))]
+mod image;
+
+/// Writes a PNG as a native image, independently of WebView clipboard permissions.
+/// Call on the main thread on macOS and Linux; `owner` is a window handle on Windows.
+pub fn set_png(png: &[u8], owner: usize) -> std::io::Result<()> {
+    if png.get(..8) != Some(b"\x89PNG\r\n\x1a\n") || png.get(12..16) != Some(b"IHDR") || png.len() < 24 {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid clipboard image"));
+    }
+    let width = u32::from_be_bytes(png[16..20].try_into().unwrap()) as usize;
+    let height = u32::from_be_bytes(png[20..24].try_into().unwrap()) as usize;
+    if width == 0
+        || height == 0
+        || !width
+            .checked_mul(height)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .is_some_and(|size| size <= 64 * 1024 * 1024)
+    {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Clipboard image is too large"));
+    }
+    imp::set_png(png, owner)
+}
 
 /// Replaces every clipboard flavor with plain text. `owner` is the calling window
 /// handle on Windows, ignored elsewhere. Call on the main thread on macOS and Linux.
@@ -27,11 +58,33 @@ pub fn set_text(text: &str, owner: usize) -> std::io::Result<()> {
     imp::set_text(text, owner)
 }
 
+/// The clipboard's plain text. None when macOS holds none, or when Windows cannot
+/// open the clipboard; empty when Windows holds none. Call on the main thread on
+/// macOS; Linux reads it asynchronously through GTK in the app.
+#[cfg(any(windows, target_os = "macos"))]
+pub fn text() -> Option<String> {
+    imp::text()
+}
+
+/// The clipboard's image as PNG bytes, None when it holds none. Call on the main
+/// thread on macOS.
+#[cfg(any(windows, target_os = "macos"))]
+pub fn png() -> Option<Vec<u8>> {
+    imp::png()
+}
+
+/// Whether the clipboard holds an image, without reading it. Call on the main
+/// thread on macOS and Linux.
+pub fn has_image() -> bool {
+    imp::has_image()
+}
+
 /// Size of `DROPFILES`: `pFiles`, `pt` (two `LONG`s), `fNC`, `fWide`.
 const HEADER: usize = 20;
 
 /// The absolute paths on the clipboard, empty when it holds no file list.
 /// Read failures remain errors so callers can retain an internal copy.
+/// Empty on Linux, where [`request_files`] reads it.
 pub fn files() -> std::io::Result<Vec<PathBuf>> {
     imp::files()
 }
@@ -54,7 +107,7 @@ pub fn set_files(paths: &[PathBuf]) -> bool {
 /// line. An editor paste inserts names, not the absolute paths the file list
 /// keeps for Explorer (#1878; IDEA's text flavor is names too). A path with no
 /// file name (a root like `C:\`) keeps its whole path.
-#[cfg(any(windows, target_os = "macos", test))]
+#[cfg(any(windows, target_os = "macos", target_os = "linux", test))]
 fn names_text(paths: &[PathBuf], separator: &str) -> String {
     paths
         .iter()
@@ -63,6 +116,82 @@ fn names_text(paths: &[PathBuf], separator: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(separator)
+}
+
+/// The `file://` URIs in a `text/uri-list` or `x-special/gnome-copied-files`
+/// payload as local paths: comments, the `copy`/`cut` line and URIs for other
+/// hosts or schemes are skipped.
+#[cfg(any(target_os = "linux", all(test, unix)))]
+fn uri_list_paths(text: &str) -> Vec<PathBuf> {
+    text.lines().map(str::trim).filter(|line| !line.starts_with('#')).filter_map(uri_to_path).collect()
+}
+
+/// A local `file://` URI (`file:///a%20b` or `file://localhost/a%20b`) as a
+/// path; its percent-escapes are raw bytes, as GLib writes them.
+#[cfg(any(target_os = "linux", all(test, unix)))]
+fn uri_to_path(uri: &str) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+    let rest = uri.strip_prefix("file://")?;
+    let path = if rest.starts_with('/') { rest } else { rest.strip_prefix("localhost")? };
+    let path = path.split(['?', '#']).next()?;
+    if !path.starts_with('/') {
+        return None;
+    }
+    let hex = |b: u8| (b as char).to_digit(16).map(|d| d as u8);
+    let bytes = path.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let escaped =
+            (bytes[i] == b'%').then(|| Some((hex(*bytes.get(i + 1)?)? << 4) | hex(*bytes.get(i + 2)?)?)).flatten();
+        match escaped {
+            Some(b) => {
+                out.push(b);
+                i += 3;
+            }
+            None => {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+    }
+    Some(PathBuf::from(std::ffi::OsString::from_vec(out)))
+}
+
+/// `path` as a `file://` URI, every byte outside the unreserved set and `/`
+/// percent-escaped.
+#[cfg(any(target_os = "linux", all(test, unix)))]
+fn file_uri(path: &std::path::Path) -> String {
+    use std::fmt::Write;
+    use std::os::unix::ffi::OsStrExt;
+    let mut uri = String::from("file://");
+    for &b in path.as_os_str().as_bytes() {
+        if b.is_ascii_alphanumeric() || b"/-._~".contains(&b) {
+            uri.push(b as char);
+        } else {
+            let _ = write!(uri, "%{b:02X}");
+        }
+    }
+    uri
+}
+
+/// Reads the clipboard's file list without blocking: `text/uri-list` first,
+/// then GNOME's list, and calls `done` with the paths (empty without a list).
+/// Call on the main thread; `done` runs there later.
+#[cfg(target_os = "linux")]
+pub fn request_files(done: impl FnOnce(Vec<PathBuf>) + 'static) {
+    use gtk::gdk::{Atom, SELECTION_CLIPBOARD};
+    fn paths_in(data: &gtk::SelectionData) -> Vec<PathBuf> {
+        // A failed request has a negative length and no data.
+        if data.length() <= 0 { Vec::new() } else { uri_list_paths(&String::from_utf8_lossy(&data.data())) }
+    }
+    gtk::Clipboard::get(&SELECTION_CLIPBOARD).request_contents(&Atom::intern(imp::URI_LIST), move |board, data| {
+        let paths = paths_in(data);
+        if !paths.is_empty() {
+            return done(paths);
+        }
+        board.request_contents(&Atom::intern(imp::GNOME_COPIED), move |_, data| done(paths_in(data)));
+    });
 }
 
 /// `DROPFILES` for `paths`, in the wide form so names outside the ANSI code
@@ -127,9 +256,71 @@ pub fn decode(bytes: &[u8]) -> Vec<PathBuf> {
     out
 }
 
+/// A `CF_UNICODETEXT` block as a string: UTF-16LE up to the first NUL. The block
+/// may be larger than the text, and a malformed one may lack the NUL.
+#[cfg(any(windows, test))]
+fn unicode_text(bytes: &[u8]) -> String {
+    let (pairs, _) = bytes.as_chunks::<2>();
+    let units: Vec<u16> = pairs.iter().map(|&pair| u16::from_le_bytes(pair)).take_while(|&unit| unit != 0).collect();
+    String::from_utf16_lossy(&units)
+}
+
+/// `BI_RGB` and `BI_BITFIELDS`: uncompressed pixels, the forms screenshots take.
+#[cfg(any(windows, test))]
+const BI_RGB: u32 = 0;
+#[cfg(any(windows, test))]
+const BI_BITFIELDS: u32 = 3;
+
+/// A packed DIB (`BITMAPINFOHEADER` or a later header, then the pixels) as PNG.
+/// Only 24- and 32-bit uncompressed bitmaps, which is what screenshots and
+/// copied images are; None for anything else. A 32-bit bitmap whose alpha is
+/// all zero (most writers leave it unset) is opaque.
+#[cfg(any(windows, test))]
+fn dib_to_png(dib: &[u8]) -> Option<Vec<u8>> {
+    let u32_at = |at: usize| dib.get(at..at + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    let header = u32_at(0)? as usize;
+    let width = u32_at(4)? as i32;
+    let height = u32_at(8)? as i32;
+    let bits = u16::from_le_bytes([*dib.get(14)?, *dib.get(15)?]);
+    let compression = u32_at(16)?;
+    if header < 40 || width <= 0 || height == 0 || !matches!(bits, 24 | 32) {
+        return None;
+    }
+    if compression != BI_RGB && !(compression == BI_BITFIELDS && bits == 32) {
+        return None;
+    }
+    // A `BITMAPINFOHEADER` keeps the three bitfield masks after it; later
+    // headers hold them inside. Masks other than BGRA's are not supported.
+    let masks = if compression == BI_BITFIELDS && header == 40 { 12 } else { 0 };
+    let colors = u32_at(32)? as usize;
+    let (width, rows) = (width as usize, height.unsigned_abs() as usize);
+    let stride = (width * bits as usize).div_ceil(32) * 4;
+    let start = header + masks + colors * 4;
+    let pixels = dib.get(start..start.checked_add(stride.checked_mul(rows)?)?)?;
+    let step = bits as usize / 8;
+    let mut rgba = Vec::with_capacity(width * rows * 4);
+    for row in 0..rows {
+        // A positive height stores the bottom row first.
+        let source = if height > 0 { rows - 1 - row } else { row };
+        let line = &pixels[source * stride..source * stride + width * step];
+        for px in line.chunks_exact(step) {
+            rgba.extend_from_slice(&[px[2], px[1], px[0], if step == 4 { px[3] } else { 255 }]);
+        }
+    }
+    if step == 4 && rgba.as_chunks::<4>().0.iter().all(|px| px[3] == 0) {
+        rgba.as_chunks_mut::<4>().0.iter_mut().for_each(|px| px[3] = 255);
+    }
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, width as u32, rows as u32);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.write_header().ok()?.write_image_data(&rgba).ok()?;
+    Some(out)
+}
+
 #[cfg(windows)]
 mod imp {
-    use super::{HEADER, decode, encode, names_text};
+    use super::{HEADER, decode, dib_to_png, encode, names_text, unicode_text};
     use std::ffi::c_void;
     use std::path::PathBuf;
     use std::ptr;
@@ -157,6 +348,73 @@ mod imp {
         fn GetClipboardData(format: u32) -> Handle;
         fn SetClipboardData(format: u32, memory: Handle) -> Handle;
         fn IsClipboardFormatAvailable(format: u32) -> i32;
+        fn RegisterClipboardFormatW(name: *const u16) -> u32;
+    }
+
+    /// `CF_DIB`: Windows synthesizes it from `CF_BITMAP` and `CF_DIBV5`, so every
+    /// bitmap on the clipboard reads as one.
+    const CF_DIB: u32 = 8;
+    const CF_DIBV5: u32 = 17;
+
+    /// The `PNG` format browsers and the Snipping Tool add beside the bitmap; it
+    /// keeps transparency, so it is read first.
+    fn png_format() -> u32 {
+        let name: Vec<u16> = "PNG\0".encode_utf16().collect();
+        unsafe { RegisterClipboardFormatW(name.as_ptr()) }
+    }
+
+    pub fn has_image() -> bool {
+        let png = png_format();
+        (png != 0 && unsafe { IsClipboardFormatAvailable(png) } != 0)
+            || unsafe { IsClipboardFormatAvailable(CF_DIB) } != 0
+    }
+
+    /// A copy of the clipboard's `format` block. Call with the clipboard open.
+    fn read_block(format: u32) -> Option<Vec<u8>> {
+        // SAFETY: the clipboard keeps the block alive while it is open, and
+        // `GlobalSize` bounds the bytes read from it.
+        unsafe {
+            let memory = GetClipboardData(format);
+            if memory.is_null() {
+                return None;
+            }
+            let data = GlobalLock(memory);
+            if data.is_null() {
+                return None;
+            }
+            let bytes = std::slice::from_raw_parts(data as *const u8, GlobalSize(memory)).to_vec();
+            GlobalUnlock(memory);
+            Some(bytes)
+        }
+    }
+
+    pub fn png() -> Option<Vec<u8>> {
+        if !open() {
+            return None;
+        }
+        let png = png_format();
+        let image = if png != 0 && unsafe { IsClipboardFormatAvailable(png) } != 0 {
+            read_block(png)
+        } else if unsafe { IsClipboardFormatAvailable(CF_DIB) } != 0 {
+            read_block(CF_DIB).and_then(|dib| dib_to_png(&dib))
+        } else {
+            None
+        };
+        unsafe { CloseClipboard() };
+        image
+    }
+
+    pub fn text() -> Option<String> {
+        // Empty rather than None: a None falls back to the WebView, which prompts the user.
+        if unsafe { IsClipboardFormatAvailable(CF_UNICODETEXT) } == 0 {
+            return Some(String::new());
+        }
+        if !open() {
+            return None;
+        }
+        let text = read_block(CF_UNICODETEXT).map(|bytes| unicode_text(&bytes));
+        unsafe { CloseClipboard() };
+        text
     }
 
     #[link(name = "kernel32")]
@@ -218,6 +476,35 @@ mod imp {
         paths
     }
 
+    /// `Preferred DropEffect`: a `DWORD` saying whether the files were copied or cut.
+    /// Explorer writes it with every file list, and paste targets that move files
+    /// between machines (Remote Desktop's clipboard redirection, #3863) read it.
+    fn drop_effect_format() -> u32 {
+        let name: Vec<u16> = "Preferred DropEffect\0".encode_utf16().collect();
+        unsafe { RegisterClipboardFormatW(name.as_ptr()) }
+    }
+
+    /// `DROPEFFECT_COPY`.
+    const DROPEFFECT_COPY: u32 = 1;
+
+    /// An `HGLOBAL` holding a copy of `bytes`. Null when the allocation failed.
+    fn global_bytes(bytes: &[u8]) -> Handle {
+        unsafe {
+            let memory = GlobalAlloc(GMEM_MOVEABLE, bytes.len());
+            if memory.is_null() {
+                return ptr::null_mut();
+            }
+            let data = GlobalLock(memory);
+            if data.is_null() {
+                GlobalFree(memory);
+                return ptr::null_mut();
+            }
+            ptr::copy_nonoverlapping(bytes.as_ptr(), data as *mut u8, bytes.len());
+            GlobalUnlock(memory);
+            memory
+        }
+    }
+
     /// An `HGLOBAL` holding `text` as UTF-16 with a terminating NUL, and its
     /// byte size. Null when the allocation failed.
     fn global_text(text: &str) -> (Handle, usize) {
@@ -263,6 +550,48 @@ mod imp {
         }
     }
 
+    pub fn set_png(png: &[u8], owner: usize) -> std::io::Result<()> {
+        let dib = super::image::png_to_dib(png)?;
+        let format = png_format();
+        if format == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let formats = [(format, png), (CF_DIBV5, dib.as_slice())];
+        // SAFETY: allocations remain ours until SetClipboardData accepts them. Prepare both
+        // before replacing the clipboard; free only allocations the OS did not take.
+        unsafe {
+            let mut blocks: Vec<_> = formats.iter().map(|(_, bytes)| global_bytes(bytes)).collect();
+            if blocks.iter().any(|memory| memory.is_null()) || !open_for(owner as Handle) {
+                let error = std::io::Error::last_os_error();
+                for memory in blocks {
+                    if !memory.is_null() {
+                        GlobalFree(memory);
+                    }
+                }
+                return Err(error);
+            }
+            let mut result = Ok(());
+            if EmptyClipboard() == 0 {
+                result = Err(std::io::Error::last_os_error());
+            } else {
+                for ((format, _), memory) in formats.iter().zip(&mut blocks) {
+                    if SetClipboardData(*format, *memory).is_null() {
+                        result = Err(std::io::Error::last_os_error());
+                        break;
+                    }
+                    *memory = ptr::null_mut();
+                }
+            }
+            CloseClipboard();
+            for memory in blocks {
+                if !memory.is_null() {
+                    GlobalFree(memory);
+                }
+            }
+            result
+        }
+    }
+
     pub fn set_files(paths: &[PathBuf]) -> bool {
         let bytes = encode(paths);
         if bytes.len() <= HEADER {
@@ -300,6 +629,13 @@ mod imp {
             if !taken {
                 GlobalFree(memory);
             }
+            let effect = drop_effect_format();
+            if effect != 0 {
+                let effect_memory = global_bytes(&DROPEFFECT_COPY.to_le_bytes());
+                if !effect_memory.is_null() && SetClipboardData(effect, effect_memory).is_null() {
+                    GlobalFree(effect_memory);
+                }
+            }
             let (text_memory, _) = global_text(&text);
             if !text_memory.is_null() {
                 // The text alone still pastes somewhere useful.
@@ -320,10 +656,10 @@ mod imp {
     use objc2::runtime::{AnyClass, AnyObject, ProtocolObject};
     use objc2::{ClassType, MainThreadMarker};
     use objc2_app_kit::{
-        NSPasteboard, NSPasteboardReadingOptionKey, NSPasteboardTypeString, NSPasteboardURLReadingFileURLsOnlyKey,
-        NSPasteboardWriting,
+        NSBitmapImageFileType, NSBitmapImageRep, NSPasteboard, NSPasteboardReadingOptionKey, NSPasteboardTypePNG,
+        NSPasteboardTypeString, NSPasteboardTypeTIFF, NSPasteboardURLReadingFileURLsOnlyKey, NSPasteboardWriting,
     };
-    use objc2_foundation::{NSArray, NSDictionary, NSNumber, NSString, NSURL};
+    use objc2_foundation::{NSArray, NSData, NSDictionary, NSNumber, NSString, NSURL};
     use std::path::PathBuf;
 
     use super::names_text;
@@ -373,6 +709,41 @@ mod imp {
         })
     }
 
+    pub fn has_image() -> bool {
+        debug_assert!(MainThreadMarker::new().is_some(), "NSPasteboard access requires the main thread");
+        autoreleasepool(|_| {
+            // SAFETY: the types are AppKit constants, valid for the process' lifetime.
+            let types = NSArray::from_slice(&[unsafe { NSPasteboardTypePNG }, unsafe { NSPasteboardTypeTIFF }]);
+            NSPasteboard::generalPasteboard().availableTypeFromArray(&types).is_some()
+        })
+    }
+
+    /// PNG as copied, else TIFF (what macOS screenshots and most apps write) converted.
+    pub fn png() -> Option<Vec<u8>> {
+        debug_assert!(MainThreadMarker::new().is_some(), "NSPasteboard access requires the main thread");
+        autoreleasepool(|_| {
+            let board = NSPasteboard::generalPasteboard();
+            // SAFETY: the types are AppKit constants, valid for the process' lifetime.
+            if let Some(png) = board.dataForType(unsafe { NSPasteboardTypePNG }) {
+                return Some(png.to_vec());
+            }
+            let tiff = board.dataForType(unsafe { NSPasteboardTypeTIFF })?;
+            let image = NSBitmapImageRep::imageRepWithData(&tiff)?;
+            // SAFETY: an empty property dictionary is valid for every file type.
+            let png =
+                unsafe { image.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new()) }?;
+            Some(png.to_vec())
+        })
+    }
+
+    pub fn text() -> Option<String> {
+        debug_assert!(MainThreadMarker::new().is_some(), "NSPasteboard access requires the main thread");
+        autoreleasepool(|_| {
+            // SAFETY: the type is an AppKit constant, valid for the process' lifetime.
+            NSPasteboard::generalPasteboard().stringForType(unsafe { NSPasteboardTypeString }).map(|s| s.to_string())
+        })
+    }
+
     pub fn set_text(text: &str, _owner: usize) -> std::io::Result<()> {
         debug_assert!(MainThreadMarker::new().is_some(), "NSPasteboard access requires the main thread");
         autoreleasepool(|_| {
@@ -382,6 +753,23 @@ mod imp {
                 Ok(())
             } else {
                 Err(std::io::Error::other("Cannot write clipboard text"))
+            }
+        })
+    }
+
+    pub fn set_png(png: &[u8], _owner: usize) -> std::io::Result<()> {
+        debug_assert!(MainThreadMarker::new().is_some(), "NSPasteboard access requires the main thread");
+        autoreleasepool(|_| {
+            let data = NSData::with_bytes(png);
+            if NSBitmapImageRep::imageRepWithData(&data).is_none() {
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid clipboard image"));
+            }
+            let board = NSPasteboard::generalPasteboard();
+            board.clearContents();
+            if board.setData_forType(Some(&data), unsafe { NSPasteboardTypePNG }) {
+                Ok(())
+            } else {
+                Err(std::io::Error::other("Cannot write clipboard image"))
             }
         })
     }
@@ -416,6 +804,21 @@ mod imp {
 mod imp {
     use std::path::PathBuf;
 
+    pub fn set_png(png: &[u8], _owner: usize) -> std::io::Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            let image = gtk::gdk_pixbuf::Pixbuf::from_read(std::io::Cursor::new(png.to_vec()))
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))?;
+            gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD).set_image(&image);
+            Ok(())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = png;
+            Err(std::io::Error::other("Clipboard images are unavailable on this platform"))
+        }
+    }
+
     pub fn set_text(text: &str, _owner: usize) -> std::io::Result<()> {
         #[cfg(target_os = "linux")]
         {
@@ -429,14 +832,69 @@ mod imp {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    pub const URI_LIST: &str = "text/uri-list";
+    #[cfg(target_os = "linux")]
+    pub const GNOME_COPIED: &str = "x-special/gnome-copied-files";
+
     pub fn has_files() -> bool {
-        false
+        #[cfg(target_os = "linux")]
+        {
+            gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD).wait_for_targets().is_some_and(|targets| {
+                targets.into_iter().any(|target| {
+                    let name = target.name();
+                    name == URI_LIST || name == GNOME_COPIED
+                })
+            })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
+    }
+
+    pub fn has_image() -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD).wait_is_image_available()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
     }
 
     pub fn files() -> std::io::Result<Vec<PathBuf>> {
         Ok(Vec::new())
     }
 
+    /// Offers `paths` as `text/uri-list` (KDE and most file managers), GNOME's
+    /// list (Nautilus, Thunar) and their names as text, rendered on request.
+    #[cfg(target_os = "linux")]
+    pub fn set_files(paths: &[PathBuf]) -> bool {
+        use gtk::{TargetEntry, TargetFlags};
+        let uris: Vec<String> = paths.iter().map(|p| super::file_uri(p)).collect();
+        let uri_list: String = uris.iter().map(|uri| format!("{uri}\r\n")).collect();
+        let gnome = format!("copy\n{}", uris.join("\n"));
+        let names = super::names_text(paths, "\n");
+        let entry = |name: &str, info: u32| TargetEntry::new(name, TargetFlags::empty(), info);
+        let targets = [
+            entry(URI_LIST, 0),
+            entry(GNOME_COPIED, 1),
+            entry("UTF8_STRING", 2),
+            entry("text/plain;charset=utf-8", 2),
+            entry("text/plain", 2),
+        ];
+        gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD).set_with_data(&targets, move |_, data, info| match info {
+            0 => data.set(&data.target(), 8, uri_list.as_bytes()),
+            1 => data.set(&data.target(), 8, gnome.as_bytes()),
+            _ => {
+                let _ = data.set_text(&names);
+            }
+        })
+    }
+
+    #[cfg(not(target_os = "linux"))]
     pub fn set_files(_paths: &[PathBuf]) -> bool {
         false
     }
@@ -446,8 +904,49 @@ mod imp {
 mod tests {
     use super::*;
 
+    #[test]
+    fn invalid_or_oversized_images_are_rejected_before_accessing_the_clipboard() {
+        assert!(set_png(b"not a PNG", 0).is_err());
+        let mut header = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+        header.extend_from_slice(&100_000u32.to_be_bytes());
+        header.extend_from_slice(&100_000u32.to_be_bytes());
+        assert!(set_png(&header, 0).is_err());
+    }
+
+    #[test]
+    fn unicode_text_stops_at_the_nul() {
+        let mut bytes: Vec<u8> = "héllo\r\n世界".encode_utf16().chain([0, 0x41]).flat_map(u16::to_le_bytes).collect();
+        assert_eq!(unicode_text(&bytes), "héllo\r\n世界");
+        // No terminator, and a stray odd byte, still read the whole text.
+        bytes.truncate(bytes.len() - 4);
+        bytes.push(7);
+        assert_eq!(unicode_text(&bytes), "héllo\r\n世界");
+    }
+
     fn paths(list: &[&str]) -> Vec<PathBuf> {
         list.iter().map(PathBuf::from).collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_manager_uri_lists_become_paths() {
+        // Dolphin: CRLF-separated `text/uri-list`, with a comment line.
+        let kde = "# copied\r\nfile:///home/u/a%20b.txt\r\nfile://localhost/home/u/%E6%A1%8C%E9%9D%A2\r\n";
+        assert_eq!(uri_list_paths(kde), paths(&["/home/u/a b.txt", "/home/u/桌面"]));
+        // Nautilus/Thunar: `copy` or `cut`, then one URI per line.
+        assert_eq!(uri_list_paths("cut\nfile:///tmp/x\nfile:///tmp/y"), paths(&["/tmp/x", "/tmp/y"]));
+        // Other hosts and schemes are not local files.
+        assert!(uri_list_paths("file://server/share/x\nhttps://example.com/x\nsmb:///x").is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn written_uris_read_back_as_the_same_paths() {
+        let list = paths(&["/home/u/a b#1%.txt", "/home/u/桌面/项目", "/tmp/plain-name_1.~"]);
+        let uris: Vec<String> = list.iter().map(|p| file_uri(p)).collect();
+        assert_eq!(uris[0], "file:///home/u/a%20b%231%25.txt");
+        assert_eq!(uris[2], "file:///tmp/plain-name_1.~");
+        assert_eq!(uri_list_paths(&uris.join("\r\n")), list);
     }
 
     #[test]
@@ -505,5 +1004,63 @@ mod tests {
         bytes[16] = 0; // fWide: the list is single-byte
         bytes.extend_from_slice(b"C:\\a\\b.txt\0C:\\c\0\0");
         assert_eq!(decode(&bytes), paths(&["C:\\a\\b.txt", "C:\\c"]));
+    }
+
+    /// A `BITMAPINFOHEADER` DIB of `width` × `height` (positive: bottom-up).
+    fn dib(width: i32, height: i32, bits: u16, compression: u32, rows: &[&[u8]]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&40u32.to_le_bytes());
+        out.extend_from_slice(&width.to_le_bytes());
+        out.extend_from_slice(&height.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&bits.to_le_bytes());
+        out.extend_from_slice(&compression.to_le_bytes());
+        out.extend_from_slice(&[0u8; 20]);
+        if compression == super::BI_BITFIELDS {
+            for mask in [0x00ff_0000u32, 0x0000_ff00, 0x0000_00ff] {
+                out.extend_from_slice(&mask.to_le_bytes());
+            }
+        }
+        for row in rows {
+            out.extend_from_slice(row);
+        }
+        out
+    }
+
+    fn decode_png(png: &[u8]) -> (u32, u32, Vec<u8>) {
+        let mut reader = png::Decoder::new(std::io::Cursor::new(png)).read_info().unwrap();
+        let mut buf = vec![0; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut buf).unwrap();
+        buf.truncate(info.buffer_size());
+        (info.width, info.height, buf)
+    }
+
+    #[test]
+    fn a_bottom_up_24_bit_bitmap_becomes_an_upright_opaque_png() {
+        // Rows are padded to 4 bytes; the first stored row is the bottom one.
+        let bottom: &[u8] = &[255, 0, 0, 0, 255, 0, 0, 0];
+        let top: &[u8] = &[0, 0, 255, 255, 255, 255, 0, 0];
+        let png = super::dib_to_png(&dib(2, 2, 24, super::BI_RGB, &[bottom, top])).unwrap();
+        let (w, h, rgba) = decode_png(&png);
+        assert_eq!((w, h), (2, 2));
+        assert_eq!(rgba, [255, 0, 0, 255, 255, 255, 255, 255, 0, 0, 255, 255, 0, 255, 0, 255]);
+    }
+
+    #[test]
+    fn a_32_bit_bitmap_keeps_its_alpha_unless_none_was_written() {
+        let row: &[u8] = &[10, 20, 30, 0, 40, 50, 60, 0];
+        let (_, _, rgba) = decode_png(&super::dib_to_png(&dib(2, -1, 32, super::BI_BITFIELDS, &[row])).unwrap());
+        assert_eq!(rgba, [30, 20, 10, 255, 60, 50, 40, 255]);
+        let row: &[u8] = &[10, 20, 30, 128, 40, 50, 60, 0];
+        let (_, _, rgba) = decode_png(&super::dib_to_png(&dib(2, -1, 32, super::BI_RGB, &[row])).unwrap());
+        assert_eq!(rgba, [30, 20, 10, 128, 60, 50, 40, 0]);
+    }
+
+    #[test]
+    fn unsupported_or_truncated_bitmaps_are_not_images() {
+        let row: &[u8] = &[1, 2, 3, 4];
+        assert!(super::dib_to_png(&dib(4, 1, 8, super::BI_RGB, &[row])).is_none());
+        assert!(super::dib_to_png(&dib(2, 2, 24, super::BI_RGB, &[row])).is_none());
+        assert!(super::dib_to_png(&[0; 10]).is_none());
     }
 }

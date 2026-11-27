@@ -1,0 +1,14 @@
+id = "typst"
+name = "Typst"
+extensions = ["typ"]
+line-comment = "//"
+block-comment = ["/*", "*/"]
+indent = { tab-size = 2, insert-spaces = true }
+ui-mode = "Typst"
+
+[[language-servers]]
+name = "tinymist"
+command = "tinymist"
+args = ["lsp"]
+root-markers = ["typst.toml"]
+install-hint = "cargo install --locked --git https://github.com/Myriad-Dreamin/tinymist tinymist-cli (or brew install tinymist)"

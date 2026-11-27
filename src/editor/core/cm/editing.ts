@@ -20,16 +20,23 @@ import {
   getIndentUnit,
   indentString,
   getIndentation,
+  ensureSyntaxTree,
 } from "@codemirror/language";
 import {
   copyLineDown,
+  cursorGroupLeft,
+  cursorGroupRight,
+  deleteGroupForward,
   deleteLine as deleteDocLine,
   insertNewlineAndIndent,
   moveLineDown,
   moveLineUp,
+  selectGroupLeft,
+  selectGroupRight,
 } from "@codemirror/commands";
 import { SearchCursor } from "@codemirror/search";
 import { humpLeft, humpRight, wordStartLeft } from "../model/camelHumps";
+import { cycleIdentifierCase, wordSpan } from "../model/identifierCase";
 
 type Node = ReturnType<ReturnType<typeof syntaxTree>["resolveInner"]>;
 
@@ -88,6 +95,21 @@ export const deleteHumpForward = deleteHump(true);
 /** ⌥⌫ / Ctrl+Backspace without CamelHumps: the whitespace before the caret and the word (or punctuation run) before it. */
 export const deleteWordBackward = deleteHump(false, false);
 
+/** The word moves and deletes the editor keys run in each mode (`caretExtension`): `[without CamelHumps, with CamelHumps]`. */
+const WORD_COMMANDS = {
+  left: [cursorGroupLeft, cursorHumpLeft],
+  right: [cursorGroupRight, cursorHumpRight],
+  selectLeft: [selectGroupLeft, selectHumpLeft],
+  selectRight: [selectGroupRight, selectHumpRight],
+  deleteToStart: [deleteWordBackward, deleteHumpBackward],
+  deleteToEnd: [deleteGroupForward, deleteHumpForward],
+} satisfies Record<string, [Command, Command]>;
+
+/** IDEA's "… in Different "CamelHumps" Mode": the word command of the mode "Use CamelHumps words" is not set to. */
+export function inDifferentHumpsMode(op: keyof typeof WORD_COMMANDS, camelHumps: boolean): Command {
+  return WORD_COMMANDS[op][camelHumps ? 0 : 1];
+}
+
 // --- lines / selections -------------------------------------------------------
 
 /**
@@ -134,22 +156,8 @@ export const duplicateLineOrSelection: Command = (view) => {
   if (state.readOnly) return false;
   if (state.selection.ranges.every((r) => r.empty)) {
     const spans = foldedLineSpans(state);
-    if (!spans) return copyLineDown(view);
     // On a folded region's line the whole folded block is duplicated.
-    const changes = state.changes(
-      spans.map((s) => ({ from: s.to, insert: state.lineBreak + state.sliceDoc(s.from, s.to) })),
-    );
-    const ranges = state.selection.ranges.map((r) => {
-      const s = spans.find((sp) => sp.from <= r.head && r.head <= sp.to)!;
-      return EditorSelection.cursor(changes.mapPos(r.head, -1) + s.to - s.from + state.lineBreak.length);
-    });
-    view.dispatch({
-      changes,
-      selection: EditorSelection.create(ranges, state.selection.mainIndex),
-      scrollIntoView: true,
-      userEvent: "input.duplicate",
-    });
-    return true;
+    return spans ? duplicateSpans(view, spans) : copyLineDown(view);
   }
   const tr = state.changeByRange((r) => {
     if (r.empty) {
@@ -169,8 +177,43 @@ export const duplicateLineOrSelection: Command = (view) => {
   return true;
 };
 
+/** IDEA's Duplicate Entire Lines: every line a caret or selection touches is copied below, and the copy keeps the selection. */
+export const duplicateEntireLines: Command = (view) => {
+  if (view.state.readOnly) return false;
+  const spans = foldedLineSpans(view.state);
+  return spans ? duplicateSpans(view, spans) : copyLineDown(view);
+};
+
+/** Copies each span below itself and moves every selection range onto its copy. */
+function duplicateSpans(view: EditorView, spans: Array<{ from: number; to: number }>): boolean {
+  const { state } = view;
+  const changes = state.changes(
+    spans.map((s) => ({ from: s.to, insert: state.lineBreak + state.sliceDoc(s.from, s.to) })),
+  );
+  const ranges = state.selection.ranges.map((r) => {
+    const s = spans.find((sp) => sp.from <= r.from && r.from <= sp.to)!;
+    const onCopy = (pos: number) => changes.mapPos(s.to, -1) + pos - s.from + 1;
+    return EditorSelection.range(onCopy(r.anchor), onCopy(r.head));
+  });
+  view.dispatch({
+    changes,
+    selection: EditorSelection.create(ranges, state.selection.mainIndex),
+    scrollIntoView: true,
+    userEvent: "input.duplicate",
+  });
+  return true;
+}
+
 /** ⌘⌫: Delete Line — on a folded region's line, every line of the folded block. */
 export const deleteLine: Command = (view) => {
+  if (!deleteLines(view)) return false;
+  // Recorded as the selection after the edit, Redo puts the caret back here rather than
+  // where the pre-deletion caret maps to (the end of the line above).
+  view.dispatch({ selection: view.state.selection });
+  return true;
+};
+
+function deleteLines(view: EditorView): boolean {
   const { state } = view;
   if (state.readOnly) return false;
   const spans = foldedLineSpans(state);
@@ -192,7 +235,7 @@ export const deleteLine: Command = (view) => {
     userEvent: "delete.line",
   });
   return true;
-};
+}
 
 // --- occurrences --------------------------------------------------------------
 
@@ -408,6 +451,79 @@ function leadingCommentStart(state: EditorState, a: number): number {
 
 export type StatementMove = { spec: TransactionSpec } | "noop" | "line";
 
+/** A `case` / `default` label whose branch body follows as its siblings (Go, JavaScript, Java). */
+const CASE_LABEL = /^(Case|CaseLabel|DefaultLabel|SwitchLabel)$/;
+
+/**
+ * Move Statement on a `case` label of a switch whose branches are flat
+ * (label, then the body as siblings): the branch, from its first stacked
+ * label to its last non-blank line, swaps with the neighbouring branch, as
+ * IDEA's case block mover does. `noop` at the first / last branch.
+ */
+function planCaseMove(state: EditorState, label: Node, up: boolean): StatementMove {
+  const doc = state.doc;
+  const block = label.parent!;
+  const close = doc.lineAt(block.to).number;
+  const isLabel = (l: number) => {
+    const n = statementStartingAt(state, l);
+    return !!n && CASE_LABEL.test(n.type.name) && n.parent?.from === block.from && n.parent.to === block.to;
+  };
+  const start = (l: number) => {
+    while (l > 1 && isLabel(l - 1)) l--;
+    return l;
+  };
+  // The line where the branch starting at `l` ends: its last non-blank line before the next branch or the closing brace.
+  const end = (l: number) => {
+    let k = l + 1;
+    while (k < close && isLabel(k)) k++;
+    while (k < close && !isLabel(k)) k++;
+    k--;
+    while (k > l && firstToken(state, k) === null) k--;
+    return k;
+  };
+  const a = start(doc.lineAt(label.from).number);
+  const b = end(a);
+  let s: number;
+  let e: number;
+  if (up) {
+    let p = a - 1;
+    while (p > 0 && doc.line(p).from > block.from && !isLabel(p)) p--;
+    if (p < 1 || doc.line(p).from <= block.from || !isLabel(p)) return "noop";
+    s = start(p);
+    e = end(s);
+  } else {
+    let n = b + 1;
+    while (n < close && !isLabel(n)) n++;
+    if (n >= close) return "noop";
+    s = n;
+    e = end(n);
+  }
+  const [first, second] = up
+    ? [
+        { s, e },
+        { s: a, e: b },
+      ]
+    : [
+        { s: a, e: b },
+        { s, e },
+      ];
+  const from = doc.line(first.s).from;
+  const to = doc.line(second.e).to;
+  const textFirst = state.sliceDoc(from, doc.line(first.e).to);
+  const textSecond = state.sliceDoc(doc.line(second.s).from, to);
+  const between = state.sliceDoc(doc.line(first.e).to, doc.line(second.s).from);
+  const head = state.selection.main.head;
+  const movedFrom = up ? from : from + textSecond.length + between.length;
+  return {
+    spec: {
+      changes: { from, to, insert: textSecond + between + textFirst },
+      selection: EditorSelection.cursor(movedFrom + (head - doc.line(a).from)),
+      scrollIntoView: true,
+      userEvent: "move.line",
+    },
+  };
+}
+
 /**
  * Move Statement as in IDEA: the statement around the caret (whole lines)
  * moves past the next statement; into a block when the neighbour is a block
@@ -420,6 +536,7 @@ export function planStatementMove(state: EditorState, up: boolean): StatementMov
   const head = state.selection.main.head;
   const cur = statementAround(state, head);
   if (!cur) return "line";
+  if (CASE_LABEL.test(cur.type.name) && cur.parent) return planCaseMove(state, cur, up);
   const doc = state.doc;
   if (/^[{}]$/.test(cur.type.name)) {
     for (let g: Node | null = cur.parent; g; g = g.parent)
@@ -505,11 +622,20 @@ function moveStatement(up: boolean): Command {
       if (plan === "noop") return true;
       if (plan !== "line") {
         view.dispatch(plan.spec);
+        recordSelectionAfter(view);
         return true;
       }
     }
     return up ? moveLineUp(view) : moveLineDown(view);
   };
+}
+
+/**
+ * Records the caret an edit command set as the selection after its edit, which Redo restores;
+ * without it Redo maps the caret from before the edit through it (elsewhere after a move).
+ */
+export function recordSelectionAfter(view: EditorView): void {
+  view.dispatch({ selection: view.state.selection });
 }
 
 export const moveStatementUp = moveStatement(true);
@@ -566,7 +692,101 @@ export const KEYWORD_BLOCK_LANGS = new Set([
 const KEYWORD_HEAD =
   /\b(do(\s*\|[^|]*\|)?|then|where|of)$|^\s*(def|defp|defmodule|class|module|function|local function|if|unless|elsif|elseif|else|while|until|for|case|begin)\b/;
 const BLOCK_HEAD =
-  /^\s*(if|else|for|while|do|switch|try|catch|finally|fn|fun|func|function|class|struct|enum|impl|trait|interface|object|match|when|loop|unsafe|mod|namespace)\b/;
+  /^\s*(if|else|elseif|for|foreach|while|do|switch|try|catch|finally|fn|fun|func|function|class|struct|enum|impl|trait|interface|object|match|when|loop|unsafe|mod|namespace)\b/;
+/** Languages whose `struct` / `class` / `union` / `enum` definitions end with `};`. */
+const C_TYPE_LANGS = new Set(["c", "cpp", "objective-c", "objective-cpp"]);
+/** `struct S`, `class A : public B`, `enum class E : int`, `template <typename T> class A`. */
+const C_TYPE_HEAD =
+  /^\s*(template\s*<[^>]*>\s*)?(typedef\s+)?(struct|class|union|enum(\s+(class|struct))?)(\s+[\w:]+)?(\s+final)?(\s*:\s*[^{};()]+)?\s*$/;
+/** A function header that names the function but has no parameter list yet. */
+const FUNCTION_NAME_ONLY = new RegExp(
+  String.raw`^\s*((pub(\([^)]*\))?|async|const|unsafe|extern|export|default|static|private|public|protected|internal|open|override|suspend|inline|operator|infix|tailrec)\s+)*(func|fn|fun|function)\s+[\w$]+(<[^>]*>)?$`,
+);
+
+/** Languages whose `if` / `for` / `while`… take their condition in parentheses. */
+const PAREN_CONDITION_LANGS = new Set([
+  "java",
+  "c",
+  "cpp",
+  "csharp",
+  "javascript",
+  "javascriptreact",
+  "typescript",
+  "typescriptreact",
+  "php",
+  "dart",
+  "kotlin",
+  "groovy",
+  "objective-c",
+  "objective-cpp",
+]);
+/** A condition keyword with nothing after it yet (`for`, `} else if`). */
+export const BARE_CONDITION = /^\s*(\}\s*)?(else\s+)?(if|elseif|for|foreach|while|switch|catch|synchronized)$/;
+const MODIFIERS =
+  "public|protected|private|internal|static|final|abstract|sealed|non-sealed|open|data|export|default|async|override|partial|readonly|unsafe|const|extern|inline|virtual|synchronized|native|strictfp|transient";
+const ANNOTATIONS = String.raw`(@[\w.]+(\([^)]*\))?\s+)*`;
+/** A type declaration behind modifiers or annotations (`public final class A`, `@Entity record R(...)`). */
+const DECLARATION_HEAD = new RegExp(
+  String.raw`^\s*${ANNOTATIONS}((${MODIFIERS})\s+)+(class|interface|enum|record|struct|trait|object|function|fun|fn|func|impl|@interface)\b`,
+);
+/** Words that start a statement, not a declaration's type. */
+const STATEMENT_WORDS = /^\s*(return|throw|new|else|yield|assert|case|goto|await|delete|typeof)\b/;
+/** A Java / C# method or constructor header: `[modifiers] [<T>] Type name(params) [throws X]`, or `modifiers Name(params)`. */
+const METHOD_HEAD = new RegExp(
+  String.raw`^\s*${ANNOTATIONS}(((${MODIFIERS})\s+)*(<[^>]*>\s+)?[\w$][\w$.<>\[\],?]*(\s*<[^>]*>)?(\[\])*\s+|((${MODIFIERS})\s+)+)[\w$]+\s*\([^;{}=]*\)(\s*throws\s+[\w$.,\s]+)?$`,
+);
+const METHOD_HEAD_LANGS = new Set(["java", "csharp", "groovy"]);
+
+/** Whether `code` (a line without its comment) opens a block that ⌘⇧↵ completes with `{ }`. */
+export function isBlockHead(code: string, language: string): boolean {
+  if (KEYWORD_BLOCK_LANGS.has(language) || /[{;,]$/.test(code)) return false;
+  if (BLOCK_HEAD.test(code) || DECLARATION_HEAD.test(code) || FUNCTION_NAME_ONLY.test(code)) return true;
+  if (C_TYPE_LANGS.has(language) && C_TYPE_HEAD.test(code)) return true;
+  return (
+    METHOD_HEAD_LANGS.has(language) &&
+    !STATEMENT_WORDS.test(code) &&
+    !/\b(abstract|native)\b/.test(code) &&
+    METHOD_HEAD.test(code)
+  );
+}
+
+/** The quote of a string or char literal `code` leaves open, if any (Rust's `'a` is a lifetime). */
+export function unclosedQuote(code: string, language: string): string | null {
+  const quotes = language === "rust" ? '"' : "\"'`";
+  let open: string | null = null;
+  for (let i = 0; i < code.length; i++) {
+    const c = code[i]!;
+    if (open) {
+      if (c === "\\") i++;
+      else if (c === open) open = null;
+    } else if (quotes.includes(c)) open = c;
+  }
+  return open;
+}
+
+/** A Python compound statement's header, which ends with `:`. */
+const PYTHON_HEAD =
+  /^\s*((async\s+)?(def|for|with)\b|(class|if|elif|while|except)\b|(else|try|finally)\s*$|(match|case)\s+(?![=:.([])\S)/;
+/** Languages with `=>` arrow functions. */
+const ARROW_LANGS = new Set(["javascript", "javascriptreact", "typescript", "typescriptreact", "dart", "csharp"]);
+const CLOSER: Record<string, string> = { "(": ")", "[": "]", "{": "}" };
+
+/** The closers for brackets `code` opens and leaves open, innermost first (string literals skipped). */
+function missingClosers(code: string): string {
+  const open: string[] = [];
+  let quote: string | null = null;
+  for (let i = 0; i < code.length; i++) {
+    const c = code[i]!;
+    if (quote) {
+      if (c === "\\") i++;
+      else if (c === quote) quote = null;
+    } else if (c === '"' || c === "'" || c === "`") quote = c;
+    else if (CLOSER[c]) open.push(CLOSER[c]!);
+    else if (c === open[open.length - 1]) open.pop();
+    else if (")]}".includes(c)) return "";
+  }
+  return quote ? "" : open.reverse().join("");
+}
 
 /** Offset in `text` where a trailing line comment starts (outside string literals), else `text.length`. */
 export function codeEnd(text: string, lineComment: string | undefined): number {
@@ -604,11 +824,24 @@ export function completeStatementSpec(state: EditorState, language: string): Tra
   const baseIndent = /^\s*/.exec(line.text)![0];
   const br = state.lineBreak;
   const braces = !KEYWORD_BLOCK_LANGS.has(language);
-  if (braces && !comment && BLOCK_HEAD.test(text) && !/[{;,]$/.test(text)) {
-    const insert = ` {${br}${baseIndent}${unit}${br}${baseIndent}}`;
+  if (braces && !comment && PAREN_CONDITION_LANGS.has(language) && BARE_CONDITION.test(text)) {
+    // `for` → `for (|) {` + `}`: the condition comes first.
     const from = line.from + text.length;
+    const insert = ` () {${br}${baseIndent}}`;
     return {
-      // A trailing comment moves to the end of the header line.
+      changes: { from, to: line.to, insert },
+      selection: { anchor: from + 2 },
+      scrollIntoView: true,
+      userEvent: "input.complete",
+    };
+  }
+  if (braces && !comment && ARROW_LANGS.has(language) && /=>$/.test(text)) {
+    // `const f = (x) =>` → a block body; brackets still open and the `;` follow it (`});`).
+    const open = missingClosers(text);
+    const semi = SEMICOLON_LANGS.has(language) && (open || /^\s*(export\s+)?(const|let|var)\b/.test(text)) ? ";" : "";
+    const from = line.from + text.length;
+    const insert = ` {${br}${baseIndent}${unit}${br}${baseIndent}}${open}${semi}`;
+    return {
       changes: {
         from,
         to: line.from + full.length,
@@ -619,11 +852,51 @@ export function completeStatementSpec(state: EditorState, language: string): Tra
       userEvent: "input.complete",
     };
   }
+  // Brackets the line opened and left open (`foo(a`, `= { name: "Ada"`) close first.
+  let closers = comment || /[{,]$/.test(text) ? "" : missingClosers(text);
+  if (closers) {
+    // `{ name: "Ada"` → `{ name: "Ada" }`: the brace spaced like its opener, then the `;`.
+    if (closers.endsWith("}") && /\{\s/.test(text)) closers = closers.replace(/\}$/, " }");
+    if (closers.endsWith("}") && SEMICOLON_LANGS.has(language)) closers += ";";
+    const at = line.from + text.length;
+    const first = state.changes({ from: at, insert: closers });
+    const next = state.update({ changes: first, selection: { anchor: first.mapPos(line.to, 1) } }).state;
+    const rest = completeStatementSpec(next, language);
+    const second = next.changes(rest?.changes ?? []);
+    return {
+      changes: first.compose(second),
+      selection: rest?.selection ?? { anchor: first.mapPos(line.to, 1) },
+      scrollIntoView: true,
+      userEvent: "input.complete",
+    };
+  }
+  if (braces && !comment && isBlockHead(text, language)) {
+    // `func f` / `fn f` / `fun f` → `f()`: a function needs its parameter list.
+    const params = FUNCTION_NAME_ONLY.test(text) ? "()" : "";
+    // A C / C++ type definition ends with `};`.
+    const close = C_TYPE_LANGS.has(language) && C_TYPE_HEAD.test(text) ? "};" : "}";
+    const insert = `${params} {${br}${baseIndent}${unit}${br}${baseIndent}${close}`;
+    const from = line.from + text.length;
+    return {
+      // A trailing comment moves to the end of the header line.
+      changes: {
+        from,
+        to: line.from + full.length,
+        insert: insert.slice(0, params.length + 2) + full.slice(text.length) + insert.slice(params.length + 2),
+      },
+      selection: {
+        anchor: from + params.length + 2 + full.length - text.length + br.length + baseIndent.length + unit.length,
+      },
+      scrollIntoView: true,
+      userEvent: "input.complete",
+    };
+  }
   let insert = "";
-  if (SEMICOLON_LANGS.has(language) && !comment && text.trim() && !/[;{},:]$/.test(text)) insert = ";";
+  if (SEMICOLON_LANGS.has(language) && !comment && text.trim() && !/[;{},:]$/.test(text))
+    insert = (unclosedQuote(text, language) ?? "") + ";";
   if (
-    (language === "python" || language === "gdscript") &&
-    BLOCK_HEAD.test(text.replace(/^\s*(def|elif|static\s+func)\b/, "if")) &&
+    ((language === "python" && PYTHON_HEAD.test(text)) ||
+      (language === "gdscript" && BLOCK_HEAD.test(text.replace(/^\s*(def|elif|static\s+func)\b/, "if")))) &&
     !text.endsWith(":")
   )
     insert = ":";
@@ -633,7 +906,16 @@ export function completeStatementSpec(state: EditorState, language: string): Tra
     text.endsWith(":") ||
     (KEYWORD_BLOCK_LANGS.has(language) && KEYWORD_HEAD.test(text) && !/^\s*module\b.*\bwhere$/.test(text));
   const nextIndent = baseIndent + (opensBlock ? unit : "");
-  const indentHere = getIndentation(state, line.to);
+  // Indent the new line as the finished statement's next line: without the `;` the line is
+  // still an unfinished statement and gets a continuation indent.
+  let finished = state;
+  let lineEnd = line.to;
+  if (insert) {
+    finished = state.update({ changes: { from: line.from + text.length, insert } }).state;
+    lineEnd += insert.length;
+    ensureSyntaxTree(finished, lineEnd, 50);
+  }
+  const indentHere = getIndentation(finished, lineEnd);
   const newline = br + (indentHere !== null && !opensBlock ? indentString(state, indentHere) : nextIndent);
   const changes: ChangeSpec[] = [];
   if (insert) changes.push({ from: line.from + text.length, insert });
@@ -796,6 +1078,49 @@ export const toggleCase: Command = (view) => {
   return true;
 };
 
+const NAME_CHAR = /[\p{L}\p{N}_$-]/u;
+
+/**
+ * ⇧⌥U: Cycle the Case of the identifier at each caret (which stays selected)
+ * or of each selection, from the style it is written in: snake_case →
+ * SCREAMING_SNAKE_CASE → kebab-case → camelCase → PascalCase.
+ */
+export const cycleCase: Command = (view) => {
+  const { state } = view;
+  if (state.readOnly) return false;
+  /** The `-`-joined name at or right before `pos`. */
+  const nameAt = (pos: number): { from: number; to: number } | null => {
+    const char = (at: number) => at >= 0 && at < state.doc.length && NAME_CHAR.test(state.sliceDoc(at, at + 1));
+    if (!char(pos) && !char(pos - 1)) return null;
+    let from = pos;
+    let to = pos;
+    while (char(from - 1)) from--;
+    while (char(to)) to++;
+    return { from, to };
+  };
+  let changed = false;
+  const tr = state.changeByRange((r) => {
+    const name = r.empty ? nameAt(r.head) : r;
+    if (!name) return { range: r };
+    const span = wordSpan(state.sliceDoc(name.from, name.to));
+    if (!span) return { range: r };
+    const from = name.from + span.from;
+    const insert = cycleIdentifierCase(state.sliceDoc(from, name.from + span.to));
+    if (insert === null) return { range: r };
+    changed = true;
+    const set = state.changes({ from, to: name.from + span.to, insert });
+    return {
+      changes: set,
+      range: r.empty
+        ? EditorSelection.range(from, from + insert.length)
+        : EditorSelection.range(set.mapPos(r.anchor), set.mapPos(r.head)),
+    };
+  });
+  if (!changed) return false;
+  view.dispatch(state.update(tr, { userEvent: "input.case" }));
+  return true;
+};
+
 /** ⌥⇧G: Add Carets to Ends of Selected Lines. */
 export const addCaretsToLineEnds: Command = (view) => {
   const { state } = view;
@@ -813,6 +1138,41 @@ export const addCaretsToLineEnds: Command = (view) => {
   if (ranges.length === state.selection.ranges.length && state.selection.ranges.every((r) => r.empty)) return false;
   view.dispatch({
     selection: EditorSelection.create(ranges, ranges.length - 1),
+    scrollIntoView: true,
+    userEvent: "select",
+  });
+  return true;
+};
+
+/** Swap Selection Boundaries: moves each selection's caret to its other end, keeping the selection. */
+export const swapSelectionBoundaries: Command = (view) => {
+  const { selection } = view.state;
+  if (selection.ranges.every((r) => r.empty)) return false;
+  view.dispatch({
+    selection: EditorSelection.create(
+      selection.ranges.map((r) => EditorSelection.range(r.head, r.anchor)),
+      selection.mainIndex,
+    ),
+    scrollIntoView: true,
+    userEvent: "select",
+  });
+  return true;
+};
+
+/**
+ * IDEA's Select Line at Caret: each caret or selection grows to the whole lines it touches,
+ * with the line break after them; a folded region's lines go together with the line it is shown on.
+ */
+export const selectLineAtCaret: Command = (view) => {
+  const { state } = view;
+  const ranges = state.selection.ranges.map((r) => {
+    const end = r.to > r.from && state.doc.lineAt(r.to).from === r.to ? r.to - 1 : r.to;
+    const span = visualLineSpan(state, r.from, end);
+    const to = Math.min(span.to + 1, state.doc.length);
+    return r.head < r.anchor ? EditorSelection.range(to, span.from) : EditorSelection.range(span.from, to);
+  });
+  view.dispatch({
+    selection: EditorSelection.create(ranges, state.selection.mainIndex),
     scrollIntoView: true,
     userEvent: "select",
   });

@@ -8,7 +8,7 @@
 .toolbar {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 2px 6px;
   border-bottom: 1px solid var(--border);
 }
@@ -20,7 +20,6 @@
   font: inherit;
   padding: 2px 6px;
   border-radius: 4px;
-  cursor: pointer;
 }
 
 .textButton:hover:not(:disabled) {
@@ -68,7 +67,7 @@
 .listItem {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   height: 24px;
   padding: 0 8px;
   cursor: default;
@@ -104,7 +103,7 @@
 .field {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .fieldLabel {
@@ -173,7 +172,6 @@
 
 /* A sortable table's header: clickable, the sorted one marked by an arrow. */
 .headerCell {
-  cursor: pointer;
   user-select: none;
 }
 

@@ -1,7 +1,11 @@
-import { pasteClipboardFiles, readClipboardText } from "@/platform/clipboard";
-import { call, commands, type TerminalId } from "@/platform/ipc";
+import { pasteClipboardFiles, readClipboardPlainText, readClipboardPng, readClipboardText } from "@/platform/clipboard";
+import { toBase64 } from "@/platform/base64";
+import { call, commands, isTauri, type TerminalId } from "@/platform/ipc";
 import { tx } from "@/platform/i18n";
+import { usePlatform } from "@/platform/platformInfo";
 import { notifications } from "@/workbench/contributions";
+import type { Terminal } from "@xterm/xterm";
+import { dialectOf, quoteForShell } from "./quote";
 
 export interface TerminalPasteTarget {
   id: TerminalId;
@@ -14,21 +18,20 @@ export interface TerminalPasteTarget {
 type Target = () => TerminalPasteTarget | null;
 
 const MAX_MEDIA_BYTES = 20 * 1024 * 1024;
+const ESC = "\x1b";
+
+/**
+ * xterm.js 6.0 brackets pasted text as it is, so an ESC[201~ inside it ends the bracket early and
+ * what follows is typed, Enter included. Shows each ESC as U+241B (␛), as xterm.js 6.1 does,
+ * while the shell has bracketed paste on.
+ */
+export function pasteIntoTerminal(term: Pick<Terminal, "paste" | "modes">, text: string): void {
+  term.paste(term.modes.bracketedPasteMode ? text.replaceAll(ESC, "\u241b") : text);
+}
 
 function pathsText(paths: readonly string[], target: TerminalPasteTarget): string {
-  const shell = target.shell.toLowerCase().replace(/\.exe$/, "");
-  return paths
-    .map((path) => {
-      if (shell === "cmd") {
-        if (/[%!"\r\n]/.test(path))
-          throw new Error(tx("Cannot paste this path safely in cmd.exe. Use PowerShell or a POSIX shell."));
-        return `"${path}"`;
-      }
-      if (shell === "powershell" || shell === "pwsh") return `'${path.replaceAll("'", "''")}'`;
-      if (shell === "fish") return `'${path.replaceAll("\\", "\\\\").replaceAll("'", "\\'")}'`;
-      return `'${path.replaceAll("'", "'\\''")}'`;
-    })
-    .join(" ");
+  const dialect = dialectOf(target.shell, false);
+  return paths.map((path) => quoteForShell(path, dialect, true)).join(" ");
 }
 
 function isMedia(type: string): boolean {
@@ -65,7 +68,7 @@ function filePaths(transfer: DataTransfer): string[] {
 async function pasteMedia(media: Blob, target: TerminalPasteTarget, paste: (text: string) => void) {
   try {
     if (media.size > MAX_MEDIA_BYTES) throw new Error(tx`Clipboard media is too large to paste (limit ${20} MB).`);
-    const data = Array.from(new Uint8Array(await media.arrayBuffer()));
+    const data = toBase64(new Uint8Array(await media.arrayBuffer()));
     if (!target.current()) return;
     if (!target.supported) throw new Error(tx("Remote server does not support image paste."));
     const path = await call(commands.termStoreImage(target.id, data, media.type));
@@ -106,6 +109,13 @@ export function installTerminalPaste(host: HTMLElement, paste: (text: string) =>
         return;
       }
     }
+    const pasted = transfer?.getData("text/plain");
+    if (!event.defaultPrevented && pasted?.includes(ESC)) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (alive) paste(pasted);
+      return;
+    }
     pasteClipboardFiles(event, (text) => {
       if (alive) paste(text);
     });
@@ -120,6 +130,37 @@ export function installTerminalPaste(host: HTMLElement, paste: (text: string) =>
 export async function pasteTerminalClipboard(paste: (text: string) => void, getTarget?: Target) {
   const target = getTarget?.();
   try {
+    // WebKitGTK pastes nothing from a menu through either WebView path; the native
+    // clipboard has the text. An image-only clipboard still takes the paths below.
+    if (target && usePlatform.getState().os === "linux") {
+      const text = await readClipboardPlainText().catch(() => "");
+      if (text) {
+        if (target.current()) paste(text);
+        return;
+      }
+    }
+    // WebKit on macOS asks the user to confirm execCommand("paste") and Clipboard.read() from a
+    // menu with a "Paste" callout; the backend reads files, text and images without asking.
+    if (target && isTauri() && usePlatform.getState().os === "macos") {
+      const paths: string[] = await call(commands.clipboardFileList()).catch(() => []);
+      const text =
+        paths.length && !target.remote ? pathsText(paths, target) : await readClipboardPlainText().catch(() => "");
+      if (!target.current()) return;
+      if (text) {
+        paste(text);
+        return;
+      }
+      const png = await readClipboardPng();
+      if (!target.current()) return;
+      if (png)
+        await pasteMedia(
+          new Blob([Uint8Array.from(atob(png), (c) => c.charCodeAt(0))], { type: "image/png" }),
+          target,
+          paste,
+        );
+      else if (paths.length) paste(paths.join("\n"));
+      return;
+    }
     // Native paste preserves clipboard blobs where Clipboard.read() is unavailable.
     if (target && document.queryCommandSupported?.("paste") && document.execCommand("paste")) return;
     const images =
@@ -130,7 +171,7 @@ export async function pasteTerminalClipboard(paste: (text: string) => void, getT
           )
         : null;
     const text = target?.remote
-      ? ((await navigator.clipboard?.readText().catch(() => "")) ?? "")
+      ? await readClipboardPlainText().catch(() => "")
       : await readClipboardText(undefined, target ? (paths) => pathsText(paths, target) : undefined);
     if (target && !target.current()) return;
     if (text) {
@@ -145,7 +186,9 @@ export async function pasteTerminalClipboard(paste: (text: string) => void, getT
       for (const item of result.items) {
         const mime = item.types.find(isMedia);
         if (mime) {
+          // oxlint-disable-next-line no-await-in-loop -- the first clipboard item with a supported image type wins
           const image = await item.getType(mime);
+          // oxlint-disable-next-line no-await-in-loop -- this one image is pasted, then the loop stops; later items are not read
           if (target.current()) await pasteMedia(image, target, paste);
           return;
         }

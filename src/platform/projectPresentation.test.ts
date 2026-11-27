@@ -93,3 +93,44 @@ it("includes modules and Spring tasks from every independently linked Gradle bui
   expect([...context.modules.keys()]).toEqual(["first", "first/app", "second"]);
   expect(context.spring).toBe(true);
 });
+
+it("extracts module display names for Maven, Gradle, and sbt projects", () => {
+  const context = buildPresentation(
+    model({
+      maven: {
+        projects: [
+          { dir: "", displayName: "Root App", artifactId: "root-app", dependencies: [], plugins: [] },
+          { dir: "basemdm", displayName: "", artifactId: "BASEMDM", dependencies: [], plugins: [] },
+        ],
+      },
+      gradle: [
+        {
+          projects: [
+            { dir: "billing", name: "billing-core", tasks: [] },
+            { dir: "basemdm", name: "ignored-dup", tasks: [] },
+          ],
+        },
+      ],
+      sbt: [
+        {
+          dir: "",
+          projects: [{ id: "scalaRoot", dir: "" }],
+        },
+        {
+          dir: "services",
+          projects: [
+            { id: "servicesRoot", dir: "" },
+            { id: "worker", dir: "worker-sub" },
+          ],
+        },
+      ],
+    }),
+  );
+  expect([...(context.moduleNames ?? new Map())]).toEqual([
+    ["", "Root App"],
+    ["basemdm", "ignored-dup"],
+    ["billing", "billing-core"],
+    ["services", "servicesRoot"],
+    ["services/worker-sub", "worker"],
+  ]);
+});

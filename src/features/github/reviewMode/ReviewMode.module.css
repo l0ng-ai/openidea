@@ -16,7 +16,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: var(--space-1);
   height: 22px;
   min-width: 22px;
   padding: 0 3px;
@@ -33,7 +33,7 @@
   font-size: var(--fs-small, var(--fs-ui));
 }
 
-.button.text:hover,
+.button:hover,
 .button[aria-expanded="true"] {
   background-color: var(--bg-toolbar-hover);
 }

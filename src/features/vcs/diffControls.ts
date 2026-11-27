@@ -3,11 +3,25 @@
  * in the divider (toward each editable side) and a Revert button shown while
  * hovering a change in an editable pane.
  */
-import { StateEffect, StateField, type Extension, type Range } from "@codemirror/state";
-import { Decoration, EditorView, ViewPlugin, WidgetType, type DecorationSet } from "@codemirror/view";
+import { RangeSet, StateEffect, StateField, Text, type Extension, type Range } from "@codemirror/state";
+import {
+  Decoration,
+  EditorView,
+  GutterMarker,
+  ViewPlugin,
+  WidgetType,
+  gutter,
+  type DecorationSet,
+} from "@codemirror/view";
 import { getChunks, getOriginalDoc, type Chunk, type MergeView } from "@codemirror/merge";
-import { iconMarkup } from "@/ui";
+import { tx } from "@/platform/i18n";
+import { iconMarkup, type IconName } from "@/ui";
 import { transferChunk } from "./diffOptions";
+import styles from "./DiffEditor.module.css";
+
+export function diffDocument(text: string | null): Text {
+  return Text.of((text ?? "").split(/\r\n?|\n/));
+}
 
 /** Copies chunk `index` of `mv` from `source` to the other side (an undoable user edit). */
 export function applyChunk(mv: MergeView, index: number, source: "a" | "b") {
@@ -27,6 +41,84 @@ export function revertUnifiedChunk(view: EditorView, pos: number) {
   });
 }
 
+export function onHunkButtonClick(button: HTMLButtonElement, apply: () => void) {
+  button.addEventListener("mousedown", (event) => {
+    // Keep editor focus and suppress MergeView's delegated one-directional revert.
+    event.preventDefault();
+    event.stopPropagation();
+  });
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    apply();
+  });
+}
+
+export interface HunkButton {
+  label: string;
+  icon: IconName;
+  run(): void;
+}
+
+export class HunkButtons extends GutterMarker {
+  constructor(private readonly buttons: HunkButton[]) {
+    super();
+  }
+
+  toDOM() {
+    const container = document.createElement("span");
+    container.className = styles.hunkButtons!;
+    for (const { icon, label, run } of this.buttons) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.title = tx(label);
+      button.setAttribute("aria-label", button.title);
+      button.innerHTML = iconMarkup(icon, 14) ?? "";
+      onHunkButtonClick(button, run);
+      container.append(button);
+    }
+    return container;
+  }
+}
+
+export function hunkButtons(side: "a" | "b", action: (chunk: Chunk) => HunkButton): Extension {
+  let lastDoc: Text | undefined;
+  let lastChunks: readonly Chunk[] | undefined;
+  let markers: RangeSet<GutterMarker> = RangeSet.empty;
+  return gutter({
+    class: styles.hunkGutter,
+    side: side === "a" ? "after" : "before",
+    markers: (view) => {
+      const doc = view.state.doc;
+      const chunks = getChunks(view.state)?.chunks;
+      if (doc === lastDoc && chunks === lastChunks) return markers;
+      lastDoc = doc;
+      lastChunks = chunks;
+      const byLine = new Map<number, HunkButton[]>();
+      for (const chunk of chunks ?? []) {
+        const offset = side === "a" ? chunk.fromA : chunk.fromB;
+        const line = doc.lineAt(Math.min(offset, doc.length)).from;
+        byLine.set(line, [...(byLine.get(line) ?? []), action(chunk)]);
+      }
+      markers = RangeSet.of(
+        [...byLine].map(([line, buttons]) => new HunkButtons(buttons).range(line)),
+        true,
+      );
+      return markers;
+    },
+  });
+}
+
+export function exposeHunkButtons(view: EditorView) {
+  const column = view.dom.querySelector(`.${styles.hunkGutter}`);
+  const gutters = column?.parentElement;
+  if (!gutters) return;
+  // CodeMirror's decorative gutters are hidden from assistive technology.
+  gutters.removeAttribute("aria-hidden");
+  for (const other of gutters.children) {
+    if (other !== column) other.setAttribute("aria-hidden", "true");
+  }
+}
+
 /** A ">>" / "<<" button; the chunk index comes from the nearest `data-chunk` (itself included). */
 export function arrowButton(dir: "a-to-b" | "b-to-a", run: (chunkIndex: number) => void): HTMLButtonElement {
   const btn = document.createElement("button");
@@ -36,11 +128,8 @@ export function arrowButton(dir: "a-to-b" | "b-to-a", run: (chunkIndex: number) 
   btn.setAttribute("aria-label", label);
   btn.title = label;
   btn.innerHTML = iconMarkup(dir === "a-to-b" ? "diff-arrow-right" : "diff-arrow-left", 14) ?? "";
-  btn.addEventListener("mousedown", (e) => {
-    // Handled here rather than by MergeView's own (one-directional) revert handler.
-    e.preventDefault();
-    e.stopPropagation();
-    const holder = (e.currentTarget as HTMLElement).closest<HTMLElement>("[data-chunk]");
+  onHunkButtonClick(btn, () => {
+    const holder = btn.closest<HTMLElement>("[data-chunk]");
     const index = Number(holder?.dataset.chunk);
     if (Number.isInteger(index)) run(index);
   });
@@ -54,12 +143,16 @@ export function arrowButton(dir: "a-to-b" | "b-to-a", run: (chunkIndex: number) 
 export function arrowControls(
   getView: () => MergeView | null,
   sides: { toA: boolean; toB: boolean },
+  apply = (index: number, source: "a" | "b") => {
+    const view = getView();
+    if (view) applyChunk(view, index, source);
+  },
 ): () => HTMLElement {
   return () => {
     const box = document.createElement("div");
     box.className = "cm-diffArrows";
-    if (sides.toB) box.appendChild(arrowButton("a-to-b", (i) => getView() && applyChunk(getView()!, i, "a")));
-    if (sides.toA) box.appendChild(arrowButton("b-to-a", (i) => getView() && applyChunk(getView()!, i, "b")));
+    if (sides.toB) box.appendChild(arrowButton("a-to-b", (i) => apply(i, "a")));
+    if (sides.toA) box.appendChild(arrowButton("b-to-a", (i) => apply(i, "b")));
     return box;
   };
 }
@@ -83,11 +176,7 @@ class RevertWidget extends WidgetType {
     btn.title = "Revert this change";
     btn.setAttribute("aria-label", "Revert this change");
     btn.innerHTML = `${iconMarkup("revert", 12) ?? ""}<span>Revert</span>`;
-    btn.addEventListener("mousedown", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      this.onRevert(view, this.index);
-    });
+    onHunkButtonClick(btn, () => this.onRevert(view, this.index));
     return btn;
   }
   ignoreEvent() {

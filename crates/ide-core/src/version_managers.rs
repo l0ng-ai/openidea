@@ -19,6 +19,7 @@ pub enum Tool {
     Maven,
     Gradle,
     Ruby,
+    Zig,
 }
 
 impl Tool {
@@ -32,6 +33,7 @@ impl Tool {
             Tool::Maven => &["maven"],
             Tool::Gradle => &["gradle"],
             Tool::Ruby => &["ruby"],
+            Tool::Zig => &["zig"],
         }
     }
 }

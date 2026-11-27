@@ -115,7 +115,8 @@ export function declaredCatalogs(settings: string): DeclaredCatalog[] {
 }
 
 const readText = (path: string) => call(commands.fsReadText(path)).catch(() => null);
-const join = (dir: string, rel: string) => (rel.startsWith("/") ? rel : `${dir}/${rel.replace(/^\.\//, "")}`);
+const join = (dir: string, rel: string) =>
+  rel.startsWith("/") || /^[A-Za-z]:[\\/]/.test(rel) ? rel : `${dir}/${rel.replace(/^\.\//, "")}`;
 
 /**
  * The catalogs a build script sees: those of the nearest enclosing build (its settings file).
@@ -125,6 +126,7 @@ export async function readCatalogs(script: string, root: string): Promise<{ cata
   let dir = dirname(script);
   let settings: string | null = null;
   for (;;) {
+    // oxlint-disable-next-line no-await-in-loop -- walk up one directory at a time; the .gradle fallback depends on the .kts read
     settings = (await readText(`${dir}/settings.gradle.kts`)) ?? (await readText(`${dir}/settings.gradle`));
     if (settings !== null || dir === root || !dir.startsWith(`${root}/`)) break;
     dir = dirname(dir);

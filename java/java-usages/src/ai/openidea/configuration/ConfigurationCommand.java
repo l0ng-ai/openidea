@@ -1,5 +1,6 @@
 package ai.openidea.configuration;
 
+import ai.openidea.Documents;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -96,6 +97,7 @@ public final class ConfigurationCommand implements IDelegateCommandHandler {
     @Override
     public Object executeCommand(String command, List<Object> args, IProgressMonitor monitor) throws Exception {
         if (command.equals("openidea.java.configuration.warmup")) return ConfigurationWarmup.request(args);
+        Documents.awaitChanges(monitor);
         String uri = (String) args.get(0);
         String key = args.get(1) instanceof String s ? s : null;
         int line = ((Number) args.get(2)).intValue(), column = ((Number) args.get(3)).intValue();

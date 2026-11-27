@@ -12,7 +12,7 @@ use ide_core::{CancellationToken, IdeError, IdeResult, error::ErrorKind};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use sqlx::{
-    Column, ColumnIndex, Connection, Decode, Executor, Row, SqlSafeStr, Sqlite, TypeInfo, ValueRef,
+    Column, ColumnIndex, ConnectOptions, Connection, Decode, Executor, Row, SqlSafeStr, Sqlite, TypeInfo, ValueRef,
     mysql::{MySqlConnectOptions, MySqlConnection, MySqlSslMode},
     pool::PoolConnection,
     postgres::{PgConnectOptions, PgConnection, PgSslMode},
@@ -48,6 +48,65 @@ pub struct QueryResult {
     pub elapsed_ms: f64,
     /// Until the server's first answer; the rest of `elapsed_ms` is fetching.
     pub execution_ms: f64,
+    /// Cells of `rows` cut short by [`QueryResult::cap_cells`], in row order.
+    pub truncated: Vec<TruncatedCell>,
+}
+
+/// A cell of a [`QueryResult`] whose text was cut to a prefix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+#[serde(rename = "DbTruncatedCell")]
+pub struct TruncatedCell {
+    pub row: u32,
+    pub column: u32,
+    /// Length of the whole value in UTF-16 code units (what a JavaScript string counts).
+    pub length: u32,
+    /// FNV-1a (32 bits) of the whole value's UTF-16 code units, each taken as one 16-bit step,
+    /// so a client that reads the value again can tell whether it is the one that was cut.
+    pub hash: u32,
+}
+
+/// FNV-1a over UTF-16 code units, one step per unit (the same on the client: see `cutCells.ts`).
+fn fnv1a_utf16(text: &str) -> u32 {
+    let mut hash: u32 = 0x811c_9dc5;
+    let mut pair = [0u16; 2];
+    for ch in text.chars() {
+        for unit in ch.encode_utf16(&mut pair) {
+            hash = (hash ^ u32::from(*unit)).wrapping_mul(0x0100_0193);
+        }
+    }
+    hash
+}
+
+impl QueryResult {
+    /// Cuts every cell longer than `limit` UTF-16 code units to its first `limit` (never inside a
+    /// surrogate pair) and lists it in `truncated`, so a page's size no longer depends on how
+    /// wide its values are. The full value is read again, one row at a time, when it is needed.
+    pub fn cap_cells(&mut self, limit: usize) {
+        for (r, row) in self.rows.iter_mut().enumerate() {
+            for (c, cell) in row.iter_mut().enumerate() {
+                let Some(text) = cell else { continue };
+                // A UTF-16 length never exceeds the UTF-8 one.
+                if text.len() <= limit {
+                    continue;
+                }
+                let mut units = 0;
+                let mut cut = text.len();
+                for (at, ch) in text.char_indices() {
+                    if units + ch.len_utf16() > limit && cut == text.len() {
+                        cut = at;
+                    }
+                    units += ch.len_utf16();
+                }
+                if units <= limit {
+                    continue;
+                }
+                let hash = fnv1a_utf16(text);
+                text.truncate(cut);
+                self.truncated.push(TruncatedCell { row: r as u32, column: c as u32, length: units as u32, hash });
+            }
+        }
+    }
 }
 
 /// Session context belongs to the physical connection, including across pool checkouts.
@@ -76,7 +135,7 @@ impl Context {
 }
 
 macro_rules! sqlx_pool {
-    ($manager:ident, $handle:ident, $options:ty, $connection:ty, $driver:expr, $query:expr) => {
+    ($manager:ident, $handle:ident, $options:ty, $connection:ty, $initialize:ident, $unfinished:expr) => {
         pub struct $manager {
             options: $options,
             init: Arc<Vec<String>>,
@@ -105,38 +164,28 @@ macro_rules! sqlx_pool {
             }
         }
 
+        impl $manager {
+            async fn initialize(&self, mut conn: $connection) -> Result<$handle, sqlx::Error> {
+                let context = Context::new($initialize(&self.options, &mut conn, &self.init).await?);
+                Ok($handle {
+                    conn: Some(conn),
+                    context,
+                    options: self.options.clone(),
+                    init: self.init.clone(),
+                    timeout: self.timeout,
+                    in_transaction: false,
+                })
+            }
+        }
+
         impl ManageConnection for $manager {
             type Connection = $handle;
             type Error = sqlx::Error;
 
             async fn connect(&self) -> Result<Self::Connection, Self::Error> {
-                tokio::time::timeout(self.timeout, async {
-                    let mut conn = <$connection>::connect_with(&self.options).await?;
-                    let context_sql = |value: Option<String>| {
-                        value.map(|v| {
-                            if $driver == DbDriver::Postgres {
-                                format!("SET search_path TO {v}")
-                            } else {
-                                crate::sql::use_schema($driver, &v).expect("switchable driver")
-                            }
-                        })
-                    };
-                    for sql in self.init.iter() {
-                        sqlx::raw_sql(sqlx::AssertSqlSafe(sql.clone())).execute(&mut conn).await?;
-                    }
-                    let row = sqlx::raw_sql(sqlx::AssertSqlSafe($query.to_owned())).fetch_one(&mut conn).await?;
-                    let context = Context::new(context_sql(row.try_get(0)?));
-                    Ok($handle {
-                        conn: Some(conn),
-                        context,
-                        options: self.options.clone(),
-                        init: self.init.clone(),
-                        timeout: self.timeout,
-                        in_transaction: false,
-                    })
-                })
-                .await
-                .map_err(|_| sqlx::Error::PoolTimedOut)?
+                tokio::time::timeout(self.timeout, async { self.initialize(self.options.connect().await?).await })
+                    .await
+                    .map_err(|_| sqlx::Error::PoolTimedOut)?
             }
 
             async fn is_valid(&self, conn: &mut Self::Connection) -> Result<(), Self::Error> {
@@ -144,17 +193,140 @@ macro_rules! sqlx_pool {
             }
 
             fn has_broken(&self, conn: &mut Self::Connection) -> bool {
-                conn.conn.is_none()
+                conn.conn.is_none() || ($unfinished)(conn)
             }
         }
     };
 }
 
-sqlx_pool!(PgManager, PgHandle, PgConnectOptions, PgConnection, DbDriver::Postgres, "SHOW search_path");
-sqlx_pool!(MysqlManager, MysqlHandle, MySqlConnectOptions, MySqlConnection, DbDriver::Mysql, "SELECT DATABASE()");
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PgReadOnly {
+    Off,
+    Session,
+    Transaction,
+}
+
+#[derive(Clone)]
+struct PostgresOptions {
+    connection: PgConnectOptions,
+    read_only: PgReadOnly,
+    local_settings: Arc<[String]>,
+}
+
+const PG_READ_ONLY_HINT: &str = "Read-only requires the pooler to track default_transaction_read_only for each client. \
+    For PgBouncer, check track_extra_parameters.";
+
+impl PostgresOptions {
+    async fn connect(&self) -> Result<PgConnection, sqlx::Error> {
+        let mut conn = self.connection.connect().await?;
+        // A pooler can silently discard startup options. Check before giving the startup script a connection.
+        self.verify_read_only(&mut conn).await?;
+        Ok(conn)
+    }
+
+    async fn verify_read_only(&self, conn: &mut PgConnection) -> Result<(), sqlx::Error> {
+        if self.read_only == PgReadOnly::Session && !pg_setting_on(conn, "SHOW default_transaction_read_only").await? {
+            return Err(sqlx::Error::Configuration(
+                format!(
+                    "PostgreSQL did not enable the requested default_transaction_read_only setting. \
+                    Check the Advanced properties and startup script. {PG_READ_ONLY_HINT}"
+                )
+                .into(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn verify_startup_script(&self, conn: &mut PgConnection) -> Result<(), sqlx::Error> {
+        self.verify_read_only(conn).await?;
+        if self.read_only == PgReadOnly::Session && !pg_setting_on(conn, "SHOW transaction_read_only").await? {
+            return Err(sqlx::Error::Configuration(
+                "The startup script left a writable transaction open on a read-only PostgreSQL source.".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+async fn pg_setting_on(conn: &mut PgConnection, show: &'static str) -> Result<bool, sqlx::Error> {
+    let row = sqlx::raw_sql(show).fetch_one(conn).await?;
+    Ok(row.try_get::<&str, _>(0)? == "on")
+}
+
+fn postgres_read_only_hint(read_only: bool, code: Option<&str>, message: &str) -> Option<&'static str> {
+    match (read_only, code, message) {
+        (
+            true,
+            Some("08P01"),
+            "unsupported startup parameter in options: default_transaction_read_only"
+            | "unsupported startup parameter: default_transaction_read_only",
+        ) => Some(PG_READ_ONLY_HINT),
+        (true, Some("08P01"), "unsupported startup parameter: options") => Some(
+            "This endpoint rejects PostgreSQL startup options. Use an endpoint that supports and tracks \
+             default_transaction_read_only for each client.",
+        ),
+        _ => None,
+    }
+}
+
+fn postgres_connect_error(error: sqlx::Error, read_only: bool) -> IdeError {
+    let hint =
+        error.as_database_error().and_then(|db| postgres_read_only_hint(read_only, db.code().as_deref(), db.message()));
+    let mut error = db_err(error);
+    if let Some(hint) = hint {
+        error.message.push_str(". ");
+        error.message.push_str(hint);
+    }
+    error
+}
+
+async fn initialize_postgres(
+    options: &PostgresOptions,
+    conn: &mut PgConnection,
+    init: &[String],
+) -> Result<Option<String>, sqlx::Error> {
+    let guarded = options.read_only == PgReadOnly::Transaction;
+    if guarded {
+        sqlx::raw_sql(pg_read_only::BEGIN).execute(&mut *conn).await?;
+    }
+    for sql in init {
+        if guarded {
+            pg_read_only::check_single(conn, sql).await?;
+        }
+        sqlx::raw_sql(sqlx::AssertSqlSafe(sql.clone())).execute(&mut *conn).await?;
+    }
+    if !guarded && !init.is_empty() {
+        options.verify_startup_script(conn).await?;
+    }
+    let row = sqlx::raw_sql("SHOW search_path").fetch_one(&mut *conn).await?;
+    let path: Option<String> = row.try_get(0)?;
+    if guarded {
+        sqlx::raw_sql("COMMIT").execute(conn).await?;
+        return Ok(path);
+    }
+    Ok(path.map(|v| format!("SET search_path TO {v}")))
+}
+
+async fn initialize_mysql(
+    _: &MySqlConnectOptions,
+    conn: &mut MySqlConnection,
+    init: &[String],
+) -> Result<Option<String>, sqlx::Error> {
+    for sql in init {
+        sqlx::raw_sql(sqlx::AssertSqlSafe(sql.clone())).execute(&mut *conn).await?;
+    }
+    let row = sqlx::raw_sql("SELECT DATABASE()").fetch_one(conn).await?;
+    Ok(row.try_get::<Option<String>, _>(0)?.and_then(|v| crate::sql::use_schema(DbDriver::Mysql, &v)))
+}
+
+sqlx_pool!(PgManager, PgHandle, PostgresOptions, PgConnection, initialize_postgres, |c: &PgHandle| c.options.read_only
+    == PgReadOnly::Transaction
+    && c.in_transaction);
+sqlx_pool!(MysqlManager, MysqlHandle, MySqlConnectOptions, MySqlConnection, initialize_mysql, |_: &MysqlHandle| false);
 
 pub struct ServerPool<M: ManageConnection> {
     inner: Bb8Pool<M>,
+    transaction_read_only: bool,
     closed: AtomicBool,
 }
 
@@ -217,7 +389,8 @@ impl ManageConnection for MssqlConnectionManager {
         let row = client.simple_query("SELECT DB_NAME()").await?.into_row().await?;
         let default = row
             .and_then(|r| r.get::<&str, _>(0).map(str::to_owned))
-            .and_then(|db| crate::sql::use_schema(DbDriver::SqlServer, &db));
+            // Statements that `USE` another database must not move the pooled connection for good.
+            .map(|db| format!("USE {}", crate::sql::quote_ident(DbDriver::SqlServer, &db)));
         Ok(MssqlConnection(Some(client), Context::new(default)))
     }
 
@@ -237,7 +410,26 @@ pub enum Pool {
     Mysql(ServerPool<MysqlManager>),
     SqlServer(Bb8Pool<MssqlConnectionManager>),
     Clickhouse(crate::clickhouse::ClickhousePool),
+    Jdbc(Box<crate::jdbc::JdbcPool>),
     Oracle(crate::oracle::OraclePool),
+    Snowflake(crate::snowflake::SnowflakePool),
+}
+
+/// Some servers and proxies (e.g. Aliyun RDS for MySQL 5.6) advertise `CLIENT_DEPRECATE_EOF` but
+/// still end result sets with legacy EOF packets, which sqlx then fails to read as OK packets.
+fn legacy_eof(e: &sqlx::Error) -> bool {
+    matches!(e, sqlx::Error::Protocol(msg) if msg.starts_with("OK_Packet too short"))
+}
+
+/// A TLS handshake that failed, e.g. with a server limited to TLS 1.0/1.1. SSL mode Prefer means
+/// TLS when it works, else a plain connection, as libpq's `sslmode=prefer` and MySQL clients'
+/// PREFERRED do; sqlx only goes plain when the server offers no TLS, so such errors are retried.
+fn tls_failed(e: &sqlx::Error) -> bool {
+    match e {
+        sqlx::Error::Tls(_) => true,
+        sqlx::Error::Io(io) => io.get_ref().is_some_and(|inner| inner.is::<rustls::Error>()),
+        _ => false,
+    }
 }
 
 pub(crate) fn db_err(e: sqlx::Error) -> IdeError {
@@ -280,6 +472,16 @@ fn mssql_pool_err(e: bb8::RunError<tiberius::error::Error>) -> IdeError {
     match e {
         bb8::RunError::User(e) => mssql_err(e),
         bb8::RunError::TimedOut => IdeError::new(ErrorKind::Io, "timed out connecting to the database"),
+    }
+}
+
+/// Tiberius requires TLS when a TLS backend is enabled. `trust_cert` only skips
+/// certificate checks, so Disable has to turn encryption off.
+fn apply_sqlserver_ssl(config: &mut tiberius::Config, ssl: DbSslMode) {
+    match ssl {
+        DbSslMode::Disable => config.encryption(tiberius::EncryptionLevel::NotSupported),
+        DbSslMode::Prefer => config.trust_cert(),
+        DbSslMode::Require | DbSslMode::VerifyCa | DbSslMode::VerifyFull => {}
     }
 }
 
@@ -456,6 +658,86 @@ fn result_columns<R: Row>(row: &R) -> Vec<ResultColumn> {
         .collect()
 }
 
+/// How far a statement's stream has been read: the columns seen so far, and the row that
+/// showed more were coming, which the next read starts with.
+pub(crate) struct Reader<R> {
+    columns: Vec<ResultColumn>,
+    carry: Option<R>,
+}
+
+impl<R> Default for Reader<R> {
+    fn default() -> Self {
+        Self { columns: Vec::new(), carry: None }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Rows pulled from statement streams on this thread (tests count what paging reads).
+    pub(crate) static ROWS_PULLED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Reads on from `stream`: past the next `skip` rows without decoding them, then keeping at
+/// most `max` rows with their cells read as `mode`. `rows_affected` reads a command's count.
+async fn drain<S, D, R>(
+    stream: &mut S,
+    reader: &mut Reader<R>,
+    skip: usize,
+    max: usize,
+    mode: Cells,
+    rows_affected: impl Fn(&D) -> u64,
+) -> IdeResult<Fetched>
+where
+    S: futures::Stream<Item = Result<sqlx::Either<D, R>, sqlx::Error>> + Unpin,
+    R: Row,
+    usize: ColumnIndex<R>,
+    String: sqlx::Type<R::Database>,
+    for<'r> String: Decode<'r, R::Database>,
+    for<'r> Vec<u8>: Decode<'r, R::Database>,
+{
+    let mut rows: Vec<Vec<Option<String>>> = Vec::new();
+    let mut affected: Option<u64> = None;
+    let mut has_more = false;
+    let mut first: Option<Instant> = None;
+    let mut to_skip = skip;
+    loop {
+        let item = match reader.carry.take() {
+            Some(row) => Ok(sqlx::Either::Right(row)),
+            None => match stream.next().await {
+                Some(item) => {
+                    #[cfg(test)]
+                    if matches!(item, Ok(sqlx::Either::Right(_))) {
+                        ROWS_PULLED.with(|n| n.set(n.get() + 1));
+                    }
+                    item
+                }
+                None => break,
+            },
+        };
+        first.get_or_insert_with(Instant::now);
+        match item {
+            Ok(sqlx::Either::Left(done)) => affected = Some(affected.unwrap_or(0) + rows_affected(&done)),
+            Ok(sqlx::Either::Right(row)) => {
+                if reader.columns.is_empty() {
+                    reader.columns = result_columns(&row);
+                }
+                if to_skip > 0 {
+                    to_skip -= 1;
+                    continue;
+                }
+                if rows.len() >= max {
+                    reader.carry = Some(row);
+                    has_more = true;
+                    break;
+                }
+                rows.push((0..row.len()).map(|i| cell(&row, i, mode)).collect());
+            }
+            Err(e) => return Err(db_err(e)),
+        }
+    }
+    Ok((reader.columns.clone(), rows, affected, has_more, first))
+}
+
 /// Streams the results of `$sql` on executor `$exec`, reading past the first `$skip`
 /// rows without decoding them, then keeping at most `$max` rows with their cells read as `$mode`.
 macro_rules! fetch {
@@ -463,44 +745,8 @@ macro_rules! fetch {
         fetch!($exec, $sql, 0usize, $max, $mode)
     };
     ($exec:expr, $sql:expr, $skip:expr, $max:expr, $mode:expr) => {{
-        use futures::StreamExt;
         let mut stream = sqlx::raw_sql(sqlx::AssertSqlSafe($sql.to_owned())).fetch_many($exec);
-        let mut columns: Vec<ResultColumn> = Vec::new();
-        let mut rows: Vec<Vec<Option<String>>> = Vec::new();
-        let mut affected: Option<u64> = None;
-        let mut has_more = false;
-        let mut failure = None;
-        let mut first: Option<Instant> = None;
-        let mut to_skip: usize = $skip;
-        while let Some(item) = stream.next().await {
-            first.get_or_insert_with(Instant::now);
-            match item {
-                Ok(sqlx::Either::Left(done)) => affected = Some(affected.unwrap_or(0) + done.rows_affected()),
-                Ok(sqlx::Either::Right(row)) => {
-                    if columns.is_empty() {
-                        columns = result_columns(&row);
-                    }
-                    if to_skip > 0 {
-                        to_skip -= 1;
-                        continue;
-                    }
-                    if rows.len() >= $max {
-                        has_more = true;
-                        break;
-                    }
-                    rows.push((0..row.len()).map(|i| cell(&row, i, $mode)).collect());
-                }
-                Err(e) => {
-                    failure = Some(db_err(e));
-                    break;
-                }
-            }
-        }
-        drop(stream);
-        match failure {
-            Some(e) => Err(e),
-            None => Ok((columns, rows, affected, has_more, first)),
-        }
+        drain(&mut stream, &mut Reader::default(), $skip, $max, $mode, |done| done.rows_affected()).await
     }};
 }
 
@@ -554,6 +800,33 @@ macro_rules! backend_id {
             .and_then(|r| r.into_iter().next().flatten())
             .filter(|id| id.chars().all(|c| c.is_ascii_digit()))
     }};
+}
+
+mod cursor;
+mod pg_read_only;
+pub(crate) use cursor::{Cursors, Key as CursorKey};
+pub(crate) use pg_read_only::validate as validate_pg_read_only;
+
+/// Whether the pages of `sql`'s result can be read by a cursor (see [`cursor`]): a query that
+/// leaves the session as it was.
+pub(crate) fn cursor_statement(sql: &str) -> bool {
+    looks_like_query(sql) && !context_may_change(sql)
+}
+
+/// A [`QueryResult`] of what `fetched` read of `sql`, run since `started`.
+pub(crate) fn query_result(sql: &str, fetched: Fetched, started: Instant) -> QueryResult {
+    let (columns, rows, affected, has_more, first) = fetched;
+    let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+    QueryResult {
+        statement: sql.to_owned(),
+        affected: if columns.is_empty() { Some(affected.unwrap_or(0) as f64) } else { None },
+        columns,
+        rows,
+        has_more,
+        elapsed_ms,
+        execution_ms: first.map_or(elapsed_ms, |t| t.duration_since(started).as_secs_f64() * 1000.0),
+        truncated: Vec::new(),
+    }
 }
 
 // Session control, scripts and PostgreSQL set_config can invalidate the tracked context.
@@ -693,6 +966,9 @@ impl Setup {
         if source.driver == DbDriver::Clickhouse && !o.time_zone.trim().is_empty() {
             s.params.push(("session_timezone".into(), o.time_zone.trim().into()));
         }
+        if source.driver == DbDriver::Snowflake && !o.time_zone.trim().is_empty() {
+            s.params.push(("TIMEZONE".into(), o.time_zone.trim().into()));
+        }
         let script = o.startup_script.trim();
         if !script.is_empty() {
             s.statements.extend(crate::split::split(script, source.driver).into_iter().map(|st| st.text));
@@ -702,6 +978,10 @@ impl Setup {
 }
 
 impl Pool {
+    pub(crate) fn transaction_read_only(&self) -> bool {
+        matches!(self, Pool::Postgres(p) if p.transaction_read_only)
+    }
+
     pub fn driver(&self) -> DbDriver {
         match self {
             Pool::Sqlite(_) => DbDriver::Sqlite,
@@ -709,11 +989,21 @@ impl Pool {
             Pool::Mysql(_) => DbDriver::Mysql,
             Pool::SqlServer(_) => DbDriver::SqlServer,
             Pool::Clickhouse(_) => DbDriver::Clickhouse,
+            Pool::Jdbc(_) => DbDriver::Jdbc,
             Pool::Oracle(_) => DbDriver::Oracle,
+            Pool::Snowflake(_) => DbDriver::Snowflake,
         }
     }
 
     /// The keep-alive ping (Oracle needs a FROM clause).
+    /// Keep-alive: one cheap round trip on the session.
+    pub async fn ping(&self) -> IdeResult<()> {
+        match self {
+            Pool::Jdbc(p) => p.ping().await,
+            _ => self.rows(self.ping_sql(), 1).await.map(|_| ()),
+        }
+    }
+
     pub fn ping_sql(&self) -> &'static str {
         match self {
             Pool::Oracle(_) => "SELECT 1 FROM DUAL",
@@ -730,6 +1020,9 @@ impl Pool {
         }
         if source.driver == DbDriver::Oracle {
             return crate::oracle::OraclePool::connect(source, password, &setup).await.map(Pool::Oracle);
+        }
+        if source.driver == DbDriver::Snowflake {
+            return crate::snowflake::SnowflakePool::connect(source, password, setup, root).await.map(Pool::Snowflake);
         }
         let timeout = setup.connect_timeout.unwrap_or(Duration::from_secs(30));
         let init = Arc::new(setup.statements);
@@ -800,18 +1093,68 @@ impl Pool {
                 if let Some(p) = password {
                     opts = opts.password(p);
                 }
-                if !setup.params.is_empty() {
-                    opts = opts.options(setup.params);
-                }
                 if let Some(n) = setup.statement_cache {
                     opts = opts.statement_cache_capacity(n);
                 }
-                let manager = PgManager { options: opts, init: init.clone(), timeout };
-                // Open once directly so authentication failures retain their database error.
-                let first = manager.connect().await.map_err(db_err)?;
+                // Remove only the option supplied by the Read-only checkbox on a retry.
+                let fallback = source.read_only.then(|| {
+                    let opts = opts.clone().statement_cache_capacity(0);
+                    if setup.params.len() == 1 { opts } else { opts.options(setup.params.iter().skip(1).cloned()) }
+                });
+                if !setup.params.is_empty() {
+                    opts = opts.options(setup.params);
+                }
+                let mode = if source.read_only { PgReadOnly::Session } else { PgReadOnly::Off };
+                let mut manager = PgManager {
+                    options: PostgresOptions { connection: opts, read_only: mode, local_settings: Arc::default() },
+                    init: init.clone(),
+                    timeout,
+                };
+                let mut fallback = fallback;
+                let mut try_plain = source.ssl == DbSslMode::Prefer;
+                let first = loop {
+                    let mut login_failed = false;
+                    let result = tokio::time::timeout(timeout, async {
+                        let mut conn =
+                            manager.options.connection.connect().await.inspect_err(|_| login_failed = true)?;
+                        manager.options.verify_read_only(&mut conn).await?;
+                        manager.initialize(conn).await
+                    })
+                    .await
+                    .unwrap_or(Err(sqlx::Error::PoolTimedOut));
+                    match result {
+                        Err(e) if login_failed && try_plain && tls_failed(&e) => {
+                            tracing::info!("TLS handshake failed, connecting without TLS (SSL mode Prefer): {e}");
+                            try_plain = false;
+                            manager.options.connection =
+                                manager.options.connection.clone().ssl_mode(PgSslMode::Disable);
+                            fallback = fallback.map(|opts| opts.ssl_mode(PgSslMode::Disable));
+                        }
+                        Err(e)
+                            if login_failed
+                                && fallback.is_some()
+                                && e.as_database_error().is_some_and(|db| {
+                                    postgres_read_only_hint(true, db.code().as_deref(), db.message()).is_some()
+                                }) =>
+                        {
+                            manager.options.connection =
+                                fallback.take().expect("read-only startup option was supplied");
+                            manager.options.read_only = PgReadOnly::Transaction;
+                            try_plain = false;
+                            let (startup, settings) = pg_read_only::startup(&init).map_err(IdeError::invalid)?;
+                            manager.init = Arc::new(startup);
+                            manager.options.local_settings = settings.into();
+                            tracing::info!(
+                                "PostgreSQL endpoint rejected read-only startup; using read-only transactions"
+                            );
+                        }
+                        result => break result.map_err(|e| postgres_connect_error(e, source.read_only))?,
+                    }
+                };
+                let transaction_read_only = manager.options.read_only == PgReadOnly::Transaction;
                 let pool = Bb8Pool::builder().max_size(MAX).connection_timeout(timeout).build_unchecked(manager);
                 let _ = pool.add(first);
-                Ok(Pool::Postgres(ServerPool { inner: pool, closed: AtomicBool::new(false) }))
+                Ok(Pool::Postgres(ServerPool { inner: pool, transaction_read_only, closed: AtomicBool::new(false) }))
             }
             DbDriver::Mysql => {
                 let mut opts = MySqlConnectOptions::new()
@@ -855,12 +1198,28 @@ impl Pool {
                 if !tz.is_empty() {
                     opts = opts.timezone(Some(tz.to_owned()));
                 }
-                let manager = MysqlManager { options: opts, init: init.clone(), timeout };
+                let mut manager = MysqlManager { options: opts, init: init.clone(), timeout };
                 // Open once directly so authentication failures retain their database error.
-                let first = manager.connect().await.map_err(db_err)?;
+                let mut first = manager.connect().await;
+                if source.ssl == DbSslMode::Prefer && first.as_ref().is_err_and(tls_failed) {
+                    if let Err(e) = &first {
+                        tracing::info!("TLS handshake failed, connecting without TLS (SSL mode Prefer): {e}");
+                    }
+                    manager.options = manager.options.clone().ssl_mode(MySqlSslMode::Disabled);
+                    first = manager.connect().await;
+                }
+                if first.as_ref().is_err_and(legacy_eof) {
+                    manager.options = manager.options.clone().deprecate_eof(false);
+                    first = manager.connect().await;
+                }
+                let first = first.map_err(db_err)?;
                 let pool = Bb8Pool::builder().max_size(MAX).connection_timeout(timeout).build_unchecked(manager);
                 let _ = pool.add(first);
-                Ok(Pool::Mysql(ServerPool { inner: pool, closed: AtomicBool::new(false) }))
+                Ok(Pool::Mysql(ServerPool {
+                    inner: pool,
+                    transaction_read_only: false,
+                    closed: AtomicBool::new(false),
+                }))
             }
             DbDriver::SqlServer => {
                 use tiberius::Config;
@@ -876,9 +1235,7 @@ impl Pool {
                 if !source.database.is_empty() {
                     config.database(&source.database);
                 }
-                if matches!(source.ssl, DbSslMode::Disable | DbSslMode::Prefer) {
-                    config.trust_cert();
-                }
+                apply_sqlserver_ssl(&mut config, source.ssl);
                 let manager = MssqlConnectionManager(config);
                 let pool = bb8::Pool::builder()
                     .max_size(MAX)
@@ -890,8 +1247,9 @@ impl Pool {
                 conn.query("SELECT 1", &[]).await.map_err(mssql_err)?.into_results().await.map_err(mssql_err)?;
                 Ok(Pool::SqlServer(pool))
             }
+            DbDriver::Jdbc => Err(IdeError::invalid("An installed JDBC driver profile is required")),
             DbDriver::Clickhouse => unreachable!(),
-            DbDriver::Oracle => unreachable!(),
+            DbDriver::Oracle | DbDriver::Snowflake => unreachable!(),
         }
     }
 
@@ -899,6 +1257,8 @@ impl Pool {
         match self {
             Pool::SqlServer(_) | Pool::Oracle(_) => {}
             Pool::Clickhouse(p) => p.close(),
+            Pool::Jdbc(p) => p.close().await,
+            Pool::Snowflake(p) => p.close().await,
             Pool::Sqlite(p) => p.close().await,
             Pool::Postgres(p) => p.closed.store(true, Ordering::Relaxed),
             Pool::Mysql(p) => p.closed.store(true, Ordering::Relaxed),
@@ -910,21 +1270,63 @@ impl Pool {
             Pool::SqlServer(_) => false,
             Pool::Oracle(p) => p.is_closed(),
             Pool::Clickhouse(p) => p.is_closed(),
+            Pool::Jdbc(p) => p.is_closed(),
+            Pool::Snowflake(p) => p.is_closed(),
             Pool::Sqlite(p) => p.is_closed(),
             Pool::Postgres(p) => p.closed.load(Ordering::Relaxed),
             Pool::Mysql(p) => p.closed.load(Ordering::Relaxed),
         }
     }
 
+    /// Whether a later page of a result can be read from a cursor instead of by running the statement
+    /// again: the drivers whose rows stream from one connection that can wait for the next page.
+    pub(crate) fn keeps_cursors(&self) -> bool {
+        matches!(self, Pool::Sqlite(_) | Pool::Postgres(_) | Pool::Mysql(_))
+    }
+
+    async fn cancel_query(&self, sql: String) {
+        if let Pool::Postgres(p) = self
+            && p.transaction_read_only
+        {
+            // The target owns its backend until cancellation finishes; all regular pool slots may be busy.
+            let control = async {
+                let mut c = p.inner.dedicated_connection().await.map_err(db_err)?;
+                c.start_read_only().await?;
+                Ok::<_, IdeError>(c)
+            };
+            // Never queue a late cancel after giving up the backend whose PID it names.
+            if let Ok(Ok(mut conn)) = tokio::time::timeout(Duration::from_secs(2), control).await {
+                let _ = sqlx::raw_sql(sqlx::AssertSqlSafe(format!("{sql}; ROLLBACK"))).execute(&mut *conn).await;
+            } else {
+                tracing::debug!(
+                    "No PostgreSQL backend available to signal cancellation; discarding the client connection"
+                );
+            }
+        } else {
+            let _ = self.rows(&sql, 1).await;
+        }
+    }
+
     /// Runs `sql` (no row limit beyond `max`), for introspection: cells are text (see [`Cells::Text`]).
     pub async fn rows(&self, sql: &str, max: usize) -> IdeResult<Vec<Vec<Option<String>>>> {
+        if let Pool::Jdbc(p) = self {
+            return Ok(p.query(sql, 0, max, &CancellationToken::new()).await?.rows);
+        }
         if let Pool::Clickhouse(p) = self {
             return Ok(p.execute(sql, max, &CancellationToken::new()).await?.rows);
         }
+        if let Pool::Snowflake(p) = self {
+            return Ok(p.metadata().execute(sql, max, &CancellationToken::new()).await?.rows);
+        }
         let mut conn = Held::acquire(self).await?;
         conn.apply_context(None).await?;
-        let fetched = conn.fetch_rows(sql, max).await;
-        Ok(fetched?.1)
+        let owned = conn.begin_read_only().await?;
+        let result = async {
+            conn.check_protected_statement(sql).await?;
+            conn.fetch_rows(sql, max).await
+        }
+        .await;
+        Ok(conn.finish_read_only(owned, result).await?.1)
     }
 
     /// Runs one statement and keeps at most `max_rows` rows. Cancelling stops
@@ -942,7 +1344,13 @@ impl Pool {
         max_rows: usize,
         cancel: &CancellationToken,
     ) -> IdeResult<QueryResult> {
+        if let Pool::Jdbc(p) = self {
+            return p.query(sql, skip, max_rows, cancel).await;
+        }
         if let Pool::Clickhouse(p) = self {
+            return p.execute_from(sql, skip, max_rows, cancel).await;
+        }
+        if let Pool::Snowflake(p) = self {
             return p.execute_from(sql, skip, max_rows, cancel).await;
         }
         let mut conn = Held::acquire(self).await?;
@@ -960,8 +1368,13 @@ impl Pool {
     /// Runs `statements` in one transaction; each must change `expect_one`
     /// row when flagged (table editor submits).
     pub async fn transaction(&self, statements: &[(String, bool)]) -> IdeResult<u64> {
+        if self.transaction_read_only() {
+            return Err(IdeError::invalid("Cannot submit table changes on a read-only PostgreSQL source"));
+        }
         match self {
+            Pool::Jdbc(_) => Err(IdeError::invalid("Custom JDBC table editing is unsupported")),
             Pool::Clickhouse(_) => Err(crate::clickhouse::transaction_error()),
+            Pool::Snowflake(p) => p.transaction(statements).await,
             Pool::SqlServer(_) => {
                 let mut held = Held::acquire(self).await?;
                 held.apply_context(None).await?;
@@ -1043,11 +1456,14 @@ pub enum Held {
     SqlServer(Box<bb8::PooledConnection<'static, MssqlConnectionManager>>),
     Clickhouse(crate::clickhouse::ClickhousePool),
     Oracle(Box<crate::oracle::OracleConnection>),
+    /// The shared session, and the schema this holder's statements run in.
+    Snowflake(crate::snowflake::SnowflakePool, Option<String>),
 }
 
 impl Held {
     pub async fn acquire(pool: &Pool) -> IdeResult<Self> {
         Ok(match pool {
+            Pool::Jdbc(_) => return Err(IdeError::invalid("Custom JDBC manual transactions are unsupported")),
             Pool::Sqlite(p) => Held::Sqlite(p.acquire().await.map_err(db_err)?),
             Pool::Postgres(p) => Held::Postgres(Box::new(p.get().await?)),
             Pool::Mysql(p) => Held::Mysql(Box::new(p.get().await?)),
@@ -1059,6 +1475,12 @@ impl Held {
                 Held::Clickhouse(p.clone())
             }
             Pool::Oracle(p) => Held::Oracle(Box::new(p.get().await?)),
+            Pool::Snowflake(p) => {
+                if p.is_closed() {
+                    return Err(IdeError::new(ErrorKind::Io, "Snowflake connection is closed"));
+                }
+                Held::Snowflake(p.clone(), None)
+            }
         })
     }
 
@@ -1103,6 +1525,11 @@ impl Held {
     }
 
     pub async fn apply_context(&mut self, schema: Option<&str>) -> IdeResult<()> {
+        if let Held::Snowflake(_, wanted) = self {
+            // Applied with each statement, while it holds the shared session.
+            *wanted = schema.filter(|s| !s.is_empty()).map(str::to_owned);
+            return Ok(());
+        }
         let driver = match self {
             Held::Postgres(_) => DbDriver::Postgres,
             Held::Mysql(_) => DbDriver::Mysql,
@@ -1110,6 +1537,15 @@ impl Held {
             Held::Oracle(_) => DbDriver::Oracle,
             _ => return Ok(()),
         };
+        if let Held::Postgres(c) = self
+            && c.options.read_only == PgReadOnly::Transaction
+        {
+            let wanted = schema
+                .filter(|s| !s.is_empty())
+                .map(|s| crate::sql::quote_ident(driver, s))
+                .or_else(|| c.context.default.clone());
+            return c.select_path(wanted).await;
+        }
         let context = self.context().expect("switchable connection");
         let wanted = context.wanted(driver, schema);
         if context.known && context.current == wanted {
@@ -1151,6 +1587,7 @@ impl Held {
     }
 
     async fn fetch_rows(&mut self, sql: &str, max: usize) -> IdeResult<Fetched> {
+        self.require_read_only_transaction()?;
         self.before_statement(sql);
         let result = match self {
             Held::Sqlite(c) => fetch!(&mut **c, sql, max, Cells::Text),
@@ -1158,7 +1595,7 @@ impl Held {
             Held::Mysql(c) => fetch!(&mut ****c, sql, max, Cells::Text),
             Held::SqlServer(c) => mssql_fetch(c, sql, 0, max).await,
             Held::Oracle(c) => crate::oracle::run(c, sql, 0, max, Cells::Text, &CancellationToken::new()).await,
-            Held::Clickhouse(_) => unreachable!(),
+            Held::Clickhouse(_) | Held::Snowflake(..) => unreachable!(),
         };
         if result.is_ok() {
             self.after_statement(sql);
@@ -1168,6 +1605,31 @@ impl Held {
 
     /// Runs a statement without results (`BEGIN`, `COMMIT`, `ROLLBACK`).
     pub async fn command(&mut self, sql: &str) -> IdeResult<()> {
+        let owned = self.begin_read_only().await?;
+        let result = async {
+            self.check_protected_statement(sql).await?;
+            self.run_command(sql).await
+        }
+        .await;
+        self.finish_read_only(owned, result).await
+    }
+
+    pub(crate) async fn begin_manual(&mut self, driver: DbDriver) -> IdeResult<()> {
+        if matches!(self, Self::Postgres(c) if c.options.read_only == PgReadOnly::Transaction) {
+            self.begin_read_only().await?;
+            return Ok(());
+        }
+        self.run_command(begin_statement(driver)).await
+    }
+
+    pub(crate) async fn finish_manual(&mut self, commit: bool) -> IdeResult<()> {
+        if matches!(self, Self::Postgres(c) if c.options.read_only == PgReadOnly::Transaction) {
+            return self.end_read_only(commit).await;
+        }
+        self.run_command(if commit { "COMMIT" } else { "ROLLBACK" }).await
+    }
+
+    async fn run_command(&mut self, sql: &str) -> IdeResult<()> {
         self.before_statement(sql);
         let result = self.raw_command(sql).await;
         if result.is_ok() {
@@ -1177,9 +1639,16 @@ impl Held {
     }
 
     async fn raw_command(&mut self, sql: &str) -> IdeResult<()> {
+        self.require_read_only_transaction()?;
         match self {
             Held::SqlServer(c) => mssql_command(c, sql).await,
             Held::Clickhouse(_) => Err(crate::clickhouse::transaction_error()),
+            Held::Snowflake(c, schema) => {
+                if sql.trim().is_empty() {
+                    return Ok(());
+                }
+                c.execute_in(schema.as_deref(), sql, 0, 0, &CancellationToken::new()).await.map(drop)
+            }
             Held::Oracle(c) => {
                 let sql = sql.trim();
                 if sql.is_empty() {
@@ -1193,7 +1662,9 @@ impl Held {
                     Held::Sqlite(c) => sqlx::raw_sql(sql).execute(&mut **c).await.map(drop),
                     Held::Postgres(c) => sqlx::raw_sql(sql).execute(&mut ****c).await.map(drop),
                     Held::Mysql(c) => sqlx::raw_sql(sql).execute(&mut ****c).await.map(drop),
-                    Held::SqlServer(_) | Held::Clickhouse(_) | Held::Oracle(_) => unreachable!(),
+                    Held::SqlServer(_) | Held::Clickhouse(_) | Held::Oracle(_) | Held::Snowflake(..) => {
+                        unreachable!()
+                    }
                 }
                 .map_err(db_err)
             }
@@ -1218,7 +1689,7 @@ impl Held {
             Held::SqlServer(mut c) => {
                 c.0.take();
             }
-            Held::Clickhouse(_) => {}
+            Held::Clickhouse(_) | Held::Snowflake(..) => {}
             Held::Oracle(mut c) => c.discard_inner(),
         }
     }
@@ -1248,6 +1719,34 @@ impl Held {
         if let Held::Clickhouse(c) = self {
             return c.execute_from(sql, skip, max_rows, cancel).await;
         }
+        if let Held::Snowflake(c, schema) = self {
+            return c.execute_in(schema.as_deref(), sql, skip, max_rows, cancel).await;
+        }
+        let owned = self.begin_read_only().await?;
+        let result = async {
+            self.check_protected_statement(sql).await?;
+            self.run_statement(pool, sql, skip, max_rows, cancel).await
+        }
+        .await;
+        if cancel.is_cancelled()
+            && let Held::Postgres(c) = self
+            && c.options.read_only == PgReadOnly::Transaction
+        {
+            c.conn.take();
+            return Err(IdeError::cancelled());
+        }
+        self.finish_read_only(owned, result).await
+    }
+
+    async fn run_statement(
+        &mut self,
+        pool: &Pool,
+        sql: &str,
+        skip: usize,
+        max_rows: usize,
+        cancel: &CancellationToken,
+    ) -> IdeResult<QueryResult> {
+        self.require_read_only_transaction()?;
         self.before_statement(sql);
         let started = Instant::now();
         // `$id`: the query naming the server process, `$kill`: how another connection stops it.
@@ -1263,7 +1762,7 @@ impl Held {
                 };
                 if cancel.is_cancelled() {
                     if let Some(b) = backend {
-                        let _ = pool.rows(&$kill(b), 1).await;
+                        pool.cancel_query($kill(b)).await;
                     }
                     return Err(IdeError::cancelled());
                 }
@@ -1292,20 +1791,10 @@ impl Held {
                 }
             }
             Held::Oracle(c) => crate::oracle::run(c, sql, skip, max_rows, Cells::Display, cancel).await?,
-            Held::Clickhouse(_) => unreachable!(),
+            Held::Clickhouse(_) | Held::Snowflake(..) => unreachable!(),
         };
         self.after_statement(sql);
-        let (columns, rows, affected, has_more, first) = fetched;
-        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
-        Ok(QueryResult {
-            statement: sql.to_owned(),
-            affected: if columns.is_empty() { Some(affected.unwrap_or(0) as f64) } else { None },
-            columns,
-            rows,
-            has_more,
-            elapsed_ms,
-            execution_ms: first.map_or(elapsed_ms, |t| t.duration_since(started).as_secs_f64() * 1000.0),
-        })
+        Ok(query_result(sql, fetched, started))
     }
 }
 
@@ -1315,7 +1804,7 @@ pub fn begin_statement(driver: DbDriver) -> &'static str {
         DbDriver::Mysql => "START TRANSACTION",
         DbDriver::SqlServer => "BEGIN TRAN",
         DbDriver::Oracle => "", // opens implicitly with autocommit off
-        DbDriver::Sqlite | DbDriver::Postgres | DbDriver::Clickhouse => "BEGIN",
+        DbDriver::Sqlite | DbDriver::Postgres | DbDriver::Clickhouse | DbDriver::Snowflake | DbDriver::Jdbc => "BEGIN",
     }
 }
 
@@ -1330,6 +1819,131 @@ fn statement_columns<S: sqlx::Statement>(s: &S) -> Vec<ResultColumn> {
 mod tests {
     use super::*;
     use crate::source::{DbOptions, DbProperty};
+
+    fn rows(cells: Vec<Vec<Option<String>>>) -> QueryResult {
+        query_result("select", (Vec::new(), cells, None, false, None), Instant::now())
+    }
+
+    #[test]
+    fn capping_cells_bounds_a_page_and_reports_the_whole_length() {
+        let wide = "x".repeat(1_000_000);
+        let mut r = rows(vec![vec![Some("short".into()), Some(wide.clone()), None], vec![Some(wide), None, None]]);
+        r.cap_cells(100);
+        let size: usize = r.rows.iter().flatten().flatten().map(String::len).sum();
+        assert_eq!(size, 5 + 100 + 100);
+        assert_eq!(
+            r.truncated,
+            [
+                TruncatedCell { row: 0, column: 1, length: 1_000_000, hash: fnv1a_utf16(&"x".repeat(1_000_000)) },
+                TruncatedCell { row: 1, column: 0, length: 1_000_000, hash: fnv1a_utf16(&"x".repeat(1_000_000)) }
+            ]
+        );
+        assert_eq!(r.rows[0][0].as_deref(), Some("short"));
+        assert_eq!(r.rows[0][2], None);
+    }
+
+    #[test]
+    fn a_cut_cell_is_hashed_by_its_utf16_units() {
+        // Fixed values: the client (`cutCells.ts`) computes the same hash to recognise a value it reads again.
+        assert_eq!(fnv1a_utf16(""), 2_166_136_261);
+        assert_eq!(fnv1a_utf16("a"), 3_826_002_220);
+        assert_eq!(fnv1a_utf16("a😀b"), 2_412_414_209);
+        assert_eq!(fnv1a_utf16("日本語日本語"), 2_778_669_755);
+        assert_ne!(fnv1a_utf16(&"x".repeat(100)), fnv1a_utf16(&format!("{}y", "x".repeat(99))));
+        let mut r = rows(vec![vec![Some("a😀b".into())]]);
+        r.cap_cells(2);
+        assert_eq!(r.truncated[0].hash, 2_412_414_209);
+    }
+
+    #[test]
+    fn capping_cells_keeps_values_at_or_under_the_limit_whole() {
+        let mut r = rows(vec![vec![Some("abcd".into()), Some("😀😀".into()), Some("ééé".into())]]);
+        // 4 units, 4 units (two pairs), 3 units in 6 bytes.
+        r.cap_cells(4);
+        assert!(r.truncated.is_empty());
+        assert_eq!(r.rows[0][1].as_deref(), Some("😀😀"));
+        r.cap_cells(3);
+        assert_eq!(
+            r.truncated,
+            [
+                TruncatedCell { row: 0, column: 0, length: 4, hash: fnv1a_utf16("abcd") },
+                TruncatedCell { row: 0, column: 1, length: 4, hash: fnv1a_utf16("😀😀") }
+            ]
+        );
+        assert_eq!(r.rows[0][2].as_deref(), Some("ééé"));
+    }
+
+    #[test]
+    fn capping_cells_never_splits_a_character_or_a_surrogate_pair() {
+        // "a😀b": units a=1, 😀=2, b=1. A cut inside the pair falls back to before it.
+        let mut r = rows(vec![vec![Some("a😀b".into()), Some("日本語日本語".into())]]);
+        r.cap_cells(2);
+        assert_eq!(r.rows[0][0].as_deref(), Some("a"));
+        assert_eq!(r.rows[0][1].as_deref(), Some("日本"));
+        assert_eq!(r.truncated[0].length, 4);
+        assert_eq!(r.truncated[1].length, 6);
+        // What is kept is a prefix of the whole value, measured in UTF-16 units.
+        for (cut, whole) in [(&r.rows[0][0], "a😀b"), (&r.rows[0][1], "日本語日本語")] {
+            assert!(whole.starts_with(cut.as_deref().unwrap()));
+            assert!(cut.as_deref().unwrap().encode_utf16().count() <= 2);
+        }
+    }
+
+    #[test]
+    fn postgres_read_only_guidance_identifies_what_the_pooler_rejected() {
+        let rejected = "unsupported startup parameter in options: default_transaction_read_only";
+        assert_eq!(postgres_read_only_hint(true, Some("08P01"), rejected), Some(PG_READ_ONLY_HINT));
+        let direct = "unsupported startup parameter: default_transaction_read_only";
+        assert_eq!(postgres_read_only_hint(true, Some("08P01"), direct), Some(PG_READ_ONLY_HINT));
+        let options = postgres_read_only_hint(true, Some("08P01"), "unsupported startup parameter: options").unwrap();
+        assert!(options.contains("rejects PostgreSQL startup options"));
+        assert_eq!(postgres_read_only_hint(false, Some("08P01"), rejected), None);
+        assert_eq!(postgres_read_only_hint(true, Some("28P01"), rejected), None);
+        assert_eq!(
+            postgres_read_only_hint(true, Some("08P01"), "unsupported startup parameter: extra_float_digits"),
+            None
+        );
+    }
+
+    #[test]
+    fn prefer_retries_without_tls_only_after_a_failed_handshake() {
+        use std::io;
+        // What a server limited to old TLS versions gives: rustls's alert inside the I/O error.
+        let alert = rustls::Error::AlertReceived(rustls::AlertDescription::HandshakeFailure);
+        assert!(tls_failed(&sqlx::Error::Io(io::Error::new(io::ErrorKind::InvalidData, alert))));
+        assert!(tls_failed(&sqlx::Error::Tls("bad config".into())));
+        // Unreachable servers, protocol errors and wrong passwords keep their error.
+        assert!(!tls_failed(&sqlx::Error::Io(io::ErrorKind::ConnectionRefused.into())));
+        assert!(!tls_failed(&sqlx::Error::Io(io::Error::new(io::ErrorKind::InvalidData, "eof"))));
+        assert!(!tls_failed(&sqlx::Error::Protocol("OK_Packet too short".into())));
+    }
+
+    fn sqlserver_debug(ssl: DbSslMode) -> String {
+        let mut config = tiberius::Config::new();
+        apply_sqlserver_ssl(&mut config, ssl);
+        format!("{config:?}")
+    }
+
+    #[test]
+    fn sqlserver_disable_does_not_require_tls() {
+        let debug = sqlserver_debug(DbSslMode::Disable);
+        assert!(debug.contains("encryption: NotSupported"), "{debug}");
+        assert!(debug.contains("bypass: false"), "{debug}");
+    }
+
+    #[test]
+    fn sqlserver_prefer_trusts_the_server_certificate() {
+        let debug = sqlserver_debug(DbSslMode::Prefer);
+        assert!(debug.contains("encryption: Required"), "{debug}");
+        assert!(debug.contains("bypass: true"), "{debug}");
+    }
+
+    #[test]
+    fn sqlserver_require_keeps_validated_tls() {
+        let debug = sqlserver_debug(DbSslMode::Require);
+        assert!(debug.contains("encryption: Required"), "{debug}");
+        assert!(debug.contains("bypass: false"), "{debug}");
+    }
 
     #[test]
     fn discarded_sqlserver_connections_are_broken() {

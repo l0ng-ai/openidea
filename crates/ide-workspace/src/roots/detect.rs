@@ -17,9 +17,23 @@ const PYTHON_FILES: &[&str] = &["pyproject.toml", "setup.py", "setup.cfg", "Pipf
 const SKIP_DIRS: &[&str] =
     &["node_modules", "target", "build", "dist", "out", "venv", "__pycache__", "vendor", "bower_components"];
 
+/// A Python virtual environment (`python -m venv`, virtualenv, uv) or conda environment,
+/// whatever it is named: its packages are dependencies, not modules of the project.
+/// Returns the file that marks it.
+pub(crate) fn virtual_env_marker(dir: &Path) -> Option<&'static str> {
+    if dir.join("pyvenv.cfg").is_file() {
+        Some("pyvenv.cfg")
+    } else if dir.join("conda-meta").is_dir() {
+        Some("conda-meta")
+    } else {
+        None
+    }
+}
+
 /// Build files whose changes can change the detected roots.
 pub(crate) const BUILD_FILES: &[&str] = &[
     "pom.xml",
+    ".classpath",
     "build.gradle",
     "build.gradle.kts",
     "settings.gradle",
@@ -65,7 +79,10 @@ pub fn affects_roots(rel: &Path) -> bool {
     let Some(name) = names.next() else { return false };
     BUILD_FILES.contains(&name)
         || ROOT_NAMES.contains(&name)
-        || matches!(name, "Assets" | "Packages" | "ProjectSettings" | "ProjectVersion.txt")
+        || matches!(
+            name,
+            "Assets" | "Packages" | "ProjectSettings" | "ProjectVersion.txt" | "pyvenv.cfg" | "conda-meta"
+        )
         || names.next() == Some("src")
 }
 
@@ -123,12 +140,21 @@ pub fn detect(root: &Path) -> Vec<SourceFolder> {
         }
         let found: Vec<String> = out[before..].iter().map(|r| r.path.clone()).collect();
         for name in dirs {
-            if name.starts_with('.') || SKIP_DIRS.contains(&name.as_str()) {
-                continue;
-            }
             let child = join(&rel, &name);
             // Roots are not searched for nested modules (`src/main/java` can be huge).
             if found.iter().any(|f| *f == child || f.is_empty() && name == "src") {
+                continue;
+            }
+            if let Some(marker) = virtual_env_marker(&root.join(&child)) {
+                if !out.iter().any(|r| r.path == child) {
+                    let from = join(&child, marker);
+                    out.push(SourceFolder { path: child, kind: RootKind::Excluded, detected_from: Some(from) });
+                }
+                continue;
+            }
+            // Skipping discovery is not an exclusion: marked hidden/conventional
+            // environments still need an explicit root for index and watcher filtering.
+            if name.starts_with('.') || SKIP_DIRS.contains(&name.as_str()) {
                 continue;
             }
             queue.push_back((child, depth + 1));
@@ -212,6 +238,20 @@ fn module_roots(root: &Path, rel: &str, files: &[String], out: &mut Vec<SourceFo
         add("test", RootKind::Test, file);
         for ex in [".venv", "venv", "__pycache__", "build", "dist"] {
             add(ex, RootKind::Excluded, file);
+        }
+    }
+
+    // An Eclipse project without Maven or Gradle: its `.classpath` is the source model.
+    if has(".classpath")
+        && !has("pom.xml")
+        && !GRADLE_FILES.iter().any(|f| has(f))
+        && let Some(cp) = super::eclipse::classpath(&dir)
+    {
+        for (sub, test) in &cp.sources {
+            add(sub, if *test { RootKind::Test } else { RootKind::Source }, ".classpath");
+        }
+        if let Some(output) = &cp.output {
+            add(output, RootKind::Excluded, ".classpath");
         }
     }
 
@@ -503,6 +543,125 @@ mod tests {
                 "web/src=Source@web/package.json",
             ]
         );
+    }
+
+    #[test]
+    fn virtual_environments_are_excluded_whatever_their_name() {
+        // A package in the environment's site-packages has build files of its own; as a
+        // source root it would be put on PYTHONPATH and shadow the standard library.
+        let dir = tree(&[
+            "requirements.txt",
+            "app.py",
+            "code10/pyvenv.cfg",
+            "code10/Lib/site-packages/pkg/pyproject.toml",
+            "code10/Lib/site-packages/pkg/io/__init__.py",
+            "envs/conda/conda-meta/",
+            "envs/conda/lib/pkg/setup.py",
+            "svc/pyproject.toml",
+            "svc/env/pyvenv.cfg",
+            "svc/env/lib/python3.12/site-packages/dep/setup.py",
+        ]);
+        assert_eq!(
+            summary(&detect(dir.path())),
+            vec![
+                "=Source@requirements.txt",
+                "code10=Excluded@code10/pyvenv.cfg",
+                "envs/conda=Excluded@envs/conda/conda-meta",
+                "svc=Source@svc/pyproject.toml",
+                "svc/env=Excluded@svc/env/pyvenv.cfg",
+            ]
+        );
+        assert!(affects_roots(Path::new("code10/pyvenv.cfg")));
+    }
+
+    #[test]
+    fn marked_environments_are_detected_before_name_based_walk_skips() {
+        let dir = tree(&[
+            ".venv/pyvenv.cfg",
+            ".venv/Lib/site-packages/pkg/setup.py",
+            ".conda/conda-meta/history",
+            "venv/pyvenv.cfg",
+            "nested/.custom/pyvenv.cfg",
+            "nested/.custom/lib/pkg/pyproject.toml",
+            "build/business.go",
+            "bin/business.go",
+            "env/business.go",
+            "dist/business.go",
+            ".ordinary/setup.py",
+        ]);
+        assert_eq!(
+            summary(&detect(dir.path())),
+            vec![
+                ".conda=Excluded@.conda/conda-meta",
+                ".venv=Excluded@.venv/pyvenv.cfg",
+                "nested/.custom=Excluded@nested/.custom/pyvenv.cfg",
+                "venv=Excluded@venv/pyvenv.cfg",
+            ]
+        );
+    }
+
+    #[test]
+    fn marked_environment_detection_preserves_source_roots_and_user_overrides() {
+        let dir = tree(&["Cargo.toml", "src/pyvenv.cfg", ".venv/pyvenv.cfg", ".conda/conda-meta/history"]);
+        let detected = detect(dir.path());
+        assert!(detected.iter().any(|r| r.path == ".venv" && r.kind == RootKind::Excluded));
+        assert!(detected.iter().any(|r| r.path == "src" && r.kind == RootKind::Source));
+        let settings = ide_core::settings::ProjectStructureSettings {
+            source_roots: vec![".venv".into()],
+            unmarked: vec![".conda".into()],
+            ..Default::default()
+        };
+        let effective = super::super::ProjectRoots::compute(detected, &settings);
+        assert!(effective.excluded_globs().is_empty());
+        assert_eq!(effective.root_for(".venv/app.py").unwrap().kind, RootKind::Source);
+    }
+
+    #[test]
+    fn environment_markers_require_the_expected_file_type_and_respect_walk_boundaries() {
+        let dir = tree(&[
+            "pyvenv.cfg",
+            "app.py",
+            ".not_venv/pyvenv.cfg/",
+            ".not_conda/conda-meta",
+            ".hidden/nested/pyvenv.cfg",
+            "a/b/c/d/e/f/g/pyvenv.cfg",
+            "at/b/c/d/e/f/pyvenv.cfg",
+        ]);
+        // An environment opened as the project remains browsable. Hidden parents and
+        // the existing depth budget are not traversed to discover more environments.
+        assert_eq!(summary(&detect(dir.path())), vec!["at/b/c/d/e/f=Excluded@at/b/c/d/e/f/pyvenv.cfg"]);
+    }
+
+    #[test]
+    fn detected_environment_roots_prune_vfs_walk_without_hiding_business_directories() {
+        let dir = tree(&[
+            ".venv/pyvenv.cfg",
+            ".venv/Lib/site-packages/pkg/setup.py",
+            "internal/build/build.go",
+            "env/business.go",
+            "bin/business.go",
+            "dist/business.go",
+            "service/go.mod",
+        ]);
+        for i in 0..128 {
+            fs::write(dir.path().join(format!(".venv/Lib/site-packages/pkg/dep{i}.py")), "").unwrap();
+        }
+        let walk = |excludes: &[String]| {
+            let files = std::sync::Mutex::new(Vec::new());
+            ide_vfs::walk_files(dir.path(), excludes, |path| {
+                files.lock().unwrap().push(path.strip_prefix(dir.path()).unwrap().to_owned());
+            });
+            let mut files = files.into_inner().unwrap();
+            files.sort();
+            files
+        };
+        let before = walk(&[]);
+        let roots = super::super::ProjectRoots::compute(detect(dir.path()), &Default::default());
+        let after = walk(&roots.excluded_globs());
+        assert_eq!(before.len(), 135);
+        assert_eq!(after.len(), 5);
+        assert_eq!(after, before.into_iter().filter(|p| !p.starts_with(".venv")).collect::<Vec<_>>());
+        assert_eq!(roots.root_for("service/go.mod").unwrap().kind, RootKind::Source);
     }
 
     #[test]

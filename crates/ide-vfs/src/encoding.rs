@@ -8,8 +8,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-/// Files above this size open with expensive features (LSP, tree-sitter
-/// structure, folding) disabled.
+/// Files above this size open with reduced editor features.
 pub const LARGE_FILE_THRESHOLD: u64 = 5 * 1024 * 1024;
 /// Files above this size open read-only.
 pub const READ_ONLY_THRESHOLD: u64 = 50 * 1024 * 1024;
@@ -103,7 +102,7 @@ pub fn save_properties_text(path: &Path, text: &str) -> IdeResult<f64> {
 }
 
 /// Detects BOM-less UTF-16 from the distribution of NUL bytes in mostly-ASCII text.
-fn sniff_utf16(sample: &[u8]) -> Option<&'static Encoding> {
+pub(crate) fn sniff_utf16(sample: &[u8]) -> Option<&'static Encoding> {
     if sample.len() < 4 {
         return None;
     }
@@ -174,6 +173,45 @@ pub(crate) fn decode(bytes: &[u8]) -> (String, &'static Encoding, bool, bool) {
     (text.into_owned(), enc, false, false)
 }
 
+/// The configured encoding of a file. It decodes text that is neither valid UTF-8 nor
+/// marked by a BOM and, when `ascii` is set, also labels plain ASCII text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fallback<'a> {
+    pub encoding: &'a str,
+    pub ascii: bool,
+}
+
+pub(crate) enum Resolution {
+    Keep,
+    /// Plain ASCII reads the same in the configured encoding: only the label changes.
+    Relabel(&'static Encoding),
+    Redecode(&'static Encoding),
+}
+
+/// How decoded text meets the configured encoding; see [`Fallback`].
+pub(crate) fn resolve(
+    text: &str,
+    detected: &'static Encoding,
+    has_bom: bool,
+    binary: bool,
+    fallback: Option<Fallback<'_>>,
+) -> Resolution {
+    let Some((fallback, ascii)) =
+        fallback.and_then(|f| Some((Encoding::for_label(f.encoding.trim().as_bytes())?, f.ascii)))
+    else {
+        return Resolution::Keep;
+    };
+    if binary || has_bom || fallback == detected || detected == UTF_16LE || detected == UTF_16BE {
+        Resolution::Keep
+    } else if detected != UTF_8 {
+        Resolution::Redecode(fallback)
+    } else if ascii && fallback.is_ascii_compatible() && text.is_ascii() {
+        Resolution::Relabel(fallback)
+    } else {
+        Resolution::Keep
+    }
+}
+
 /// Bytes of a file inside an archive (size-checked) and the archive's mtime.
 fn archive_bytes(path: &Path) -> IdeResult<Option<(Vec<u8>, f64)>> {
     let Some((archive, entry)) = crate::split_archive_path(path) else { return Ok(None) };
@@ -228,7 +266,11 @@ pub(crate) fn load_text(path: &Path) -> IdeResult<LoadedText> {
 }
 
 /// Bounded disk snapshots for background consumers that share editor decoding.
-pub(crate) fn load_text_bounded(path: &Path, fallback: Option<&str>, max_bytes: usize) -> IdeResult<LoadedText> {
+pub(crate) fn load_text_bounded(
+    path: &Path,
+    fallback: Option<Fallback<'_>>,
+    max_bytes: usize,
+) -> IdeResult<LoadedText> {
     use std::io::Read;
     let regular = |meta: &fs::Metadata| meta.is_file() && meta.len() <= max_bytes as u64;
     if !regular(&fs::metadata(path)?) {
@@ -246,15 +288,13 @@ pub(crate) fn load_text_bounded(path: &Path, fallback: Option<&str>, max_bytes: 
     }
     let len = bytes.len() as u64;
     let (mut text, mut enc, has_bom, binary) = decode(&bytes);
-    if !binary
-        && !has_bom
-        && enc != UTF_8
-        && enc != UTF_16LE
-        && enc != UTF_16BE
-        && let Some(fallback) = fallback.and_then(|label| Encoding::for_label(label.trim().as_bytes()))
-    {
-        text = fallback.decode_without_bom_handling(&bytes).0.into_owned();
-        enc = fallback;
+    match resolve(&text, enc, has_bom, binary, fallback) {
+        Resolution::Keep => {}
+        Resolution::Relabel(fallback) => enc = fallback,
+        Resolution::Redecode(fallback) => {
+            text = fallback.decode_without_bom_handling(&bytes).0.into_owned();
+            enc = fallback;
+        }
     }
     if text.len() > max_bytes {
         return Err(IdeError::invalid("decoded document is too large"));
@@ -359,6 +399,32 @@ fn sync_error_is_tolerable(e: &std::io::Error) -> bool {
     false
 }
 
+/// On Windows a file can't be replaced while another process has it open without
+/// delete sharing: an antivirus or indexer scan, a sync client, a program reading
+/// its config. Those let go within moments, so the replacing rename is retried briefly.
+const RENAME_ATTEMPTS: u32 = 10;
+const RENAME_PAUSE: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Access denied (os error 5), sharing and lock violations (32, 33) on Windows.
+fn held_by_another_process(e: &std::io::Error) -> bool {
+    cfg!(windows) && matches!(e.raw_os_error(), Some(5 | 32 | 33))
+}
+
+fn retrying(
+    attempts: u32,
+    pause: std::time::Duration,
+    transient: impl Fn(&std::io::Error) -> bool,
+    mut op: impl FnMut() -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    for _ in 1..attempts {
+        match op() {
+            Err(e) if transient(&e) => std::thread::sleep(pause),
+            r => return r,
+        }
+    }
+    op()
+}
+
 /// Writes `bytes` to `path` atomically: temp file in the same directory, fsync,
 /// rename over the target. Preserves the permissions of an existing file and
 /// writes through symlinks. Falls back to an in-place write when the directory
@@ -441,7 +507,7 @@ fn write_atomic_impl(path: &Path, bytes: &[u8], allow_in_place: bool, private: b
             fs::set_permissions(&tmp, permissions)?;
         }
         drop(file);
-        fs::rename(&tmp, &target)
+        retrying(RENAME_ATTEMPTS, RENAME_PAUSE, held_by_another_process, || fs::rename(&tmp, &target))
     })();
     if let Err(e) = result {
         let _ = fs::remove_file(&tmp);
@@ -539,6 +605,58 @@ mod tests {
         assert_eq!(fs::metadata(&target).unwrap().permissions().mode() & 0o777, 0o640);
     }
 
+    #[test]
+    fn replacing_is_retried_only_while_a_file_is_held() {
+        use std::io::{Error, ErrorKind};
+        let in_use = || Error::from_raw_os_error(32);
+        let transient = |e: &Error| e.raw_os_error() == Some(32);
+        let zero = std::time::Duration::ZERO;
+        for (fails, outcome) in [(0, true), (3, true), (RENAME_ATTEMPTS - 1, true), (RENAME_ATTEMPTS, false)] {
+            let mut calls = 0;
+            let r = retrying(RENAME_ATTEMPTS, zero, transient, || {
+                calls += 1;
+                if calls <= fails { Err(in_use()) } else { Ok(()) }
+            });
+            assert_eq!(r.is_ok(), outcome, "{fails} failures");
+            assert_eq!(calls, (fails + 1).min(RENAME_ATTEMPTS));
+        }
+        let mut calls = 0;
+        let r = retrying(RENAME_ATTEMPTS, zero, transient, || {
+            calls += 1;
+            Err(Error::from(ErrorKind::NotFound))
+        });
+        assert_eq!(r.unwrap_err().kind(), ErrorKind::NotFound);
+        assert_eq!(calls, 1, "other errors fail at once");
+
+        for code in [5, 32, 33] {
+            assert_eq!(held_by_another_process(&Error::from_raw_os_error(code)), cfg!(windows), "os error {code}");
+        }
+        assert!(!held_by_another_process(&Error::from(ErrorKind::NotFound)));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn saving_waits_for_a_windows_file_lock_to_be_released() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+        // No sharing at all (os error 32), and readers that don't allow deletion (os error 5).
+        for share in [0, FILE_SHARE_READ | FILE_SHARE_WRITE] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.json");
+            fs::write(&path, b"old").unwrap();
+            let held = fs::OpenOptions::new().read(true).share_mode(share).open(&path).unwrap();
+            let release = std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                drop(held);
+            });
+            let result = write_atomic(&path, b"new");
+            release.join().unwrap();
+            result.unwrap();
+            assert_eq!(fs::read(&path).unwrap(), b"new", "share mode {share}");
+            assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1, "no temp file left behind");
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn strict_write_does_not_truncate_when_sibling_creation_is_denied() {
@@ -624,18 +742,21 @@ mod tests {
             };
             let text = format!("{text}{}", "padding ".repeat(16));
             crate::save_text(&path, &text, encoding, bom).unwrap();
-            let ordinary = crate::load_text_with_fallback(&path, Some(encoding)).unwrap();
-            let bounded = load_text_bounded(&path, Some(encoding), 1024).unwrap();
+            let ordinary = crate::load_text_with_fallback(&path, Some(Fallback { encoding, ascii: true })).unwrap();
+            let bounded = load_text_bounded(&path, Some(Fallback { encoding, ascii: true }), 1024).unwrap();
             assert!(!bounded.binary, "{encoding} BOM={bom}");
             assert_eq!(bounded.text, text, "{encoding} BOM={bom}");
             assert_eq!(
                 (&bounded.text, &bounded.encoding, bounded.has_bom),
                 (&ordinary.text, &ordinary.encoding, ordinary.has_bom)
             );
-            assert!(load_text_bounded(&path, Some(encoding), 2).is_err());
+            assert!(load_text_bounded(&path, Some(Fallback { encoding, ascii: true }), 2).is_err());
         }
         fs::write(&path, [0xe9; 4]).unwrap();
-        assert!(load_text_bounded(&path, Some("windows-1252"), 4).is_err(), "decoded UTF-8 expansion is bounded");
+        assert!(
+            load_text_bounded(&path, Some(Fallback { encoding: "windows-1252", ascii: true }), 4).is_err(),
+            "decoded UTF-8 expansion is bounded"
+        );
         fs::write(&path, b"\x7fELF\0\0").unwrap();
         assert!(load_text_bounded(&path, None, 1024).unwrap().binary);
     }

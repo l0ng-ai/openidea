@@ -13,7 +13,6 @@ blake3.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 specta.workspace = true
-thiserror.workspace = true
 tracing.workspace = true
 parking_lot.workspace = true
 semver = "1"
@@ -23,5 +22,5 @@ wasmtime-wasi = { version = "49.0.4", default-features = false, features = ["p2"
 
 [dev-dependencies]
 tempfile.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "net"] }
 wat = "1.258"

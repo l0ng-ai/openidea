@@ -15,6 +15,7 @@ import {
   isTauri,
   type ChannelFrame,
   type RemoteProgress,
+  type RemoteProject,
   type RemoteSession,
   type RemoteTarget,
 } from "./ipc";
@@ -25,9 +26,19 @@ import { useProject } from "./project";
 
 interface RemoteState {
   session: RemoteSession | null;
+  /** The host the connection was lost to (the window's project is unreachable), else null. */
+  lost: string | null;
+  takenOver: boolean;
+  /** A reconnection to the lost host is in progress. */
+  reconnecting: boolean;
 }
 
-export const useRemote = create<RemoteState>(() => ({ session: null }));
+export const useRemote = create<RemoteState>(() => ({
+  session: null,
+  lost: null,
+  takenOver: false,
+  reconnecting: false,
+}));
 
 let routed = new Set<string>();
 let nextChannel = 1;
@@ -56,6 +67,18 @@ export function encodeArgs(args: unknown): { json: string; channels: Map<number,
 
 async function remoteInvoke(cmd: string, args?: InvokeArgs, options?: InvokeOptions): Promise<unknown> {
   const { json, channels } = encodeArgs(args);
+  if (cmd === "db_execute_stream" || cmd === "vcs_watch_commit_messages") {
+    // These callbacks are reached through onChannel; their own Tauri registrations are unused.
+    const runtime = "__TAURI_INTERNALS__" in window ? window.__TAURI_INTERNALS__ : undefined;
+    if (
+      runtime &&
+      typeof runtime === "object" &&
+      "unregisterCallback" in runtime &&
+      typeof runtime.unregisterCallback === "function"
+    ) {
+      for (const channel of channels.values()) runtime.unregisterCallback(channel.id);
+    }
+  }
   const onChannel = new Channel<ChannelFrame>();
   onChannel.onmessage = (frame) => channels.get(frame.id)?.onmessage(JSON.parse(frame.data));
   const result = await invokeLocal<string>("remote_invoke", { cmd, args: json, onChannel }, options);
@@ -67,19 +90,33 @@ async function remoteInvoke(cmd: string, args?: InvokeArgs, options?: InvokeOpti
   return value;
 }
 
+function isMcpServerSetting(key: string): boolean {
+  return key === "mcpServer" || key.startsWith("mcpServer.");
+}
+
 /**
  * Where a command of a remote window runs. Local always: opening a project (a
  * local folder; leaving the remote one) and closing it (that drops the
- * connection, which ends the server's session). Client UI settings stay local.
- * Both: a global tooling setting, which
- * the server's language servers and the local windows read.
+ * connection, not the backend). Client UI settings stay local.
+ * Host-specific service settings apply to the remote host only;
+ * other global tooling settings apply on both sides.
  */
 export function remoteRouting(cmd: string, args: InvokeArgs | undefined, served: ReadonlySet<string>) {
-  if (cmd === "system_font_families" || cmd === "settings_get_global") return "local";
-  if (cmd === "settings_set" && isClientSetting((args as { key?: string } | undefined)?.key ?? "")) return "local";
+  const key = (args as { key?: string } | undefined)?.key ?? "";
+  if (cmd === "settings_set" && (key === "remoteDevelopment" || key.startsWith("remoteDevelopment."))) return "remote";
+  if (cmd === "system_font_families") return "local";
+  if (cmd === "settings_set" && isClientSetting(key)) return "local";
   if (!served.has(cmd) || cmd === "open_project" || cmd === "close_project") return "local";
+  if (cmd === "settings_set" && isMcpServerSetting(key)) {
+    return served.has("mcp_server_status") ? "remote" : "local";
+  }
   if (cmd === "settings_set" && (args as { scope?: string } | undefined)?.scope === "global") return "both";
   return "remote";
+}
+
+/** This machine's own global settings (for desktop SSH configurations even in a remote window). */
+export function localGlobalSettings(): Promise<Settings> {
+  return isTauri() ? invokeLocal<Settings>("settings_get_global") : commands.settingsGetGlobal();
 }
 
 /** All effective settings responses use the same client overlay, including writes and project snapshots. */
@@ -109,7 +146,7 @@ const route: InvokeRoute = (cmd, args, options) => {
   }
   if (destination === "local") return null;
   return remoteInvoke(cmd, args, options).then(async (result) => {
-    if (cmd === "settings_get") return clientSettings(result as Settings);
+    if (cmd === "settings_get" || cmd === "settings_get_global") return clientSettings(result as Settings);
     if (cmd === "project_current" && result) {
       const project = result as { settings: Settings };
       return { ...project, settings: await clientSettings(project.settings) };
@@ -118,21 +155,30 @@ const route: InvokeRoute = (cmd, args, options) => {
   });
 };
 
-/** Routes the commands the server answers (`session.commands`) to it from now on. */
+/**
+ * Routes `session.commands` to the server from now on: the commands this build's
+ * server answers, as the desktop backend knows them (not as the server reports them).
+ */
 export function enableRemote(session: RemoteSession) {
   routed = new Set(session.commands);
-  useRemote.setState({ session });
+  const takenOver = session.takenOver === true;
   setInvokeRoute(route);
+  useRemote.setState({ session, lost: takenOver ? session.host : null, takenOver, reconnecting: false });
 }
 
 export function disableRemote() {
   routed = new Set();
   setInvokeRoute(null);
-  useRemote.setState({ session: null });
+  useRemote.setState({ session: null, lost: null, takenOver: false, reconnecting: false });
 }
 
 export function isRemoteWindow(): boolean {
   return useRemote.getState().session !== null;
+}
+
+/** Whether `path` is the project folder of this window's remote session. */
+export function isRemoteRoot(path: string): boolean {
+  return useRemote.getState().session?.root === path;
 }
 
 /** The OS this window's commands run on: the remote server's, else this desktop's (`usePlatform`). */
@@ -154,6 +200,64 @@ export const useRemoteProgress = create<{ progress: RemoteProgress | null; locat
   location: null,
 }));
 
+/** Routes this window to the server `remoteConnect` answered with and shows its project. */
+async function attachRemote(r: RemoteProject, path: string): Promise<void> {
+  enableRemote({
+    target: r.target,
+    root: r.root,
+    host: r.host,
+    os: r.os,
+    commands: r.commands,
+    idlePolicy: r.idlePolicy,
+  });
+  if (takeLegacyRemoteTrust(r.target, path, r.host)) {
+    const status = await call(commands.projectTrustStatus(r.root));
+    if (!status.decided) await call(commands.projectTrustSet(r.root, true, false));
+    if (!(await call(commands.remoteTrustStatus())).decided) await call(commands.remoteTrustSet(true));
+  }
+  try {
+    await confirmProjectTrust(r.root);
+  } catch (error) {
+    await commands.closeProject();
+    disableRemote();
+    throw error;
+  }
+  const current = await commands.projectCurrent();
+  if (current) r.project = current;
+  r.project.settings = await clientSettings(r.project.settings);
+  useProject.setState({ project: r.project, settings: r.project.settings });
+  rememberRemote({
+    target: r.target,
+    path: r.root,
+    name: r.project.displayName || r.project.name,
+    host: r.host,
+    openedAtMs: Date.now(),
+  });
+}
+
+let connectAttempt = 0;
+
+let backendBusyPrompt: ((target: RemoteTarget) => Promise<boolean>) | null = null;
+
+/** Asks whether to stop another build's backend that still holds the project (#6119). */
+export function provideBackendBusyPrompt(value: (target: RemoteTarget) => Promise<boolean>): () => void {
+  backendBusyPrompt = value;
+  return () => {
+    if (backendBusyPrompt === value) backendBusyPrompt = null;
+  };
+}
+
+/** Connects; when another build's backend still holds the project, stops it once the user agrees. */
+async function connectOrReplace(target: RemoteTarget, path: string, onProgress: Channel<RemoteProgress>) {
+  try {
+    return await call(commands.remoteConnect(target, path, false, onProgress));
+  } catch (e) {
+    const busy = e instanceof IpcError && e.data?.type === "remoteBackendBusy";
+    if (!busy || !backendBusyPrompt || !(await backendBusyPrompt(target))) throw e;
+    return await call(commands.remoteConnect(target, path, true, onProgress));
+  }
+}
+
 /**
  * Opens `path` of `target` (an SSH host or a WSL distribution) in this window. A dev container's
  * project folder is the one in the container: `path` is then only a label.
@@ -161,51 +265,47 @@ export const useRemoteProgress = create<{ progress: RemoteProgress | null; locat
 export async function connectRemote(target: RemoteTarget, path: string) {
   useProject.setState({ opening: true });
   const location = remoteLocation(target, path);
+  // Two connects to one location (a double click) share `location`; only the latest attaches.
+  const attempt = ++connectAttempt;
+  const current = () => attempt === connectAttempt && useRemoteProgress.getState().location === location;
   const onProgress = new Channel<RemoteProgress>();
   onProgress.onmessage = (progress) => {
-    if (useRemoteProgress.getState().location === location) {
-      useRemoteProgress.setState({ progress });
-    }
+    if (current()) useRemoteProgress.setState({ progress });
   };
   useRemoteProgress.setState({
     progress: { stage: "connecting", fraction: null },
     location,
   });
   try {
-    const r = await call(commands.remoteConnect(target, path, onProgress));
-    if (useRemoteProgress.getState().location !== location) {
-      await commands.remoteDisconnect().catch(() => {});
+    const r = await connectOrReplace(target, path, onProgress);
+    // Another connect replaced this one, or the user cancelled. Disconnecting here
+    // would drop the connection that replacement published. Cancel already disconnects.
+    if (!current()) {
       throw new IpcError({ kind: "cancelled", message: "Remote connection cancelled" });
     }
-    enableRemote({ target: r.target, root: r.root, host: r.host, os: r.os, commands: r.commands });
-    if (takeLegacyRemoteTrust(r.target, path, r.host)) {
-      const status = await call(commands.projectTrustStatus(r.root));
-      if (!status.decided) await call(commands.projectTrustSet(r.root, true, false));
-    }
-    try {
-      await confirmProjectTrust(r.root);
-    } catch (error) {
-      await commands.closeProject();
-      disableRemote();
-      throw error;
-    }
-    const current = await commands.projectCurrent();
-    if (current) r.project = current;
-    r.project.settings = await clientSettings(r.project.settings);
-    useProject.setState({ project: r.project, settings: r.project.settings });
-    rememberRemote({
-      target: r.target,
-      path: r.root,
-      name: r.project.displayName || r.project.name,
-      host: r.host,
-      openedAtMs: Date.now(),
-    });
+    await attachRemote(r, path);
     return r;
   } finally {
-    if (useRemoteProgress.getState().location === location) {
+    if (current()) {
       useProject.setState({ opening: false });
       useRemoteProgress.setState({ progress: null, location: null });
     }
+  }
+}
+
+/**
+ * Opens the project again, reattaching to its existing backend if it is still running.
+ */
+export async function reconnectRemote(): Promise<void> {
+  const session = useRemote.getState().session;
+  if (!session) return;
+  useRemote.setState({ reconnecting: true });
+  try {
+    const r = await connectOrReplace(session.target, session.root, new Channel<RemoteProgress>());
+    useProject.setState({ project: null });
+    await attachRemote(r, session.root);
+  } finally {
+    useRemote.setState({ reconnecting: false });
   }
 }
 
@@ -214,6 +314,18 @@ export async function disconnectRemote() {
   await commands.closeProject();
   disableRemote();
   useProject.setState({ project: null });
+}
+
+/** Shuts down the remote `openidea-server` daemon and its processes, then closes the window's project. */
+export async function stopRemoteBackend() {
+  if (!isRemoteWindow()) return;
+  await shutdownRemoteBackend();
+  await disconnectRemote();
+}
+
+/** Stops the backend without deciding what to do with the desktop window. */
+export async function shutdownRemoteBackend() {
+  await call(commands.remoteStopBackend());
 }
 
 // ---------------------------------------------------------------------------
@@ -343,6 +455,21 @@ function saveRemotes(list: RecentRemote[]) {
   } catch {
     /* storage unavailable */
   }
+  syncRemoteRecentMenu();
+}
+
+/** Hands the recent remote projects to File › Open Recent, which lists them among the local ones. */
+export function syncRemoteRecentMenu() {
+  if (!isTauri()) return;
+  const projects = recentRemotes().map((r) => ({
+    location: remoteLocation(r.target, r.path),
+    name: r.name,
+    detail: `${r.host || targetName(r.target)}:${r.path}`,
+    openedAtMs: r.openedAtMs,
+  }));
+  void Promise.resolve()
+    .then(() => commands.menuSetRemoteRecent(projects))
+    .catch(() => {});
 }
 
 const sameRemote = (a: Pick<RecentRemote, "target" | "path">, b: Pick<RecentRemote, "target" | "path">) =>

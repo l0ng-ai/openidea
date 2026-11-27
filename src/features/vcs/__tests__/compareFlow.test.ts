@@ -1,9 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ scope: vi.fn(), choose: vi.fn(), open: vi.fn(), show: vi.fn(), notify: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  scope: vi.fn(),
+  entries: vi.fn(),
+  choose: vi.fn(),
+  open: vi.fn(),
+  show: vi.fn(),
+  notify: vi.fn(),
+}));
 vi.mock("@/platform/ipc", async (original) => {
   const real = await original<typeof import("@/platform/ipc")>();
-  return { ...real, commands: { ...real.commands, vcsCompareScope: mocks.scope } };
+  return { ...real, commands: { ...real.commands, vcsCompareScope: mocks.scope, vcsDiffEntries: mocks.entries } };
 });
 vi.mock("../RevisionChooser", () => ({ chooseRepositoryRevision: mocks.choose }));
 vi.mock("../diffInput", () => ({ openDiff: mocks.open, openVcsDiff: mocks.open }));
@@ -11,10 +18,12 @@ vi.mock("../operations", () => ({ showPathComparison: mocks.show }));
 vi.mock("@/workbench/contributions", () => ({ notifications: () => ({ notify: mocks.notify }) }));
 import { useProject } from "@/platform/project";
 import { comparePathsWithRevision, showDirectoryWorkingDiff } from "../comparePaths";
+import { useVcs } from "../store";
 
 afterEach(() => {
   vi.clearAllMocks();
   useProject.setState({ project: null });
+  useVcs.setState({ status: [], byPath: new Map() });
 });
 
 describe("comparison flow", () => {
@@ -70,5 +79,18 @@ describe("comparison flow", () => {
     });
     expect(await showDirectoryWorkingDiff(["/server/src"])).toBe(true);
     expect(mocks.show).toHaveBeenCalledWith(["/server/src"], "HEAD", null);
+  });
+
+  it("keeps a changed gitlink in the file diff even when it is a directory", async () => {
+    const path = "/server/modules/vendor";
+    const file = { path, relPath: "modules/vendor", unstaged: "modified", staged: null, renamedFrom: null } as const;
+    useVcs.setState({ status: [file], byPath: new Map([[path, file]]) });
+    mocks.scope.mockResolvedValue({
+      status: "ok",
+      data: { repositories: [path], singleFile: false, skippedPaths: [] },
+    });
+    mocks.entries.mockResolvedValue({ status: "ok", data: [{ mode: "160000", gitlink: null }, null, null] });
+    expect(await showDirectoryWorkingDiff([path])).toBe(false);
+    expect(mocks.show).not.toHaveBeenCalled();
   });
 });

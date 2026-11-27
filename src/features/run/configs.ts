@@ -18,6 +18,7 @@ const KIND_LABELS: Record<string, string> = {
   make: "Make",
   cmake: "CMake",
   just: "Just",
+  sbt: "sbt Task",
   shell: "Shell Script",
   program: "Program",
   compound: "Compound",
@@ -63,10 +64,12 @@ export const KIND_CATEGORIES: Record<string, string> = {
   cmake: "Build Tools",
   make: "Build Tools",
   just: "Build Tools",
+  sbt: "Build Tools",
   npm: "JavaScript",
   node: "JavaScript",
   bun: "JavaScript",
   deno: "JavaScript",
+  cypress: "JavaScript",
   python: "Python",
   pytest: "Python",
   cargo: "Rust",
@@ -114,8 +117,9 @@ export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {
     case "tomcat":
       return "tomcat";
     case "npm":
-    case "bun":
       return "file-npm";
+    case "bun":
+      return "file-bun";
     case "deno":
       return "file-ts";
     case "cargo":
@@ -129,6 +133,11 @@ export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {
       return "file-csharp";
     case "go":
       return "file-go";
+    case "rebar3":
+    case "escript":
+      return "file-erlang";
+    case "mix":
+      return "file-elixir";
     case "node":
       return "file-js";
     case "application":
@@ -159,11 +168,15 @@ export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {
     case "elixir":
       return "file-elixir";
     case "scala-cli":
+    case "sbt":
       return "file-scala";
     case "kotlinc":
       return "file-kotlin";
     case "kotlin":
       return "file-kotlin-script";
+    case "zig":
+    case "zig-application":
+      return "file-zig";
     case "native":
       return "file-binary";
     case "python":
@@ -172,6 +185,8 @@ export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {
     case "phpunit":
     case "composer":
       return "file-php";
+    case "dart-command":
+      return "file-dart";
     default:
       return useRunConfigTypes.getState().types.get(config.kind)?.icon ?? "terminal";
   }
@@ -211,6 +226,22 @@ export function upsertConfig(configs: readonly RunConfig[], edited: RunConfig): 
   const out = [...configs];
   out[i] = next;
   return out;
+}
+
+/**
+ * The saved configurations after "Create Run Configuration" for `config`, or `null` when one with
+ * its id is already saved: that one opens as the user left it. Gutter and tool-window actions
+ * build their configuration with a fixed id, so saving it again would reset the user's edits
+ * (a Dockerfile configuration's bound ports, #6047).
+ */
+export function createdConfigs(
+  configs: readonly RunConfig[],
+  temporary: readonly string[],
+  config: RunConfig,
+): RunConfig[] | null {
+  const saved = configs.filter((c) => !c.detected && !temporary.includes(c.id));
+  if (saved.some((c) => c.id === config.id)) return null;
+  return [...saved, { ...config, detected: false }];
 }
 
 export function removeConfig(configs: readonly RunConfig[], id: string): RunConfig[] {

@@ -12,4 +12,4 @@ ui-mode = "Groovy"
 name = "groovy-language-server"
 command = "groovy-language-server"
 root-markers = ["build.gradle", "settings.gradle", "pom.xml"]
-install-hint = "Build https://github.com/GroovyLanguageServer/groovy-language-server and expose it as `groovy-language-server`"
+install-hint = "Build https://github.com/GroovyLanguageServer/groovy-language-server and put it on PATH as groovy-language-server"

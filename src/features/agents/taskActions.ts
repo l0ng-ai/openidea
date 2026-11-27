@@ -1,12 +1,19 @@
 import type { AgentTask } from "@/bindings";
-import type { Action } from "@/platform/actions";
+import { executeActionFrom, type Action } from "@/platform/actions";
 import { tx } from "@/platform/i18n";
 import type { MenuItem } from "@/ui";
-import { showError, confirmChecked } from "@/workbench/messages";
+import { confirm, showError, confirmChecked } from "@/workbench/messages";
 import { promptInput } from "@/workbench/inputDialogs";
 import { isBusy } from "./model";
+import { groupNameError, type OrganizeGroup } from "./organize";
 import {
   archiveTask,
+  deleteTaskGroup,
+  moveTasksToGroup,
+  newTaskGroup,
+  pinTasks,
+  renameTaskGroup,
+  taskGroups,
   unarchiveTask,
   deleteTask,
   dockTask,
@@ -16,24 +23,31 @@ import {
   openTaskInEditorLocation,
   renameTask,
   setSessionLocation,
+  setTasksUnread,
+  showImportSessions,
   undockTask,
   useAgents,
 } from "./store";
+import { focusedTaskListSelection } from "./taskListFocus";
 
-/** The Agents tool window's options menu: where conversations open. */
+/** The Agents tool window's options menu: where conversations open, a new list group, importing sessions. */
 export function useAgentsHeaderMenu(): MenuItem[] {
   const location = useAgents((s) => s.sessionLocation);
   return [
     // A radio pair: check marks only, no action icons beside them.
     { kind: "action", action: "agents.useToolWindow", icon: "", checked: location === "toolWindow" },
     { kind: "action", action: "agents.useEditor", icon: "", checked: location === "editor" },
+    { kind: "separator" },
+    { kind: "action", action: "agents.newTaskGroup", label: "New Group…", icon: "plus" },
+    { kind: "action", action: "agents.importSessions", icon: "download" },
   ];
 }
 
-const canArchive = (task: AgentTask) => !isBusy(task.status) && task.status !== "archived";
+export const canArchive = (task: AgentTask) => !isBusy(task.status) && task.status !== "archived";
 const canFork = (task: AgentTask) => canArchive(task) && !!task.capabilities?.fork;
 
 function resolveTasks(arg: unknown): AgentTask[] {
+  if (arg == null) arg = focusedTaskListSelection();
   if (!Array.isArray(arg)) return [];
   return [...new Set(arg)].flatMap((id: unknown) => {
     const task = typeof id === "string" ? useAgents.getState().tasks.get(id) : undefined;
@@ -45,6 +59,7 @@ async function runTasks(tasks: AgentTask[], run: (task: AgentTask) => Promise<un
   const errors: string[] = [];
   for (const task of tasks) {
     try {
+      // oxlint-disable-next-line no-await-in-loop -- archive/unarchive/delete mutate shared task and worktree state one task at a time
       await run(task);
     } catch (error) {
       errors.push(`${task.title}: ${error instanceof Error ? error.message : String(error)}`);
@@ -82,7 +97,150 @@ async function confirmDelete(tasks: AgentTask[]) {
     );
 }
 
+/** Asks for a name, then adds a group with `tasks` in it. */
+async function promptNewGroup(tasks: readonly string[]) {
+  const name = await promptInput({
+    title: "New Group",
+    label: "Group name:",
+    okLabel: "Create",
+    validate: (v) => groupNameError(v, taskGroups()),
+  });
+  if (name !== null) newTaskGroup(name.trim(), tasks);
+}
+
+async function promptRenameGroup(group: string) {
+  const current = useAgents.getState().organize.groups.find((g) => g.id === group);
+  if (!current) return;
+  const name = await promptInput({
+    title: "Rename Group",
+    label: "Group name:",
+    initial: current.name,
+    okLabel: "Rename",
+    validate: (v) => groupNameError(v, taskGroups(), current.name),
+  });
+  if (name !== null) renameTaskGroup(group, name.trim());
+}
+
+async function confirmRemoveGroup(group: string) {
+  const current = useAgents.getState().organize.groups.find((g) => g.id === group);
+  if (!current) return;
+  if (
+    await confirm({
+      title: tx("Remove Group"),
+      message: tx`Remove “${current.name}”? Its tasks move back to their status groups.`,
+      ok: tx("Remove"),
+      icon: "warning",
+    })
+  )
+    deleteTaskGroup(group);
+}
+
+/** Pins and unpins of the selected tasks. */
+function pinMenu(tasks: AgentTask[]): MenuItem[] {
+  const isPinned = new Set(useAgents.getState().organize.pinned);
+  const toPin = tasks.filter((t) => !isPinned.has(t.id));
+  const toUnpin = tasks.filter((t) => isPinned.has(t.id));
+  return [
+    ...(toPin.length
+      ? ([
+          {
+            kind: "action",
+            action: "agents.pinTasks",
+            label: toPin.length > 1 ? tx`Pin (${toPin.length})` : "Pin",
+            icon: "pin",
+            arg: toPin.map((t) => t.id),
+          },
+        ] satisfies MenuItem[])
+      : []),
+    ...(toUnpin.length
+      ? ([
+          {
+            kind: "action",
+            action: "agents.unpinTasks",
+            label: toUnpin.length > 1 ? tx`Unpin (${toUnpin.length})` : "Unpin",
+            icon: "pin",
+            arg: toUnpin.map((t) => t.id),
+          },
+        ] satisfies MenuItem[])
+      : []),
+  ];
+}
+
+/** Marks the tasks unread, or read when they all are unread already. */
+function unreadMenu(ids: string[]): MenuItem[] {
+  const unread = useAgents.getState().unread;
+  const allUnread = ids.every((id) => unread.has(id));
+  return [
+    {
+      kind: "action",
+      action: allUnread ? "agents.markTasksRead" : "agents.markTasksUnread",
+      label: allUnread ? "Mark as Read" : "Mark as Unread",
+      icon: "",
+      arg: ids,
+    },
+  ];
+}
+
+/** Where the selected tasks go. */
+function groupMenuItem(ids: string[]): MenuItem {
+  const { groups, groupOf } = useAgents.getState().organize;
+  return {
+    kind: "item",
+    id: "move-to-group",
+    label: "Group",
+    icon: "folder",
+    submenu: groupSubmenu(
+      ids,
+      groups,
+      ids.map((id) => groupOf[id]),
+    ),
+  };
+}
+
+/** The groups to move the tasks into; the one they all belong to is checked. */
+function groupSubmenu(ids: string[], groups: OrganizeGroup[], current: Array<string | undefined>): MenuItem[] {
+  return [
+    ...groups.map((group): MenuItem => ({
+      kind: "item",
+      id: `group:${group.id}`,
+      label: group.name,
+      verbatim: true,
+      checked: current.every((g) => g === group.id),
+      run: () => moveTasksToGroup(ids, group.id),
+    })),
+    ...(groups.length ? ([{ kind: "separator" }] satisfies MenuItem[]) : []),
+    { kind: "item", id: "group:new", label: "New Group…", icon: "plus", run: () => void promptNewGroup(ids) },
+    ...(current.some(Boolean)
+      ? ([
+          {
+            kind: "item",
+            id: "group:none",
+            label: "No Group",
+            run: () => moveTasksToGroup(ids, null),
+          },
+        ] satisfies MenuItem[])
+      : []),
+  ];
+}
+
+/** A user group's row menu. */
+export function groupMenu(group: OrganizeGroup): MenuItem[] {
+  return [
+    { kind: "action", action: "agents.renameTaskGroup", label: "Rename Group…", icon: "edit", arg: group.id },
+    { kind: "action", action: "agents.removeTaskGroup", label: "Remove Group", icon: "close", arg: group.id },
+  ];
+}
+
 export const taskActions: Action[] = [
+  {
+    id: "agents.importSessions",
+    title: "Import Sessions…",
+    category: "Agents",
+    icon: "download",
+    when: "projectOpen",
+    keywords: ["import", "other apps", "claude", "codex", "history", "transcript"],
+    run: showImportSessions,
+  },
   {
     id: "agents.retryConversation",
     title: "Retry Loading Conversation",
@@ -176,6 +334,8 @@ export const taskActions: Action[] = [
     title: "Archive Agent Tasks",
     category: "Agents",
     hidden: true,
+    // Without an argument the shortcut archives the task list's selection.
+    keyWhen: "agentTaskListFocus",
     run: ({ arg }) =>
       runTasks(resolveTasks(arg).filter(canArchive), (task) => archiveTask(task.id), tx("Cannot archive agent tasks")),
   },
@@ -198,35 +358,113 @@ export const taskActions: Action[] = [
     hidden: true,
     run: ({ arg }) => confirmDelete(resolveTasks(arg)),
   },
+  {
+    id: "agents.pinTasks",
+    title: "Pin Agent Tasks",
+    category: "Agents",
+    hidden: true,
+    run: ({ arg }) =>
+      pinTasks(
+        resolveTasks(arg).map((task) => task.id),
+        true,
+      ),
+  },
+  {
+    id: "agents.unpinTasks",
+    title: "Unpin Agent Tasks",
+    category: "Agents",
+    hidden: true,
+    run: ({ arg }) =>
+      pinTasks(
+        resolveTasks(arg).map((task) => task.id),
+        false,
+      ),
+  },
+  {
+    id: "agents.markTasksUnread",
+    title: "Mark Agent Tasks as Unread",
+    category: "Agents",
+    hidden: true,
+    run: ({ arg }) =>
+      setTasksUnread(
+        resolveTasks(arg).map((task) => task.id),
+        true,
+      ),
+  },
+  {
+    id: "agents.markTasksRead",
+    title: "Mark Agent Tasks as Read",
+    category: "Agents",
+    hidden: true,
+    run: ({ arg }) =>
+      setTasksUnread(
+        resolveTasks(arg).map((task) => task.id),
+        false,
+      ),
+  },
+  {
+    id: "agents.newTaskGroup",
+    title: "New Agent Task Group",
+    category: "Agents",
+    hidden: true,
+    run: ({ arg }) =>
+      promptNewGroup(Array.isArray(arg) ? arg.filter((id): id is string => typeof id === "string") : []),
+  },
+  {
+    id: "agents.renameTaskGroup",
+    title: "Rename Agent Task Group",
+    category: "Agents",
+    hidden: true,
+    run: ({ arg }) => {
+      if (typeof arg === "string") return promptRenameGroup(arg);
+    },
+  },
+  {
+    id: "agents.removeTaskGroup",
+    title: "Remove Agent Task Group",
+    category: "Agents",
+    hidden: true,
+    run: ({ arg }) => {
+      if (typeof arg === "string") return confirmRemoveGroup(arg);
+    },
+  },
 ];
 
-export function taskMenu(tasks: AgentTask[]): MenuItem[] {
+/**
+ * The task rows' menu. `below` lists the tasks under a single selected one in its section,
+ * for Archive All Below.
+ */
+export function taskMenu(tasks: AgentTask[], below: AgentTask[] = []): MenuItem[] {
   if (!tasks.length) return [];
   const ids = tasks.map((task) => task.id);
   const task = tasks[0]!;
   const multiple = tasks.length > 1;
   const archived = tasks.filter((task) => task.status === "archived").length;
   const archivable = tasks.filter(canArchive).length;
+  const archivableBelow = multiple ? [] : below.filter(canArchive);
   return [
+    ...pinMenu(tasks),
     ...(!multiple
       ? ([
           { kind: "action", action: "agents.renameTask", label: "Rename…", icon: "edit", arg: task.id },
-          { kind: "action", action: "terminal.openAt", label: "Terminal", icon: "terminal", arg: task.cwd },
-          ...(task.capabilities?.fork && task.status !== "archived"
-            ? ([
-                {
-                  kind: "action",
-                  action: "agents.forkTask",
-                  label: "Fork",
-                  icon: "branch",
-                  arg: task.id,
-                  disabled: !canFork(task),
-                },
-              ] satisfies MenuItem[])
-            : []),
-          { kind: "separator" },
         ] satisfies MenuItem[])
       : []),
+    ...unreadMenu(ids),
+    { kind: "separator" },
+    ...(!multiple && task.capabilities?.fork && task.status !== "archived"
+      ? ([
+          {
+            kind: "action",
+            action: "agents.forkTask",
+            label: "Fork",
+            icon: "branch",
+            arg: task.id,
+            disabled: !canFork(task),
+          },
+        ] satisfies MenuItem[])
+      : []),
+    groupMenuItem(ids),
+    { kind: "separator" },
     ...(archived
       ? ([
           {
@@ -241,9 +479,26 @@ export function taskMenu(tasks: AgentTask[]): MenuItem[] {
       kind: "action",
       action: "agents.archiveTasks",
       label: multiple ? tx`Archive (${archivable})` : "Archive",
+      icon: "archive",
       arg: ids,
       disabled: !archivable,
     },
+    ...(archivableBelow.length
+      ? ([
+          {
+            kind: "item",
+            id: "archive-below",
+            label: "Archive All Below",
+            icon: "archive",
+            run: () =>
+              void executeActionFrom(
+                "menu",
+                "agents.archiveTasks",
+                archivableBelow.map((t) => t.id),
+              ),
+          },
+        ] satisfies MenuItem[])
+      : []),
     {
       kind: "action",
       action: "agents.deleteTasks",

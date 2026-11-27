@@ -9,6 +9,7 @@
 use ide_core::process::executable_names;
 use ide_core::{IdeError, IdeResult};
 use ide_language::{DebuggerConfig, LanguageRegistry, ProgramPin};
+use serde_json::Value;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -21,6 +22,8 @@ use tokio::process::{Child, Command};
 pub const PORT_PLACEHOLDER: &str = "${port}";
 /// Replaced by the session's working directory (the project) in adapter arguments.
 pub const ROOT_PLACEHOLDER: &str = "${root}";
+/// java-analyzer's debug adapter (`java-analyzer dap`), a separate process over stdio.
+pub const JAVA_ANALYZER: &str = "java-analyzer";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Transport {
@@ -46,6 +49,8 @@ pub struct AdapterSpec {
     pub connect: Option<String>,
     /// A plugin language's adapter: start exactly this approved program.
     pub pinned: Option<ProgramPin>,
+    /// See [`DebuggerConfig::resolve_lazy_variables`].
+    pub resolve_lazy_variables: bool,
 }
 
 /// Built-in adapters used when no language definition names `adapter`.
@@ -57,6 +62,7 @@ fn builtin(adapter: &str) -> Option<DebuggerConfig> {
         transport: transport.to_owned(),
         connect: None,
         install_hint: Some(hint.to_owned()),
+        resolve_lazy_variables: false,
         pinned: None,
     };
     Some(match adapter {
@@ -71,6 +77,13 @@ fn builtin(adapter: &str) -> Option<DebuggerConfig> {
             &[],
             "stdio",
             "Install Kotlin Debug Adapter in Settings › Languages & Frameworks › Language Servers",
+        ),
+        // Inside the language server: reached through `debugServer`, never started.
+        "kotlin-lsp" => cfg(
+            "kotlin-lsp",
+            &[],
+            "tcp",
+            "Install JetBrains Kotlin LSP in Settings › Languages & Frameworks › Language Servers",
         ),
         // Windows installs `python.exe`; `python3.exe` there is at most a Store alias.
         "debugpy" => cfg(
@@ -98,9 +111,12 @@ fn builtin(adapter: &str) -> Option<DebuggerConfig> {
             "stdio",
             "Install netcoredbg (.NET debugger) in Settings › Languages & Frameworks › Language Servers",
         ),
-        "lldb-dap" => {
-            cfg("lldb-dap", &[], "stdio", "Install LLVM's lldb-dap (brew install llvm; on macOS `xcrun -f lldb-dap`)")
-        }
+        "lldb-dap" => cfg(
+            "lldb-dap",
+            &[],
+            "stdio",
+            "Install LLVM's lldb-dap (brew install llvm), or on macOS use the one found by xcrun -f lldb-dap",
+        ),
         // GDB's own DAP interpreter, stdio transport. The DAP support it needs shipped in GDB 14
         // (`prepare_gdb` refuses older ones with the required version in the message).
         "gdb" => cfg(
@@ -109,13 +125,36 @@ fn builtin(adapter: &str) -> Option<DebuggerConfig> {
             "stdio",
             "Install GDB 14 or newer (apt install gdb, dnf install gdb, brew install gdb)",
         ),
+        "unity" => cfg(
+            "unity-debug",
+            &[],
+            "stdio",
+            "Install Unity Debugger in Settings > Language Servers, or configure the unity-debug tool path",
+        ),
         "rdbg" => cfg("rdbg", &["-O", "--port", PORT_PLACEHOLDER, "-c"], "tcp", "gem install debug"),
         // A jdtls bundle: the session is started through jdtls and reached via `debugServer`.
-        "java-debug" => cfg(
-            "com.microsoft.java.debug.plugin.jar",
-            &[],
+        "java-debug" => DebuggerConfig {
+            resolve_lazy_variables: true,
+            ..cfg(
+                "com.microsoft.java.debug.plugin.jar",
+                &[],
+                "tcp",
+                "Install Microsoft java-debug (Settings › Languages & Frameworks › Language Servers)",
+            )
+        },
+        // The Java language server's own debugger, for modules jdtls doesn't serve; the host
+        // runs the executable of the java-analyzer serving the module.
+        JAVA_ANALYZER => cfg(
+            "java-analyzer",
+            &["dap"],
+            "stdio",
+            "Configure java-analyzer as a Java language server (Settings › Languages & Frameworks › Language Servers)",
+        ),
+        "bun-dap" => cfg(
+            "bun-dap",
+            &["${port}", "127.0.0.1"],
             "tcp",
-            "Install Microsoft java-debug (Settings › Languages & Frameworks › Language Servers)",
+            "To install bun-dap: git clone https://github.com/morf-bls/bun-dap, run bun install && bun run build, then place dist/bun-dap in your PATH",
         ),
         _ => return None,
     })
@@ -153,6 +192,7 @@ pub fn resolve(config: &DebuggerConfig, cwd: PathBuf) -> AdapterSpec {
         server_host: None,
         connect: config.connect.clone(),
         pinned: config.pinned.clone(),
+        resolve_lazy_variables: config.resolve_lazy_variables,
     }
 }
 
@@ -196,6 +236,50 @@ pub fn tools_root() -> Option<PathBuf> {
     TOOLS_ROOT.read().clone()
 }
 
+/// The browser js-debug launches for `ty`, or `None` when the launch starts no browser.
+fn launched_browser(ty: &str) -> Option<&'static str> {
+    match ty {
+        "pwa-chrome" | "chrome" => Some("chrome"),
+        "pwa-msedge" | "msedge" => Some("msedge"),
+        _ => None,
+    }
+}
+
+/// Gives a browser launch that names no `userDataDir` a profile of `project`'s own in the
+/// IDE's local data (`cache/browser-profiles`), so sign-ins and site data are still there in
+/// the next session. js-debug's own default is one temporary profile for every project.
+pub(crate) fn set_browser_profile(arguments: &mut Value, project: &Path) {
+    if let Some(local_data) = tools_root().and_then(|tools| tools.parent().map(Path::to_owned)) {
+        set_browser_profile_in(arguments, project, &local_data);
+    }
+}
+
+fn set_browser_profile_in(arguments: &mut Value, project: &Path, local_data: &Path) {
+    let Some(obj) = arguments.as_object_mut() else { return };
+    let browser = obj.get("type").and_then(Value::as_str).and_then(launched_browser);
+    let launch = obj.get("request").and_then(Value::as_str) == Some("launch");
+    let (Some(browser), true, false) = (browser, launch, obj.contains_key("userDataDir")) else { return };
+    let dir = local_data.join("cache").join("browser-profiles").join(profile_name(project)).join(browser);
+    obj.insert("userDataDir".into(), dir.to_string_lossy().into_owned().into());
+}
+
+/// `<folder name>-<hash of the path>`: readable, and distinct for projects whose folders share a name.
+fn profile_name(project: &Path) -> String {
+    // FNV-1a: the name has to stay the same across toolchains, which `DefaultHasher` doesn't promise.
+    let hash = project
+        .to_string_lossy()
+        .bytes()
+        .fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3));
+    let name: String = project
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '_' })
+        .collect();
+    format!("{name}-{hash:016x}")
+}
+
 /// Executable directories of managed installs, read at lookup time so tools installed
 /// after startup are found without a restart: `<tool>/bin`, `<tool>/venv/bin`, npm's `.bin`.
 fn managed_dirs(root: &Path) -> Vec<PathBuf> {
@@ -214,15 +298,16 @@ fn managed_dirs(root: &Path) -> Vec<PathBuf> {
 /// The `PATH` an adapter runs with, unless its launch sets one: the search path language servers
 /// get, so what it starts in turn (js-debug's wrapper runs `node`, Delve runs `go build`) is
 /// found like Run finds it, even when the login shell's `PATH` didn't reach the app.
-fn adapter_path(env: &[(String, String)]) -> Option<std::ffi::OsString> {
+fn adapter_path(env: &[(String, String)], cwd: &Path) -> Option<std::ffi::OsString> {
     let own = env.iter().any(|(k, _)| if cfg!(windows) { k.eq_ignore_ascii_case("PATH") } else { k == "PATH" });
-    (!own).then(ide_core::tool_path::search_path)
+    (!own).then(|| ide_core::tool_path::search_path_in(cwd))
 }
 
-/// Directories searched for adapter binaries: managed tools first, then `PATH` and the usual install spots.
-fn search_dirs() -> Vec<PathBuf> {
+/// Directories searched for adapter binaries: managed tools first, then `PATH` (the project's
+/// holding `cwd` first) and the usual install spots.
+fn search_dirs(cwd: &Path) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = tools_root().map(|r| managed_dirs(&r)).unwrap_or_default();
-    dirs.extend(std::env::split_paths(&ide_core::tool_path::search_path()));
+    dirs.extend(std::env::split_paths(&ide_core::tool_path::search_path_in(cwd)));
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
         for rel in [".cargo/bin", ".local/bin", "go/bin", ".dotnet/tools", ".bun/bin", ".npm-global/bin", ".volta/bin"]
         {
@@ -251,7 +336,7 @@ fn is_executable(path: &Path, windows: bool) -> bool {
 /// extensionless script next to a shim is never started as a program.
 pub fn find_binary(command: &str, cwd: &Path) -> Option<PathBuf> {
     let pathext = std::env::var("PATHEXT").ok();
-    find_binary_in(command, cwd, &search_dirs(), cfg!(windows), pathext.as_deref())
+    find_binary_in(command, cwd, &search_dirs(cwd), cfg!(windows), pathext.as_deref())
 }
 
 fn find_binary_in(
@@ -310,10 +395,10 @@ pub async fn prepare_debugpy(spec: &mut AdapterSpec) -> IdeResult<()> {
         return Ok(()); // Reported as a missing adapter when it is started.
     };
     let mut probe = Command::new(&python);
+    probe.current_dir(&spec.cwd);
     ide_core::process::prepare(probe.as_std_mut());
     let probe = probe
         .args(["-c", "import debugpy.adapter"])
-        .current_dir(&spec.cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -385,13 +470,13 @@ pub fn parse_gdb_version(output: &str) -> Option<(u32, u32)> {
 /// Probe the already resolved and verified executable with its launch environment.
 async fn gdb_version(binary: &Path, spec: &AdapterSpec) -> IdeResult<Option<(u32, u32)>> {
     let mut probe = Command::new(binary);
-    if let Some(path) = adapter_path(&spec.env) {
+    if let Some(path) = adapter_path(&spec.env, &spec.cwd) {
         probe.env("PATH", path);
     }
+    probe.current_dir(&spec.cwd);
     ide_core::process::prepare(probe.as_std_mut());
     let probe = probe
         .arg("--version")
-        .current_dir(&spec.cwd)
         .envs(spec.env.iter().cloned())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -623,9 +708,11 @@ async fn spawn_adapter(
 ) -> IdeResult<AdapterIo> {
     let stderr = Arc::new(parking_lot::Mutex::new(Vec::new()));
     let mut cmd = Command::new(binary);
-    if let Some(path) = adapter_path(&spec.env) {
+    if let Some(path) = adapter_path(&spec.env, &spec.cwd) {
         cmd.env("PATH", path);
     }
+    // The working directory first: it picks the project's environment.
+    cmd.current_dir(&spec.cwd);
     ide_core::process::prepare(cmd.as_std_mut());
     // Every adapter leads its own process group: the program an adapter launches itself
     // (java-debug's JVM) joins the group, so a forced stop reaches the whole tree with
@@ -633,7 +720,6 @@ async fn spawn_adapter(
     ide_core::process::own_group(cmd.as_std_mut());
     cmd.args(args)
         .envs(spec.env.iter().map(|(k, v)| (k, v)))
-        .current_dir(&spec.cwd)
         .stdin(if port.is_some() { Stdio::null() } else { Stdio::piped() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -776,10 +862,11 @@ mod tests {
     #[test]
     fn adapters_run_on_the_tool_search_path() {
         let search = ide_core::tool_path::search_path();
-        assert_eq!(adapter_path(&[]), Some(search.clone()));
-        assert_eq!(adapter_path(&[("GOFLAGS".into(), "-mod=mod".into())]), Some(search));
+        let cwd = Path::new("/openidea-test-no-project");
+        assert_eq!(adapter_path(&[], cwd), Some(search.clone()));
+        assert_eq!(adapter_path(&[("GOFLAGS".into(), "-mod=mod".into())], cwd), Some(search));
         // A launch that sets its own (a selected Go SDK's bin first) keeps it.
-        assert_eq!(adapter_path(&[("PATH".into(), "/sdk/go/bin:/usr/bin".into())]), None);
+        assert_eq!(adapter_path(&[("PATH".into(), "/sdk/go/bin:/usr/bin".into())], cwd), None);
         // The search path reaches the usual install spots even when this process's `PATH` doesn't.
         #[cfg(unix)]
         {
@@ -850,6 +937,13 @@ mod tests {
         }
         let delve = resolve(&builtin("delve").unwrap(), PathBuf::from("/"));
         assert_eq!(delve.transport, Transport::Tcp);
+        // java-analyzer debugs over stdio with its `dap` subcommand.
+        let java_analyzer = resolve(&builtin(JAVA_ANALYZER).unwrap(), PathBuf::from("/"));
+        assert_eq!(
+            (java_analyzer.command.as_str(), java_analyzer.args.as_slice()),
+            ("java-analyzer", &["dap".to_owned()][..])
+        );
+        assert_eq!(java_analyzer.transport, Transport::Stdio);
         // GDB's own DAP interpreter over stdio, with the required version in its hint.
         let gdb = builtin("gdb").unwrap();
         assert_eq!(gdb.command, "gdb");
@@ -1022,6 +1116,33 @@ mod tests {
         let err = ProcessLauncher.launch(spec, None).await.err().unwrap();
         assert_eq!(err.kind, ide_core::error::ErrorKind::Unavailable);
         assert!(err.message.contains("runs inside the Java language server"), "{}", err.message);
+    }
+
+    #[test]
+    fn a_browser_launch_gets_a_profile_of_its_project() {
+        let local = Path::new("/data/local");
+        let profile = |args: serde_json::Value, project: &str| {
+            let mut args = args;
+            set_browser_profile_in(&mut args, Path::new(project), local);
+            args.get("userDataDir").cloned()
+        };
+        let chrome = serde_json::json!({ "type": "pwa-chrome", "request": "launch" });
+        let dir = profile(chrome.clone(), "/work/shop").unwrap();
+        let dir = Path::new(dir.as_str().unwrap());
+        assert!(dir.starts_with("/data/local/cache/browser-profiles"), "{dir:?}");
+        assert!(dir.ends_with("chrome"), "{dir:?}");
+        let name = dir.parent().unwrap().file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with("shop-") && name.len() == "shop-".len() + 16, "{name}");
+        // The same project again: the same profile. Another folder of that name, or Edge: another one.
+        assert_eq!(profile(chrome.clone(), "/work/shop").unwrap(), dir.to_string_lossy().as_ref());
+        assert_ne!(profile(chrome.clone(), "/other/shop").unwrap(), dir.to_string_lossy().as_ref());
+        let edge = profile(serde_json::json!({ "type": "pwa-msedge", "request": "launch" }), "/work/shop").unwrap();
+        assert!(Path::new(edge.as_str().unwrap()).ends_with("msedge"), "{edge}");
+        // A chosen profile (or the default one, `false`) is kept; Node and attach requests get none.
+        let own = serde_json::json!({ "type": "pwa-chrome", "request": "launch", "userDataDir": false });
+        assert_eq!(profile(own, "/work/shop"), Some(false.into()));
+        assert_eq!(profile(serde_json::json!({ "type": "pwa-node", "request": "launch" }), "/work/shop"), None);
+        assert_eq!(profile(serde_json::json!({ "type": "pwa-chrome", "request": "attach" }), "/work/shop"), None);
     }
 
     #[test]

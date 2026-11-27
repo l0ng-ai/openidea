@@ -2,9 +2,11 @@ import { ContributedToolbar } from "./ContributedToolbar";
 import { useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import { useActions } from "@/platform/actions";
+import { isWebMode } from "@/platform/webBridge";
 import { shortcutLabel, useKeymap } from "@/platform/keymap";
-import { useProject } from "@/platform/project";
+import { basename, useProject } from "@/platform/project";
 import { BarButton, Icon, IconButton, Menu, type MenuItem, showContextMenu, T } from "@/ui";
+import { useChromeIconSize } from "@/ui/density";
 import { useContributions, useWorkbenchSlots, type TitleItemContribution } from "./contributions";
 import { ErrorBoundary, Slot } from "./ErrorBoundary";
 import { MainMenu } from "./MainMenu";
@@ -22,9 +24,9 @@ import {
   widgetTitle,
 } from "./mainToolbar";
 import { WindowControls } from "./WindowControls";
-import { useFullscreen } from "./useFullscreen";
+import { captionButtons } from "./windowButtons";
 import { usePlatform } from "@/platform/platformInfo";
-import { projectInitials } from "./projectColor";
+import { ProjectAvatar } from "./ProjectBadge";
 import { keymapItems, themeItems, themePreview, type ThemePreview, VIEW_MODE_ITEMS } from "./quickSwitch";
 import { useContributedThemes } from "@/platform/themes";
 import { currentThemeChoice, useThemeOverride } from "./theme";
@@ -32,6 +34,9 @@ import styles from "./TitleBar.module.css";
 import { useNativeTitlebar } from "./nativeTitlebar";
 import { useDocumentTitle } from "./documentTitle";
 import { windowDragRegion } from "./window-drag";
+import { useToolbarCenter } from "./toolbarCenter";
+import { useProjectGradientAnchor } from "./projectGradient";
+import { useToolbarLabelWidth } from "./toolbarLabelWidth";
 
 export function orderTitleItems(items: Iterable<TitleItemContribution>) {
   const all = [...items];
@@ -53,14 +58,18 @@ function TitleItem({ item }: { item: TitleItemContribution }) {
 }
 
 function ProjectButton() {
-  const name = useProject((s) => s.project?.displayName || s.project?.name);
-  const root = useProject((s) => s.project?.root);
+  const name = useProject((s) =>
+    s.openingPath ? basename(s.openingPath) || s.openingPath : s.project?.displayName || s.project?.name,
+  );
+  const root = useProject((s) => s.openingPath ?? s.project?.root);
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLButtonElement>(null);
   const actions = useActions((s) => s.actions);
   const Popup = useWorkbenchSlots((s) => s.projectPopup);
   const items = useMemo<MenuItem[]>(() => {
-    const list: MenuItem[] = [{ kind: "action", action: "file.openProject", label: "Open…" }];
+    const list: MenuItem[] = [];
+    if (actions.has("file.newProject")) list.push({ kind: "action", action: "file.newProject", label: "New Project…" });
+    list.push({ kind: "action", action: "file.openProject", label: "Open…" });
     if (actions.has("welcome.recentProjects")) list.push({ kind: "action", action: "welcome.recentProjects" });
     list.push({ kind: "separator" }, { kind: "action", action: "file.closeProject" });
     return list;
@@ -73,15 +82,18 @@ function ProjectButton() {
         variant="title"
         className={styles.widget}
         tooltip={root}
+        data-toolbar-icon-dropdown=""
         aria-label={label}
         aria-haspopup={Popup ? "dialog" : "menu"}
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
       >
-        <span className={styles.avatar} aria-hidden="true">
-          {projectInitials(label)}
+        <span className={styles.avatar} aria-hidden="true" data-project-widget-icon="">
+          <ProjectAvatar name={label} root={root} />
         </span>
-        <span className={styles.widgetText}>{label}</span>
+        <span className={styles.widgetText} data-toolbar-label="">
+          {label}
+        </span>
         <Icon name="chevron-down" size={12} className={styles.chevron} />
       </BarButton>
       {Popup ? (
@@ -93,7 +105,7 @@ function ProjectButton() {
   );
 }
 
-const VCS_FALLBACK_ACTIONS = ["vcs.clone", "vcs.localHistory", "vcs.showLog"];
+const VCS_FALLBACK_ACTIONS = ["vcs.createRepository", "vcs.clone", "vcs.localHistory", "vcs.showLog"];
 
 /** "Version Control ▾" shown while no VCS widget is contributed (project without a repository). */
 function VcsFallback() {
@@ -115,7 +127,7 @@ function VcsFallback() {
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
       >
-        <span className={styles.widgetText}>
+        <span className={styles.widgetText} data-toolbar-label="">
           <T>Version Control</T>
         </span>
         <Icon name="chevron-down" size={12} className={styles.chevron} />
@@ -130,13 +142,18 @@ function VcsFallback() {
  * dialog and Restore Default. Also the title bar's context menu.
  */
 export function customizeToolbarItems(
-  shown: { left: string[]; right: string[] },
+  shown: { left: string[]; center?: string[]; right: string[] },
   hidden: readonly string[],
   items: ReadonlyMap<string, TitleItemContribution>,
   toggle: (id: string) => void,
   reset: () => void,
 ): MenuItem[] {
-  const entries = [...shown.left, ...shown.right, ...hidden.filter((id) => !isActionEntry(id))];
+  const entries = [
+    ...shown.left,
+    ...(shown.center ?? []),
+    ...shown.right,
+    ...hidden.filter((id) => !isActionEntry(id)),
+  ];
   return [
     ...entries.map<MenuItem>((id) => ({
       id: `toolbar.${id}`,
@@ -210,6 +227,7 @@ function useToolbar() {
 }
 
 function GearButton({ customize }: { customize: MenuItem[] }) {
+  const iconSize = useChromeIconSize();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLButtonElement>(null);
   const settings = useProject((s) => s.settings);
@@ -238,7 +256,7 @@ function GearButton({ customize }: { customize: MenuItem[] }) {
         ref={ref}
         icon="settings"
         title="IDE and Project Settings"
-        iconSize={20}
+        iconSize={iconSize}
         className={styles.tool}
         aria-haspopup="menu"
         aria-expanded={open}
@@ -252,6 +270,7 @@ function GearButton({ customize }: { customize: MenuItem[] }) {
 /** One main toolbar entry: a built-in widget, a contributed one or an added action. */
 function ToolbarEntry({ id, items }: { id: string; items: ReadonlyMap<string, TitleItemContribution> }) {
   const actions = useActions((s) => s.actions);
+  const iconSize = useChromeIconSize();
   if (id === PROJECT_WIDGET) return <ProjectButton />;
   const item = items.get(id);
   if (item) return <TitleItem item={item} />;
@@ -266,7 +285,7 @@ function ToolbarEntry({ id, items }: { id: string; items: ReadonlyMap<string, Ti
         action={action.id}
         title={action.title}
         shortcut={shortcutLabel(action.id) ?? (action.id === "navigate.searchEverywhere" ? "⇧⇧" : undefined)}
-        iconSize={20}
+        iconSize={iconSize}
         className={styles.tool}
       />
     </div>
@@ -289,7 +308,7 @@ function CompactTitle({ title }: { title?: string }) {
  * the caption buttons. `dialog`: a dialog window's bar (Settings), close button only.
  * `lightEdit`: a LightEdit window's bar, its title and the menu but no toolbar widgets.
  * `compact`: IDEA's compact header (Distraction Free, View › Appearance › Toolbar off).
- * `bare`: the window frame only, while a project opens.
+ * `bare`: the window frame only.
  */
 export function TitleBar({
   minimal = false,
@@ -307,19 +326,27 @@ export function TitleBar({
   title?: string;
 }) {
   const overlay = usePlatform((s) => s.overlayTitleBar);
-  const fullscreen = useFullscreen();
   const frameless = usePlatform((s) => s.framelessTitleBar);
+  const showMainMenu = frameless || isWebMode();
+  const windowButtons = usePlatform((s) => s.windowButtons);
   const { map, shown, menu } = useToolbar();
   const [menuExpanded, setMenuExpanded] = useState(false);
+  const separateMenu = useProject((s) => s.settings?.appearance?.mainMenuStyle === "toolbar");
   const [bar, setBar] = useState<HTMLElement | null>(null);
   useNativeTitlebar(bar);
+  const toolbar = !minimal && !lightEdit && !compact && !bare;
+  useToolbarLabelWidth(toolbar ? bar : null);
+  const centered = toolbar && !menuExpanded && !minimal && shown.center.length > 0;
+  useToolbarCenter(bar, centered);
+  useProjectGradientAnchor(bar, toolbar);
   const className = clsx(
     styles.bar,
     overlay && styles.overlay,
-    overlay && fullscreen && styles.overlayFullscreen,
     frameless && styles.frameless,
+    frameless && captionButtons(windowButtons, "left", dialog).length > 0 && styles.captionsAtLeft,
+    frameless && captionButtons(windowButtons, "right", dialog).length === 0 && styles.noCaptionsAtRight,
   );
-  // Where the title bar carries the main menu (Windows, Linux) it stays, or nothing
+  // Where the title bar carries the main menu (Windows, Linux, web) it stays, or nothing
   // would lead back out of Distraction Free Mode or bring the toolbar back.
   if (bare || compact)
     return (
@@ -329,14 +356,15 @@ export function TitleBar({
         {...windowDragRegion}
         data-titlebar={compact ? "compact" : "bare"}
       >
-        {frameless && <MainMenu />}
+        {frameless && <WindowControls side="left" />}
+        {showMainMenu && <MainMenu />}
         {compact ? <CompactTitle title={title} /> : frameless && <div className={styles.drag} {...windowDragRegion} />}
-        {frameless && <WindowControls />}
+        {frameless && <WindowControls side="right" />}
       </header>
     );
   const entry = (id: string) => <ToolbarEntry key={id} id={id} items={map} />;
-  const toolbar = !minimal && !lightEdit;
-  return (
+  const menuRow = showMainMenu && !minimal && separateMenu;
+  const header = (
     <header
       ref={setBar}
       className={clsx(className, minimal && styles.minimal, dialog && styles.dialogBar)}
@@ -347,14 +375,28 @@ export function TitleBar({
         showContextMenu(e, menu);
       }}
     >
-      {frameless && !minimal && <MainMenu onExpandedChange={setMenuExpanded} />}
+      {frameless && <WindowControls side="left" dialog={dialog} />}
+      {showMainMenu && !minimal && !separateMenu && <MainMenu onExpandedChange={setMenuExpanded} />}
       {title && (
         <span className={styles.windowTitle} {...windowDragRegion}>
           {typeof title === "string" ? <T>{title}</T> : title}
         </span>
       )}
       {toolbar && !menuExpanded && shown.left.map(entry)}
-      <div className={styles.drag} {...windowDragRegion} />
+      <div
+        className={styles.drag}
+        {...windowDragRegion}
+        data-toolbar-spacer=""
+        data-toolbar-center-spacer={centered ? "" : undefined}
+      />
+      {centered && (
+        <>
+          <div className={styles.centerGroup} data-toolbar-center="">
+            {shown.center.map(entry)}
+          </div>
+          <div className={styles.drag} {...windowDragRegion} data-toolbar-spacer="" />
+        </>
+      )}
       {!minimal && (
         <>
           {toolbar && !menuExpanded && shown.right.map(entry)}
@@ -366,7 +408,16 @@ export function TitleBar({
           )}
         </>
       )}
-      {frameless && <WindowControls dialog={dialog} />}
+      {frameless && <WindowControls side="right" dialog={dialog} />}
     </header>
+  );
+  if (!menuRow) return header;
+  return (
+    <>
+      {header}
+      <div className={styles.menuRow}>
+        <MainMenu row />
+      </div>
+    </>
   );
 }

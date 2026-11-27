@@ -4,11 +4,6 @@ import { provideEditorService, provideNotificationService } from "@/workbench/co
 import { springControllers } from "./endpoints";
 import { generateRequests } from "./editor";
 
-// `appDataDir()` is a native path: `\`-separated on Windows.
-vi.mock("@tauri-apps/api/path", () => ({
-  appDataDir: async () => String.raw`C:\Users\me\AppData\Roaming\ai.l0ng.openidea`,
-}));
-
 // No backend here: the file commands answer like a project without Spring
 // configuration files (empty configs, the files the body lookup probes missing).
 vi.mock("@/platform/ipc", async (importOriginal) => {
@@ -18,7 +13,8 @@ vi.mock("@/platform/ipc", async (importOriginal) => {
     call: async (p: Promise<unknown>) => await p,
     commands: {
       ...m.commands,
-      fsCreateDir: async () => null,
+      // The backend reports the scratches folder `/`-separated on every OS.
+      fsScratchesDir: async () => "C:/Users/me/AppData/Roaming/ai.l0ng.openidea/scratches",
       fsCreateFile: async () => null,
       fsReadText: async () => "",
     },

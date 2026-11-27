@@ -4,7 +4,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 const read = vi.fn();
 const set = vi.fn();
 const notify = vi.fn();
-const editor = { fontSize: 13, customSchemes: {}, colorOverrides: {} };
+const editor = { fontFamily: "JetBrains Mono", fontSize: 13, customSchemes: {}, colorOverrides: {} };
 
 vi.mock("@/platform/ipc", async (original) => {
   const actual = await original<typeof import("@/platform/ipc")>();
@@ -44,6 +44,8 @@ beforeEach(() => {
     },
   });
   set.mockResolvedValue({ status: "ok", data: { editor } });
+  // jsdom has no canvas: the import falls back to the font size for the line height.
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
 });
 
 it.each(["Cancel", "Import"])("confirms folder settings before applying them: %s", async (button) => {
@@ -56,7 +58,7 @@ it.each(["Cancel", "Import"])("confirms folder settings before applying them: %s
   expect(screen.getByText("Monaco")).toBeInTheDocument();
   expect(screen.getByText("17")).toBeInTheDocument();
   expect(screen.getAllByText("Custom")).toHaveLength(2);
-  expect(screen.getByText(/Not imported:/)).toHaveTextContent("Keymap, Plugins");
+  expect(screen.getByText(/Not imported:/)).toHaveTextContent("Plugins");
   expect(set).not.toHaveBeenCalled();
   await act(async () => {
     fireEvent.click(screen.getByRole("button", { name: button }));
@@ -78,6 +80,7 @@ it.each(["Cancel", "Import"])("confirms folder settings before applying them: %s
       "editor.colorScheme": id,
       "editor.fontFamily": "Monaco",
       "editor.fontSize": 17,
+      "editor.lineHeight": 25,
     });
     expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: "Settings imported" }));
   }

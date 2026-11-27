@@ -7,11 +7,17 @@ OpenIDEA highlights PHP files (`.php`, `.phtml`, `.phpt` and older `.php3`–`.p
 
 ## Language servers
 
-| Server         | When it runs                                                                                                                          |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `intelephense` | Default. Workspace root: `composer.json`, `.phpactor.json` or `index.php`.                                                            |
-| `phpactor`     | Fallback: used only while Intelephense is not installed.                                                                              |
-| `laravel-lsp`  | Laravel projects only (below an `artisan` file): hover, definition and completion inside `config('…')`, `route('…')` and `view('…')`. |
+| Server            | When it runs                                                                                                                                                                                                          |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `intelephense`    | Default. Workspace root: `composer.json`, `.phpactor.json` or `index.php`.                                                                                                                                            |
+| `phpactor`        | Fallback: used only while Intelephense is not installed.                                                                                                                                                              |
+| `phoxite`         | Alternative with its own Laravel and Blade support: used while neither server above is installed, or when you pick it in **Settings › Languages & Frameworks › Language Servers**.                                    |
+| `devsense-php-ls` | Alternative whose engine ships as native builds, so the server itself needs no Node or PHP: used while no server above is installed, or when you pick it in **Settings › Languages & Frameworks › Language Servers**. |
+| `laravel-lsp`     | Laravel projects only (below an `artisan` file): hover, definition and completion inside `config('…')`, `route('…')` and `view('…')`.                                                                                 |
+
+While Phoxite or DEVSENSE serves a project, `laravel-lsp` is not started: they answer the Laravel strings themselves.
+
+DEVSENSE is usable without a licence for everyday code insight (completion, hover, go to definition, references, diagnostics, Laravel and Blade support); its refactorings and call/type hierarchy need a DEVSENSE licence.
 
 Intelephense checks code against the project's PHP version (see [Language level](#language-level)) and indexes the stubs and include paths you configure.
 
@@ -25,6 +31,8 @@ When a `.php` file opens and Intelephense is missing, a notification offers **In
 | ------------------ | ---------------------------------------------------------------------- |
 | Intelephense       | npm (`intelephense`)                                                   |
 | Laravel LSP        | GitHub release (`laravel/lsp`)                                         |
+| Phoxite            | GitHub release (`samehelhawary/phoxite`)                               |
+| DEVSENSE           | npm (`devsense-php-ls`); needs Node.js to launch                       |
 | PHP Debug (Xdebug) | Open VSX (`xdebug.php-debug`); needs Node.js to run                    |
 | phpactor           | Not installable from the IDE; install it yourself and put it on `PATH` |
 
@@ -53,6 +61,7 @@ In a Composer project without `vendor/`, or whose installed packages differ from
 
 - **PHPStan**: when the project has `vendor/bin/phpstan`, saved files are checked with it and its findings appear as diagnostics. The **PHPStan › Configuration file** setting picks the config; empty uses `phpstan.neon`, `phpstan.neon.dist` or `phpstan.dist.neon` in the project root.
 - **PHP-CS-Fixer**: when a folder above the file has `.php-cs-fixer.php` or `.php-cs-fixer.dist.php` and the project has `vendor/bin/php-cs-fixer`, **Reformat Code** (`⌥⌘L` / `Ctrl+Alt+L`) uses PHP-CS-Fixer instead of the language server.
+- **Alignment**: **Settings › Editor › Code Style › PHP › Alignment** has PhpStorm's **Align key-value pairs** (`=>` in multi-line arrays) and **Align consecutive assignments** (`=` in assignment statements on consecutive lines), both off by default. They apply after the language server or PHP-CS-Fixer formats, on save too; for a selection, only to its lines. A blank line, a comment line, another statement or a value spanning several lines starts a new group, and nested arrays align on their own.
 
 ## Run and test
 
@@ -77,12 +86,12 @@ See [Debugging](/en/guide/debugging).
 
 ## Framework support
 
-- **Laravel**: Laravel LSP for `config()`, `route()` and `view()` strings, and an `artisan serve` configuration.
+- **Laravel**: Laravel LSP for `config()`, `route()` and `view()` strings, and an `artisan serve` configuration. With Phoxite as the PHP server, routes, views, config, translations and Eloquent models get completion, navigation and rename from it instead.
 - **WordPress** and similar platforms: add their stubs under **Additional stubs** and the platform folder under **Include paths**.
 
 ## Limitations
 
-- No Blade or Twig template support; only `.php` files get PHP code insight.
+- No Blade or Twig template support with Intelephense; only `.php` files get PHP code insight. Phoxite adds code insight in `.blade.php` files, without Blade highlighting.
 - phpactor is not installed by the IDE.
 - Run with Coverage is not available for PHPUnit.
 - Debugging needs the Xdebug extension in your PHP; the IDE does not install it.

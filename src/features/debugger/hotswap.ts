@@ -17,12 +17,20 @@ import {
 } from "@/platform/ipc";
 import { setContext } from "@/platform/context";
 import { executeAction } from "@/platform/actions";
-import { maybeEditorService, notifications } from "@/workbench/contributions";
+import { basename } from "@/platform/project";
+import { workflowSettings } from "@/platform/workflowSettings";
+import {
+  maybeEditorService,
+  notifications,
+  onBuildCompleted,
+  type BuildCompletedEvent,
+} from "@/workbench/contributions";
 import { isLive, selectFrame, selectSession, useDebug, type DebugSession } from "./state";
 import { tx } from "@/platform/i18n";
 import type { MenuItem } from "@/ui/Menu";
 
 const KEY = "debug.hotswap";
+const JAVA_BUILD_SYSTEMS = new Set(["maven", "gradle", "javac"]);
 /** `BUILD_COMPLETE` events of our own build are not worth a prompt. */
 let quietUntil = 0;
 /** The compile request HotSwap is waiting on, so it can be cancelled. */
@@ -51,15 +59,40 @@ const classesText = (n: number) => (n === 1 ? tx`${n} class` : tx`${n} classes`)
 
 // java-debug reports this after redefineClasses succeeds, with no changedClasses count.
 const obsoleteMethods = (message: string) => message.trim() === "JVM contains obsolete methods";
+// JDI's refusals of a structural change: "add method not implemented", "schema change not implemented", …
+const structuralChange = (message: string) => /\bnot implemented\b/i.test(message);
+
+/** Application and Spring Boot configurations offer Enhanced class redefinition (JetBrains Runtime's DCEVM). */
+const ENHANCEABLE_KINDS = new Set(["application", "spring-boot"]);
+
+/** Whether the session's configuration could turn on Enhanced class redefinition but has not. */
+export function canEnhanceRedefinition(s: DebugSession): boolean {
+  const rc = s.runConfig;
+  return !!rc && ENHANCEABLE_KINDS.has(rc.kind) && rc.params?.enhancedClassRedefinition !== "true";
+}
+
+/** The failure text, plus how to allow structural changes when JDI refused one and the configuration can. */
+function failureBody(errors: string[], enhanceable: boolean): string {
+  const body = errors.join("\n");
+  if (!enhanceable || !errors.some(structuralChange)) return body;
+  return (
+    body +
+    "\n\n" +
+    tx(
+      "To add or remove methods and fields, turn on Enhanced class redefinition in the run configuration and debug on JetBrains Runtime.",
+    )
+  );
+}
 
 /** Message for the reload result (IDEA wording). */
 export function hotSwapMessage(
   changed: number,
   errors: string[],
   bottomFrame = false,
+  enhanceable = false,
 ): { level: "info" | "warning" | "error"; title: string; body?: string } {
   if (errors.some((e) => !obsoleteMethods(e)))
-    return { level: "error", title: "Hot Swap failed", body: errors.join("\n") };
+    return { level: "error", title: "Hot Swap failed", body: failureBody(errors, enhanceable) };
   if (errors.length)
     return {
       level: "warning",
@@ -105,7 +138,7 @@ function obsoleteFrameActions(sessions: DebugSession[]) {
 }
 
 /** Compiles (unless `build` is false) and reloads changed classes into every Java debug session. */
-export async function reloadChangedClasses(build = true, configId?: string): Promise<void> {
+export async function reloadChangedClasses(build = true, configId?: string, allowBuildErrors = false): Promise<void> {
   if (reloading) return;
   const sessions = hotSwapSessions().filter((s) => !configId || s.runConfig?.id === configId);
   if (!sessions.length || !isTauri()) {
@@ -114,6 +147,7 @@ export async function reloadChangedClasses(build = true, configId?: string): Pro
   }
   reloading = true;
   quietUntil = Date.now() + 60_000;
+  let buildFailed = false;
   try {
     if (build) {
       try {
@@ -137,6 +171,7 @@ export async function reloadChangedClasses(build = true, configId?: string): Pro
         });
         let status: "cancelled" | "failed" | "succeeded" | "withErrors" | null = null;
         try {
+          // oxlint-disable-next-line no-await-in-loop -- builds run one module at a time against the shared activeBuild/cancel state and UI context; cancellation aborts the whole reload
           status = await call(commands.javaBuildWorkspace(module, request));
         } catch (e) {
           status = isCancelled(e) ? "cancelled" : null;
@@ -159,14 +194,19 @@ export async function reloadChangedClasses(build = true, configId?: string): Pro
           return;
         }
         if (status === "failed" || status === "withErrors" || status === null) {
-          notifications().notify({
-            group: "run",
-            level: "error",
-            key: KEY,
-            title: "Hot Swap failed",
-            body: "Compilation failed: fix the errors and reload again.",
-          });
-          return;
+          if (!allowBuildErrors) {
+            notifications().notify({
+              group: "run",
+              level: "error",
+              key: KEY,
+              title: "Hot Swap failed",
+              body: "Compilation failed: fix the errors and reload again.",
+            });
+            return;
+          }
+          // Single-file Recompile succeeded with javac; another file in the module may still fail
+          // in JDT, so continue to redefine any classes compiled cleanly before this error.
+          buildFailed = true;
         }
       }
     }
@@ -185,6 +225,7 @@ export async function reloadChangedClasses(build = true, configId?: string): Pro
     const obsolete: DebugSessionId[] = [];
     for (const s of sessions) {
       try {
+        // oxlint-disable-next-line no-await-in-loop -- redefines run in session order; errors and obsolete-session results are aggregated in that order for the notification
         const r = await call(commands.debugRedefineClasses(s.id));
         r.changedClasses.forEach((c) => changed.add(c));
         if (r.errorMessage) {
@@ -195,11 +236,22 @@ export async function reloadChangedClasses(build = true, configId?: string): Pro
         errors.push(e instanceof Error ? e.message : String(e));
       }
     }
+    if (buildFailed && changed.size === 0 && errors.length === 0) {
+      notifications().notify({
+        group: "run",
+        level: "error",
+        key: KEY,
+        title: "Hot Swap failed",
+        body: "Compilation failed: fix the errors and reload again.",
+      });
+      return;
+    }
     const affected = obsolete.flatMap((id) => useDebug.getState().sessions[id] ?? []);
     const m = hotSwapMessage(
       changed.size,
       errors,
       affected.some((s) => s.status === "paused" && s.frames.length === 1),
+      sessions.some(canEnhanceRedefinition),
     );
     notifications().notify({
       group: "run",
@@ -213,12 +265,46 @@ export async function reloadChangedClasses(build = true, configId?: string): Pro
   }
 }
 
+/** Handles a completed user build (`Build Project`, `Build Module`, `Recompile`) for active Java debug sessions. */
+export function onJavaBuildCompleted(event: BuildCompletedEvent): void {
+  if (!event.userInitiated || !JAVA_BUILD_SYSTEMS.has(event.system) || reloading || !hotSwapSessions().length) return;
+  const policy = workflowSettings().debugger.hotSwapAfterCompile;
+  if (policy === "never") return;
+  quietUntil = Math.max(quietUntil, Date.now() + 2_000);
+  const allowBuildErrors = event.kind === "compileFile";
+  if (policy === "always") {
+    void reloadChangedClasses(true, undefined, allowBuildErrors);
+    return;
+  }
+  const fileName = event.kind === "compileFile" && event.file ? basename(event.file) : "";
+  notifications().notify({
+    group: "run",
+    level: "info",
+    key: KEY,
+    title: "Classes changed",
+    body: fileName
+      ? tx`Reload '${fileName}' into the running debug session?`
+      : "Reload the changed classes into the running debug session?",
+    actions: [{ label: "Reload", run: () => void reloadChangedClasses(true, undefined, allowBuildErrors) }],
+  });
+}
+
+export function installBuildHotSwap(): () => void {
+  return onBuildCompleted(onJavaBuildCompleted);
+}
+
 /** java-debug's `hotcodereplace` events of a session this window owns. */
 export function onHotCodeReplace(session: DebugSessionId, event: Extract<DebugEvent, { kind: "hotCodeReplace" }>) {
   if (!useDebug.getState().sessions[session]) return;
   switch (event.changeType) {
-    case "BUILD_COMPLETE":
+    case "BUILD_COMPLETE": {
       if (reloading || Date.now() < quietUntil) return;
+      const policy = workflowSettings().debugger.hotSwapAfterCompile;
+      if (policy === "never") return;
+      if (policy === "always") {
+        void reloadChangedClasses(false);
+        return;
+      }
       notifications().notify({
         group: "run",
         level: "info",
@@ -228,6 +314,7 @@ export function onHotCodeReplace(session: DebugSessionId, event: Extract<DebugEv
         actions: [{ label: "Reload", run: () => void reloadChangedClasses(false) }],
       });
       break;
+    }
     case "ERROR":
     case "WARNING":
       if (obsoleteMethods(event.message)) {
@@ -247,7 +334,7 @@ export function onHotCodeReplace(session: DebugSessionId, event: Extract<DebugEv
         level: event.changeType === "ERROR" ? "error" : "warning",
         key: KEY,
         title: "Hot Swap",
-        body: event.message,
+        body: failureBody([event.message], canEnhanceRedefinition(useDebug.getState().sessions[session]!)),
       });
       break;
   }

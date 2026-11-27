@@ -5,17 +5,32 @@
   display: flex;
   position: relative;
 }
+.group {
+  flex: 1;
+}
 .editor {
-  flex: 1 1 50%;
+  flex: 1;
+  min-height: 0;
   min-width: 0;
   display: flex;
   flex-direction: column;
 }
-.mode-preview .editor {
-  display: none;
+/* Keep the thumb clear of the side-by-side divider's mouse hit area. */
+.mode-split
+  .group:has(> :global([data-separator][aria-orientation="vertical"]))
+  .editor
+  :global(.cm-openidea-overviewThumb) {
+  right: 5px;
 }
-.mode-split .editor {
-  border-right: 1px solid var(--border-editor-tabs, var(--border));
+/* Only the scrollbar lane runs alongside every wrapped source line. */
+.mode-split .editor :global(.cm-lineWrapping .cm-line) {
+  padding-right: var(--cm-overview-width, 0px);
+}
+.mode-preview > :global([data-group]) > :global([data-panel]:first-child) {
+  display: none !important;
+}
+.mode-preview > :global([data-group]) > :global([data-panel]:last-child) {
+  flex-grow: 1 !important;
 }
 
 .layoutActions {
@@ -27,11 +42,23 @@
   height: var(--h-floating-toolbar-button);
 }
 
+.previewPane {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
 .preview {
-  flex: 1 1 50%;
+  contain: strict;
+  flex: 1;
+  min-height: 0;
   min-width: 0;
   position: relative;
   overflow: auto;
+  /* Positions are restored and synced by source line; Chromium's scroll anchoring
+     would keep a later block in view while images above it load. */
+  overflow-anchor: none;
   padding: 16px 28px 40vh;
   outline: none;
   /* The preview sits on the editor background, so its text comes from the
@@ -44,10 +71,27 @@
   line-height: 1.6;
   overflow-wrap: break-word;
 }
+/* Offscreen blocks keep their last settled width between resize events. Their SVGs stay painted. */
+.preview > :global([data-preview-blocks]) > :global([data-line]:not([data-in-viewport])) {
+  width: var(--markdown-block-width, auto);
+}
+.preview[data-constrain-blocks] > :global([data-preview-blocks]) {
+  overflow-x: clip;
+}
 .preview :global(h1),
 .preview :global(h2) {
   padding-bottom: 0.3em;
   border-bottom: 1px solid var(--border-strong);
+}
+.preview :global([role="doc-footnote"]) {
+  display: flex;
+  gap: var(--space-2);
+}
+.preview :global([role="doc-footnote"] > div > :first-child) {
+  margin-block-start: 0;
+}
+.preview :global([role="doc-footnote"] > div > :last-child) {
+  margin-block-end: 0;
 }
 .preview :global(h1),
 .preview :global(h2),
@@ -68,7 +112,7 @@
 .preview :global(h3) {
   font-size: 1.25em;
 }
-.preview > :global(div:first-child) > :first-child {
+.preview > :global([data-preview-blocks]) > :global(div:first-child) > :first-child {
   margin-top: 0;
 }
 .preview :global(p),
@@ -107,19 +151,91 @@
   background: none;
   font-size: 0.93em;
 }
+.codeBlock {
+  position: relative;
+  margin: 0 0 1em;
+}
+.codeBlock > :global(pre) {
+  margin: 0;
+  padding-inline-start: 34px;
+}
+.codeCopy {
+  position: absolute;
+  inset-block-start: 4px;
+  inset-inline-start: 4px;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-small);
+  background: var(--bg-elev);
+  color: var(--fg-secondary);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.codeBlock:hover > .codeCopy,
+.preview :global([data-mermaid]):hover > .codeCopy,
+.codeCopy:focus-visible,
+.codeCopy[data-copied] {
+  opacity: 1;
+  pointer-events: auto;
+}
+.codeCopy:hover {
+  background: var(--bg-toolbar-hover);
+}
+.codeCopy:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+.codeCopy[data-copied] {
+  color: var(--success);
+}
 .preview :global(blockquote) {
   padding: 0 1em;
   border-left: 3px solid var(--border-strong);
   color: var(--fg-editor, var(--fg-secondary));
   opacity: 0.8;
 }
+.preview :global([data-math-svg]) {
+  position: relative;
+}
+.preview :global([data-math-svg="display"]) {
+  display: block;
+  margin: 1em 0;
+  overflow: auto hidden;
+  padding: 2px 0;
+  text-align: center;
+}
+.preview :global(mjx-assistive-mml) {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  user-select: none;
+}
 .preview :global(table) {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
   border-collapse: collapse;
 }
 .preview :global(th),
 .preview :global(td) {
   padding: 4px 10px;
   border: 1px solid var(--border-strong);
+  overflow-wrap: normal;
+}
+.preview :global(td code),
+.preview :global(td a) {
+  overflow-wrap: anywhere;
 }
 .preview :global(th) {
   background: var(--bg-editor-inline, var(--bg-elev));
@@ -129,8 +245,40 @@
   border-top: 1px solid var(--border-strong);
   margin: 1.5em 0;
 }
+.preview :global([role="doc-endnotes"] > hr) {
+  margin-block-end: 2.5em;
+}
 .preview :global(img) {
-  max-width: 100%;
+  max-width: calc(100% * var(--markdown-zoom-scale, 1));
+}
+.preview :global(img[data-natural-width]) {
+  width: calc(min(var(--image-width), 100%) * var(--markdown-zoom-scale, 1));
+  height: auto;
+}
+/* the wrapper takes the image's size, so the image fills it */
+.preview :global(.image-zoom) {
+  display: inline-block;
+  max-width: calc(100% * var(--markdown-zoom-scale, 1));
+}
+.preview :global(.image-zoom[data-natural-width]) {
+  width: calc(min(var(--image-width), 100%) * var(--markdown-zoom-scale, 1));
+}
+.preview :global(.image-zoom > .pan-zoom-content > img) {
+  width: 100%;
+  max-width: none;
+  height: auto;
+}
+.preview :global(.image-zoom[data-zoomed="true"]) {
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.preview :global(.image-zoom[data-zoomed="true"] img) {
+  -webkit-user-drag: none;
+}
+.preview :global(.image-zoom[data-dragging="true"]) {
+  cursor: grabbing;
 }
 .preview :global(ul.contains-task-list) {
   list-style: none;
@@ -151,14 +299,41 @@
 .preview :global([data-mermaid] > pre) {
   margin: 0;
 }
+.preview :global([data-mermaid]):has(> .codeCopy) > :global(pre) {
+  padding-inline-start: 34px;
+}
 .preview :global([data-mermaid-state="ok"] > pre) {
   display: none;
 }
+.preview :global([align="left" i]) {
+  --mermaid-align: left;
+  --mermaid-margin-left: 0;
+  --mermaid-margin-right: auto;
+}
+.preview :global([align="right" i]) {
+  --mermaid-align: right;
+  --mermaid-margin-left: auto;
+  --mermaid-margin-right: 0;
+}
+.preview :global([align="center" i]),
+.preview :global(center) {
+  --mermaid-align: center;
+  --mermaid-margin-left: auto;
+  --mermaid-margin-right: auto;
+}
 .preview :global(.mermaid-output) {
-  overflow: hidden;
-  text-align: center;
+  overflow-x: auto;
+  overflow-y: hidden;
+  text-align: var(--mermaid-align, center);
+}
+.preview :global(.mermaid-output svg[data-natural-width]) {
+  display: block;
+  margin: 0 var(--mermaid-margin-right, auto) 0 var(--mermaid-margin-left, auto);
+  width: calc(min(var(--diagram-width), 100%) * var(--markdown-zoom-scale, 1));
+  height: auto;
 }
 .preview :global(.mermaid-output[data-zoomed="true"]) {
+  overflow: hidden;
   cursor: grab;
   touch-action: none;
   user-select: none;

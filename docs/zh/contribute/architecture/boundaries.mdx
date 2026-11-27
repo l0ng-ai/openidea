@@ -51,6 +51,6 @@ Rust 里的工作还要遵守线程规则：长任务绝不阻塞 UI 线程或 T
 
 如果只关乎外观或对输入的响应，并且只用后端已经提供的数据，就留在前端。
 
-放在 Rust 时按领域归位：逻辑放在负责该领域的 crate（或新建 `crates/ide-<domain>`），共享的命令实现放在 `ide-host::ops`，`src-tauri/src/commands/<domain>.rs` 里只写薄薄的适配层。`src-tauri` 中不放领域逻辑。
+放在 Rust 时按领域归位：逻辑放在负责该领域的 crate（或新建 `crates/ide-<domain>`），命令在 `ide-host::ops` 的实现上声明（见 [UI 与 Rust 的通信](/zh/contribute/architecture/ipc)）；只有需要 Tauri 本身的命令才写在 `src-tauri/src/commands/<domain>.rs` 里。`src-tauri` 中不放领域逻辑。
 
 放在前端时，它就是 `src/features/<name>/` 下的一个功能目录，注册 action 和 contribution，且不能 import 其他功能；见[前端](/zh/contribute/architecture/frontend)。

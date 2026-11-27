@@ -1,8 +1,10 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { Tabs } from "@/ui";
+import { useI18n } from "@/platform/i18n";
 import { registerToolWindow } from "../contributions";
-import { isToolWindowVisible, resetToolWindowLayout, showToolWindow, useToolWindowLayout } from "./store";
+import { installToolWindowActions } from "./actions";
+import { isToolWindowVisible, resetToolWindowLayout, showToolWindow, useToolWindowLayout, viewModeOf } from "./store";
 import { ToolWindowLayout } from "./ToolWindows";
 
 const Empty = () => null;
@@ -13,6 +15,7 @@ beforeEach(() => {
   resetToolWindowLayout();
   closeContentTab.mockClear();
   disposers = [
+    installToolWindowActions(),
     registerToolWindow({
       id: "run",
       title: "Run",
@@ -66,7 +69,9 @@ it("middle click on a header button leaves the tool window open", () => {
 it("middle click on a header content tab closes the tab, not the window", () => {
   showToolWindow("problems");
   render(<ToolWindowLayout editor={null} />);
-  fireEvent.mouseDown(screen.getByRole("tab", { name: "File" }), { button: 1 });
+  const tab = screen.getByRole("tab", { name: "File" });
+  fireEvent.mouseDown(tab, { button: 1 });
+  fireEvent.mouseUp(tab, { button: 1 });
   expect(closeContentTab).toHaveBeenCalledWith("file");
   expect(isToolWindowVisible("problems")).toBe(true);
 });
@@ -84,4 +89,113 @@ it("header double click hides the editor and restores its previous size", () => 
   fireEvent.doubleClick(header("run"));
   expect(editor).toBeVisible();
   expect(useToolWindowLayout.getState().sizes).toEqual(sizes);
+});
+
+it("View Mode › Undock lays the window over the editor and frees its track", () => {
+  showToolWindow("run");
+  render(<ToolWindowLayout editor={null} />);
+  const area = document.querySelector<HTMLElement>('[data-slot="bottom"]')!;
+  const grid = area.closest<HTMLElement>('[data-anchor="bottom"]')!.parentElement!;
+  expect(grid.style.getPropertyValue("--tw-bottom")).not.toBe("0px");
+
+  fireEvent.click(screen.getByRole("button", { name: "Options" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "View Mode" }));
+  expect(screen.getByRole("menuitemcheckbox", { name: "Dock Pinned" })).toHaveAttribute("aria-checked", "true");
+  fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Undock" }));
+
+  expect(viewModeOf("run")).toBe("undock");
+  expect(isToolWindowVisible("run")).toBe(true);
+  expect(grid.style.getPropertyValue("--tw-bottom")).toBe("0px");
+  expect(area.style.getPropertyValue("--undock-size")).toBe(`${useToolWindowLayout.getState().sizes.bottom}px`);
+  expect(screen.getByRole("separator", { name: "Resize undocked bottom tool window" })).toBeInTheDocument();
+});
+
+it("a menu opened from the header returns focus to the window, not the editor", () => {
+  showToolWindow("run");
+  render(<ToolWindowLayout editor={<input aria-label="Editor" />} />);
+  screen.getByRole("textbox", { name: "Editor" }).focus();
+  const options = screen.getByRole("button", { name: "Options" });
+  // Like WebKit, jsdom doesn't focus a clicked button.
+  fireEvent.click(options);
+  fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+  expect(screen.queryByRole("menu")).toBeNull();
+  expect(document.activeElement).toBe(options);
+});
+
+it("shows the header title in a language chosen while the window is open", () => {
+  showToolWindow("run");
+  render(<ToolWindowLayout editor={null} />);
+  expect(header("run").textContent).toContain("Run");
+  const before = useI18n.getState().texts;
+  try {
+    act(() => useI18n.setState({ texts: { Run: "运行" } }));
+    expect(header("run").textContent).toContain("运行");
+  } finally {
+    act(() => useI18n.setState({ texts: before }));
+  }
+});
+
+it("skips hidden and inert focus targets when activating a tool window", () => {
+  vi.useFakeTimers();
+  const dispose = registerToolWindow({
+    id: "hidden-inputs",
+    title: "Hidden Inputs",
+    icon: "file",
+    anchor: "right",
+    requiresProject: false,
+    component: () => (
+      <div>
+        <input type="file" aria-label="Hidden file" style={{ display: "none" }} />
+        <input type="hidden" value="secret" />
+        <div hidden>
+          <input aria-label="In hidden panel" data-autofocus="" />
+        </div>
+        <div inert>
+          <input aria-label="In inert container" />
+        </div>
+        <div style={{ display: "none" }}>
+          <input aria-label="In display-none wrapper" />
+        </div>
+        <textarea aria-label="Visible composer" />
+      </div>
+    ),
+  });
+  try {
+    render(<ToolWindowLayout editor={<input aria-label="Editor" />} />);
+    screen.getByRole("textbox", { name: "Editor" }).focus();
+    act(() => showToolWindow("hidden-inputs", true));
+    act(() => vi.runAllTimers());
+    expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Visible composer" }));
+  } finally {
+    dispose();
+    vi.useRealTimers();
+  }
+});
+
+it("falls back to the tool window body when only hidden focus targets exist", () => {
+  vi.useFakeTimers();
+  const dispose = registerToolWindow({
+    id: "only-hidden",
+    title: "Only Hidden",
+    icon: "file",
+    anchor: "right",
+    requiresProject: false,
+    component: () => (
+      <div>
+        <input type="file" aria-label="Hidden file" style={{ display: "none" }} />
+        <button type="button">Action</button>
+      </div>
+    ),
+  });
+  try {
+    render(<ToolWindowLayout editor={<input aria-label="Editor" />} />);
+    screen.getByRole("textbox", { name: "Editor" }).focus();
+    act(() => showToolWindow("only-hidden", true));
+    act(() => vi.runAllTimers());
+    const body = document.querySelector<HTMLElement>('[data-toolwindow="only-hidden"] [data-toolwindow-body]')!;
+    expect(document.activeElement).toBe(body);
+  } finally {
+    dispose();
+    vi.useRealTimers();
+  }
 });

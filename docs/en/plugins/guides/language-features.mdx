@@ -115,6 +115,13 @@ These are methods of `providers::Providers` (WIT `providers`):
   (`$1`, `${1:name}`, `$0`), replace a `replace` range, match on `filter_text` instead of its
   label, sort by `sort_text`, carry `documentation`, and bring `additional_edits` elsewhere
   in the document (an import).
+- **`completion_list(doc, at, trigger)`** (API 1.16) returns the same items with an
+  `incomplete` flag, for completions computed from what has been typed (GORM's
+  `findByTitleAndAuthor…`). While the user types on in the same word, the host asks this
+  plugin again with the new text instead of filtering its items; the language server and
+  the other plugins are not asked again. Override it in your `Providers` and register it
+  too: `register_plugin!(T, providers, completion_list)`. By default it returns
+  `completion`'s items, complete; `MockHost::completion_list` calls it in tests.
 - **`inline_completion(doc, at)`** returns ghost text at the caret
   (`InlineSuggestion { insert_text, replace }`).
   [AI Completion](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/ai-completion)
@@ -228,6 +235,7 @@ Declare any of these kinds with `engines.openidea = "^1.4"`, implement
 | `implementation`      | `implementation(doc, at)`                        | Merged with the server's implementations.                                                                                                                                                                                            |
 | `type-definition`     | `type_definition(doc, at)`                       | Merged with the server's type declarations.                                                                                                                                                                                          |
 | `gutter-actions`      | `gutter_actions(doc)`                            | Gutter buttons that run one of the plugin's declared commands, with an optional argument.                                                                                                                                            |
+| `hover-actions`       | `hover_actions(doc)`                             | Actions at the left edge of a line, revealed while the pointer is in the first four editing-area columns for any line in `start-line..=end-line`; the button is anchored to `line` and never covers text (API 1.14).                 |
 
 A code lens that offers a command, from the
 [Blame Annotations](https://github.com/l0ng-ai/openidea/tree/main/plugins/official/blame-annotations)
@@ -261,6 +269,11 @@ shows `gutter-actions`. Rules that apply to all of them:
   dropped. Format edits must be valid and must not overlap.
 - Disabling the selected formatter reports it as unavailable rather than silently using
   another one.
+- `gutter-actions` and `hover-actions` are asked for one editor's window:
+  `host::invoking_project()` (API 1.18) returns that window's project during the call, also
+  when a project opened inside it holds the file too. After an edit the buttons keep their
+  place but are inert (dimmed) until the plugin answers for the new text, so a click never
+  runs an action placed for older text.
 
 ## Embedded languages (injections)
 

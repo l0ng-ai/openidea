@@ -6,7 +6,7 @@ import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { IconButton, Select, T } from "@/ui";
 import { isNumericColumn, type GridColumn } from "./Grid";
 import type { Cell } from "./model";
-import { chartSeries, formatNumber, niceTicks, type ChartAggregate } from "./resultView";
+import { chartSeries, niceTicks, type ChartAggregate } from "./resultView";
 import styles from "./Database.module.css";
 
 const AGGREGATES: ReadonlyArray<{ value: ChartAggregate; label: string }> = [
@@ -56,7 +56,7 @@ export function ChartView({ columns, rows }: { columns: readonly GridColumn[]; r
     return () => ro.disconnect();
   }, []);
 
-  const options = columns.map((c, i) => ({ value: String(i), label: c.name }));
+  const options = columns.map((c, i) => ({ value: String(i), label: c.name, verbatim: true }));
   const values = points.map((p) => p.value);
   const ticks = niceTicks(
     Math.min(0, ...values),
@@ -133,6 +133,7 @@ export function ChartView({ columns, rows }: { columns: readonly GridColumn[]; r
             ))}
             {points.map((_, i) => (
               <line
+                // oxlint-disable-next-line react/no-array-index-key -- data rows repeat; point position is the identity
                 key={i}
                 className={styles.chartGrid}
                 x1={PAD.left + band * (i + 1)}
@@ -144,6 +145,7 @@ export function ChartView({ columns, rows }: { columns: readonly GridColumn[]; r
             {kind === "bar"
               ? points.map((p, i) => (
                   <rect
+                    // oxlint-disable-next-line react/no-array-index-key -- data rows repeat; point position is the identity
                     key={i}
                     className={styles.chartBarMark}
                     x={PAD.left + band * i + band * 0.05}
@@ -151,7 +153,7 @@ export function ChartView({ columns, rows }: { columns: readonly GridColumn[]; r
                     y={Math.min(yAt(p.value), yAt(0))}
                     height={Math.abs(yAt(0) - yAt(p.value))}
                   >
-                    <title>{`${p.label}: ${formatNumber(p.value)}`}</title>
+                    <title>{`${p.label}: ${p.text}`}</title>
                   </rect>
                 ))
               : [
@@ -161,15 +163,29 @@ export function ChartView({ columns, rows }: { columns: readonly GridColumn[]; r
                     points={points.map((p, i) => `${xAt(i)},${yAt(p.value)}`).join(" ")}
                   />,
                   ...points.map((p, i) => (
-                    <circle key={i} className={styles.chartDot} cx={xAt(i)} cy={yAt(p.value)} r={3}>
-                      <title>{`${p.label}: ${formatNumber(p.value)}`}</title>
+                    <circle
+                      // oxlint-disable-next-line react/no-array-index-key -- data rows repeat; point position is the identity
+                      key={i}
+                      className={styles.chartDot}
+                      cx={xAt(i)}
+                      cy={yAt(p.value)}
+                      r={3}
+                    >
+                      <title>{`${p.label}: ${p.text}`}</title>
                     </circle>
                   )),
                 ]}
             <line className={styles.chartAxis} x1={PAD.left} x2={PAD.left + plotW} y1={yAt(0)} y2={yAt(0)} />
             {points.map((p, i) =>
               i % labelEvery ? null : (
-                <text key={i} className={styles.chartTick} x={xAt(i)} y={PAD.top + plotH + 14} textAnchor="middle">
+                <text
+                  // oxlint-disable-next-line react/no-array-index-key -- data rows repeat; point position is the identity
+                  key={i}
+                  className={styles.chartTick}
+                  x={xAt(i)}
+                  y={PAD.top + plotH + 14}
+                  textAnchor="middle"
+                >
                   {p.label.length > 14 ? `${p.label.slice(0, 13)}…` : p.label}
                 </text>
               ),

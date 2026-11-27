@@ -4,24 +4,29 @@
  * to it (platform/remote.ts).
  */
 import { registerActions } from "@/platform/actions";
-import { disconnectRemote, useRemote } from "@/platform/remote";
+import { disconnectRemote, provideBackendBusyPrompt, stopRemoteBackend, useRemote } from "@/platform/remote";
 import { lazyComponent } from "@/ui";
 import { maybeEditorService, registerOverlay, registerStatusItem, registerToolWindow } from "@/workbench/contributions";
+import { confirm } from "@/workbench/messages";
+import { tx } from "@/platform/i18n";
 import { confirmLeaveProject } from "@/platform/project";
 import { ConnectHost } from "./ConnectDialog";
+import { installConnectHandoff, showConnect } from "./connectWindow";
 import { reopenInContainer } from "./container";
-import { reloadEnvironment } from "./environment";
+import { installDirenvNotifications, reloadEnvironment } from "./environment";
 import { RemoteStatus } from "./RemoteStatus";
-import { closeConnectDialog, openConnectDialog } from "./model";
+import { closeConnectDialog } from "./model";
 import { restorePorts, usePorts } from "./ports";
+import { installReconnect, reconnectNow } from "./reconnect";
 
-/** Forwarded ports are available while this window is connected to an SSH host or a dev container. */
+/** Forwarded ports are available while this window is connected to an SSH host, a WSL distribution or a dev container. */
 function trackPortsWindow(): () => void {
   let off: (() => void) | null = null;
   let session = useRemote.getState().session;
   const sync = () => {
     const next = useRemote.getState().session;
-    const connected = next?.target.kind === "ssh" || next?.target.kind === "devContainer";
+    const connected =
+      next?.target.kind === "ssh" || next?.target.kind === "wsl" || next?.target.kind === "devContainer";
     if (connected && (next !== session || !off)) {
       usePorts.setState({ ports: [] });
       void restorePorts();
@@ -53,8 +58,21 @@ function trackPortsWindow(): () => void {
 
 export function activate(): () => void {
   const disposers = [
+    provideBackendBusyPrompt(() =>
+      confirm({
+        title: tx("Stop Remote Backend"),
+        message: tx(
+          "The backend of another OpenIDEA build, for example the one from before an upgrade, still has this project open, so this build can't open it. Stop that backend and open the project? Its terminals, runs and agent sessions end, and changes it hasn't saved are lost.",
+        ),
+        ok: tx("Stop Backend and Open"),
+        icon: "warning",
+      }),
+    ),
     trackPortsWindow(),
+    installReconnect(),
+    installDirenvNotifications(),
     registerOverlay({ id: "remote.connect", component: ConnectHost }),
+    installConnectHandoff(),
     registerStatusItem({
       id: "remote.location",
       title: "Remote Host",
@@ -68,9 +86,18 @@ export function activate(): () => void {
         title: "Remote Development…",
         description: "Opens a project folder on an SSH host; the IDE backend runs on that host.",
         category: "File",
-        icon: "folder",
+        icon: "remote",
         keywords: ["ssh", "remote", "server", "gateway", "connect", "host"],
-        run: () => openConnectDialog(),
+        run: () => showConnect(),
+      },
+      {
+        id: "remote.reconnect",
+        title: "Reconnect to Remote Host",
+        description: "Connects this window to its remote project again after the connection was lost.",
+        category: "File",
+        keywords: ["ssh", "remote", "reconnect", "connection", "lost"],
+        when: "remoteConnectionLost",
+        run: () => reconnectNow(),
       },
       {
         id: "remote.disconnect",
@@ -79,9 +106,38 @@ export function activate(): () => void {
         keywords: ["ssh", "remote", "close"],
         when: "projectOpen",
         run: async () => {
-          if (!(await confirmLeaveProject())) return;
+          if (!(await confirmLeaveProject(false))) return;
           try {
             await disconnectRemote();
+          } catch (e) {
+            maybeEditorService()?.cancelClose?.();
+            throw e;
+          }
+        },
+      },
+      {
+        id: "remote.stopBackend",
+        title: "Stop Remote Backend",
+        description:
+          "Stops the remote IDE backend and its terminals, runs and agent sessions, then closes the project.",
+        category: "File",
+        keywords: ["ssh", "remote", "stop", "shutdown", "backend", "server"],
+        when: "projectRemote && !remoteConnectionLost",
+        run: async () => {
+          const host = useRemote.getState().session?.host;
+          if (!host) return;
+          if (
+            !(await confirm({
+              title: tx("Stop Remote Backend"),
+              message: tx`Stop the IDE backend on ${host} and terminate its running terminals, runs and agent sessions?`,
+              ok: tx("Stop Backend"),
+              icon: "warning",
+            }))
+          )
+            return;
+          if (!(await confirmLeaveProject(false))) return;
+          try {
+            await stopRemoteBackend();
           } catch (e) {
             maybeEditorService()?.cancelClose?.();
             throw e;
@@ -105,7 +161,20 @@ export function activate(): () => void {
         description:
           "Reads the login shell's environment (and devcontainer.json remoteEnv on a remote host) again for new terminals and processes.",
         category: "File",
-        keywords: ["env", "environment", "variables", "path", "shell", "remoteEnv", "devcontainer", "reload"],
+        keywords: [
+          "env",
+          "environment",
+          "variables",
+          "path",
+          "shell",
+          "remoteEnv",
+          "devcontainer",
+          "direnv",
+          "envrc",
+          "nix",
+          "flake",
+          "reload",
+        ],
         when: "projectOpen",
         run: () => reloadEnvironment(),
       },

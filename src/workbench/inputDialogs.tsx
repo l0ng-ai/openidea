@@ -9,8 +9,13 @@
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { create } from "zustand";
+import { registerHostPathChooser, type HostPathOptions } from "@/platform/choosePath";
 import { t, tx, VerbatimTextContext } from "@/platform/i18n";
-import { Checkbox, Dialog, Given, Input, List, T } from "@/ui";
+import { call, commands, isErrorKind, type FileEntry } from "@/platform/ipc";
+import { ipcPath } from "@/platform/paths";
+import { useProject } from "@/platform/project";
+import { Checkbox, Dialog, Given, Icon, IconButton, Input, List, T } from "@/ui";
+import { confirm } from "./messages";
 import styles from "./inputDialogs.module.css";
 
 export interface PromptInputOptions {
@@ -33,6 +38,8 @@ export interface PromptInputOptions {
   keepWhitespace?: boolean;
   /** A multi-line field: Enter adds a line, Cmd/Ctrl+Enter confirms. */
   multiline?: boolean;
+  /** A password field (characters hidden). */
+  secret?: boolean;
   /** Title, text and labels come from outside the IDE (a plugin) and are shown as written. */
   verbatim?: boolean;
 }
@@ -57,7 +64,8 @@ export interface PickItemsOptions {
 type Request =
   | { kind: "prompt"; id: number; options: PromptInputOptions; resolve: (v: string | null) => void }
   | { kind: "choose"; id: number; options: ChooseItemOptions; resolve: (v: string | null) => void }
-  | { kind: "pick"; id: number; options: PickItemsOptions; resolve: (v: string[] | null) => void };
+  | { kind: "pick"; id: number; options: PickItemsOptions; resolve: (v: string[] | null) => void }
+  | { kind: "path"; id: number; options: HostPathOptions; resolve: (v: string[] | null) => void };
 
 const useInputDialogs = create<{ stack: Request[] }>(() => ({ stack: [] }));
 let seq = 0;
@@ -95,6 +103,13 @@ export function pickItems(options: PickItemsOptions): Promise<string[] | null> {
   return open<string[]>((id, resolve) => ({ kind: "pick", id, options, resolve }), options.signal);
 }
 
+/** A file or folder on the host this window's commands run on, browsed in the IDE (a remote window's chooser). */
+function choosePathOnHost(options: HostPathOptions): Promise<string[] | null> {
+  return open<string[]>((id, resolve) => ({ kind: "path", id, options, resolve }), options.signal);
+}
+
+registerHostPathChooser(choosePathOnHost);
+
 export function InputDialogsHost() {
   const stack = useInputDialogs((s) => s.stack);
   return (
@@ -106,6 +121,8 @@ export function InputDialogsHost() {
           </VerbatimTextContext.Provider>
         ) : r.kind === "choose" ? (
           <ChooseDialog key={r.id} options={r.options} done={r.resolve} />
+        ) : r.kind === "path" ? (
+          <PathDialog key={r.id} options={r.options} done={r.resolve} />
         ) : (
           <VerbatimTextContext.Provider key={r.id} value={!!r.options.verbatim}>
             <PickDialog options={r.options} done={r.resolve} />
@@ -156,6 +173,7 @@ function PromptDialog({ options, done }: { options: PromptInputOptions; done: (v
   return (
     <Dialog
       open
+      blockWorkbenchShortcuts
       title={options.title}
       onClose={close}
       width={420}
@@ -207,6 +225,7 @@ function PromptDialog({ options, done }: { options: PromptInputOptions; done: (v
           <Input
             data-autofocus
             aria-label={options.label ?? options.title}
+            type={options.secret ? "password" : undefined}
             value={value}
             placeholder={options.placeholder}
             disabled={pending}
@@ -235,6 +254,7 @@ function ChooseDialog({ options, done }: { options: ChooseItemOptions; done: (v:
   return (
     <Dialog
       open
+      blockWorkbenchShortcuts
       title={options.title}
       onClose={() => done(null)}
       width={360}
@@ -250,7 +270,6 @@ function ChooseDialog({ options, done }: { options: ChooseItemOptions; done: (v:
           activeIndex={active}
           onActiveChange={setActive}
           onActivate={(item) => done(item)}
-          rowHeight={24}
           className={styles.list}
           aria-label={options.title}
           empty={
@@ -283,6 +302,7 @@ function PickDialog({ options, done }: { options: PickItemsOptions; done: (v: st
   return (
     <Dialog
       open
+      blockWorkbenchShortcuts
       title={options.title}
       onClose={() => done(null)}
       width={420}
@@ -326,6 +346,208 @@ function PickDialog({ options, done }: { options: PickItemsOptions; done: (v: st
           )}
         />
       </div>
+    </Dialog>
+  );
+}
+
+/** The folder that holds `path` (either separator), or null at a root. */
+export function parentPath(path: string): string | null {
+  if (/^(?:[\\/]+|[A-Za-z]:[\\/]*)$/.test(path)) return null;
+  const posix = path.startsWith("/") && !path.startsWith("//");
+  const trimmed = path.replace(posix ? /\/+$/ : /[\\/]+$/, "");
+  const slash = trimmed.lastIndexOf("/");
+  const cut = posix ? slash : Math.max(slash, trimmed.lastIndexOf("\\"));
+  if (cut < 0) return null;
+  const parent = trimmed.slice(0, cut);
+  // `/a` → `/`; `C:\a` → `C:\`.
+  if (!parent || /^[A-Za-z]:$/.test(parent)) return parent + trimmed[cut];
+  return parent === trimmed ? null : parent;
+}
+
+function PathDialog({ options, done }: { options: HostPathOptions; done: (v: string[] | null) => void }) {
+  const root = useProject((s) => s.project?.root ?? null);
+  const title =
+    options.title ?? (options.save ? tx("Save As") : options.directory ? tx("Choose Directory…") : tx("Choose File…"));
+  const [dir, setDir] = useState<string | null>(null);
+  const [entries, setEntries] = useState<FileEntry[]>([]);
+  const [active, setActive] = useState(-1);
+  const [value, setValue] = useState(options.defaultPath || root || "");
+  const [selected, setSelected] = useState<string[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const request = useRef(0);
+
+  const inDir = (dir: string, name: string) => `${ipcPath(dir).replace(/\/$/, "")}/${name}`;
+  const isAbsolute = (path: string) => /^(?:\/|[A-Za-z]:\/)/.test(ipcPath(path));
+  const isDir = (e: FileEntry) => e.kind === "dir" || (e.kind === "symlink" && e.targetKind === "dir");
+  const nameOf = (path: string) => ipcPath(path).split("/").at(-1) ?? "";
+  const accepts = (entry: FileEntry) =>
+    isDir(entry) ||
+    (!options.directory &&
+      (!options.filters?.length ||
+        options.filters.some(({ extensions }) =>
+          extensions.some((ext) => ext === "*" || entry.name.toLowerCase().endsWith(`.${ext.toLowerCase()}`)),
+        )));
+  const visit = async (path: string, filename = "") => {
+    const id = ++request.current;
+    setLoading(true);
+    try {
+      const listed = await call(commands.fsReadDir(path));
+      if (id !== request.current) return true;
+      const shown = listed
+        .filter(accepts)
+        .sort((a, b) => Number(isDir(b)) - Number(isDir(a)) || a.name.localeCompare(b.name));
+      setDir(path);
+      setEntries(shown);
+      setActive(-1);
+      setValue(filename ? inDir(path, filename) : path);
+      setError(null);
+      return true;
+    } catch (e) {
+      if (id === request.current) setError(e instanceof Error ? e.message : String(e));
+      return false;
+    } finally {
+      if (id === request.current) setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    const initial = options.defaultPath || root || "/";
+    const start = root && !isAbsolute(initial) ? inDir(root, initial) : initial;
+    if (options.save) {
+      void visit(parentPath(start) ?? root ?? "/", nameOf(start));
+      return;
+    }
+    // A file path starts in its folder, with the file in the field.
+    void visit(start).then((ok) => {
+      const parent = parentPath(start);
+      if (!ok && parent) void visit(parent).then((found) => found && !options.directory && setValue(start));
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const move = (path: string) => visit(path, options.save && value !== dir ? nameOf(value) : "");
+  const toggle = (path: string) =>
+    setSelected((paths) => (paths.includes(path) ? paths.filter((p) => p !== path) : [...paths, path]));
+  const choose = (entry: FileEntry) => {
+    if (isDir(entry)) void move(entry.path);
+    else if (options.multiple) toggle(entry.path);
+    else if (options.save) setValue(entry.path);
+    else done([entry.path]);
+  };
+  const submit = async () => {
+    const input = value.trim();
+    if (loading || submitting) return;
+    if (options.multiple && selected.length) return done(selected);
+    if (!input) return;
+    const path = dir && !isAbsolute(input) ? inDir(dir, input) : input;
+    setSubmitting(true);
+    try {
+      const kind = await call(commands.fsEntryKind(path));
+      const folder = kind === "dir";
+      if (options.directory) return folder ? done([path]) : setError(tx("Choose a folder"));
+      if (folder) return void visit(path);
+      if (
+        !options.save ||
+        (await confirm({
+          title,
+          message: tx`File '${nameOf(path)}' already exists. Do you want to overwrite it?`,
+          ok: "Overwrite",
+        }))
+      )
+        done([path]);
+    } catch (e) {
+      if (options.save && isErrorKind(e, "notFound")) done([path]);
+      else setError(options.save && e instanceof Error ? e.message : tx("No such file or folder"));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+  const up = dir === null ? null : parentPath(dir);
+
+  return (
+    <Dialog
+      open
+      blockWorkbenchShortcuts
+      title={title}
+      onClose={() => done(null)}
+      width={520}
+      buttons={[
+        {
+          label: tx("OK"),
+          role: "default",
+          disabled: loading || submitting || (!value.trim() && !selected.length),
+          onClick: () => void submit(),
+        },
+        { label: t("common.cancel"), role: "cancel" },
+      ]}
+    >
+      <form
+        className={styles.form}
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submit();
+        }}
+      >
+        <div className={styles.pathRow}>
+          <IconButton
+            icon="arrow-up"
+            title={tx("Parent Folder")}
+            disabled={!up || loading}
+            onClick={() => up && void move(up)}
+          />
+          <Input
+            data-autofocus
+            className={styles.pathInput}
+            aria-label={title}
+            value={value}
+            invalid={!!error}
+            onChange={(e) => {
+              setValue(e.target.value);
+              setError(null);
+            }}
+          />
+        </div>
+        <List
+          items={entries}
+          getKey={(e) => e.path}
+          activeIndex={active}
+          onActiveChange={(i) => {
+            setActive(i);
+            const entry = entries[i];
+            if (entry && (!options.save || !isDir(entry))) setValue(entry.path);
+          }}
+          // A click selects; a double click or Enter opens the folder or chooses the file.
+          onActivate={(entry, _i, e) => (e.type !== "click" || e.detail > 1) && choose(entry)}
+          className={styles.pathList}
+          aria-label={dir ?? title}
+          empty={
+            <div className={styles.hint}>
+              <T>{loading ? "Loading…" : "Empty folder"}</T>
+            </div>
+          }
+          renderItem={(entry, state) => (
+            <div className={`${state.active ? styles.activeRow : styles.row} ${styles.entry}`}>
+              <Icon name={isDir(entry) ? "folder" : "file"} />
+              {options.multiple && (options.directory || !isDir(entry)) ? (
+                <Checkbox
+                  label={<Given>{entry.name}</Given>}
+                  checked={selected.includes(entry.path)}
+                  onChange={() => toggle(entry.path)}
+                />
+              ) : (
+                <span className={styles.entryName}>{entry.name}</span>
+              )}
+            </div>
+          )}
+        />
+        {error && (
+          <div className={styles.error}>
+            <T>{error}</T>
+          </div>
+        )}
+      </form>
     </Dialog>
   );
 }

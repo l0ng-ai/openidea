@@ -133,8 +133,6 @@ mod tests {
             ("dark-hc", Color(0x1a, 0x1b, 0x1e, 0xff)),
             ("solarized-light", Color(0xee, 0xe8, 0xd5, 0xff)),
             ("solarized-dark", Color(0x07, 0x36, 0x42, 0xff)),
-            ("one-light", Color(0xea, 0xea, 0xeb, 0xff)),
-            ("one-dark", Color(0x21, 0x25, 0x2b, 0xff)),
         ] {
             assert_eq!(builtin_frame(id), Some(color), "{id}");
         }

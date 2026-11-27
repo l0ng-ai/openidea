@@ -9,7 +9,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 0 6px;
 }
 .sep {
@@ -22,7 +22,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-height: 28px;
   padding: 2px 6px 2px 10px;
   font-size: var(--fs-small);
@@ -54,14 +54,14 @@
 .loading {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 12px;
   color: var(--fg-muted);
 }
 .row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
   flex: 1;
   white-space: nowrap;
@@ -96,6 +96,7 @@
 }
 .detailPane {
   height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
 }
@@ -135,7 +136,7 @@
 .form {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 14px;
 }
 .fieldLabel {
@@ -143,14 +144,6 @@
   font-size: var(--fs-small);
 }
 /* Dockerfile / Compose gutter run icons */
-.gutter {
-  width: 14px;
-}
-.gutter :global(.cm-gutterElement) {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
 .marker {
   padding: 0;
   border: 0;
@@ -167,7 +160,7 @@
 
 .fieldRow {
   display: flex;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .fieldRow > :first-child {
   flex: 1;
@@ -184,13 +177,13 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   color: var(--fg-muted);
 }
 .link {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 0;
   border: 0;
   background: none;
@@ -207,7 +200,7 @@
 .facts {
   display: grid;
   grid-template-columns: max-content 1fr;
-  gap: 4px 12px;
+  gap: var(--space-1) var(--space-3);
   padding: 12px;
   margin: 0;
 }
@@ -223,7 +216,7 @@
 }
 .detailActions {
   display: flex;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 0 12px 12px;
 }
 
@@ -243,10 +236,11 @@
   user-select: text;
 }
 .dashboardActions {
+  flex: none;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
 }
@@ -262,24 +256,34 @@
   border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
 }
+.dashboard > .sectionBanner:first-child,
+.dashboardActions + .sectionBanner {
+  border-top: 0;
+}
+.bannerMeta {
+  font-weight: 400;
+  color: var(--fg-secondary);
+}
 .propList {
   display: flex;
   flex-direction: column;
 }
 .propRow {
   display: grid;
-  grid-template-columns: 140px 1fr;
-  gap: 8px;
-  align-items: baseline;
+  grid-template-columns: 140px minmax(0, 1fr);
+  gap: var(--space-2);
+  align-items: start;
   padding: 5px 12px;
   border-bottom: 1px solid var(--border);
 }
 .propName {
   color: var(--fg-secondary);
   font-size: var(--fs-small);
+  line-height: 20px;
 }
 .propVal {
   min-width: 0;
+  line-height: 20px;
   overflow-wrap: anywhere;
   color: var(--fg);
 }
@@ -287,20 +291,90 @@
   display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .mono {
   font-family: var(--font-mono);
   font-size: var(--fs-code);
 }
-.codeInline {
-  display: inline-block;
+.commandField {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1-5);
+  min-width: 0;
+}
+.commandHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.commandPreview {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   padding: 1px 6px;
   border-radius: var(--radius-small);
   background: var(--bg-elev);
   font-family: var(--font-mono);
   font-size: var(--fs-code);
+  line-height: 18px;
+}
+.commandToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-0-5);
+  flex: none;
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-small);
+  background: var(--bg-elev);
+  color: var(--fg-secondary);
+  font-family: var(--font-ui);
+  font-size: var(--fs-tiny);
+  line-height: 1;
+}
+.commandToggle:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.commandToggle:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+.commandBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1-5);
+  max-height: 180px;
+  overflow: auto;
+  padding: 6px 8px;
+  border-radius: var(--radius-small);
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+}
+.commandSection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0-5);
+}
+.commandSectionLabel {
+  font-size: var(--fs-tiny);
+  font-weight: 600;
+  line-height: 14px;
+  color: var(--fg-subtle);
+}
+.commandPre {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  line-height: 18px;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
+  color: var(--fg);
 }
 .mutedMeta {
   color: var(--fg-subtle);
@@ -345,7 +419,7 @@
 .metricBlock {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   max-width: 320px;
 }
 .lineProgress {
@@ -371,18 +445,18 @@
 .chipGroup {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 8px 12px;
 }
 .chipGroupInline {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .entityChip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 2px 8px;
   border-radius: var(--radius-small);
   border: 1px solid var(--border-strong);
@@ -390,7 +464,6 @@
   color: var(--fg);
   font: inherit;
   font-size: var(--fs-small);
-  cursor: pointer;
 }
 .entityChip:disabled {
   cursor: default;
@@ -404,6 +477,7 @@ button.entityChip:not(:disabled):hover {
 }
 .portChipLink {
   color: var(--link);
+  cursor: pointer;
 }
 .chipMeta {
   color: var(--fg-subtle);
@@ -415,7 +489,7 @@ button.entityChip:not(:disabled):hover {
   font-size: var(--fs-small);
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .kvTable {
   display: flex;
@@ -446,8 +520,8 @@ button.entityChip:not(:disabled):hover {
 }
 .dataRow {
   display: grid;
-  grid-template-columns: 72px minmax(120px, 1fr) minmax(140px, 1.3fr) 56px;
-  gap: 8px;
+  grid-template-columns: 72px minmax(120px, 1fr) minmax(120px, 1.2fr) 88px 56px;
+  gap: var(--space-2);
   align-items: center;
   padding: 4px 12px;
   border-bottom: 1px solid var(--border);
@@ -507,5 +581,67 @@ button.entityChip:not(:disabled):hover {
 }
 .layerSizeCell {
   min-width: 96px;
+  white-space: nowrap;
+}
+.composeTableWrap {
+  overflow-x: auto;
+}
+.composeServicesTable th {
+  position: static;
+  background: transparent;
+  padding: 4px 8px;
+}
+.composeServicesTable td {
+  padding: 4px 8px;
+  vertical-align: middle;
+}
+.composeServicesTable tbody tr:last-child td {
+  border-bottom: 0;
+}
+.composeServicesTable th:first-child,
+.composeServicesTable td:first-child {
+  padding-left: 12px;
+}
+.composeServicesTable th:last-child,
+.composeServicesTable td:last-child {
+  padding-right: 12px;
+}
+.composeServiceCell {
+  white-space: nowrap;
+}
+.composeServiceCell > .mutedMeta {
+  margin-left: var(--space-1-5);
+}
+.nowrapCell {
+  white-space: nowrap;
+}
+.composeMetricCell {
+  min-width: 76px;
+  white-space: nowrap;
+}
+.composeMemoryCell {
+  min-width: 148px;
+  white-space: nowrap;
+}
+.composeMetric {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-0-5);
+}
+.volumeChip {
+  max-width: 100%;
+  min-width: 0;
+}
+.volumeChipIcon {
+  flex: none;
+}
+.volumeChipName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.volumeChipMeta {
+  flex: none;
   white-space: nowrap;
 }

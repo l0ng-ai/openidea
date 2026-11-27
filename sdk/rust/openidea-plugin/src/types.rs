@@ -153,6 +153,69 @@ pub struct StatusItem {
     pub command: Option<String>,
 }
 
+/// An entry of a status bar item's menu ([`crate::host::set_status_item_menu`], API 1.14).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StatusMenuEntry {
+    /// Runs one of the plugin's commands, with `argument`, when chosen.
+    Action { label: String, description: Option<String>, command: String, argument: Option<String> },
+    /// A line between groups of actions.
+    Separator,
+    /// A caption above a group.
+    Header(String),
+}
+
+impl StatusMenuEntry {
+    /// An action labelled `label` that runs the plugin command `command`.
+    pub fn action(label: impl Into<String>, command: impl Into<String>) -> Self {
+        Self::Action { label: label.into(), description: None, command: command.into(), argument: None }
+    }
+    /// Sets an action's secondary text (a URL, a path); other entries are returned unchanged.
+    pub fn with_description(mut self, text: impl Into<String>) -> Self {
+        if let Self::Action { description, .. } = &mut self {
+            *description = Some(text.into());
+        }
+        self
+    }
+    /// Sets the text an action passes to its command; other entries are returned unchanged.
+    pub fn with_argument(mut self, text: impl Into<String>) -> Self {
+        if let Self::Action { argument, .. } = &mut self {
+            *argument = Some(text.into());
+        }
+        self
+    }
+}
+
+/// What [`crate::host::read_clipboard`] found (API 1.11): `None` for a kind the clipboard
+/// doesn't hold.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ClipboardContent {
+    pub text: Option<String>,
+    /// An image (a screenshot), always as PNG bytes.
+    pub image: Option<Vec<u8>>,
+}
+
+impl ClipboardContent {
+    /// The clipboard holds neither text nor an image.
+    pub fn is_empty(&self) -> bool {
+        self.text.is_none() && self.image.is_none()
+    }
+}
+
+/// A named group of extensions in a native file chooser.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileFilter {
+    pub name: String,
+    pub extensions: Vec<String>,
+}
+
+/// Options for choosing an existing file or a save destination.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FileDialog {
+    pub save: bool,
+    pub name: Option<String>,
+    pub filters: Vec<FileFilter>,
+}
+
 /// An entry of [`crate::host::pick`] and [`crate::host::pick_many`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PickItem {
@@ -169,6 +232,71 @@ impl PickItem {
 
     pub fn description(mut self, description: &str) -> Self {
         self.description = Some(description.to_owned());
+        self
+    }
+}
+
+/// A highlight rule for Run and Debug console output ([`crate::host::set_console_rules`], API 1.12).
+///
+/// `pattern` is a regular expression in the syntax Rust's `regex` and JavaScript share, without
+/// inline flags, named groups, lookaround, backreferences or repeated groups; one that could
+/// backtrack for long on a 2000-character line is `Invalid`. Colours are console palette names
+/// (`red`, `bright-blue`, …), styles any of `bold`, `italic`, `underline`, `strikethrough`, `dim`;
+/// unknown names are ignored.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConsoleRule {
+    pub pattern: String,
+    pub ignore_case: bool,
+    pub foreground: Option<String>,
+    pub background: Option<String>,
+    pub styles: Vec<String>,
+    /// Style the whole line instead of only the matched text.
+    pub whole_line: bool,
+    /// A disabled rule keeps its place but never matches.
+    pub enabled: bool,
+}
+
+impl ConsoleRule {
+    /// An enabled, case-sensitive rule that styles only the matched text.
+    pub fn new(pattern: &str) -> Self {
+        Self {
+            pattern: pattern.to_owned(),
+            ignore_case: false,
+            foreground: None,
+            background: None,
+            styles: Vec::new(),
+            whole_line: false,
+            enabled: true,
+        }
+    }
+
+    pub fn ignore_case(mut self) -> Self {
+        self.ignore_case = true;
+        self
+    }
+
+    pub fn foreground(mut self, color: &str) -> Self {
+        self.foreground = Some(color.to_owned());
+        self
+    }
+
+    pub fn background(mut self, color: &str) -> Self {
+        self.background = Some(color.to_owned());
+        self
+    }
+
+    pub fn style(mut self, style: &str) -> Self {
+        self.styles.push(style.to_owned());
+        self
+    }
+
+    pub fn whole_line(mut self) -> Self {
+        self.whole_line = true;
+        self
+    }
+
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
         self
     }
 }
@@ -228,6 +356,8 @@ impl Contribution {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum EventKind {
+    DocumentChanged,
+    WebsocketReady,
     FileClosed,
     SettingsChanged,
     InputModeChanged,
@@ -240,16 +370,28 @@ pub enum EventKind {
     FileSaved,
     FilesChanged,
     EditorFocused,
+    /// The caret moved in the focused editor (`Event::Other`, JSON
+    /// `{path, line, col, settled}` with 0-based UTF-16 positions; `settled`
+    /// marks the final position once the caret rests).
+    CaretMoved,
     /// Needs `events.input`.
     ActionPerformed,
     VcsChanged,
+    /// Problems of the window's files changed (a language server or a report): JSON object (`Event::Other`).
+    ProblemsChanged,
     Scheduled,
+    /// A project was closed (or its window closed): the project root path (`Event::ProjectClosed`).
+    ProjectClosed,
+    /// Paths watched with [`crate::host::watch_paths`] changed (`Event::WatchedFilesChanged`, API 1.18).
+    WatchedFilesChanged,
 }
 
 impl EventKind {
     /// The name the IDE knows it by.
     pub fn name(self) -> &'static str {
         match self {
+            Self::DocumentChanged => "document-changed",
+            Self::WebsocketReady => "websocket-ready",
             Self::FileClosed => "file-closed",
             Self::SettingsChanged => "settings-changed",
             Self::InputModeChanged => "input-mode-changed",
@@ -261,11 +403,68 @@ impl EventKind {
             Self::FileSaved => "file-saved",
             Self::FilesChanged => "files-changed",
             Self::EditorFocused => "editor-focused",
+            Self::CaretMoved => "caret-moved",
             Self::ActionPerformed => "action-performed",
             Self::VcsChanged => "vcs-changed",
+            Self::ProblemsChanged => "problems-changed",
+            Self::ProjectClosed => "project-closed",
+            Self::WatchedFilesChanged => "watched-files-changed",
             Self::Scheduled => "scheduled",
         }
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentTextChange {
+    pub from: u32,
+    pub to: u32,
+    pub insert: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentChanged {
+    /// Relative to `project`.
+    pub path: String,
+    /// Root of the open project `path` is relative to (absolute). Two open projects can
+    /// hold the same relative path; pass this project to `document-at`. `None` from
+    /// older IDEs.
+    #[serde(default)]
+    pub project: Option<String>,
+    pub base_version: u64,
+    pub version: u64,
+    pub changes: Vec<DocumentTextChange>,
+}
+
+impl DocumentChanged {
+    /// Converts the wire changes to editor ranges after checking their base
+    /// version and absolute UTF-16 offsets.
+    pub fn text_edits(&self, document: &Document) -> Result<Vec<TextEdit>, Error> {
+        if document.version != self.base_version {
+            return Err(Error::Stale);
+        }
+        self.changes
+            .iter()
+            .map(|change| {
+                if change.from > change.to {
+                    return Err(Error::Invalid("document change has a reversed range".into()));
+                }
+                let start = crate::text::position_utf16(&document.text, change.from)
+                    .ok_or_else(|| Error::Invalid("document change starts outside the document".into()))?;
+                let end = crate::text::position_utf16(&document.text, change.to)
+                    .ok_or_else(|| Error::Invalid("document change ends outside the document".into()))?;
+                Ok(TextEdit { range: Range::new(start, end), text: change.insert.clone() })
+            })
+            .collect()
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebSocketReady {
+    pub plugin_id: String,
+    pub connection: u64,
 }
 
 /// How the user started an action; later IDEs may report more.
@@ -307,15 +506,39 @@ pub struct ActionPerformed {
 /// Debounced changes in an open project, delivered with the `events` capability.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FilesChanged {
+    #[serde(default)]
+    pub project: Option<String>,
+    #[serde(default)]
+    pub generation: Option<u64>,
     pub created: Vec<String>,
     pub modified: Vec<String>,
     pub removed: Vec<String>,
+}
+
+/// Options for [`crate::host::subscribe_paths_with_options`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SubscriptionOptions {
+    pub globs: Vec<String>,
+    pub debounce_ms: Option<u32>,
+}
+
+impl SubscriptionOptions {
+    pub fn new(globs: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        Self { globs: globs.into_iter().map(Into::into).collect(), debounce_ms: None }
+    }
+
+    pub fn with_debounce_ms(mut self, debounce_ms: u32) -> Self {
+        self.debounce_ms = Some(debounce_ms);
+        self
+    }
 }
 
 /// A workbench event (see [`crate::host::subscribe`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Event {
+    DocumentChanged(DocumentChanged),
+    WebSocketReady(WebSocketReady),
     FileOpened(String),
     FileSaved(String),
     FilesChanged(FilesChanged),
@@ -325,6 +548,11 @@ pub enum Event {
     VcsChanged(String),
     /// The `on-schedule` period elapsed.
     Scheduled,
+    /// A project was closed (or its window closed): the project root path.
+    ProjectClosed(String),
+    /// Paths watched with [`crate::host::watch_paths`] changed (API 1.18): absolute
+    /// paths, and `project` is the project the watch belongs to.
+    WatchedFilesChanged(FilesChanged),
     /// A kind this SDK doesn't know: its name and JSON data.
     Other {
         kind: String,
@@ -345,6 +573,18 @@ pub struct RepositoryStatus {
     /// Merge / rebase / cherry-pick in progress.
     pub operation: Option<String>,
     pub changed_files: u32,
+}
+
+/// Reference and credential-stripped remotes of the worktree owning a path.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RepositoryInfo {
+    pub root: String,
+    pub relative_path: String,
+    pub branch: Option<String>,
+    pub commit: Option<String>,
+    pub upstream: Option<String>,
+    pub ahead: u32,
+    pub remotes: Vec<(String, String)>,
 }
 
 /// What a path inside a project is, as [`crate::host::Project::stat`] reports it.
@@ -517,6 +757,35 @@ mod tests {
         let d = Diagnostic::new(Range::default(), Severity::Hint, "m").code("c");
         assert_eq!((d.code.as_deref(), d.unnecessary, d.related.len()), (Some("c"), false, 0));
     }
+
+    #[test]
+    fn decodes_document_and_websocket_events() {
+        let change = Event::from_other(
+            "document-changed".into(),
+            r#"{"path":"/p/a.rs","baseVersion":7,"version":8,"changes":[{"from":1,"to":2,"insert":"x"}]}"#.into(),
+        );
+        assert!(matches!(change, Event::DocumentChanged(DocumentChanged { base_version: 7, project: None, .. })));
+        let change = Event::from_other(
+            "document-changed".into(),
+            r#"{"path":"a.rs","project":"/p","baseVersion":7,"version":8,"changes":[]}"#.into(),
+        );
+        assert!(matches!(change, Event::DocumentChanged(DocumentChanged { project: Some(ref p), .. }) if p == "/p"));
+        let ready = Event::from_other("websocket-ready".into(), r#"{"pluginId":"collab","connection":42}"#.into());
+        assert_eq!(ready, Event::WebSocketReady(WebSocketReady { plugin_id: "collab".into(), connection: 42 }));
+
+        let document = Document { version: 7, text: "a😀b".into() };
+        let change = DocumentChanged {
+            path: "/p/a.rs".into(),
+            project: None,
+            base_version: 7,
+            version: 8,
+            changes: vec![DocumentTextChange { from: 1, to: 3, insert: "x".into() }],
+        };
+        assert_eq!(
+            change.text_edits(&document).unwrap(),
+            [TextEdit { range: Range::new(Position::new(0, 1), Position::new(0, 3)), text: "x".into() }]
+        );
+    }
 }
 
 /// A notification button invoking a command declared by this plugin.
@@ -541,10 +810,30 @@ impl NotificationAction {
 impl Event {
     /// Decodes additive events while preserving unknown or malformed payloads.
     pub fn from_other(kind: String, data: String) -> Self {
+        if kind == "document-changed"
+            && let Ok(change) = serde_json::from_str(&data)
+        {
+            return Self::DocumentChanged(change);
+        }
+        if kind == "websocket-ready"
+            && let Ok(ready) = serde_json::from_str(&data)
+        {
+            return Self::WebSocketReady(ready);
+        }
         if kind == "files-changed"
             && let Ok(batch) = serde_json::from_str(&data)
         {
             return Self::FilesChanged(batch);
+        }
+        if kind == "project-closed"
+            && let Ok(root) = serde_json::from_str(&data)
+        {
+            return Self::ProjectClosed(root);
+        }
+        if kind == "watched-files-changed"
+            && let Ok(batch) = serde_json::from_str(&data)
+        {
+            return Self::WatchedFilesChanged(batch);
         }
         Self::Other { kind, data }
     }
@@ -595,6 +884,32 @@ pub struct Decoration {
     pub hover: Option<String>,
     pub after: Option<String>,
 }
+/// An editor annotation whose hover is rendered as Markdown (API 1.16).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MarkdownDecoration {
+    pub range: Range,
+    pub style: String,
+    pub hover: Option<String>,
+    pub after: Option<String>,
+    pub markdown_hover: Option<String>,
+}
+/// An editor decoration's own colors (API 1.17): `#rrggbb` or `#rrggbbaa`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DecorationColors {
+    pub foreground: Option<String>,
+    pub background: Option<String>,
+}
+/// An editor annotation with its own colors (API 1.17). `style` may be empty when `colors` are set;
+/// otherwise it is a palette name and the colors paint over it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StyledDecoration {
+    pub range: Range,
+    pub style: String,
+    pub hover: Option<String>,
+    pub after: Option<String>,
+    pub markdown_hover: Option<String>,
+    pub colors: Option<DecorationColors>,
+}
 /// A project-tree annotation. Badge is at most two Unicode characters.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FileDecoration {
@@ -622,6 +937,39 @@ pub struct BlameLine {
     pub author: String,
     pub date: i64,
     pub summary: String,
+}
+
+/// How an occurrence in a build's dependency graph was resolved (API 1.10).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DependencyStatus {
+    /// Part of the resolved graph.
+    Resolved,
+    /// Another version won: `version` is the winner, `requested_version` what this occurrence asked for.
+    OmittedForConflict,
+    /// Listed with its dependencies elsewhere in the graph; its children are not repeated.
+    OmittedForDuplicate,
+    /// Dependency management (a BOM, a platform, a constraint) supplies the version.
+    VersionManaged,
+}
+
+/// One occurrence in a build's flat dependency graph ([`crate::Project::build_dependencies`]).
+/// Each module is a root (`parent` is `None`, `scope` is empty) with its direct
+/// dependencies under it; walk `parent` up to see why an artifact is there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DependencyNode {
+    /// Empty for a Gradle project of the build.
+    pub group: String,
+    /// Artifact id, or a Gradle project's path (`:core`).
+    pub artifact: String,
+    /// The version in use; empty for a Gradle project of the build or one Gradle could not resolve.
+    pub version: String,
+    /// Maven scope, or the Gradle configuration (`runtimeClasspath`).
+    pub scope: String,
+    pub status: DependencyStatus,
+    /// What this occurrence asked for, when it differs from `version`.
+    pub requested_version: Option<String>,
+    /// Index of the occurrence bringing this one in.
+    pub parent: Option<u32>,
 }
 
 /// Non-secret settings of a plugin-owned project database source (API 1.4).

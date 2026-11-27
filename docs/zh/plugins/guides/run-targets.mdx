@@ -6,15 +6,18 @@ description: "贡献运行配置，把测试输出解析进测试树，从代码
 插件运行的任何东西都要经过 `process:<program>` 权限：用户批准程序后，IDE 按绝对路径和内容哈希固定（pin）它，
 并在每次启动前重新校验。在此基础上，插件可以：
 
-| 目标                                           | 使用                                                            | API       |
-| ---------------------------------------------- | --------------------------------------------------------------- | --------- |
-| 项目包含某个标记文件时提供固定命令             | `[[contributes.runDetectors]]`（无需代码）                      | 1.0       |
-| 在代码中计算项目的运行配置                     | `[[contributes.runConfigurations]]` + `run-configurations` 导出 | 1.4       |
-| 把测试输出转成 IDE 的测试树                    | `test-results` 导出，`framework = "plugin"`                     | 1.4       |
-| 从命令中启动自己的某个配置                     | `host::start_run`（WIT `run.start`）                            | 1.4       |
-| 让项目的所有运行都经过包装程序（DDEV、容器等） | `host::register_run_target`（WIT `run-targets`）                | 1.4       |
-| 每次启动前检查包装程序的运行环境               | `run-target-validation` 导出                                    | 1.5       |
-| 运行程序并读取输出                             | `Project::run_process`、`host::run_command`、`host::start`      | 1.0 / 1.3 |
+| 目标                                           | 使用                                                            | API        |
+| ---------------------------------------------- | --------------------------------------------------------------- | ---------- |
+| 项目包含某个标记文件时提供固定命令             | `[[contributes.runDetectors]]`（无需代码）                      | 1.0        |
+| 在代码中计算项目的运行配置                     | `[[contributes.runConfigurations]]` + `run-configurations` 导出 | 1.4        |
+| 给配置加上环境变量和调试器                     | `launch-configurations` 导出                                    | 1.9        |
+| 为配置设置默认的 PTY 或管道输出模式            | `execution-configurations` 导出 / `runDetectors.outputMode`     | 1.18       |
+| 补全自己配置的“实参”字段                       | `run-configuration-completion` 导出                             | 1.18       |
+| 把测试输出转成 IDE 的测试树                    | `test-results` 导出，`framework = "plugin"`                     | 1.4        |
+| 从命令中启动自己的某个配置                     | `host::start_run` / `host::start_run_with_options`（`run` WIT） | 1.4 / 1.18 |
+| 让项目的所有运行都经过包装程序（DDEV、容器等） | `host::register_run_target`（WIT `run-targets`）                | 1.4        |
+| 每次启动前检查包装程序的运行环境               | `run-target-validation` 导出                                    | 1.5        |
+| 运行程序并读取输出                             | `Project::run_process`、`host::run_command`、`host::start`      | 1.0 / 1.3  |
 
 ## 运行检测器
 
@@ -70,6 +73,40 @@ register_plugin!(TestRunner, run_configurations);
 每个 `PluginRunConfiguration` 包含 `id`、`name`、`program`、`args`、可选的项目内 `cwd`、`test` 和可选的 `framework`。
 请返回该项目根目录的完整列表；列出配置时会刷新。宿主最多保留 1000 项 / 4 MiB，导出失败时保留上一次有效的列表，
 程序未获批准的条目不会提供。该导出在没有窗口的情况下运行，不能弹出对话框。
+
+## 环境变量和调试器
+
+从 API 1.9 起，可以改为导出 `launch-configurations`（实现 `LaunchConfigurations`，注册为 `launch_configurations`），
+给每个配置加上环境变量和调试器。组件同时导出两者时，IDE 使用这一个。
+
+```rust
+use openidea_plugin::{Debugger, LaunchConfigurations, PluginLaunchConfiguration, PluginRunConfiguration};
+
+impl LaunchConfigurations for Functions {
+    fn launch_configurations(&mut self, _root: &str) -> Vec<PluginLaunchConfiguration> {
+        vec![PluginLaunchConfiguration {
+            config: PluginRunConfiguration {
+                id: "func".into(),
+                name: "Functions host".into(),
+                program: "func".into(),
+                args: vec!["start".into(), "--dotnet-isolated-debug".into()],
+                ..Default::default()
+            },
+            env: vec![("FUNCTIONS_WORKER_RUNTIME".into(), "dotnet-isolated".into())],
+            debugger: Some(Debugger::AttachChild { kind: "dotnet".into(), command_contains: None }),
+        }]
+    }
+}
+
+register_plugin!(Functions, launch_configurations);
+```
+
+- `env` 最多给运行的环境添加 64 个变量。和 `process` 命令一样只能新增：IDE 自身环境里已有的变量名（`PATH` 等）会让整个列表无效。
+- `debugger: None` 保持默认行为：Debug 根据 `args` 中的源文件推断调试器。
+- `Debugger::Launch { language }` 在该语言的调试器（其 `[debugger]`）下启动 `program`，适用于参数里没有源文件的程序。
+- `Debugger::AttachChild { kind, command_contains }` 让 Debug 先像 Run 一样运行配置，再附加到这次运行启动的第一个该类型进程
+  （`dotnet`、`node`、`python`、`go` 或 `native`，与 Attach to Process 相同），可选地只匹配命令行包含 `command_contains` 的进程。
+  只有这次运行自己的进程才是候选。IDE 在运行期间最多等待一分钟；没有匹配时运行继续，但不附加调试器。
 
 ## 测试结果
 
@@ -129,6 +166,28 @@ fn run_command(&mut self, _id: &str, _ctx: &Invocation, arg: Option<&str>) -> Re
 
 停止、重新运行和运行目标由 IDE 负责，启动和重新运行时都会校验已批准的程序。调试使用参数中所指源文件对应的调试器
 （或保存的配置上明确选择的调试器），没有调试器时返回 `invalid`。只能在命令或事件中调用，不能在激活或提供者中调用。
+
+### 管道与 PTY 输出（API 1.18）
+
+默认情况下，插件运行配置在 **运行** 控制台中通过分离的 `stdout` / `stderr` 管道运行（`OutputMode::Pipes`），
+早期插件的默认行为保持不变。API 1.18 起插件可以：
+
+- 在非测试的 `[[contributes.runDetectors]]` 上设置 `outputMode = "pty"`，或导出 `execution-configurations`
+  （实现 `ExecutionConfigurations`，注册为 `execution_configurations`）在 `PluginExecutionConfiguration` 上指定 `output_mode`；
+- 通过 `host::start_run_with_options(config, &args, &RunStartOptions { debug, output_mode })` 传入单次启动覆盖。
+
+优先级为：用户在 **运行 | 编辑配置…** 中保存的覆盖 > 单次调用指定的 `output_mode` > 插件配置的默认值（未设置时为 `Pipes`）。
+宿主禁止的 PTY 组合（`test` 配置、请求 `Pty` 的 `debug` 启动、远程运行目标、以及 `stdin` 文件重定向）会返回 `Invalid` 错误。
+
+> 普通伪终端（PTY）会将 `stdout` 和 `stderr` 合并为同一输出流，并可能改变缓冲、输入处理及终端行为（换行、回显与 ANSI 控制序列）。
+
+## 补全实参
+
+导出 `run-configuration-completion`（实现 `RunConfigurationCompletion`，注册为 `run_configuration_completion`），
+就能在 **运行 | 编辑配置…** 中补全自己配置的“实参”字段，比如任务运行器的任务名。用户输入（或按 Ctrl+Space）时，
+IDE 传入配置 id、`field = "arguments"`、字段文本和以 UTF-16 计的光标位置。每一项只替换它给出的 UTF-16 区间，
+其他选项、带引号的值和 `--` 之后的参数保持原样。请根据插件已经掌握的信息作答：IDE 最多保留 200 项，
+超过 300 ms 或文本已经变化后的回答会被丢弃。
 
 ## 运行目标
 
@@ -219,12 +278,14 @@ register_plugin!(MyPlugin, run_target_validation);
 
 ## 运行程序
 
-| 函数                                                 | 作用                                                                                     |
-| ---------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `Project::run_process(program, &args, stdin)`        | 在项目根目录运行已固定的程序并等待结束：`{ status, stdout, stderr }`，各 4 MiB。         |
-| `host::run_command(&Command, Some(&project), stdin)` | API 1.3：同上，可用 `Command::env` 追加环境变量。                                        |
-| `host::start(&Command, Some(&project))`              | API 1.3：保持运行的 `Child`：`poll`、`write`、`close_stdin`、`wait`、`kill`。最多 8 个。 |
-| `host::open_terminal(title, program, &args)`         | 运行该程序的终端标签页（见 [视图](/zh/plugins/guides/views)）。                          |
+| 函数                                                           | 作用                                                                                     |
+| -------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `Project::run_process(program, &args, stdin)`                  | 在项目根目录运行已固定的程序并等待结束：`{ status, stdout, stderr }`，各 4 MiB。         |
+| `host::run_command(&Command, Some(&project), stdin)`           | API 1.3：同上，可用 `Command::env` 追加环境变量。                                        |
+| `host::run_captured(&Command, Some(&project), stdin, options)` | API 1.15：可配置输出上限（每个流最高 128 MiB），stdout 或 stderr 溢出时明确报错。        |
+| `host::start(&Command, Some(&project))`                        | API 1.3：保持运行的 `Child`：`poll`、`write`、`close_stdin`、`wait`、`kill`。最多 8 个。 |
+| `host::start_stream(&Command, Some(&project), options)`        | API 1.15：基于管道背压的有界无损流式传输，超出总预算时明确报错并终止进程。               |
+| `host::open_terminal(title, program, &args)`                   | 运行该程序的终端标签页（见 [视图](/zh/plugins/guides/views)）。                          |
 
 ```rust
 use openidea_plugin::host::{self, Command};
@@ -237,4 +298,9 @@ let out = host::run_command(&Command::new("forge").arg("build").env("FOUNDRY_PRO
 - 环境变量只能追加：名称已存在于准备好的环境中（包括登录 shell 的 `PATH`）会报错。最多 64 项。
 - 调用会随任务或调用一起取消，超时即终止；耗时的工作请放进 `host::begin_task`。丢弃 `Child` 会终止进程，
   禁用或回收插件会结束它启动的所有子进程。
+- `Child` 的 `poll` 和 `wait` 返回上次读取之后的输出；`status` 随包含最后一段输出的那次结果返回，读到它为止。
+  通过 `start` 启动的命令，未读取的输出每个流只保留最后 1 MiB（尾部环形缓冲）。若需无头部丢弃、避免竞态的无损流式传输，
+  请使用 API 1.15 的 `start_stream` 与 `ProcessOptions`（默认每流 256 KiB 缓冲区并施加系统管道背压，总上限 32 MiB）。
+- 当程序在 `run_process`、`run_command` 或 `run_captured` 中超出输出上限，或在 `start_stream` 中超出总流预算时，
+  IDE 会返回明确的错误，绝不静默截断 stdout 或 stderr。
 - 用户可以在 **设置 › 插件** 中为 `process:` 授权全局或按项目选择可执行文件；插件仍使用其声明的程序名调用。

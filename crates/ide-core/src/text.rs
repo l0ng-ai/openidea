@@ -110,6 +110,17 @@ pub struct WorkspaceEditPrecondition {
 }
 
 impl WorkspaceEdit {
+    /// The files and folders the edit renames, in order.
+    pub fn moves(&self) -> Vec<FileMove> {
+        self.files
+            .iter()
+            .filter_map(|f| match f {
+                FileEdit::Rename { from, to } => Some(FileMove { from: from.clone(), to: to.clone() }),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Coalesces aliases of the same file before applying edits against its original text.
     /// Resource operations separate batches because later edits may use the new contents.
     pub fn deduplicate(&mut self) {
@@ -138,8 +149,11 @@ impl WorkspaceEdit {
                         continue;
                     }
                     *expected = expected.or(version);
+                    // Repeats within one entry are intended (LSP inserts at one position
+                    // apply in order); only an alias entry repeats what is already merged.
+                    let merged = own.len();
                     for edit in edits {
-                        if !own.contains(&edit) {
+                        if !own[..merged].contains(&edit) {
                             own.push(edit);
                         }
                     }
@@ -179,6 +193,14 @@ pub enum FileEdit {
         path: crate::IpcPath,
         recursive: bool,
     },
+}
+
+/// One file or folder move.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FileMove {
+    pub from: crate::IpcPath,
+    pub to: crate::IpcPath,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
@@ -236,6 +258,8 @@ pub enum SymbolKind {
     Event,
     Operator,
     Key,
+    /// A Flutter widget built in the code (Flutter outline only).
+    Widget,
     Unknown,
 }
 
@@ -277,10 +301,40 @@ pub struct OutlineItem {
 /// Fuzzy-match highlight: indices (in chars of the displayed string) that matched.
 pub type MatchIndices = Vec<u32>;
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod workspace_edit_tests {
     use super::*;
 
+    #[test]
+    fn repeated_edits_within_one_entry_survive_but_repeats_across_entries_do_not() {
+        let path = PathBuf::from("missing-dir/main.ts");
+        let at = |line, text: &str| TextEdit {
+            range: Range::new(Pos::new(line, 0), Pos::new(line, 0)),
+            new_text: text.into(),
+        };
+        let entry = |edits: Vec<TextEdit>| FileEdit::Edit { path: path.clone().into(), edits, version: None };
+        let (nl, brace, other) = (at(0, "\n"), at(1, "}"), at(2, "x"));
+        for (entries, expected) in [
+            (vec![vec![nl.clone(), nl.clone()]], vec![nl.clone(), nl.clone()]),
+            (vec![vec![brace.clone(), nl.clone(), brace.clone()]], vec![brace.clone(), nl.clone(), brace.clone()]),
+            (vec![vec![nl.clone(), nl.clone()], vec![nl.clone(), nl.clone()]], vec![nl.clone(), nl.clone()]),
+            (vec![vec![nl.clone()], vec![nl.clone(), other.clone()]], vec![nl.clone(), other.clone()]),
+            (
+                vec![vec![nl.clone()], vec![other.clone(), other.clone()]],
+                vec![nl.clone(), other.clone(), other.clone()],
+            ),
+        ] {
+            let mut workspace =
+                WorkspaceEdit { files: entries.clone().into_iter().map(entry).collect(), ..Default::default() };
+            workspace.deduplicate();
+            assert_eq!(workspace.files, [entry(expected.clone())], "{entries:?}");
+            let once = workspace.clone();
+            workspace.deduplicate();
+            assert_eq!(workspace, once, "{entries:?}");
+        }
+    }
+
+    #[cfg(unix)]
     #[test]
     fn aliases_are_one_edit_but_resource_operations_preserve_order() {
         let dir = tempfile::tempdir().unwrap();

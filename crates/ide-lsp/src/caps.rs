@@ -122,6 +122,7 @@ pub fn client_capabilities() -> Value {
             },
             "codeLens": { "dynamicRegistration": false },
             "documentLink": { "dynamicRegistration": false, "tooltipSupport": true },
+            "colorProvider": { "dynamicRegistration": false },
             "formatting": { "dynamicRegistration": false },
             "rangeFormatting": { "dynamicRegistration": false },
             "rename": {
@@ -147,9 +148,10 @@ pub fn client_capabilities() -> Value {
                     "macro", "keyword", "modifier", "comment", "string", "number", "regexp",
                     "operator", "decorator"
                 ],
+                // The native TypeScript server only sends modifiers the client advertises.
                 "tokenModifiers": [
                     "declaration", "definition", "readonly", "static", "deprecated", "abstract",
-                    "async", "modification", "documentation", "defaultLibrary"
+                    "async", "modification", "documentation", "defaultLibrary", "local"
                 ],
                 "formats": ["relative"],
                 "overlappingTokenSupport": false,
@@ -163,7 +165,9 @@ pub fn client_capabilities() -> Value {
             "typeHierarchy": { "dynamicRegistration": false }
         },
         // rust-analyzer: report when the project has loaded (`quiescent`).
-        "experimental": { "serverStatusNotification": true }
+        "experimental": { "serverStatusNotification": true },
+        // Jupyter notebooks: code cells are synced with `notebookDocument/*` (see `notebook.rs`).
+        "notebookDocument": { "synchronization": { "dynamicRegistration": false, "executionSummarySupport": false } }
     })
 }
 
@@ -426,6 +430,34 @@ impl ServerCaps {
             .unwrap_or_default()
     }
 
+    /// Whether `notebookDocumentSync` takes Jupyter notebooks (`file:`) with cells of `language`:
+    /// a selector that names no notebook, or `jupyter-notebook` / `*`, and no cell languages or
+    /// `language` among them.
+    pub fn syncs_notebooks(&self, language: &str) -> bool {
+        let Some(selectors) = self.raw.pointer("/notebookDocumentSync/notebookSelector").and_then(Value::as_array)
+        else {
+            return false;
+        };
+        selectors.iter().any(|s| {
+            let notebook = match s.get("notebook") {
+                None | Some(Value::Null) => true,
+                Some(Value::String(kind)) => kind == "jupyter-notebook" || kind == "*",
+                Some(filter) => {
+                    filter
+                        .get("notebookType")
+                        .and_then(Value::as_str)
+                        .is_none_or(|t| t == "jupyter-notebook" || t == "*")
+                        && filter.get("scheme").and_then(Value::as_str).is_none_or(|s| s == "file")
+                }
+            };
+            let cells = match s.get("cells").and_then(Value::as_array) {
+                None => true,
+                Some(cells) => cells.iter().any(|c| c.get("language").and_then(Value::as_str) == Some(language)),
+            };
+            notebook && cells && (s.get("notebook").is_some() || s.get("cells").is_some())
+        })
+    }
+
     /// `workspace.fileOperations.<op>` registration options (`op`: `willRename`, `didRename`).
     pub fn file_operation(&self, op: &str) -> Option<&Value> {
         self.raw.pointer(&format!("/workspace/fileOperations/{op}")).filter(|v| v.is_object())
@@ -666,6 +698,26 @@ mod tests {
         c.restrict(r.clone());
         c.register("textDocument/codeAction", Some(&json!({ "codeActionKinds": ["quickfix", "refactor.inline"] })));
         assert_eq!(c.code_action_kinds(), Some(vec!["refactor.inline".into()]));
+    }
+
+    #[test]
+    fn notebook_sync_selectors() {
+        let syncs = |selector: Value| {
+            ServerCaps::parse(json!({ "notebookDocumentSync": { "notebookSelector": [selector] } }))
+                .syncs_notebooks("python")
+        };
+        // basedpyright
+        assert!(syncs(json!({
+            "notebook": { "scheme": "file", "notebookType": "jupyter-notebook" }, "cells": [{ "language": "python" }]
+        })));
+        // Ruff: any notebook with Python cells.
+        assert!(syncs(json!({ "cells": [{ "language": "python" }] })));
+        assert!(syncs(json!({ "notebook": "*" })));
+        assert!(!syncs(json!({ "notebook": "interactive" })));
+        assert!(!syncs(json!({ "notebook": { "notebookType": "jupyter-notebook", "scheme": "untitled" } })));
+        assert!(!syncs(json!({ "cells": [{ "language": "r" }] })));
+        assert!(!syncs(json!({})));
+        assert!(!ServerCaps::parse(json!({ "textDocumentSync": 2 })).syncs_notebooks("python"));
     }
 
     #[test]

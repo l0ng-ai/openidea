@@ -52,6 +52,100 @@ fn npm_scripts_with_lockfile_package_manager() {
 }
 
 #[test]
+fn playwright_scripts_and_configs() {
+    let dir = project(&[
+        ("package.json", r#"{"scripts":{"e2e":"cross-env CI=1 playwright test --project=chromium","test":"vitest"}}"#),
+        ("playwright.config.ts", ""),
+        ("site/package.json", r#"{"devDependencies":{"@playwright/test":"^1.56.0"}}"#),
+        ("site/playwright.config.ts", ""),
+    ]);
+    let c = detect(dir.path());
+    let e2e = find(&c, "npm:e2e");
+    assert!(e2e.is_test);
+    assert_eq!(e2e.extras.test_runner.as_deref(), Some("playwright"));
+    assert_eq!(find(&c, "npm:test").extras.test_runner, None);
+    // The root's script runs Playwright already; the nested package has none.
+    assert!(!ids(&c).contains(&"playwright"));
+    let site = find(&c, "playwright:site");
+    assert_eq!(cmdline(site), "npx playwright test");
+    assert_eq!(site.name, "site: playwright test");
+    assert!(site.is_test && site.detected);
+    assert_eq!(site.kind, "node");
+    assert_eq!(site.cwd.as_deref(), Some(Path::new("site")));
+    assert_eq!(site.extras.test_runner.as_deref(), Some("playwright"));
+    assert_eq!(site.debug_adapter.as_deref(), Some("js-debug"));
+}
+
+#[test]
+fn cypress_scripts_dependencies_and_configs() {
+    let dir = project(&[
+        ("package.json", r#"{"scripts":{"cy:run":"cypress run --browser chrome","cy:open":"cypress open"}}"#),
+        ("cypress.config.ts", ""),
+        ("web/package.json", r#"{"devDependencies":{"cypress":"^15.0.0"}}"#),
+        ("docs/package.json", r#"{"scripts":{"build":"vite build"}}"#),
+        ("docs/cypress.config.js", ""),
+    ]);
+    let c = detect(dir.path());
+    let run = find(&c, "npm:cy:run");
+    assert!(run.is_test);
+    assert_eq!(run.extras.test_runner.as_deref(), Some("cypress"));
+    assert!(!find(&c, "npm:cy:open").is_test);
+    // The root's script runs Cypress already.
+    assert!(!ids(&c).contains(&"cypress"));
+    let web = find(&c, "cypress:web");
+    assert_eq!(cmdline(web), "npx cypress run");
+    assert_eq!(web.name, "web: cypress run");
+    assert!(web.is_test && web.detected);
+    assert_eq!(web.kind, "cypress");
+    assert_eq!(web.cwd.as_deref(), Some(Path::new("web")));
+    assert_eq!(find(&c, "cypress:docs").kind, "cypress");
+}
+
+#[test]
+fn node_test_scripts() {
+    let dir = project(&[(
+        "package.json",
+        r#"{"scripts":{"test":"node --import tsx --test","check":"tsx --test src/","tap":"node --test --test-reporter=tap","start":"node server.js --test"}}"#,
+    )]);
+    let c = detect(dir.path());
+    assert_eq!(find(&c, "npm:test").extras.test_runner.as_deref(), Some("node-test"));
+    let check = find(&c, "npm:check");
+    assert!(check.is_test);
+    assert_eq!(check.extras.test_runner.as_deref(), Some("node-test"));
+    // A reporter of its own: run as written, without the IDE's.
+    assert_eq!(find(&c, "npm:tap").extras.test_runner, None);
+    assert_eq!(find(&c, "npm:start").extras.test_runner, None);
+}
+
+#[test]
+fn mocha_scripts() {
+    let dir = project(&[(
+        "package.json",
+        r#"{"scripts":{"spec":"mocha --recursive","test":"nyc ./node_modules/.bin/mocha","lint":"eslint mocha.config.js"}}"#,
+    )]);
+    let c = detect(dir.path());
+    let spec = find(&c, "npm:spec");
+    assert!(spec.is_test);
+    assert_eq!(spec.extras.test_runner.as_deref(), Some("mocha"));
+    assert_eq!(find(&c, "npm:test").extras.test_runner.as_deref(), Some("mocha"));
+    assert!(!find(&c, "npm:lint").is_test);
+}
+
+#[test]
+fn jasmine_scripts() {
+    let dir = project(&[(
+        "package.json",
+        r#"{"scripts":{"spec":"jasmine --config=spec/support/jasmine.json","test":"tsc && node node_modules/jasmine/bin/jasmine.js","browser":"jasmine-browser-runner runSpecs"}}"#,
+    )]);
+    let c = detect(dir.path());
+    let spec = find(&c, "npm:spec");
+    assert!(spec.is_test);
+    assert_eq!(spec.extras.test_runner.as_deref(), Some("jasmine"));
+    assert_eq!(find(&c, "npm:test").extras.test_runner.as_deref(), Some("jasmine"));
+    assert!(!find(&c, "npm:browser").is_test);
+}
+
+#[test]
 fn package_manager_selection() {
     for (lock, pm) in [("yarn.lock", "yarn"), ("bun.lockb", "bun"), ("bun.lock", "bun"), ("package-lock.json", "npm")] {
         let dir = project(&[("package.json", r#"{"scripts":{"start":"node ."}}"#), (lock, "")]);
@@ -354,6 +448,8 @@ fn nested_builds_of_every_kind_and_depth() {
         ide_build::compile::BuildKind::Build,
         Some(&dir.path().join("services/api/app/src/main/kotlin/com/acme/Api.kt")),
         None,
+        None,
+        &ide_core::CancellationToken::new(),
     )
     .unwrap();
     assert_eq!(plan.steps[0].cwd, dir.path().join("services/api"));
@@ -378,25 +474,108 @@ fn a_root_build_disables_the_nested_scan() {
 }
 
 #[test]
-fn spring_boot_applications_need_the_plugin_and_a_main() {
+fn spring_boot_applications_need_spring_boot_and_a_main() {
     let main =
         "package demo;\n@SpringBootApplication\npublic class App {\n  public static void main(String[] args) {}\n}\n";
-    // A library using Spring Boot without the plugin, a configuration class without `main`,
-    // the annotation in a comment, a parent POM.
+    // A module without Spring Boot in its build, a configuration class without `main`, the
+    // annotation in a comment, a parent POM.
     let dir = project(&[
-        ("lib/pom.xml", "<project><dependencies>spring-boot-starter</dependencies></project>"),
-        ("lib/src/main/java/demo/App.java", main),
+        ("plain/pom.xml", "<project><dependencies>commons-lang3</dependencies></project>"),
+        ("plain/src/main/java/demo/App.java", main),
         ("svc/pom.xml", BOOT_POM),
         ("svc/src/main/java/demo/Config.java", "package demo;\n@SpringBootApplication\npublic class Config {}\n"),
         (
             "svc/src/main/java/demo/Old.java",
             "package demo;\n// @SpringBootApplication\nclass Old { public static void main(String[] a) {} }\n",
         ),
-        ("gr/build.gradle", "dependencies { implementation 'org.springframework.boot:spring-boot-starter' }\n"),
+        ("gr/build.gradle", "dependencies { implementation 'com.google.guava:guava:33.0.0-jre' }\n"),
         ("gr/src/main/java/demo/App.java", main),
     ]);
     let c = detect(dir.path());
     assert!(!c.iter().any(|c| c.kind == "spring-boot"), "{:?}", ids(&c));
+}
+
+/// Spring Boot on the classpath is enough, as for IntelliJ IDEA: a module depending on a
+/// starter (directly or through its parent POM) without the packaging plugin, and Gradle's
+/// dependency on `org.springframework.boot:…`.
+#[test]
+fn spring_boot_applications_without_the_plugin() {
+    let main =
+        "package demo;\n@SpringBootApplication\npublic class App {\n  public static void main(String[] args) {}\n}\n";
+    let dir = project(&[
+        (
+            "lib/pom.xml",
+            "<project><dependencies><dependency><groupId>org.springframework.boot</groupId>\
+                         <artifactId>spring-boot-starter-web</artifactId></dependency></dependencies></project>",
+        ),
+        ("lib/src/main/java/demo/App.java", main),
+        ("gr/build.gradle", "dependencies { implementation 'org.springframework.boot:spring-boot-starter' }\n"),
+        ("gr/src/main/java/demo/App.java", main),
+    ]);
+    let c = detect(dir.path());
+    assert_eq!(find(&c, "application:lib:demo.App").kind, "spring-boot");
+    assert_eq!(find(&c, "application:gr:demo.App").kind, "spring-boot");
+
+    let parent = "<project><packaging>pom</packaging><modules><module>job</module></modules>\
+                  <parent><groupId>org.springframework.boot</groupId>\
+                  <artifactId>spring-boot-starter-parent</artifactId></parent></project>";
+    let dir = project(&[
+        ("pom.xml", parent),
+        ("job/pom.xml", "<project><artifactId>job</artifactId></project>"),
+        ("job/src/main/java/demo/App.java", main),
+    ]);
+    assert_eq!(find(&detect(dir.path()), "application:job:demo.App").kind, "spring-boot");
+}
+
+#[test]
+fn spring_boot_modules_inherit_the_plugin_from_their_parent_build() {
+    let main = |pkg: &str, ann: &str, cls: &str| {
+        format!("package {pkg};\n{ann}\npublic class {cls} {{\n  public static void main(String[] a) {{}}\n}}\n")
+    };
+    let parent = "<project><packaging>pom</packaging><modules><module>order</module><module>user</module>\
+                  <module>gateway</module></modules><build><plugins><plugin>\
+                  <artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></build></project>";
+    let order = main("shop.order", "@SpringBootApplication", "OrderApp");
+    let user = main("shop.user", "@SpringCloudApplication", "UserApp");
+    // A project annotation carrying @SpringBootApplication, declared in another module.
+    let gateway = main("shop.gateway", "@ShopApplication", "GatewayApp")
+        .replace("package shop.gateway;\n", "package shop.gateway;\nimport shop.common.ShopApplication;\n");
+    let annotation = "package shop.common;\n\nimport org.springframework.boot.autoconfigure.SpringBootApplication;\n\
+                      @Target(ElementType.TYPE)\n@SpringBootApplication\npublic @interface ShopApplication {}\n";
+    let files = [
+        ("pom.xml", parent.to_owned()),
+        ("order/pom.xml", "<project><artifactId>order</artifactId></project>".to_owned()),
+        ("order/src/main/java/shop/order/OrderApp.java", order),
+        ("user/pom.xml", "<project><artifactId>user</artifactId></project>".to_owned()),
+        ("user/src/main/java/shop/user/UserApp.java", user),
+        ("gateway/pom.xml", "<project><artifactId>gateway</artifactId></project>".to_owned()),
+        ("gateway/src/main/java/shop/gateway/GatewayApp.java", gateway),
+        ("common/src/main/java/shop/common/ShopApplication.java", annotation.to_owned()),
+    ];
+    let files: Vec<(&str, &str)> = files.iter().map(|(p, t)| (*p, t.as_str())).collect();
+    let c = detect(project(&files).path());
+    for id in [
+        "application:order:shop.order.OrderApp",
+        "application:user:shop.user.UserApp",
+        "application:gateway:shop.gateway.GatewayApp",
+    ] {
+        assert_eq!(find(&c, id).kind, "spring-boot", "{id}");
+    }
+
+    // A parent that only manages the plugin doesn't apply it; Gradle applies it from `subprojects`.
+    let dir = project(&[
+        ("pom.xml", PARENT_POM),
+        ("app/pom.xml", "<project/>"),
+        ("app/src/main/java/demo/App.java", &main("demo", "@SpringBootApplication", "App")),
+    ]);
+    assert!(!detect(dir.path()).iter().any(|c| c.kind == "spring-boot"));
+    let dir = project(&[
+        ("settings.gradle", "include 'app'\n"),
+        ("build.gradle", "subprojects {\n  apply plugin: 'org.springframework.boot'\n}\n"),
+        ("app/build.gradle", "dependencies {}\n"),
+        ("app/src/main/java/demo/App.java", &main("demo", "@SpringBootApplication", "App")),
+    ]);
+    assert_eq!(find(&detect(dir.path()), "application:app:demo.App").kind, "spring-boot");
 }
 
 #[test]
@@ -572,6 +751,20 @@ fn godot_projects_run_their_main_scene() {
     assert_eq!(demo.name, "Godot Project (demo)");
     assert_eq!(demo.cwd, Some(std::path::PathBuf::from("demo").into()));
     assert!(detect(project(&[("main.gd", "extends Node\n")]).path()).is_empty());
+}
+
+#[test]
+fn flutter_apps_run_their_entry_point() {
+    let pubspec = "name: app\ndependencies:\n  flutter:\n    sdk: flutter\n";
+    let dir = project(&[("pubspec.yaml", pubspec), ("lib/main.dart", "void main() {}\n")]);
+    let c = detect(dir.path());
+    let app = find(&c, "flutter:run");
+    assert_eq!(app.kind, "flutter");
+    assert_eq!(cmdline(app), "flutter run -t lib/main.dart");
+    assert_eq!(app.debug_adapter.as_deref(), Some("dart"));
+    // A Flutter package has no app to start, and a Dart package no Flutter.
+    assert!(detect(project(&[("pubspec.yaml", pubspec), ("lib/widgets.dart", "")]).path()).is_empty());
+    assert!(detect(project(&[("pubspec.yaml", "name: tool\n"), ("lib/main.dart", "")]).path()).is_empty());
 }
 
 #[test]
@@ -856,7 +1049,7 @@ fn go_work_external_member_has_a_plain_absolute_working_directory() {
 
 #[test]
 fn go_work_parser_ignores_other_directives_comments_and_malformed_groups() {
-    use ide_run::go::work_modules;
+    use ide_core::go::work_modules;
     assert_eq!(
         work_modules("replace use => ./not-a-member\n// use ./also-not\nuse ./real\n"),
         vec![std::path::PathBuf::from("./real")]
@@ -867,7 +1060,7 @@ fn go_work_parser_ignores_other_directives_comments_and_malformed_groups() {
 
 #[test]
 fn go_work_paths_decode_go_string_escapes() {
-    use ide_run::go::work_modules;
+    use ide_core::go::work_modules;
     for path in [r#""./\u0061pp""#, r#""./\x61pp""#, r#""./\141pp""#, "`./app`"] {
         assert_eq!(work_modules(&format!("use {path}\n")), vec![std::path::PathBuf::from("./app")]);
     }
@@ -1172,4 +1365,92 @@ fn a_django_project_in_src_uses_the_environment_next_to_it() {
     let c = detect(dir.path());
     assert!(c.iter().any(|c| c.id == "pytest"));
     assert!(!c.iter().any(|c| c.id.starts_with("pytest:")), "{:?}", c.iter().map(|c| &c.id).collect::<Vec<_>>());
+}
+
+#[test]
+fn rebar3_projects() {
+    let dir = project(&[("rebar.config", "{erl_opts, [debug_info]}.\n"), ("src/app.erl", "-module(app).\n")]);
+    let c = detect(dir.path());
+    assert_eq!(ids(&c), ["rebar3:shell", "rebar3:eunit"]);
+    assert_eq!(cmdline(&c[0]), "rebar3 shell");
+    assert!(c[1].is_test);
+
+    // Common Test suites in an umbrella app; the project's own rebar3 script.
+    let dir = project(&[
+        ("rebar.config", ""),
+        ("rebar3", "#!/usr/bin/env escript\n"),
+        ("apps/core/test/core_SUITE.erl", "-module(core_SUITE).\n"),
+    ]);
+    let c = detect(dir.path());
+    assert_eq!(ids(&c), ["rebar3:shell", "rebar3:eunit", "rebar3:ct"]);
+    if !cfg!(windows) {
+        assert_eq!(cmdline(find(&c, "rebar3:ct")), "./rebar3 ct");
+    }
+}
+
+#[test]
+fn mix_projects() {
+    let dir = project(&[("mix.exs", "defmodule App.MixProject do\n  defp deps, do: []\nend\n")]);
+    let c = detect(dir.path());
+    assert_eq!(ids(&c), ["mix:iex", "mix:test"]);
+    assert_eq!(cmdline(&c[0]), "iex -S mix");
+    assert!(c[1].is_test);
+
+    let dir = project(&[("mix.exs", "defp deps do\n  [{:phoenix, \"~> 1.7\"}]\nend\n")]);
+    assert_eq!(cmdline(&detect(dir.path())[0]), "iex -S mix phx.server");
+}
+
+#[test]
+fn sbt_projects() {
+    let dir = project(&[
+        ("build.sbt", "lazy val core = project\n"),
+        ("core/build.sbt", "libraryDependencies += \"a\" % \"b\" % \"1\"\n"),
+        ("core/src/main/scala/App.scala", "object App\n"),
+    ]);
+    let c = detect(dir.path());
+    assert_eq!(ids(&c), ["sbt:run", "sbt:test"]);
+    assert_eq!(cmdline(&c[0]), "sbt run");
+    assert!(c[1].is_test && c.iter().all(|c| c.kind == "sbt"));
+
+    let dir = project(&[("build.sbt", ""), ("sbt", "#!/bin/sh\n")]);
+    if !cfg!(windows) {
+        assert_eq!(cmdline(&detect(dir.path())[1]), "./sbt test");
+    }
+}
+
+/// UE writes a `.sln` listing the engine's own tool projects; expanding it buries the run menu.
+#[test]
+fn a_solution_in_a_unreal_project_is_not_expanded_into_dotnet_configurations() {
+    let dir = project(&[
+        ("Game.uproject", r#"{"FileVersion":3,"EngineAssociation":"5.8"}"#),
+        (
+            "Game.sln",
+            r#"Microsoft Visual Studio Solution File, Format Version 12.00
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Game", "Source\Game\Game.csproj", "{00000000-0000-0000-0000-000000000000}"
+EndProject
+"#,
+        ),
+        (
+            "Source/Game/Game.csproj",
+            r#"<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType></PropertyGroup></Project>"#,
+        ),
+    ]);
+    let c = detect(dir.path());
+    assert!(c.iter().all(|c| !c.kind.starts_with("dotnet")), "{:?}", ids(&c));
+}
+
+/// The engine keeps copies of its tool projects under the generated trees, which hold no code
+/// anyone runs from here — and on a real project they are deep enough to slow detection down.
+#[test]
+fn csproj_under_unreal_generated_directories_is_not_detected() {
+    let exe =
+        r#"<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType></PropertyGroup></Project>"#;
+    let dir = project(&[
+        ("Intermediate/ProjectFiles/UnrealBuildTool/UnrealBuildTool.csproj", exe),
+        ("Binaries/Win64/ShaderCopy/ShaderCopy.csproj", exe),
+        ("Saved/Tools/Helper/Helper.csproj", exe),
+        ("DerivedDataCache/Worker/Worker.csproj", exe),
+    ]);
+    let c = detect(dir.path());
+    assert!(c.is_empty(), "{:?}", ids(&c));
 }

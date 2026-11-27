@@ -23,23 +23,125 @@ fn describe(cmd: &Command) -> String {
     s
 }
 
+pub const PUBLIC_NPM_REGISTRY: &str = "https://registry.npmjs.org/";
+
+fn failed_command(label: &str, output: &str, status: &str) -> IdeError {
+    let tail: Vec<&str> = output.lines().rev().filter(|l| !l.trim().is_empty()).take(3).collect();
+    let tail: Vec<&str> = tail.into_iter().rev().collect();
+    failed_with(label, &tail, status)
+}
+
+fn failed_with(label: &str, lines: &[impl AsRef<str>], status: &str) -> IdeError {
+    let lines: Vec<&str> = lines.iter().map(AsRef::as_ref).collect();
+    IdeError::new(
+        ErrorKind::Io,
+        format!(
+            "`{label}` failed ({status}){}",
+            if lines.is_empty() { String::new() } else { format!(": {}", lines.join(" / ")) }
+        ),
+    )
+}
+
+/// CLI flags forcing `npm` / `pnpm` onto [`PUBLIC_NPM_REGISTRY`], including `@scope:registry`
+/// overrides that otherwise take precedence over `--registry` in `~/.npmrc` for scoped packages.
+pub fn npm_public_registry_args<'a>(specs: impl IntoIterator<Item = &'a str>, pnpm: bool) -> Vec<String> {
+    let mut args = vec![format!("--registry={PUBLIC_NPM_REGISTRY}")];
+    if !pnpm {
+        for spec in specs {
+            if let Some((scope, _)) = spec.split_once('/').filter(|(s, _)| s.starts_with('@') && s.len() > 1) {
+                let flag = format!("--{scope}:registry={PUBLIC_NPM_REGISTRY}");
+                if !args.contains(&flag) {
+                    args.push(flag);
+                }
+            }
+        }
+    }
+    args
+}
+
+/// Whether `npm` / `pnpm` output indicates a mirror miss or private-registry auth rejection
+/// (`ETARGET`, `E404`, `E401`, `ENEEDAUTH`, `E403`).
+pub fn is_npm_registry_miss(output: &str) -> bool {
+    const CODES: &[&str] = &[
+        "ETARGET",
+        "notarget",
+        "No matching version found",
+        "ERR_PNPM_NO_MATCHING_VERSION",
+        "E404",
+        "404 Not Found",
+        "ERR_PNPM_FETCH_404",
+        "E401",
+        "ENEEDAUTH",
+        "ERR_PNPM_FETCH_401",
+        "E403",
+        "ERR_PNPM_FETCH_403",
+    ];
+    CODES.iter().any(|code| output.contains(code))
+}
+
 /// Runs `cmd`, forwarding each stdout/stderr line as [`InstallEvent::Line`].
 /// Returns the collected output; fails on non-zero exit or cancellation.
 pub fn run_streamed(cmd: Command, cancel: &CancellationToken, emit: Emit) -> IdeResult<String> {
     let label = describe(&cmd);
     let (ok, output, status) = run_collect(cmd, cancel, emit)?;
     if !ok {
-        let tail: Vec<&str> = output.lines().rev().filter(|l| !l.trim().is_empty()).take(3).collect();
-        let tail: Vec<&str> = tail.into_iter().rev().collect();
-        return Err(IdeError::new(
-            ErrorKind::Io,
-            format!(
-                "`{label}` failed ({status}){}",
-                if tail.is_empty() { String::new() } else { format!(": {}", tail.join(" / ")) }
-            ),
-        ));
+        return Err(failed_command(&label, &output, &status));
     }
     Ok(output)
+}
+
+/// Like [`run_streamed`], but a failure quotes the lines `pick` finds in the output instead of
+/// the last three, when it finds any.
+pub fn run_streamed_picking(
+    cmd: Command,
+    cancel: &CancellationToken,
+    emit: Emit,
+    pick: fn(&str) -> Vec<String>,
+) -> IdeResult<String> {
+    let label = describe(&cmd);
+    let (ok, output, status) = run_collect(cmd, cancel, emit)?;
+    if ok {
+        return Ok(output);
+    }
+    match pick(&output) {
+        picked if picked.is_empty() => Err(failed_command(&label, &output, &status)),
+        picked => Err(failed_with(&label, &picked, &status)),
+    }
+}
+
+/// Runs an `npm` / `pnpm` command against the user's configured registry first (preserving
+/// corporate mirrors, proxies, and CAs), and with `public_fallback` retries once against
+/// [`PUBLIC_NPM_REGISTRY`] when the configured registry misses the package/version or rejects
+/// auth. Preserves the primary error if the public registry is unreachable. Without
+/// `public_fallback` (Settings › Tools › Download Mirrors) the configured registry's error stands.
+pub fn run_npm_with_public_fallback(
+    mut build: impl FnMut(&[String]) -> Command,
+    specs: &[String],
+    pnpm: bool,
+    public_fallback: bool,
+    cancel: &CancellationToken,
+    emit: Emit,
+) -> IdeResult<String> {
+    let primary = build(&[]);
+    let label = describe(&primary);
+    let (ok, output, status) = run_collect(primary, cancel, emit)?;
+    if ok {
+        return Ok(output);
+    }
+    let err = failed_command(&label, &output, &status);
+    if !public_fallback || cancel.is_cancelled() || !is_npm_registry_miss(&output) {
+        return Err(err);
+    }
+    emit(InstallEvent::Line {
+        text: format!("Configured npm registry missed package; retrying against {PUBLIC_NPM_REGISTRY}…"),
+    });
+    let extra = npm_public_registry_args(specs.iter().map(String::as_str), pnpm);
+    match run_collect(build(&extra), cancel, emit) {
+        Ok((true, retry_out, _)) => Ok(retry_out),
+        Ok((false, _, _)) => Err(err),
+        Err(e) if e.kind == ErrorKind::Cancelled => Err(e),
+        Err(_) => Err(err),
+    }
 }
 
 /// Like [`run_streamed`] but returns `(success, output, status text)` instead of failing on a non-zero exit.
@@ -255,6 +357,25 @@ fn revoke_best_effort(curl: &Path) -> bool {
     ok
 }
 
+/// Whether the environment names a proxy, which curl then follows on its own.
+fn environment_names_proxy() -> bool {
+    ["HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY"]
+        .iter()
+        .flat_map(|name| [name.to_string(), name.to_ascii_lowercase()])
+        .any(|name| std::env::var_os(name).is_some_and(|v| !v.is_empty()))
+}
+
+/// `--proxy` for `url` from the system proxy `matcher` reads (macOS and Windows settings),
+/// which the IDE's HTTP client follows in Auto mode but curl doesn't read: without it a proxy
+/// app's system proxy reaches every request but the tool downloads.
+fn system_proxy_args(url: &str, matcher: &hyper_util::client::proxy::matcher::Matcher) -> Vec<String> {
+    let Ok(uri) = url.parse::<http::Uri>() else { return Vec::new() };
+    match matcher.intercept(&uri) {
+        Some(proxy) => vec!["--proxy".into(), proxy.uri().to_string()],
+        None => Vec::new(),
+    }
+}
+
 /// Reads `curl --version`: `curl 8.9.1 (Windows) libcurl/8.9.1 Schannel …`.
 fn curl_takes_revoke_best_effort(version: &str) -> bool {
     let Some(first) = version.lines().find(|l| l.starts_with("curl ")) else { return false };
@@ -281,6 +402,7 @@ pub struct Http {
     https_only: bool,
     revoke_best_effort: bool,
     accept: Option<&'static str>,
+    compressed: bool,
 }
 
 impl Http {
@@ -290,7 +412,15 @@ impl Http {
         let gh = which::which_in("gh", Some(search_path), ".").ok();
         let explicit_github_token = environment_github_token(|key| std::env::var(key).ok());
         let revoke_best_effort = cfg!(windows) && revoke_best_effort(&curl);
-        Ok(Self { curl, gh, explicit_github_token, https_only: false, revoke_best_effort, accept: None })
+        Ok(Self {
+            curl,
+            gh,
+            explicit_github_token,
+            https_only: false,
+            revoke_best_effort,
+            accept: None,
+            compressed: false,
+        })
     }
 
     /// Refuses every protocol but HTTPS, redirects included.
@@ -302,6 +432,30 @@ impl Http {
     /// Sends `Accept: <mime>` (e.g. the npm registry's abbreviated metadata).
     pub fn accept(mut self, mime: &'static str) -> Self {
         self.accept = Some(mime);
+        self
+    }
+
+    /// Asks for a compressed response and decodes it (large JSON documents).
+    pub fn compressed(mut self) -> Self {
+        self.compressed = true;
+        self
+    }
+
+    /// Looks up `gh` on `search_path` (e.g. a path that includes IDE-managed tools).
+    pub(crate) fn with_gh_from(mut self, search_path: &std::ffi::OsStr) -> Self {
+        self.gh = which::which_in("gh", Some(search_path), ".").ok();
+        self
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn gh_path(&self) -> Option<&Path> {
+        self.gh.as_deref()
+    }
+
+    /// Skips `GITHUB_TOKEN` / `GH_TOKEN` / `gh auth token` (e.g. retrying a public GitHub endpoint after HTTP 401).
+    pub fn without_github_auth(mut self) -> Self {
+        self.gh = None;
+        self.explicit_github_token = None;
         self
     }
 
@@ -329,8 +483,15 @@ impl Http {
         }
         own_group(ide_core::process::prepare(&mut cmd));
         cmd.args(["-fsSL", "--retry", "2", "--connect-timeout", "20", "-A", "openidea"]);
+        // A connection that stops delivering (a stalled proxy or mirror) fails and is retried
+        // instead of leaving the request waiting forever.
+        cmd.args(["--speed-limit", "1", "--speed-time", "30"]);
         // System Settings › HTTP Proxy (a manual proxy comes in through `prepare`'s environment).
-        cmd.args(ide_core::proxy_settings::proxy().curl_args(url));
+        let proxy = ide_core::proxy_settings::proxy();
+        cmd.args(proxy.curl_args(url));
+        if proxy.route_for_url(url) == ide_core::proxy_settings::ProxyRoute::System && !environment_names_proxy() {
+            cmd.args(system_proxy_args(url, &hyper_util::client::proxy::matcher::Matcher::from_system()));
+        }
         if self.https_only {
             cmd.args(["--proto", "=https", "--proto-redir", "=https"]);
         }
@@ -339,6 +500,9 @@ impl Http {
         }
         if let Some(mime) = self.accept {
             cmd.arg("--header").arg(format!("Accept: {mime}"));
+        }
+        if self.compressed {
+            cmd.arg("--compressed");
         }
         cmd.stdin(Stdio::null());
         if token.is_some() {
@@ -369,6 +533,16 @@ impl Http {
     /// Adoptium uses 404 as well as an empty array for absent platform builds.
     pub fn get_text_or_empty_on_404(&self, url: &str, cancel: &CancellationToken) -> IdeResult<String> {
         self.get_text_response(url, None, Request::GetOrEmptyOn404, cancel)
+    }
+
+    /// [`Self::get_text_or_empty_on_404`], failing when the response is larger than `max_bytes`.
+    pub fn get_text_limited_or_empty_on_404(
+        &self,
+        url: &str,
+        max_bytes: u64,
+        cancel: &CancellationToken,
+    ) -> IdeResult<String> {
+        self.get_text_response(url, Some(max_bytes), Request::GetOrEmptyOn404, cancel)
     }
 
     fn get_text_response(
@@ -649,6 +823,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn curl_gets_the_system_proxy_it_cannot_read() {
+        use hyper_util::client::proxy::matcher::Matcher;
+        let system = Matcher::builder().http("127.0.0.1:7890").https("127.0.0.1:7890").no("internal.test").build();
+        assert_eq!(
+            system_proxy_args("https://github.com/o/r/releases/download/v1/x.zip", &system),
+            ["--proxy", "http://127.0.0.1:7890/"]
+        );
+        assert!(system_proxy_args("https://internal.test/x.zip", &system).is_empty());
+        assert!(system_proxy_args("https://github.com/x", &Matcher::builder().build()).is_empty());
+    }
+
+    #[test]
     fn ansi_and_carriage_returns_are_cleaned() {
         assert_eq!(strip_ansi("\u{1b}[32mok\u{1b}[0m"), "ok");
         assert_eq!(strip_ansi("10%\r50%\r100%"), "100%");
@@ -711,6 +897,7 @@ mod tests {
             https_only: false,
             revoke_best_effort: false,
             accept: None,
+            compressed: false,
         };
         for (code, exit, expected) in [(404, 22, Some("[]")), (200, 0, Some("payload")), (403, 22, None), (0, 7, None)]
         {
@@ -864,6 +1051,7 @@ mod github_auth_tests {
                         https_only: false,
                         revoke_best_effort: false,
                         accept: None,
+                        compressed: false,
                     },
                 };
                 fixture.script(
@@ -916,6 +1104,14 @@ mod github_auth_tests {
             fs::write(f.path("token"), "gho_fake_second\n").unwrap();
             f.get(API).unwrap();
             assert_eq!(fs::read_to_string(f.path("headers")).unwrap(), "Authorization: Bearer gho_fake_second\n");
+        }
+
+        #[test]
+        fn a_stalled_transfer_times_out_instead_of_hanging() {
+            let f = Fixture::new();
+            f.get(API).unwrap();
+            let args = fs::read_to_string(f.path("curl-args")).unwrap();
+            assert!(args.contains("--speed-limit\n1\n--speed-time\n30\n"), "{args}");
         }
 
         #[test]

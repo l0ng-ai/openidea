@@ -121,9 +121,14 @@ pub(crate) struct NavigationIndex {
 fn contains(range: Range, pos: Pos) -> bool {
     (range.start.line, range.start.col) <= (pos.line, pos.col) && (pos.line, pos.col) < (range.end.line, range.end.col)
 }
+/// Inside the document, start not after end. An empty range marks a position (a template file's
+/// definition at its start, say): navigation lands there, but it has no text to rename.
 fn valid_range(lines: &[usize], range: Range) -> bool {
     let pos = |p: Pos| lines.get(p.line as usize).is_some_and(|&length| p.col as usize <= length);
-    pos(range.start) && pos(range.end) && (range.start.line, range.start.col) < (range.end.line, range.end.col)
+    pos(range.start) && pos(range.end) && (range.start.line, range.start.col) <= (range.end.line, range.end.col)
+}
+fn is_empty(range: Range) -> bool {
+    (range.start.line, range.start.col) == (range.end.line, range.end.col)
 }
 
 impl PluginHost {
@@ -204,7 +209,11 @@ impl PluginHost {
         if text.len() > MAX_DOCUMENT_BYTES {
             return Err(IdeError::invalid("navigation document is too large"));
         }
-        let real = ide_plugin::resolve_in_root(root, &path.to_string_lossy()).map_err(IdeError::invalid)?;
+        // A project window group's members are project scope: a member's file
+        // is indexed into the group's graph like any file of the group root.
+        let mut roots = vec![root.to_path_buf()];
+        roots.extend(crate::project::workspace_member_roots(root));
+        let real = ide_plugin::resolve_in_roots(&roots, &path.to_string_lossy()).map_err(IdeError::invalid)?;
         if real != path {
             return Err(IdeError::invalid("navigation requires a canonical project path"));
         }
@@ -276,12 +285,20 @@ impl PluginHost {
                     .chain(&edges.references)
                     .any(|a| a.key.is_empty() || a.key.len() > 1024 || !valid_range(&lines, a.range))
             {
-                return Err(IdeError::invalid("invalid navigation anchors"));
+                return Err(IdeError::invalid(format!(
+                    "{}: invalid navigation anchors in {}",
+                    plugin.id(),
+                    path.display()
+                )));
             }
             if edges.markers.len() > MAX_EDGES
                 || edges.markers.iter().any(|a| a.key.is_empty() || a.key.len() > 1024 || !valid_range(&lines, a.range))
             {
-                return Err(IdeError::invalid("invalid navigation markers"));
+                return Err(IdeError::invalid(format!(
+                    "{}: invalid navigation markers in {}",
+                    plugin.id(),
+                    path.display()
+                )));
             }
             let mut index = self.navigation.lock();
             if index.epochs.get(root).copied() != generation {
@@ -402,7 +419,7 @@ impl PluginHost {
             let answer = result.get_or_insert_with(|| IndexedSymbol { range: primary.range, files: vec![] });
             for (path, file) in &graph.files {
                 let mut ranges = std::collections::BTreeSet::new();
-                for candidate in &file.edges.definitions {
+                for candidate in file.edges.definitions.iter().filter(|a| !is_empty(a.range)) {
                     if targets.contains(&Location::file(path.clone(), candidate.range))
                         || (targets.is_empty() && file.scope == source.scope && keys.contains(candidate.key.as_str()))
                     {
@@ -410,7 +427,7 @@ impl PluginHost {
                     }
                 }
                 let mut matches = HashMap::new();
-                for candidate in &file.edges.references {
+                for candidate in file.edges.references.iter().filter(|a| !is_empty(a.range)) {
                     let same = *matches.entry(candidate.key.as_str()).or_insert_with(|| {
                         let resolved = graph.scoped_targets(&candidate.key, &file.scope);
                         resolved.iter().any(|target| targets.contains(target))
@@ -574,5 +591,23 @@ impl ExtensionPoint for IndexersPoint {
             return Err("declare one document indexer per plugin".into());
         }
         Ok(Prepared::new(d.extensions.join(", "), || Ok(Disposable::new(|| {}))).capability(Capability::ProjectRead))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_ranges_inside_the_document_are_valid_positions() {
+        let lines = [3, 0];
+        let range = |a: (u32, u32), b: (u32, u32)| Range::new(Pos::new(a.0, a.1), Pos::new(b.0, b.1));
+        assert!(valid_range(&lines, range((0, 0), (0, 0))));
+        assert!(valid_range(&lines, range((1, 0), (1, 0))));
+        assert!(valid_range(&lines, range((0, 1), (0, 3))));
+        assert!(!valid_range(&lines, range((0, 2), (0, 1))), "reversed");
+        assert!(!valid_range(&lines, range((0, 4), (0, 4))), "past the line end");
+        assert!(!valid_range(&lines, range((2, 0), (2, 0))), "past the last line");
+        assert!(is_empty(range((0, 0), (0, 0))) && !is_empty(range((0, 0), (0, 1))));
     }
 }

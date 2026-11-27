@@ -1,0 +1,56 @@
+diff --git a/dist/index.cjs b/dist/index.cjs
+index 4172cb0f2befc00da9ae09eb3486cae743403a97..ed3c542377fc6dff0195dd9116c16464fb615919 100644
+--- a/dist/index.cjs
++++ b/dist/index.cjs
+@@ -208,7 +208,9 @@ class Stack {
+             if (index > 0 && (this.buffer[index - 4] != 0 /* Term.Err */ || this.buffer[index - 1] < 0)) {
+                 let mustMove = false;
+                 for (let scan = index; scan > 0 && this.buffer[scan - 2] > end; scan -= 4) {
+-                    if (this.buffer[scan - 1] >= 0) {
++                    // Reused skipped nodes after the end must be moved out too.
++                    if (this.buffer[scan - 1] >= 0 ||
++                        this.buffer[scan - 1] == -1 && this.p.reused[this.buffer[scan - 4]].type.isSkipped) {
+                         mustMove = true;
+                         break;
+                     }
+@@ -278,7 +280,11 @@ class Stack {
+             this.p.reused.push(value);
+             index++;
+         }
+-        let end = this.reducePos = this.pos = start + value.length;
++        // A reused skipped node (a comment) is not part of the node being
++        // reduced: like a shifted skipped token, it leaves reducePos alone.
++        let end = this.pos = start + value.length;
++        if (!value.type.isSkipped)
++            this.reducePos = end;
+         this.pushState(next, start);
+         this.buffer.push(index, start, end, -1 /* size == -1 means this is a reused value */);
+         if (this.curContext)
+diff --git a/dist/index.js b/dist/index.js
+index 8fd3f87829c312b93ce022867fd17bf34da0dbc0..f67b16d2f46d683f12ddc81534efbf50925e7c65 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -206,7 +206,9 @@ class Stack {
+             if (index > 0 && (this.buffer[index - 4] != 0 /* Term.Err */ || this.buffer[index - 1] < 0)) {
+                 let mustMove = false;
+                 for (let scan = index; scan > 0 && this.buffer[scan - 2] > end; scan -= 4) {
+-                    if (this.buffer[scan - 1] >= 0) {
++                    // Reused skipped nodes after the end must be moved out too.
++                    if (this.buffer[scan - 1] >= 0 ||
++                        this.buffer[scan - 1] == -1 && this.p.reused[this.buffer[scan - 4]].type.isSkipped) {
+                         mustMove = true;
+                         break;
+                     }
+@@ -276,7 +278,11 @@ class Stack {
+             this.p.reused.push(value);
+             index++;
+         }
+-        let end = this.reducePos = this.pos = start + value.length;
++        // A reused skipped node (a comment) is not part of the node being
++        // reduced: like a shifted skipped token, it leaves reducePos alone.
++        let end = this.pos = start + value.length;
++        if (!value.type.isSkipped)
++            this.reducePos = end;
+         this.pushState(next, start);
+         this.buffer.push(index, start, end, -1 /* size == -1 means this is a reused value */);
+         if (this.curContext)

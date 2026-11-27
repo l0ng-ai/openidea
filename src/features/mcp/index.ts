@@ -2,25 +2,36 @@
 import { activeEditor, onEditorEvent, openEditorPaths, useEditorRegistry } from "@/editor/api";
 import { commands, call, onIdeEvent, ideEventsReady } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { isRemoteWindow, useRemote } from "@/platform/remote";
+import { useRemote } from "@/platform/remote";
 
-import { registerOverlay } from "@/workbench/contributions";
+import { registerOverlay, registerStatusItem } from "@/workbench/contributions";
+import { BackgroundStatus } from "./BackgroundStatus";
 import { McpConfirmHost } from "./ConfirmDialog";
 import { denyAll, dropConfirm, handleMcpRequest } from "./requests";
 
 export function activate(): () => void {
   const offOverlay = registerOverlay({ id: "mcp.confirm", component: McpConfirmHost });
+  const offStatus = registerStatusItem({
+    id: "mcp.background",
+    align: "right",
+    priority: 4,
+    title: "Background Projects",
+    component: BackgroundStatus,
+    lightEdit: true,
+  });
   const offRequests = onIdeEvent("mcpRequest", (e) => void handleMcpRequest(e.id, e.request));
   const offClosed = onIdeEvent("mcpRequestClosed", (e) => dropConfirm(e.id));
   const ready = () => {
-    if (!isRemoteWindow() && useProject.getState().project)
+    const project = useProject.getState().project;
+    if (project && project.trusted !== false)
       void ideEventsReady()
         .then(() => call(commands.mcpUiReady(true)))
         .catch(() => {});
   };
   const unload = () => {
     denyAll();
-    if (!isRemoteWindow()) void call(commands.mcpUiReady(false)).catch(() => {});
+    const project = useProject.getState().project;
+    if (project && project.trusted !== false) void call(commands.mcpUiReady(false)).catch(() => {});
   };
   ready();
   window.addEventListener("beforeunload", unload);
@@ -78,8 +89,8 @@ export function activate(): () => void {
   const offRegistry = useEditorRegistry.subscribe(schedule);
   const offEvents = onEditorEvent(schedule);
   const offProject = useProject.subscribe((s, prev) => {
-    if (s.project?.root !== prev.project?.root) {
-      denyAll();
+    if (s.project?.root !== prev.project?.root || s.project?.trusted !== prev.project?.trusted) {
+      if (s.project?.root !== prev.project?.root || s.project?.trusted === false) denyAll();
       ready();
       lastPaths = undefined;
       lastEditor = undefined;
@@ -87,7 +98,10 @@ export function activate(): () => void {
     }
   });
   const offRemote = useRemote.subscribe((s, prev) => {
+    if (s.lost && !prev.lost) denyAll();
     if (s.session !== prev.session) {
+      denyAll();
+      ready();
       lastPaths = undefined;
       lastEditor = undefined;
       schedule();
@@ -99,6 +113,7 @@ export function activate(): () => void {
     disposed = true;
     unload();
     offOverlay();
+    offStatus();
     offRequests();
     offClosed();
     window.removeEventListener("beforeunload", unload);

@@ -80,18 +80,47 @@ pub fn trim_line_end(line: &[u8]) -> &[u8] {
     &line[..end]
 }
 
+/// The longest line kept in full; the rest of a longer one is dropped (a server that writes a
+/// progress bar with `\r` only, or never a newline, must not grow memory without bound).
+pub const MAX_LINE: usize = 8 * 1024;
+
 /// Reads `stream` to its end, calling `on_line` with each line decoded by [`decode`].
 /// Unlike `AsyncBufReadExt::lines`, a line that is not UTF-8 does not end the stream.
+/// A line longer than [`MAX_LINE`] bytes is cut there and ends with `…`.
 pub async fn read_lines<R: AsyncRead + Unpin>(stream: R, mut on_line: impl FnMut(String)) {
     let mut reader = BufReader::new(stream);
     let mut line = Vec::new();
+    let mut cut = false;
     loop {
-        line.clear();
-        match reader.read_until(b'\n', &mut line).await {
-            Ok(0) | Err(_) => break,
-            Ok(_) => on_line(decode(trim_line_end(&line))),
+        let (used, complete) = match reader.fill_buf().await {
+            Ok([]) | Err(_) => break,
+            Ok(buf) => {
+                let end = buf.iter().position(|&b| b == b'\n');
+                let piece = &buf[..end.unwrap_or(buf.len())];
+                let room = MAX_LINE.saturating_sub(line.len());
+                cut |= piece.len() > room;
+                line.extend_from_slice(&piece[..piece.len().min(room)]);
+                (end.map_or(buf.len(), |i| i + 1), end.is_some())
+            }
+        };
+        reader.consume(used);
+        if complete {
+            emit(&mut line, &mut cut, &mut on_line);
         }
     }
+    if !line.is_empty() || cut {
+        emit(&mut line, &mut cut, &mut on_line);
+    }
+}
+
+fn emit(line: &mut Vec<u8>, cut: &mut bool, on_line: &mut impl FnMut(String)) {
+    let mut text = decode(trim_line_end(line));
+    if *cut {
+        text.push('…');
+    }
+    line.clear();
+    *cut = false;
+    on_line(text);
 }
 
 #[cfg(test)]
@@ -132,5 +161,20 @@ mod tests {
         assert_eq!(lines[0], "first");
         assert!(lines[1].ends_with(" broken"));
         assert_eq!(lines[2], "last");
+    }
+
+    #[tokio::test]
+    async fn a_very_long_line_is_cut_and_the_next_one_is_intact() {
+        let mut input = vec![b'x'; MAX_LINE * 10 + 3];
+        input.extend_from_slice(b"\nnext\r\n");
+        // No newline at all after this one: still bounded.
+        input.extend_from_slice(&vec![b'y'; MAX_LINE * 3]);
+        let mut lines = Vec::new();
+        read_lines(&input[..], |l| lines.push(l)).await;
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0].chars().count(), MAX_LINE + 1);
+        assert!(lines[0].ends_with('…') && lines[0].starts_with("xxx"));
+        assert_eq!(lines[1], "next");
+        assert_eq!(lines[2].chars().count(), MAX_LINE + 1);
     }
 }

@@ -184,6 +184,34 @@ describe("Changes tree diffs follow the commit interface setting (#1863)", () =>
     act(() => fireEvent.doubleClick(row));
   };
 
+  it.each([
+    ["Changes", "modified"],
+    ["Unversioned Files", "untracked"],
+  ] as const)("opens the working files in the selected %s group with F4", async (group, kind) => {
+    modal(false);
+    useVcs.setState({
+      status: [
+        { ...file, unstaged: kind },
+        { ...file, path: "/p/src/b.ts", relPath: "src/b.ts", unstaged: kind },
+        { ...file, path: "/p/gone.ts", relPath: "gone.ts", unstaged: "deleted" },
+        { ...file, path: "/p/nested/", relPath: "nested/", unstaged: "untracked" },
+        { ...file, path: "/p/other.ts", relPath: "other.ts", unstaged: kind === "modified" ? "untracked" : "modified" },
+      ],
+    });
+    render(<ChangesTree mode="commit" />);
+
+    fireEvent.mouseDown(screen.getByText(group, { exact: true }), { button: 0 });
+    fireEvent.keyDown(screen.getByRole("tree", { name: "Changes" }), { key: "F4" });
+
+    await vi.waitFor(() =>
+      expect(openFile.mock.calls).toEqual([
+        ["/p/src/a.ts", { focus: false }],
+        ["/p/src/b.ts", { focus: true }],
+      ]),
+    );
+    expect(openInput).not.toHaveBeenCalled();
+  });
+
   it("opens the source file of a double-clicked file with the modal interface", async () => {
     render(<ChangesTree mode="local" />);
     await activate();
@@ -294,10 +322,14 @@ describe("Changes tree diffs follow the commit interface setting (#1863)", () =>
     expect(openFile).not.toHaveBeenCalled();
   });
 
-  it("keeps the Show Diff action item with the non-modal interface", () => {
+  // The row's own diff (under Staged or Unstaged, its side of the index), in an editor tab.
+  it("opens the node's diff in an editor tab with the non-modal interface", async () => {
     modal(false);
     const menu = nodeMenu([node], ["/p"], { roots: [node] });
-    expect(menu).toContainEqual({ kind: "action", action: "vcs.showDiff", arg: "/p/src/a.ts" });
+    const show = menu.find((m) => m.kind !== "separator" && "label" in m && m.label === "Show Diff");
+    (show as { run: () => void }).run();
+    await vi.waitFor(() => expect(openInput).toHaveBeenCalledTimes(1));
+    expect(openDiffDialog).not.toHaveBeenCalled();
   });
 });
 

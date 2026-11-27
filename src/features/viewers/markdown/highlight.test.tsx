@@ -7,7 +7,7 @@ import { _addEditor, _removeEditor, editorContributions, type EditorDocContext }
 import { findExtension, findNext, findPrevious, makeQuery, setFindOpen, type FindOptions } from "@/editor/core/cm/find";
 import { fontZoom } from "@/editor/core/cm/prefs";
 import { seedFind, useFindOptions, useFindSessions, type FindTarget } from "@/editor/core/view/FindBar";
-import { FIND_CURRENT_HIGHLIGHT, FIND_HIGHLIGHT, SELECTION_MATCH_HIGHLIGHT } from "./highlight";
+import { FIND_CURRENT_HIGHLIGHT, FIND_HIGHLIGHT, SELECTION_MATCH_HIGHLIGHT, previewSelectionOf } from "./highlight";
 import { registerMarkdownLiveSource, useLiveMarkdown } from "./live";
 import { MarkdownEditor } from "./MarkdownEditor";
 import { useMarkdownModes } from "./modes";
@@ -49,7 +49,7 @@ describe("Markdown preview search & selection highlights", () => {
 
   beforeEach(() => {
     disposers.push(registerMarkdownLiveSource());
-    act(() => useMarkdownModes.setState((s) => ({ byPath: { ...s.byPath, [path]: "preview" } })));
+    act(() => useMarkdownModes.setState((s) => ({ byTab: { ...s.byTab, t: "preview" } })));
   });
 
   afterEach(() => {
@@ -184,7 +184,7 @@ describe("Markdown preview search & selection highlights", () => {
 
   it("auto-highlights all other occurrences when a word is selected in the preview", async () => {
     openEditor("alpha beta alpha gamma alpha\n");
-    act(() => useMarkdownModes.setState((s) => ({ byPath: { ...s.byPath, [path]: "split" } })));
+    act(() => useMarkdownModes.setState((s) => ({ byTab: { ...s.byTab, t: "split" } })));
     render(
       <MarkdownEditor path={path} tabId="t">
         <div />
@@ -228,7 +228,7 @@ describe("Markdown preview search & selection highlights", () => {
 
   it("auto-highlights occurrences in the preview when a word is selected in the editor", () => {
     openEditor("beta alpha beta\n");
-    act(() => useMarkdownModes.setState((s) => ({ byPath: { ...s.byPath, [path]: "split" } })));
+    act(() => useMarkdownModes.setState((s) => ({ byTab: { ...s.byTab, t: "split" } })));
     render(
       <MarkdownEditor path={path} tabId="t">
         <div />
@@ -304,5 +304,27 @@ describe("Markdown preview search & selection highlights", () => {
 
     expect(useFindSessions.getState().t?.search).toBe("second");
     expect(view.state.sliceDoc(view.state.selection.main.from, view.state.selection.main.to)).toBe("second");
+  });
+});
+
+describe("a word selected in the preview", () => {
+  it("drops the space a Windows double-click adds after the word", () => {
+    const root = document.createElement("div");
+    root.innerHTML = "<p>Manage <strong>Order</strong> items</p>";
+    document.body.append(root);
+    try {
+      const strong = root.querySelector("strong")!.firstChild!;
+      const after = root.querySelector("strong")!.nextSibling!;
+      const range = document.createRange();
+      range.setStart(strong, 0);
+      range.setEnd(after, 1);
+      const sel = window.getSelection()!;
+      sel.removeAllRanges();
+      sel.addRange(range);
+      expect(previewSelectionOf(root)?.text).toBe("Order");
+      expect(sel.toString()).toBe("Order");
+    } finally {
+      root.remove();
+    }
   });
 });

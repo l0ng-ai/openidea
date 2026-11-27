@@ -3,8 +3,11 @@ import type { GradleModel, ProjectInfo, RunConfig } from "@/platform/ipc";
 import * as ipc from "@/platform/ipc";
 import { applicationConfig } from "./application";
 import {
+  DELEGATED_ATTACH_LISTENER,
   DELEGATED_DEBUG,
+  DELEGATED_TOKEN,
   delegatedGradleConfig,
+  runJvmToken,
   gradleDelegation,
   gradleBootLaunch,
   gradleTestLaunch,
@@ -12,10 +15,12 @@ import {
   wrapperGradleVersion,
 } from "./gradleRun";
 import { jdwpLaunch } from "./javaDebug";
+import RUN_SCRIPT from "./gradleRun.gradle?raw";
 import { isJvmApplication } from "@/platform/javaLaunch";
 import TESTS_SCRIPT from "./gradleTests.gradle?raw";
 import BOOT_SCRIPT from "./gradleBoot.gradle?raw";
 import { useBuildModel } from "@/platform/buildModel";
+import { usePlatform } from "@/platform/platformInfo";
 import { useProject } from "@/platform/project";
 
 vi.mock("@/platform/ipc", async (original) => {
@@ -82,6 +87,7 @@ describe("Build and run using: Gradle", () => {
       '-Dopenidea.run.args=["--port","8081 x"]',
       '-Dopenidea.run.jvmArgs=["-Xmx1g"]',
       `-Dopenidea.run.workingDir=${CORE}`,
+      `${DELEGATED_TOKEN}${runJvmToken(app, ROOT)}`,
       ":billing:core:openideaRun",
     ]);
   });
@@ -92,6 +98,36 @@ describe("Build and run using: Gradle", () => {
     expect(run.args).toContain("-Dopenidea.run.sourceSet=test");
     expect(run.args).toContain("-Dopenidea.run.workingDir=/w/shop/app");
     expect(run.args.slice(-2)).toEqual(["--offline", ":app:openideaRun"]);
+  });
+
+  it("delegated run passes a stable token", () => {
+    const app = applicationConfig({ className: "a.Main" }, "app/src/main/java/a/Main.java", []);
+    const token = (c: RunConfig) => c.args.filter((a) => a.startsWith(DELEGATED_TOKEN));
+    const first = token(delegatedGradleConfig(app, "app", ctx)!);
+    // A per-launch value would miss Gradle's configuration cache on every launch.
+    expect(first).toEqual([`${DELEGATED_TOKEN}${runJvmToken(app, ROOT)}`]);
+    expect(token(delegatedGradleConfig(app, "app", { ...ctx, configurationCache: true })!)).toEqual(first);
+  });
+
+  it("token escapes unsafe characters", () => {
+    expect(runJvmToken({ id: "app:Main Class/x\\y" }, ROOT)).toMatch(/^app_Main_Class_x_y-[A-Za-z0-9]+$/);
+    expect(runJvmToken({ id: "a.b-c_9" }, ROOT)).toMatch(/^a\.b-c_9-[A-Za-z0-9]+$/);
+  });
+
+  it("token names the project as well as the configuration", () => {
+    const app = { id: "application:app:com.example.DemoApplication" };
+    expect(runJvmToken(app, ROOT)).toBe(runJvmToken({ ...app }, ROOT));
+    // Two worktrees of one project, or two projects with the same main class.
+    expect(runJvmToken(app, "/w/shop-feature")).not.toBe(runJvmToken(app, ROOT));
+    expect(runJvmToken(app, "/w/other")).not.toBe(runJvmToken(app, ROOT));
+  });
+
+  it("init scripts hand the token to the forked JVM in Run and Debug alike", () => {
+    for (const script of [RUN_SCRIPT, BOOT_SCRIPT]) {
+      const token = script.indexOf("jvmArgs('-Dopenidea.run.token=' + token)");
+      expect(token).toBeGreaterThan(-1);
+      expect(token).toBeLessThan(script.indexOf("openidea.run.debug"));
+    }
   });
 
   it("reuses Gradle's configuration cache on Gradle 8.1+ wrappers", () => {
@@ -157,6 +193,93 @@ describe("Build and run using: Gradle", () => {
     expect(debug.args.at(-1)).toBe(DELEGATED_DEBUG);
     expect(debug.args).not.toContain("--debug-jvm");
     expect(jdwpLaunch(debug)!.args.filter((a) => a === DELEGATED_DEBUG)).toHaveLength(1);
+    expect(jdwpLaunch(debug)!.args.filter((a) => a === DELEGATED_ATTACH_LISTENER)).toHaveLength(1);
+  });
+
+  it("asks the init script for the attach listener except when Gradle runs on Windows", () => {
+    const app = applicationConfig({ className: "a.Main" }, "app/src/main/java/a/Main.java", []);
+    const run = delegatedGradleConfig(app, "app", ctx)!;
+    expect(jdwpLaunch(run)!.args).toContain(DELEGATED_ATTACH_LISTENER);
+    const os = usePlatform.getState().os;
+    usePlatform.setState({ os: "windows" });
+    try {
+      const debug = jdwpLaunch(run)!;
+      expect(debug.args).not.toContain(DELEGATED_ATTACH_LISTENER);
+      expect(debug.args.at(-1)).toBe(DELEGATED_DEBUG);
+    } finally {
+      usePlatform.setState({ os });
+    }
+  });
+
+  it("adds the attach listener before the agent in the init script, unless the VM options decide", () => {
+    const flag = RUN_SCRIPT.indexOf("'-XX:+StartAttachListener'");
+    const agent = RUN_SCRIPT.indexOf("'-agentlib:jdwp=");
+    expect(flag).toBeGreaterThan(0);
+    expect(flag).toBeLessThan(agent);
+    const guard = RUN_SCRIPT.slice(RUN_SCRIPT.lastIndexOf("if (", flag), flag);
+    // Only when the IDE asked for it (never on Windows).
+    expect(guard).toContain("Boolean.getBoolean('openidea.run.attachListener')");
+    // The guard reads the same list the user's VM options arrive in.
+    expect(guard).toContain("list('openidea.run.jvmArgs')");
+    expect(guard).toContain("StartAttachListener|DisableAttachMechanism");
+  });
+
+  // Gradle 4.6 is the oldest IDEA supports: `register`, `named` and `configureEach` are 4.9+,
+  // `debugOptions` 5.6+, `JavaExec.mainClass` 6.4+. Each use needs a guard on its line (#3864).
+  it.each([
+    ["gradleRun", RUN_SCRIPT],
+    ["gradleTests", TESTS_SCRIPT],
+    ["gradleBoot", BOOT_SCRIPT],
+  ])("%s guards Gradle API newer than 4.6", (_, script) => {
+    const unguarded = script
+      .split("\n")
+      .filter((l) => !l.trim().startsWith("//"))
+      .filter((l) => /\.register\(|\.named\(|configureEach|debugOptions|mainClass/.test(l))
+      .filter((l) => !/GradleVersion|lazyTasks|hasProperty/.test(l));
+    expect(unguarded).toEqual([]);
+  });
+
+  // Up to Gradle 7.0, a build JVM with its own `org.gradle.jvmargs` gets the command line's `-D`
+  // values only once the settings load: read at an init script's top level, they are null (#4093).
+  it.each([
+    ["gradleRun", RUN_SCRIPT],
+    ["gradleTests", TESTS_SCRIPT],
+    ["gradleBoot", BOOT_SCRIPT],
+  ])("%s reads the launch's -D values in project actions, not at its top level", (_, script) => {
+    const topLevel = script
+      .split("\n")
+      .filter((l) => /^\S/.test(l) && /System\.getProperty|Boolean\.getBoolean|systemPropertiesArgs/.test(l));
+    expect(topLevel).toEqual([]);
+  });
+
+  it.each([
+    // The report: a Spring Boot application in the root project, Gradle wrapper 6.4.1.
+    ["", ":", ":openideaRun"],
+    ["app", ":app", ":app:openideaRun"],
+    [CORE, ":billing:core", ":billing:core:openideaRun"],
+  ])("runs module %j as project %s on a Gradle 6.4.1 wrapper (#4093)", (module, project, task) => {
+    const file = `${module ? `${module}/` : ""}src/main/java/com/example/demo/DemoApplication.java`;
+    const app = applicationConfig({ className: "com.example.demo.DemoApplication", spring: true }, file, []);
+    expect(wrapperGradleVersion("distributionUrl=https\\://x/gradle-6.4.1-bin.zip")).toEqual([6, 4]);
+    // Below Gradle 8.1: no configuration cache.
+    const run = delegatedGradleConfig(app, module, { ...ctx, configurationCache: false })!;
+    expect(run.args).toContain(`-Dopenidea.run.project=${project}`);
+    expect(run.args.at(-1)).toBe(task);
+    // The init script compares each project's identity path with it inside `allprojects`.
+    expect(RUN_SCRIPT).toContain("if (id() != System.getProperty('openidea.run.project')) return");
+  });
+
+  it("sets the main class with `main` and creates the task eagerly on old Gradle (#3864)", () => {
+    expect(RUN_SCRIPT).toContain("if (t.hasProperty('mainClass')) t.mainClass.set(main) else t.main = main");
+    expect(RUN_SCRIPT).toContain("else p.tasks.create('openideaRun', JavaExec, configure)");
+    expect(RUN_SCRIPT).toContain("import org.gradle.util.GradleVersion");
+  });
+
+  // A toolchain newer than Gradle's JVM: on it, a class compiled for that toolchain fails to load (#5594).
+  it("launches on the project's Java toolchain, as the application plugin's `run` does (#5594)", () => {
+    // `javaLauncher` is Gradle 6.7+: guarded on its line, like `mainClass`.
+    expect(RUN_SCRIPT).toContain("if (t.hasProperty('javaLauncher'))");
+    expect(RUN_SCRIPT).toContain("JavaToolchainService).launcherFor(");
   });
 });
 
@@ -183,6 +306,7 @@ describe("Gradle test runs", () => {
 
 describe("Gradle launch routing", () => {
   const boot = {
+    id: "boot",
     kind: "gradle",
     command: "./gradlew",
     args: [":module:bootRun"],
@@ -212,6 +336,21 @@ describe("Gradle launch routing", () => {
     }
     expect(boot.args).toEqual([":module:bootRun"]);
     expect(test.args).toEqual([":module:test"]);
+  });
+
+  it("marks the forked BootRun JVM with a stable per-configuration token", async () => {
+    useProject.setState({ project: { root: ROOT } as ProjectInfo, settings: null });
+    const named = { ...boot, id: "boot app/1" } as RunConfig;
+    const first = await gradleBootLaunch(named);
+    expect(first.args.filter((a) => a.startsWith(DELEGATED_TOKEN))).toEqual([
+      `${DELEGATED_TOKEN}${runJvmToken(named, ROOT)}`,
+    ]);
+    expect((await gradleBootLaunch(named)).args).toEqual(first.args);
+    // Debug adds its flag after the token; the token stays and is not repeated.
+    const debug = jdwpLaunch(first)!;
+    expect(debug.args).toContain(DELEGATED_DEBUG);
+    expect(debug.args.filter((a) => a.startsWith(DELEGATED_TOKEN))).toHaveLength(1);
+    expect((await gradleBootLaunch(first)).args.filter((a) => a.startsWith(DELEGATED_TOKEN))).toHaveLength(1);
   });
 });
 

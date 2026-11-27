@@ -2,7 +2,7 @@
  * Window close / quit flow.
  *
  * Closing a window (traffic light, Quit closing every window) runs
- * `decideClose`: confirm exit when this is the last window and
+ * the remote backend choice, if connected, then `decideClose`: confirm exit when this is the last window and
  * `general.confirmExit` is on, then Terminate / Cancel when Run/Debug processes
  * still run and `run.confirmTerminate` is on, then Save All / Don't Save / Cancel
  * when documents have unsaved changes. Quit confirms once, then the backend
@@ -12,9 +12,11 @@
  * `general.closeWithoutWelcome` is on, in which case it closes. When
  * `general.closeTabsWithWindow` is on, that close drops the saved editor tabs.
  */
-import { commands, isTauri, onIdeEvent, type Settings } from "@/platform/ipc";
-import { t } from "@/platform/i18n";
+import { createElement } from "react";
+import { call, IpcError, commands, isCancelled, isTauri, onIdeEvent, type Settings } from "@/platform/ipc";
+import { t, tx } from "@/platform/i18n";
 import { closeProject, provideLeaveProjectGuard, useProject } from "@/platform/project";
+import { isRemoteWindow, shutdownRemoteBackend, useRemote } from "@/platform/remote";
 import { workflowSettings } from "@/platform/workflowSettings";
 import {
   maybeEditorService,
@@ -24,14 +26,17 @@ import {
   type EditorCloseSession,
 } from "@/workbench/contributions";
 import { beginTermination, endTermination } from "./termination";
+import { RemoteCloseMessage } from "./RemoteCloseMessage";
 import { ask, type Ask } from "@/workbench/messages";
 import { AUX_CLOSED, auxiliaryWindow, closeDocumentWindows, type AuxCloseResult } from "@/platform/auxWindow";
 
 /** Document ids the backend reports dirty in this window. */
 const dirtyDocs = new Set<number>();
 
+const dirtyDocumentIds = () => new Set([...dirtyDocs, ...(maybeEditorService()?.dirtyDocumentIds?.() ?? [])]);
+
 export function dirtyCount(): number {
-  return new Set([...dirtyDocs, ...(maybeEditorService()?.dirtyDocumentIds?.() ?? [])]).size;
+  return dirtyDocumentIds().size;
 }
 
 export function confirmExitEnabled(settings: Settings | null | undefined): boolean {
@@ -83,6 +88,8 @@ export interface CloseDeps {
   onSaveFailed: (e: unknown) => void;
   /** Stops custom document edits/execution before reading their final dirty state. */
   prepareClose?: () => Promise<EditorCloseSession | undefined>;
+  /** Applies a Don't Save decision when the document host outlives the window. */
+  discardChanges?: () => Promise<void>;
 }
 
 /** Asks whatever must be asked; resolves true when the window may close. */
@@ -134,8 +141,10 @@ export async function decideClose(input: CloseInput, deps: CloseDeps): Promise<b
         icon: "warning",
       });
       if (r.button === "save") await deps.saveAll();
-      else if (r.button === "discard") await session?.discard();
-      else return false;
+      else if (r.button === "discard") {
+        await session?.discard();
+        await deps.discardChanges?.();
+      } else return false;
     }
     // IDEA asks, then shows "Terminating 'X'" while the graceful shutdown runs; a Kill button
     // there kills the processes and the close finishes once none is left.
@@ -168,9 +177,11 @@ const defaultDeps: CloseDeps = {
   runningProcesses: async () => (await liveProcesses()).map((p) => p.name),
   terminate: (kill) => stopRunningProcesses(kill),
   waitForProcesses: async () => {
+    // oxlint-disable-next-line no-await-in-loop -- polling must finish one interval before checking processes again
     while ((await liveProcesses()).length > 0) await new Promise((r) => setTimeout(r, 100));
   },
   onSaveFailed: (e) =>
+    !isCancelled(e) &&
     notifications().notify({
       level: "error",
       title: t("app.unsaved.saveFailed"),
@@ -199,6 +210,33 @@ async function processNames(deps: CloseDeps): Promise<string[]> {
 
 let closing = false;
 
+/**
+ * A quit can start outside this window: the Dock or a logout on macOS, another window's action, a
+ * remote client. Every prompt of that flow is drawn inside the window, so a minimized or covered
+ * one asks without showing anything and the app looks stuck. Bring the window up before asking.
+ */
+async function raiseWindowForPrompts(): Promise<void> {
+  if (!isTauri()) return;
+  try {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    const window = getCurrentWindow();
+    await Promise.allSettled([window.unminimize(), window.show(), window.setFocus()]);
+  } catch {
+    // A window that cannot be raised still asks; the prompts must not be lost to this.
+  }
+}
+
+/** `deps` whose prompts bring the window up first; a window with nothing to ask stays where it is. */
+function raisingBeforeAsk(deps: CloseDeps): CloseDeps {
+  return {
+    ...deps,
+    ask: async (request) => {
+      await raiseWindowForPrompts();
+      return deps.ask(request);
+    },
+  };
+}
+
 /** Drops saved tabs when that setting is on. The result says whether a cancelled close should put them back. */
 function forgetTabs(): boolean {
   if (!closeTabsWithWindowEnabled(useProject.getState().settings)) return false;
@@ -210,6 +248,15 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
   if (closing) return false;
   closing = true;
   let forgot = false;
+  let quitting = false;
+  let promptHeld = false;
+  let batchAborted = false;
+  const cancel = async () => {
+    if (!batchAborted) {
+      await (quitting ? commands.appCancelQuit() : commands.windowGroupCancelClose());
+    }
+    return false;
+  };
   const undoForget = () => {
     if (!forgot) return;
     forgot = false;
@@ -217,56 +264,118 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
   };
   try {
     const ctx = await commands.windowCloseContext();
-    if (!(await closeDocumentWindows())) {
-      await (ctx.quitting ? commands.appCancelQuit() : commands.windowGroupCancelClose());
-      return false;
+    quitting = ctx.quitting;
+    // In a quit or multi-tab close, windows check in parallel; only a window that needs to ask
+    // acquires the prompt turn and comes forward so prompts still run one at a time.
+    if (quitting || ctx.batch) {
+      const baseAsk = deps.ask;
+      deps = {
+        ...deps,
+        ask: async (request) => {
+          if (!promptHeld) {
+            const proceed = await commands.windowBeginPrompt();
+            if (!proceed) {
+              batchAborted = true;
+              return { button: "cancel", checked: false };
+            }
+            promptHeld = true;
+          }
+          await raiseWindowForPrompts();
+          return baseAsk(request);
+        },
+      };
     }
+    if (ctx.hasDocumentWindows !== false && !(await closeDocumentWindows())) return await cancel();
     const s = useProject.getState();
-    // The last project or LightEdit window can return to Welcome. Otherwise it closes.
-    if (returnsToWelcome(ctx.quitting, ctx.windows, !!(s.project || s.lightEdit), s.settings)) {
-      if (await confirmLeave(deps)) {
-        forgot = forgetTabs();
-        try {
-          await closeProject();
-          // Welcome is showing; keep the tabs dropped.
-          forgot = false;
-        } catch (e) {
-          undoForget();
-          throw e;
-        }
-      }
-      await commands.windowGroupCancelClose();
-      return false;
+    const welcome = returnsToWelcome(quitting, ctx.windows, !!(s.project || s.lightEdit), s.settings);
+    const remote = useRemote.getState();
+    let stop = false;
+    if (remote.session && !remote.lost) {
+      const r = await deps.ask({
+        title: tx("Close Remote Development Window"),
+        body: createElement(RemoteCloseMessage, { session: remote.session }),
+        buttons: [
+          { id: "stop", label: tx("Stop Backend") },
+          { id: "keep", label: tx("Keep Backend Running"), primary: true },
+        ],
+      });
+      if (r.button !== "keep" && r.button !== "stop") return await cancel();
+      stop = r.button === "stop";
     }
-    const confirmTerminate = workflowSettings().run.confirmTerminate;
+    const confirmTerminate = !remote.session && workflowSettings().run.confirmTerminate;
     const ok = await decideClose(
       {
-        quitting: ctx.quitting,
+        quitting,
         windows: ctx.windows,
-        confirmExit: confirmExitEnabled(s.settings),
+        confirmExit: !welcome && confirmExitEnabled(s.settings),
         confirmTerminate,
         processes: confirmTerminate ? await processNames(deps) : [],
         dirty: dirtyCount(),
         project: s.project?.displayName || s.project?.name || null,
       },
-      deps,
+      savingUntitled({
+        ...deps,
+        discardChanges: remote.session && !remote.lost && !stop ? discardRemoteChanges : undefined,
+      }),
     );
-    if (!ok) {
-      await (ctx.quitting ? commands.appCancelQuit() : commands.windowGroupCancelClose());
+    if (!ok) return await cancel();
+    if (stop) {
+      try {
+        await shutdownRemoteBackend();
+      } catch (e) {
+        maybeEditorService()?.cancelClose?.();
+        notifications().notify({
+          level: "error",
+          title: tx("Could not stop the remote backend"),
+          body: e instanceof Error ? e.message : String(e),
+        });
+        return await cancel();
+      }
+    }
+    forgot = forgetTabs();
+    if (!forgot && (!welcome || remote.session)) maybeEditorService()?.flushSession?.();
+    if (welcome) {
+      await closeProject();
+      forgot = false;
+      return await cancel();
+    }
+    if (!(await commands.windowReadyToClose())) {
+      batchAborted = true;
+      undoForget();
+      maybeEditorService()?.cancelClose?.();
       return false;
     }
-    // The window is closing. Drop the tabs now so pagehide cannot write them back.
-    forgetTabs();
     return true;
   } catch (e) {
     undoForget();
     maybeEditorService()?.cancelClose?.();
-    void commands.windowGroupCancelClose().catch(() => {});
+    void cancel().catch(() => {});
     deps.onSaveFailed(e);
     return false;
   } finally {
+    if (promptHeld) {
+      promptHeld = false;
+      void commands.windowEndPrompt().catch(() => {});
+    }
     closing = false;
   }
+}
+
+async function discardRemoteChanges() {
+  // Unlike an unexpected transport loss, Don't Save must not keep these buffers for reattachment.
+  await Promise.all([...dirtyDocumentIds()].map((doc) => call(commands.docClose(doc))));
+}
+
+/** Save asks for each untitled buffer's path; one left unsaved (Save As cancelled) keeps the window open. */
+function savingUntitled(deps: CloseDeps): CloseDeps {
+  return {
+    ...deps,
+    saveAll: async () => {
+      await deps.saveAll();
+      if (maybeEditorService()?.untitledDirtyDocumentIds?.().length)
+        throw new IpcError({ kind: "cancelled", message: "Untitled files were not saved" });
+    },
+  };
 }
 
 /**
@@ -276,9 +385,19 @@ async function onCloseRequested(deps: CloseDeps): Promise<boolean> {
 export async function confirmLeave(
   deps: CloseDeps = defaultDeps,
   project = (useProject.getState().project?.displayName || useProject.getState().project?.name) ?? null,
+  keepUntitled = true,
 ): Promise<boolean> {
   if (!(await closeDocumentWindows())) return false;
-  const confirmTerminate = workflowSettings().run.confirmTerminate;
+  const confirmTerminate = !isRemoteWindow() && workflowSettings().run.confirmTerminate;
+  // Untitled buffers follow the window into another project: they are neither counted nor
+  // saved then (the window keeps them open). Closing to Welcome drops them, so they count.
+  const untitled = new Set(keepUntitled ? (maybeEditorService()?.untitledDirtyDocumentIds?.() ?? []) : []);
+  const saveDeps: CloseDeps =
+    untitled.size > 0
+      ? { ...deps, saveAll: () => Promise.resolve(maybeEditorService()?.saveAll({ skipUntitled: true })) }
+      : keepUntitled
+        ? deps
+        : savingUntitled(deps);
   return decideClose(
     {
       quitting: false,
@@ -286,10 +405,10 @@ export async function confirmLeave(
       confirmExit: false,
       confirmTerminate,
       processes: confirmTerminate ? await processNames(deps) : [],
-      dirty: dirtyCount(),
+      dirty: dirtyCount() - untitled.size,
       project,
     },
-    deps,
+    saveDeps,
   );
 }
 
@@ -308,7 +427,7 @@ export async function quitApp(deps: CloseDeps = defaultDeps): Promise<void> {
         dirty: 0,
         project: null,
       },
-      { ...deps, prepareClose: undefined },
+      { ...raisingBeforeAsk(deps), prepareClose: undefined },
     );
     if (!ok) return;
   }
@@ -324,7 +443,7 @@ export function installCloseGuard(deps: CloseDeps = defaultDeps): () => void {
     useProject.subscribe((s, prev) => {
       if (s.project?.root !== prev.project?.root || s.lightEdit !== prev.lightEdit) dirtyDocs.clear();
     }),
-    provideLeaveProjectGuard(() => confirmLeave(deps)),
+    provideLeaveProjectGuard((keepUntitled) => confirmLeave(deps, undefined, keepUntitled)),
   ];
   let unlisten: (() => void) | undefined;
   let disposed = false;

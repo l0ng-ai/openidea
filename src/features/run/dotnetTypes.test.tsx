@@ -3,10 +3,10 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { commands } from "@/platform/ipc";
 import type { RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { dotnetBuildConfig, dotnetProjectType, dotnetTestType } from "./dotnetTypes";
+import { dotnetProjectFile, dotnetProjectProduction, dotnetProjectType, dotnetTestType } from "./dotnetTypes";
 import { ConfigForm } from "./ConfigForm";
 import { validateConfig } from "./configs";
-import { newConfigOfType, registerBuiltinTypes, withParams } from "./types";
+import { formParams, newConfigOfType, registerBuiltinTypes, withParams } from "./types";
 
 const resolveDotnet = vi.hoisted(() => vi.fn());
 vi.mock("@/platform/ipc", async (importOriginal) => {
@@ -69,16 +69,64 @@ describe(".NET configurations", () => {
     ]);
   });
 
-  it("builds edited project/framework from the open root instead of a profile cwd", () => {
-    useProject.setState({ project: { root: "/repo" } as never });
-    const c = withParams(
-      { ...config(), cwd: "profile/work" },
-      { ...params, project: "other/App.csproj", framework: "net9.0" },
+  it("opens a new configuration, and a typed dotnet run command, as the form with its project field", () => {
+    const fresh = newConfigOfType(dotnetProjectType, []);
+    expect(formParams(fresh, dotnetProjectType)).toEqual({ project: "" });
+    render(
+      <ConfigForm
+        config={fresh}
+        all={[fresh]}
+        type={dotnetProjectType}
+        errors={{}}
+        modifyRequest={0}
+        onChange={vi.fn()}
+      />,
     );
-    const build = dotnetBuildConfig(c);
-    expect(build.args).toEqual(["build", "other/App.csproj", "--configuration", "Debug", "--framework", "net9.0"]);
-    expect(build.cwd).toBe("/repo");
-    expect(build.beforeLaunch).toEqual([]);
+    expect(screen.getByLabelText(".NET project")).toBeTruthy();
+    // #2733: typed into the command fields of a configuration without params.
+    const typed: RunConfig = {
+      ...fresh,
+      params: {},
+      command: "dotnet",
+      args: ["run", "--project", "Worker.Service", "--no-launch-profile", "--", "--verbose"],
+    };
+    expect(formParams(typed, dotnetProjectType)).toEqual({
+      project: "Worker.Service",
+      programArgs: "--verbose",
+    });
+    // Options the form has no field for keep the command editor.
+    expect(formParams({ ...typed, args: ["run", "--project", "A", "--no-build"] }, dotnetProjectType)).toBeNull();
+    expect(formParams({ ...typed, args: ["build", "A"] }, dotnetProjectType)).toBeNull();
+  });
+
+  it("produces a context run configuration for a project file (#5635)", () => {
+    const p = dotnetProjectProduction("src/App/App.csproj");
+    expect(p).toMatchObject({
+      id: "context:dotnet:src/App/App.csproj",
+      name: "App",
+      kind: "dotnet",
+      command: "dotnet",
+      args: ["run", "--project", "src/App/App.csproj", "--no-launch-profile"],
+      debugAdapter: "netcoredbg",
+      detected: true,
+      isTest: false,
+      params: { project: "src/App/App.csproj" },
+    });
+    // Like a configuration from the form, it builds before launching so Debug works unbuilt.
+    expect(p.beforeLaunch).toEqual([{ kind: "dotnetBuild", target: "" }]);
+    // F#, Visual Basic and a project file at the root get the same shape.
+    expect(dotnetProjectProduction("lib/Worker.vbproj").name).toBe("Worker");
+    expect(dotnetProjectProduction("App.fsproj").name).toBe("App");
+    // The form can show it back ("Modify Run Configuration…").
+    expect(formParams(p, dotnetProjectType)).toEqual({ project: "src/App/App.csproj" });
+  });
+
+  it("builds the edited project from the open root instead of a profile cwd", () => {
+    useProject.setState({ project: { root: "/repo" } as never });
+    const c = withParams({ ...config(), cwd: "profile/work" }, { ...params, project: "other/App.csproj" });
+    expect(dotnetProjectFile(c)).toBe("/repo/other/App.csproj");
+    expect(dotnetProjectFile(withParams(c, { ...params, project: "C:\\src\\App.csproj" }))).toBe("C:\\src\\App.csproj");
+    expect(dotnetProjectFile(withParams(c, { ...params, project: "" }))).toBeNull();
   });
 
   it("edits project, framework, profile, arguments and environment in the shared form", () => {

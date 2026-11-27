@@ -5,6 +5,7 @@ on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened]
+  merge_group:
   workflow_dispatch:
 
 permissions:
@@ -12,8 +13,9 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  # A newer push supersedes the run in progress, on main too.
-  cancel-in-progress: true
+  # A newer push supersedes a pull request's run in progress. Runs on main and in the merge
+  # queue finish, so a broken main shows up and the queue's required checks report.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -23,16 +25,23 @@ env:
 
 jobs:
   # Which parts a pull request touches, so jobs it can't affect skip and leave the
-  # shared runners to others. Pushes and manual runs always run everything.
+  # shared runners to others. Pushes, the merge queue and manual runs always run everything.
   changes:
     name: Changes
-    runs-on: ubuntu-latest
+    # Self-hosted runners (scripts/selfhost-runner) only for trusted events, and only while the
+    # SELFHOSTED_RUNNERS repository variable is 'true': runs-on cannot fall back when none is online.
+    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions:
       pull-requests: read
     outputs:
       rust: ${{ steps.classify.outputs.rust }}
+      server: ${{ steps.classify.outputs.server }}
+      plugins: ${{ steps.classify.outputs.plugins }}
+      deny: ${{ steps.classify.outputs.deny }}
       frontend: ${{ steps.classify.outputs.frontend }}
+      e2e: ${{ steps.classify.outputs.e2e }}
+      catalog: ${{ steps.classify.outputs.catalog }}
     steps:
       - id: classify
         env:
@@ -40,55 +49,105 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
+          jobs="rust server plugins deny frontend e2e catalog"
           if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
-            echo "rust=true" >> "$GITHUB_OUTPUT"
-            echo "frontend=true" >> "$GITHUB_OUTPUT"
+            for job in $jobs; do echo "$job=true" >> "$GITHUB_OUTPUT"; done
             exit 0
           fi
           gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" \
             --jq '.[] | .filename, (.previous_filename // empty)' > files.txt
           cat files.txt
+          # A change to CI itself runs everything.
+          ci='^\.github/(workflows/ci\.yml|actions/)'
           docs='^(docs/|\.agents/|\.claude/|\.idea/|\.github/ISSUE_TEMPLATE/|\.github/pull_request_template\.md$|[^/]+\.md$|LICENSE$|NOTICE$)'
           # Frontend-only paths. The Rust code embeds a few files under src/; those stay out.
-          web='^(src/|e2e/|perf/|public/|scripts/|smoke/|index\.html$|vite\.config\.ts$|tsconfig[^/]*\.json$|knip\.ts$|playwright\.config\.ts$|\.oxlintrc\.json$|\.oxfmtrc\.json$)'
+          web='^(src/|e2e/|perf/|public/|scripts/|smoke/|evals/|index\.html$|vite\.config\.ts$|tsconfig[^/]*\.json$|knip\.ts$|playwright\.config\.ts$|\.oxlintrc\.json$|\.oxfmtrc\.json$)'
           embedded='^src/(bindings\.ts|styles/tokens\.css|features/plugins/views/frame-bridge\.js|platform/keymaps/)'
-          # A job runs when any changed file falls outside the paths that can't affect it.
-          rust=false
-          if grep -Ev "$docs|$web" files.txt | grep -q . || grep -Eq "$embedded" files.txt; then rust=true; fi
-          frontend=false
-          if grep -Ev "$docs" files.txt | grep -q .; then frontend=true; fi
-          echo "rust=$rust frontend=$frontend"
-          echo "rust=$rust" >> "$GITHUB_OUTPUT"
-          echo "frontend=$frontend" >> "$GITHUB_OUTPUT"
+          # Plugin web pages are their own pnpm projects, checked by the Plugins job only.
+          plugin_web='^plugins/official/[^/]+/web-src/'
+          # Paths the frontend checks never read...
+          backend='^(crates/|src-tauri/|sdk/|wit/|java/|fixtures/|Cargo\.(toml|lock)$|deny\.toml$|rustfmt\.toml$|rust-toolchain(\.toml)?$|\.cargo/)'
+          # ...except these, which frontend tests and e2e fixtures load (the crate manifests:
+          # scripts/smoke-paths.test.ts, through cargo metadata).
+          read_by_web='^(fixtures/(folding|django-app)/|(crates/[^/]+/)?Cargo\.toml$|crates/ide-plugin/tests/fixtures/|crates/ide-db/(src|tests/fixtures)/snowflake/|src-tauri/(icons|capabilities)/|src-tauri/tauri\.conf\.json$)'
+          # What the browser app and its e2e tests are built from.
+          app='^(src/|e2e/|public/|index\.html$|vite\.config\.ts$|tsconfig\.json$|playwright\.config\.ts$|package\.json$|pnpm-(lock|workspace)\.yaml$|crates/ide-plugin/tests/fixtures/|src-tauri/(icons|capabilities)/|src-tauri/tauri\.conf\.json$)'
+          # The plugin workspaces: the SDK, the plugins, their interface and the host's fixture plugins.
+          plugin_ws='^(sdk/|plugins/|wit/|crates/ide-plugin/tests/fixtures/|rust-toolchain(\.toml)?$)'
+          # Never compiled into the openidea-server binary.
+          not_server='^(src-tauri/|sdk/|fixtures/|crates/[^/]+/(tests|benches)/)'
+          deps='(^|/)Cargo\.(toml|lock)$|^deny\.toml$'
+          # The text catalog test reads the string literals of every Rust source.
+          rust_source='^(crates|src-tauri/src)/.*\.rs$'
+
+          any() { grep -Eq "$1" files.txt; }
+          outside() { [ -n "$(grep -Ev "$1" files.txt || true)" ]; }
+          set_job() { echo "$1=$2" | tee -a "$GITHUB_OUTPUT"; }
+
+          if any "$ci"; then
+            for job in $jobs; do set_job "$job" true; done
+            exit 0
+          fi
+          on() { if "${@:2}"; then set_job "$1" true; else set_job "$1" false; fi; }
+          rust_build() { outside "$1" || any "$embedded"; }
+          web_checks() { outside "$docs|$plugin_web|$backend" || any "$read_by_web"; }
+          catalog_only() { ! web_checks && any "$rust_source"; }
+          on rust rust_build "$docs|$web|$plugin_web"
+          on server rust_build "$docs|$web|$plugin_web|$not_server"
+          on plugins any "$plugin_ws"
+          on deny any "$deps"
+          on frontend web_checks
+          on e2e any "$app"
+          on catalog catalog_only
 
   rust:
     name: Rust (${{ matrix.os }})
     needs: changes
     if: needs.changes.outputs.rust == 'true'
+    permissions:
+      contents: read
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-22.04, windows-latest]
-    runs-on: ${{ matrix.os }}
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    # Self-hosted runners (scripts/selfhost-runner) only for trusted events, and only while the
+    # SELFHOSTED_RUNNERS repository variable is 'true': runs-on cannot fall back when none is online.
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || matrix.os }}
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v5
         with: { version: 11 }
       - uses: actions/setup-node@v5
-        with: { node-version: 22, cache: pnpm }
+        with:
+          node-version: 22
+          cache: ${{ runner.environment != 'self-hosted' && 'pnpm' || '' }}
+          package-manager-cache: ${{ runner.environment != 'self-hosted' }}
       - uses: dtolnay/rust-toolchain@stable
         with: { components: "clippy, rustfmt" }
-      # Only main saves the cache (saving takes minutes on Windows); PRs restore main's.
+      # Self-hosted runners keep persistent local Cargo caches; GitHub-hosted runners use Actions cache
+      # (only main saves it because saving takes minutes on Windows; PRs restore main's).
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment != 'self-hosted'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      # The persistent target dir makes incremental builds pay off; cap its size so it can't fill the disk.
+      - name: Persistent Cargo target dir
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          echo "CARGO_INCREMENTAL=1" >> "$GITHUB_ENV"
+          size=$(du -sm "$CARGO_TARGET_DIR" 2>/dev/null | cut -f1 || true)
+          if [ "${size:-0}" -gt 40000 ]; then
+            echo "$CARGO_TARGET_DIR is ${size} MB; clearing it"
+            rm -rf "$CARGO_TARGET_DIR"
+          fi
       - uses: taiki-e/install-action@nextest
       - name: Linux deps
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf
+          pkgs=(libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf)
+          dpkg -s "${pkgs[@]}" >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y "${pkgs[@]}"; }
       # tauri-build checks that frontendDist exists.
       - run: pnpm install --frozen-lockfile && mkdir -p dist
         shell: bash
@@ -97,49 +156,137 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       # Test fixtures write LF files; keep Git from converting them on checkout.
       - run: git config --global core.autocrlf false
+      - name: Restore Maven artifacts for Java build tests
+        id: jbuild-maven-cache
+        if: runner.environment == 'github-hosted'
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ runner.temp }}/jbuild-maven-repository
+          key: jbuild-maven-${{ runner.os }}-${{ hashFiles('crates/ide-build/tests/fixtures/jbuild-maven/**/pom.xml') }}
+      - name: Prepare Maven artifacts for Java build tests
+        id: jbuild-maven
+        if: runner.environment == 'github-hosted'
+        timeout-minutes: 5
+        shell: bash
+        env:
+          CACHE_HIT: ${{ steps.jbuild-maven-cache.outputs.cache-hit }}
+        run: |
+          if [[ -z "${JAVA_HOME:-}" || ! -d "$JAVA_HOME/bin" ]] || ! command -v mvn >/dev/null; then
+            exit 0
+          fi
+          export MAVEN_OPTS="${MAVEN_OPTS:+$MAVEN_OPTS }-Dmaven.repo.local=$RUNNER_TEMP/jbuild-maven-repository"
+          echo "MAVEN_OPTS=$MAVEN_OPTS" >> "$GITHUB_ENV"
+          if [[ "$CACHE_HIT" == true ]]; then
+            exit 0
+          fi
+          # The IDE also reads the compiler plugin descriptor when it builds the Maven model.
+          for delay in 0 10 30; do
+            sleep "$delay"
+            if mvn -B -ntp -U -N -f crates/ide-build/tests/fixtures/jbuild-maven/pom.xml resources:resources compiler:compile; then
+              echo "prepared=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          exit 1
+      - name: Save Maven artifacts for Java build tests
+        if: steps.jbuild-maven.outputs.prepared == 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ runner.temp }}/jbuild-maven-repository
+          key: ${{ steps.jbuild-maven-cache.outputs.cache-primary-key }}
       - run: cargo nextest run --workspace --no-fail-fast
-      # nextest ran export_bindings, which rewrites src/bindings.ts.
-      - name: Bindings are up to date
+      - name: Remote backend with Docker Compose
+        # Self-hosted runner containers do not mount /var/run/docker.sock (scripts/selfhost-runner/README.md).
+        if: runner.os == 'Linux' && runner.environment != 'self-hosted'
+        run: |
+          docker pull busybox:latest
+          cargo nextest run -p ide-host --test remote_daemon --run-ignored only \
+            -E 'test(=compose_service_survives_disconnect_and_is_removed_on_stop)'
+      # nextest skips doctests; ide-command's are its compile-fail tests.
+      - if: runner.os == 'Linux'
+        run: cargo test --doc -p ide-command
+      # nextest ran export_bindings, which rewrites src/bindings.ts and the command snapshot.
+      - name: Bindings and command snapshot are up to date
         if: runner.os == 'Linux'
-        run: git diff --exit-code src/bindings.ts
+        run: git diff --exit-code src/bindings.ts src-tauri/tests/commands.snap
+
+  # One check that always reports, for the ruleset to require: a skipped matrix job reports
+  # under its unexpanded name, so the per-OS checks never appear on frontend-only PRs.
+  rust-checks:
+    name: Rust checks
+    needs: [changes, rust]
+    if: always()
+    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    steps:
+      - env:
+          CHANGES: ${{ needs.changes.result }}
+          RUST: ${{ needs.rust.result }}
+        run: |
+          echo "changes: $CHANGES, rust: $RUST"
+          [ "$CHANGES" = success ] && { [ "$RUST" = success ] || [ "$RUST" = skipped ]; }
 
   # The remote development server ships as a static Linux binary (release-build.yml):
   # keep that build working.
   server:
     name: Remote server (linux musl)
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.server == 'true'
     timeout-minutes: 40
-    runs-on: ubuntu-22.04
+    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: x86_64-unknown-linux-musl }
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment != 'self-hosted'
         with: { key: server-musl }
-      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Persistent Cargo target dir
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          echo "CARGO_INCREMENTAL=1" >> "$GITHUB_ENV"
+          size=$(du -sm "$CARGO_TARGET_DIR" 2>/dev/null | cut -f1 || true)
+          if [ "${size:-0}" -gt 40000 ]; then
+            echo "$CARGO_TARGET_DIR is ${size} MB; clearing it"
+            rm -rf "$CARGO_TARGET_DIR"
+          fi
+      - run: dpkg -s musl-tools >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y musl-tools; }
       - run: cargo build --locked -p ide-host --bin openidea-server --target x86_64-unknown-linux-musl
-      - run: target/x86_64-unknown-linux-musl/debug/openidea-server --version
+      - run: '"${CARGO_TARGET_DIR:-target}/x86_64-unknown-linux-musl/debug/openidea-server" --version'
 
   # The plugin SDK, the official plugins and the test fixtures build in their
   # own workspaces (the root excludes them), so the jobs above don't see them.
   plugins:
     name: Plugins (SDK, official, fixtures)
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.plugins == 'true'
     timeout-minutes: 30
-    runs-on: ubuntu-22.04
-    env:
-      CARGO_TARGET_DIR: ${{ github.workspace }}/target-plugins
+    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: wasm32-wasip2, components: "clippy, rustfmt" }
+      - if: runner.environment != 'self-hosted'
+        shell: bash
+        run: echo "CARGO_TARGET_DIR=$GITHUB_WORKSPACE/target-plugins" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment != 'self-hosted'
         with:
           key: plugins
           cache-directories: target-plugins
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Persistent Cargo target dir
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          echo "CARGO_INCREMENTAL=1" >> "$GITHUB_ENV"
+          size=$(du -sm "$CARGO_TARGET_DIR" 2>/dev/null | cut -f1 || true)
+          if [ "${size:-0}" -gt 40000 ]; then
+            echo "$CARGO_TARGET_DIR is ${size} MB; clearing it"
+            rm -rf "$CARGO_TARGET_DIR"
+          fi
+          echo "CARGO_TARGET_DIR=$CARGO_TARGET_DIR/plugins" >> "$GITHUB_ENV"
       - name: Format, lint (host and wasm) and test each crate
         shell: bash
         run: |
@@ -156,7 +303,7 @@ jobs:
       - uses: pnpm/action-setup@v5
         with: { version: 11 }
       - uses: actions/setup-node@v5
-        with: { node-version: 22 }
+        with: { node-version: 22, package-manager-cache: false }
       # Plugin web pages (`web-src/`, their own pnpm projects): typecheck and test.
       - name: Web pages typecheck and test
         shell: bash
@@ -178,9 +325,9 @@ jobs:
   deny:
     name: Cargo deny
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.deny == 'true'
     timeout-minutes: 15
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -192,13 +339,19 @@ jobs:
     needs: changes
     if: needs.changes.outputs.frontend == 'true'
     timeout-minutes: 30
-    runs-on: ubuntu-22.04
+    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v5
+      # scripts/smoke-paths.test.ts runs `cargo metadata`, which is not preinstalled in the runner container.
+      - uses: dtolnay/rust-toolchain@stable
+        if: runner.environment == 'self-hosted'
       - uses: pnpm/action-setup@v5
         with: { version: 11 }
       - uses: actions/setup-node@v5
-        with: { node-version: 22, cache: pnpm }
+        with:
+          node-version: 22
+          cache: ${{ runner.environment != 'self-hosted' && 'pnpm' || '' }}
+          package-manager-cache: ${{ runner.environment != 'self-hosted' }}
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm lint
@@ -207,27 +360,50 @@ jobs:
       - run: pnpm test
       - run: pnpm build
 
-  e2e:
-    name: E2E
+  # A backend-only change can still drop a string the text catalog uses: run that one test.
+  catalog:
+    name: Text catalog
     needs: changes
-    if: needs.changes.outputs.frontend == 'true'
-    timeout-minutes: 30
-    runs-on: ubuntu-24.04
-    # Browsers and their system libraries are preinstalled; keep the tag in step with @playwright/test.
-    container: mcr.microsoft.com/playwright:v1.64.1-noble
+    if: needs.changes.outputs.catalog == 'true'
+    timeout-minutes: 15
+    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v5
         with: { version: 11 }
       - uses: actions/setup-node@v5
-        with: { node-version: 22, cache: pnpm }
+        with:
+          node-version: 22
+          cache: ${{ runner.environment != 'self-hosted' && 'pnpm' || '' }}
+          package-manager-cache: ${{ runner.environment != 'self-hosted' }}
       - run: pnpm install --frozen-lockfile
-      - run: pnpm e2e
-        env:
-          HOME: /root
+      - run: pnpm vitest run src/platform/locales/textCatalog.test.ts
+
+  e2e:
+    name: E2E (${{ matrix.shard }}/4)
+    needs: changes
+    if: needs.changes.outputs.e2e == 'true'
+    timeout-minutes: 45
+    runs-on: ${{ vars.SELFHOSTED_RUNNERS == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "openidea-selfhosted"]') || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+        with: { version: 11 }
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: ${{ runner.environment != 'self-hosted' && 'pnpm' || '' }}
+          package-manager-cache: ${{ runner.environment != 'self-hosted' }}
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm e2e --shard=${{ matrix.shard }}/4
       - uses: actions/upload-artifact@v6
         if: failure()
         with:
-          name: playwright-report
+          name: playwright-report-${{ matrix.shard }}
           path: playwright-report/
           retention-days: 7

@@ -670,21 +670,34 @@ pub fn workspace_edit(conv: &Conv, e: lsp::WorkspaceEdit) -> WorkspaceEdit {
                 for op in ops {
                     match op {
                         lsp::DocumentChangeOperation::Edit(e) => doc_edit(&mut files, e),
+                        // An operation its `ignoreIfExists` / `ignoreIfNotExists` makes a no-op is
+                        // left out (vtsls' extractions "create" the file they then edit).
                         lsp::DocumentChangeOperation::Op(lsp::ResourceOp::Create(c)) => {
                             if let Some(path) = uri_path(&c.uri) {
-                                let overwrite = c.options.and_then(|o| o.overwrite).unwrap_or(false);
-                                files.push(FileEdit::Create { path: path.into(), overwrite });
+                                let overwrite = c.options.as_ref().and_then(|o| o.overwrite).unwrap_or(false);
+                                let ignore = c.options.and_then(|o| o.ignore_if_exists).unwrap_or(false);
+                                if !(ignore && !overwrite && path.exists()) {
+                                    files.push(FileEdit::Create { path: path.into(), overwrite });
+                                }
                             }
                         }
                         lsp::DocumentChangeOperation::Op(lsp::ResourceOp::Rename(r)) => {
                             if let (Some(from), Some(to)) = (uri_path(&r.old_uri), uri_path(&r.new_uri)) {
-                                files.push(FileEdit::Rename { from: from.into(), to: to.into() });
+                                let o = r.options.as_ref();
+                                let overwrite = o.and_then(|o| o.overwrite).unwrap_or(false);
+                                let ignore = o.and_then(|o| o.ignore_if_exists).unwrap_or(false);
+                                if !(ignore && !overwrite && to.exists()) {
+                                    files.push(FileEdit::Rename { from: from.into(), to: to.into() });
+                                }
                             }
                         }
                         lsp::DocumentChangeOperation::Op(lsp::ResourceOp::Delete(d)) => {
                             if let Some(path) = uri_path(&d.uri) {
-                                let recursive = d.options.and_then(|o| o.recursive).unwrap_or(false);
-                                files.push(FileEdit::Delete { path: path.into(), recursive });
+                                let recursive = d.options.as_ref().and_then(|o| o.recursive).unwrap_or(false);
+                                let ignore = d.options.and_then(|o| o.ignore_if_not_exists).unwrap_or(false);
+                                if !(ignore && !path.exists()) {
+                                    files.push(FileEdit::Delete { path: path.into(), recursive });
+                                }
                             }
                         }
                     }
@@ -955,6 +968,7 @@ pub fn inlay_hint(conv: &Conv, path: &Path, h: lsp::InlayHint) -> InlayHint {
         _ => InlayKind::Other,
     };
     let tooltip = h.tooltip.map(tooltip_text);
+    let text_edits = conv.text_edits(path, h.text_edits.unwrap_or_default());
     InlayHint {
         position: conv.pos(path, h.position),
         label,
@@ -963,13 +977,16 @@ pub fn inlay_hint(conv: &Conv, path: &Path, h: lsp::InlayHint) -> InlayHint {
         padding_right: h.padding_right.unwrap_or(false),
         tooltip,
         parts,
+        text_edits,
     }
 }
 
-/// Decodes relative semantic token data into absolute UTF-16 quintuples.
-pub fn decode_semantic_tokens(data: &[u32], enc: Encoding, text: Option<&DocText>) -> Vec<u32> {
-    let mut out = Vec::with_capacity(data.len());
-    let (mut line, mut start) = (0u32, 0u32);
+/// Decodes relative semantic token data into absolute UTF-16 quintuples, sorted by position.
+/// Deltas are read as signed because some servers (JDT LS) emit tokens out of order; tokens that
+/// land before the document start are dropped and exact duplicates removed.
+pub fn decode_semantic_tokens(data: &[i64], enc: Encoding, text: Option<&DocText>) -> Vec<u32> {
+    let mut out: Vec<[u32; 5]> = Vec::with_capacity(data.len() / 5);
+    let (mut line, mut start) = (0i64, 0i64);
     for &[dl, ds, len, ty, mods] in data.as_chunks::<5>().0 {
         if dl == 0 {
             start = start.saturating_add(ds);
@@ -977,16 +994,21 @@ pub fn decode_semantic_tokens(data: &[u32], enc: Encoding, text: Option<&DocText
             line = line.saturating_add(dl);
             start = ds;
         }
+        let (Ok(line), Ok(start), Ok(len)) = (u32::try_from(line), u32::try_from(start), u32::try_from(len)) else {
+            continue;
+        };
         let (col, len16) = match (enc, text) {
             (Encoding::Utf16, _) | (_, None) => (start, len),
             (_, Some(t)) => {
-                let (a, b) = convert_offsets(t.line(line as usize), start as usize, (start + len) as usize, enc);
+                let (a, b) = convert_offsets(t.line(line as usize), start as usize, start as usize + len as usize, enc);
                 (a, b - a)
             }
         };
-        out.extend_from_slice(&[line, col, len16, ty, mods]);
+        out.push([line, col, len16, ty as u32, mods as u32]);
     }
-    out
+    out.sort_by_key(|t| (t[0], t[1]));
+    out.dedup();
+    out.into_flattened()
 }
 
 pub fn code_lens(conv: &Conv, path: &Path, l: lsp::CodeLens) -> CodeLens {
@@ -1014,6 +1036,29 @@ pub fn document_link(conv: &Conv, path: &Path, l: lsp::DocumentLink) -> Option<D
     })
 }
 
+pub fn document_color(conv: &Conv, path: &Path, server: ServerId, c: lsp::ColorInformation) -> DocumentColor {
+    let unit = |v: f32| if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 };
+    DocumentColor {
+        range: conv.range(path, c.range),
+        red: unit(c.color.red),
+        green: unit(c.color.green),
+        blue: unit(c.color.blue),
+        alpha: unit(c.color.alpha),
+        server,
+    }
+}
+
+/// Without its own edit, a presentation's label replaces the color.
+pub fn color_presentation(conv: &Conv, path: &Path, range: Range, p: lsp::ColorPresentation) -> ColorPresentation {
+    let main = match p.text_edit {
+        Some(e) => conv.text_edit(path, e),
+        None => TextEdit { range, new_text: p.label.clone() },
+    };
+    let mut edits = vec![main];
+    edits.extend(conv.text_edits(path, p.additional_text_edits.unwrap_or_default()));
+    ColorPresentation { label: p.label, edits }
+}
+
 pub fn call_item(conv: &Conv, item: &lsp::CallHierarchyItem, from_ranges: Vec<Range>) -> Option<HierarchyItem> {
     let (path, uri) = uri_target(item.uri.as_str());
     Some(HierarchyItem {
@@ -1025,6 +1070,7 @@ pub fn call_item(conv: &Conv, item: &lsp::CallHierarchyItem, from_ranges: Vec<Ra
         path: path.into(),
         uri,
         from_ranges,
+        from_path: None,
     })
 }
 
@@ -1049,6 +1095,7 @@ pub fn type_item(conv: &Conv, item: &lsp::TypeHierarchyItem) -> Option<Hierarchy
         path: path.into(),
         uri,
         from_ranges: Vec::new(),
+        from_path: None,
     })
 }
 
@@ -1418,6 +1465,34 @@ mod tests {
     }
 
     #[test]
+    fn workspace_edit_leaves_out_operations_their_ignore_options_make_no_ops() {
+        let conv = Conv::utf16();
+        let dir = tempfile::tempdir().unwrap();
+        let existing = dir.path().join("e.ts");
+        std::fs::write(&existing, "").unwrap();
+        let missing = dir.path().join("m.ts");
+        let uri = |p: &Path| crate::uri::path_to_uri_string(p);
+        let e: lsp::WorkspaceEdit = serde_json::from_value(json!({
+            "documentChanges": [
+                { "kind": "create", "uri": uri(&existing), "options": { "ignoreIfExists": true } },
+                { "kind": "create", "uri": uri(&missing), "options": { "ignoreIfExists": true } },
+                { "kind": "rename", "oldUri": uri(&missing), "newUri": uri(&existing), "options": { "ignoreIfExists": true } },
+                { "kind": "delete", "uri": uri(&dir.path().join("gone.ts")), "options": { "ignoreIfNotExists": true } },
+                { "kind": "delete", "uri": uri(&existing), "options": { "ignoreIfNotExists": true } }
+            ]
+        }))
+        .unwrap();
+        let w = workspace_edit(&conv, e);
+        assert_eq!(
+            w.files,
+            [
+                FileEdit::Create { path: missing.into(), overwrite: false },
+                FileEdit::Delete { path: existing.into(), recursive: false },
+            ]
+        );
+    }
+
+    #[test]
     fn workspace_edit_document_changes() {
         let conv = Conv::utf16();
         let e: lsp::WorkspaceEdit = serde_json::from_value(json!({
@@ -1473,12 +1548,34 @@ mod tests {
 
     #[test]
     fn semantic_token_decoding() {
-        let data = [1, 2, 3, 0, 1, 0, 5, 2, 1, 0, 2, 0, 4, 2, 3];
+        let data: [i64; 15] = [1, 2, 3, 0, 1, 0, 5, 2, 1, 0, 2, 0, 4, 2, 3];
         let out = decode_semantic_tokens(&data, Encoding::Utf16, None);
         assert_eq!(out, vec![1, 2, 3, 0, 1, 1, 7, 2, 1, 0, 3, 0, 4, 2, 3]);
         // UTF-8 server: "😀ab" token "ab" at byte 4 len 2 → utf16 col 2 len 2.
         let text = DocText::new("😀ab");
         assert_eq!(decode_semantic_tokens(&[0, 4, 2, 0, 0], Encoding::Utf8, Some(&text)), vec![0, 2, 2, 0, 0]);
+    }
+
+    #[test]
+    fn semantic_tokens_out_of_order() {
+        // JDT LS for `public class Repro<T extends Number> extends\n        ArrayList<T> {`: the bound's
+        // `extends` comes after `Number`, the superclass is emitted twice and the line goes backwards.
+        let data: [i64; 95] = [
+            0, 8, 4, 0, 0, 2, 7, 4, 0, 4096, 0, 5, 4, 0, 4096, 0, 5, 9, 1, 5184, 2, 0, 6, 11, 0, 0, 7, 5, 11, 0, 0, 6,
+            5, 1, 1104, 0, 6, 1, 6, 16, 0, 10, 6, 1, 65, 0, -8, 7, 11, 0, 1, 8, 9, 1, 1088, 0, 10, 1, 6, 2048, -1, 37,
+            7, 11, 0, 1, 8, 9, 1, 1088, 0, 10, 1, 6, 2048, 1, 4, 7, 11, 0, 0, 12, 5, 8, 144, 2, 9, 1, 7, 1040, 1, 8, 5,
+            8, 128,
+        ];
+        let out = decode_semantic_tokens(&data, Encoding::Utf16, None);
+        let positions: Vec<(u32, u32)> = out.chunks(5).map(|t| (t[0], t[1])).collect();
+        #[rustfmt::skip]
+        assert_eq!(positions, [
+            (0, 8), (2, 7), (2, 12), (2, 17),
+            (4, 0), (4, 7), (4, 13), (4, 19), (4, 21), (4, 29), (4, 37),
+            (5, 8), (5, 18), (6, 4), (6, 16), (8, 9), (9, 8),
+        ]);
+        // A token that would start before the document is dropped rather than wrapped.
+        assert_eq!(decode_semantic_tokens(&[0, -1, 2, 0, 0, 0, 5, 1, 0, 0], Encoding::Utf16, None), [0, 4, 1, 0, 0]);
     }
 
     #[test]
@@ -1517,6 +1614,23 @@ mod tests {
         assert!(h.padding_left && !h.padding_right);
         assert_eq!(h.parts.len(), 2);
         assert!(h.parts.iter().all(|p| p.location.is_none()));
+        assert!(h.text_edits.is_empty());
+    }
+
+    #[test]
+    fn inlay_text_edits_carry_over() {
+        let conv = Conv::utf16();
+        let h: lsp::InlayHint = serde_json::from_value(json!({
+            "position": {"line": 2, "character": 5}, "label": ": Any", "kind": 1,
+            "textEdits": [
+                {"range": {"start": {"line": 2, "character": 5}, "end": {"line": 2, "character": 5}}, "newText": ": Any"},
+                {"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}, "newText": "from typing import Any\n"}
+            ]
+        }))
+        .unwrap();
+        let h = inlay_hint(&conv, Path::new("/a"), h);
+        let edits: Vec<_> = h.text_edits.iter().map(|e| (e.range.start, e.new_text.as_str())).collect();
+        assert_eq!(edits, [(p(2, 5), ": Any"), (p(0, 0), "from typing import Any\n")]);
     }
 
     #[cfg(unix)]
@@ -1541,6 +1655,51 @@ mod tests {
         assert_eq!(loc.path, PathBuf::from("/p/foo.rs"));
         assert_eq!(loc.range.start, p(4, 7));
         assert_eq!(h.kind, InlayKind::Other);
+    }
+
+    #[test]
+    fn document_colors_keep_their_server_and_clamp_components() {
+        let conv = Conv::utf16();
+        let info = serde_json::from_value::<lsp::ColorInformation>(json!({
+            "range": { "start": { "line": 2, "character": 14 }, "end": { "line": 2, "character": 24 } },
+            "color": { "red": 0.937, "green": 0.267, "blue": 0.267, "alpha": 1.5 },
+        }))
+        .unwrap();
+        let c = document_color(&conv, Path::new("/p/a.html"), ServerId(3), info);
+        assert_eq!(c.range, Range::new(p(2, 14), p(2, 24)));
+        assert_eq!((c.red, c.green, c.blue, c.alpha), (0.937, 0.267, 0.267, 1.0));
+        assert_eq!(c.server, ServerId(3));
+    }
+
+    #[test]
+    fn color_presentations_replace_the_color_unless_the_server_gives_an_edit() {
+        let conv = Conv::utf16();
+        let here = Path::new("/p/a.css");
+        let color = Range::new(p(0, 7), p(0, 10));
+        let plain = serde_json::from_value::<lsp::ColorPresentation>(json!({ "label": "#00ff00" })).unwrap();
+        let plain = color_presentation(&conv, here, color, plain);
+        assert_eq!(plain.label, "#00ff00");
+        assert_eq!(plain.edits, vec![TextEdit { range: color, new_text: "#00ff00".into() }]);
+        let edited = serde_json::from_value::<lsp::ColorPresentation>(json!({
+            "label": "rgb(0 255 0)",
+            "textEdit": {
+                "range": { "start": { "line": 0, "character": 7 }, "end": { "line": 0, "character": 10 } },
+                "newText": "rgb(0 255 0)",
+            },
+            "additionalTextEdits": [{
+                "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } },
+                "newText": "/* x */",
+            }],
+        }))
+        .unwrap();
+        let edited = color_presentation(&conv, here, color, edited);
+        assert_eq!(
+            edited.edits,
+            vec![
+                TextEdit { range: color, new_text: "rgb(0 255 0)".into() },
+                TextEdit { range: Range::new(p(0, 0), p(0, 0)), new_text: "/* x */".into() },
+            ]
+        );
     }
 
     #[cfg(unix)]

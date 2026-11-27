@@ -45,11 +45,10 @@ POST https://example.test/messages
 const json = document.createElement("div");
 json.id = "json";
 document.body.append(json);
+const jsonSupport = await loadSupport(findLanguageDescription("JSON", "body.json")!);
+if (!jsonSupport) throw new Error("Failed to load JSON support for the highlighting fixture");
 new EditorView({
   parent: json,
   doc: '{"name": "World", "count": 12, "enabled": true, "ready": false, "empty": null, "items": [1]}',
-  extensions: [
-    await loadSupport(findLanguageDescription("JSON", "body.json")!),
-    syntaxHighlighting(openideaHighlightStyle),
-  ],
+  extensions: [jsonSupport, syntaxHighlighting(openideaHighlightStyle)],
 });

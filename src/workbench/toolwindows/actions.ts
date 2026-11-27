@@ -1,4 +1,4 @@
-import { registerAction, registerActions, type Action } from "@/platform/actions";
+import { registerAction, registerActions, retitleAction, type Action } from "@/platform/actions";
 import { setContext } from "@/platform/context";
 import { formatMessage, tx } from "@/platform/i18n";
 import { occurrenceNavigator, showStatusInfo, useContributions } from "../contributions";
@@ -10,22 +10,29 @@ import {
   deleteLayout,
   layoutNames,
   renameLayout,
+  restoreCurrentLayout,
   restoreDefaultLayout,
   restoreLayout,
+  saveCurrentLayout,
   saveLayout,
   useToolWindowLayouts,
 } from "./layouts";
 import { closeSelectedContent } from "./content";
+import { toggleMoreToolWindowsSide } from "./stripes";
 import {
   activateToolWindow,
   hideActiveToolWindow,
   hideAllToolWindows,
+  hideSideToolWindows,
   hideToolWindow,
   jumpToLastToolWindow,
   lastUsedToolWindow,
   resizeActiveToolWindow,
+  setToolWindowViewMode,
+  toolWindowsRestorable,
   useToolWindowLayout,
   toggleMaximizeToolWindow,
+  viewModeOf,
 } from "./store";
 
 /**
@@ -92,11 +99,35 @@ function layoutActions(): Action[] {
       },
     },
     {
+      id: "layout.restoreCurrent",
+      title: "Restore Current Layout",
+      description: "Restores the active saved layout, or the default layout when none is active.",
+      category: "Window",
+      keywords: ["tool window layout", "reset"],
+      when: "projectOpen",
+      run: () => {
+        exitDistractionFree();
+        restoreCurrentLayout();
+      },
+    },
+    {
+      id: "layout.saveCurrent",
+      title: "Save Changes in Current Layout",
+      category: "Window",
+      keywords: ["tool window layout", "store layout"],
+      when: "projectOpen && toolWindowLayoutActive",
+      run: ({ arg }) => {
+        if (typeof arg === "string" && arg !== useToolWindowLayouts.getState().active) return;
+        saveCurrentLayout();
+      },
+    },
+    {
       id: "layout.restoreDefault",
       title: "Restore Default Layout",
       category: "Window",
       keywords: ["tool window layout", "reset"],
       when: "projectOpen",
+      toggled: () => useToolWindowLayouts.getState().active === null,
       run: () => {
         exitDistractionFree();
         restoreDefaultLayout();
@@ -107,9 +138,9 @@ function layoutActions(): Action[] {
       title: "Rename Tool Window Layout…",
       category: "Window",
       when: "toolWindowLayoutsSaved",
-      run: async () => {
-        const from = await pick("Rename Layout");
-        if (!from) return;
+      run: async ({ arg }) => {
+        const from = typeof arg === "string" ? arg : await pick("Rename Layout");
+        if (!from || !layoutNames().includes(from)) return;
         const to = await promptInput({
           title: "Rename Layout",
           label: "New name:",
@@ -125,10 +156,11 @@ function layoutActions(): Action[] {
       title: "Delete Tool Window Layout…",
       category: "Window",
       when: "toolWindowLayoutsSaved",
-      run: async () => {
-        const name = await pick("Delete Layout");
+      run: async ({ arg }) => {
+        const name = typeof arg === "string" ? arg : await pick("Delete Layout");
         if (
           name &&
+          layoutNames().includes(name) &&
           (await confirm({
             title: "Delete Layout",
             message: tx`Delete the layout '${name}'?`,
@@ -173,12 +205,33 @@ export function installToolWindowActions(): () => void {
   const unsubscribe = useContributions.subscribe((s, prev) => {
     if (s.toolWindows !== prev.toolWindows) sync();
   });
-  const publishLayouts = () => setContext("toolWindowLayoutsSaved", useToolWindowLayouts.getState().layouts.length > 0);
+  const publishLayouts = () => {
+    const { layouts, active } = useToolWindowLayouts.getState();
+    setContext("toolWindowLayoutsSaved", layouts.length > 0);
+    setContext("toolWindowLayoutActive", !!active);
+  };
   publishLayouts();
   const unsubscribeLayouts = useToolWindowLayouts.subscribe(publishLayouts);
+  /** The window an Options menu names, else the active one. */
+  const viewModeTarget = (arg?: unknown) => {
+    const s = useToolWindowLayout.getState();
+    return typeof arg === "string" ? arg : (s.focused ?? s.lastActive);
+  };
 
   const disposeStatic = registerActions([
-    { id: "toolwindow.hideAll", title: "Hide All Tool Windows", category: "Window", run: hideAllToolWindows },
+    {
+      id: "toolwindow.moveMore",
+      title: "Move More Tool Windows Button",
+      category: "Window",
+      run: toggleMoreToolWindowsSide,
+    },
+    {
+      id: "toolwindow.hideAll",
+      title: "Hide All Tool Windows",
+      category: "Window",
+      keywords: ["restore tool windows"],
+      run: hideAllToolWindows,
+    },
     {
       id: "toolwindow.jumpToLast",
       title: "Jump to Last Tool Window",
@@ -194,6 +247,15 @@ export function installToolWindowActions(): () => void {
       category: "Window",
       when: "projectOpen && !popupOpen",
       run: hideActiveToolWindow,
+    },
+    {
+      // IDEA's HideSideWindows: every window on the active window's side.
+      id: "toolwindow.hideSide",
+      title: "Hide Side Tool Windows",
+      category: "Window",
+      keywords: ["tool window"],
+      when: "projectOpen && !popupOpen",
+      run: hideSideToolWindows,
     },
     {
       // Close Content, as IDEA (⌘W / Ctrl+F4 in a tool window): the selected closable tab, else the window.
@@ -244,6 +306,27 @@ export function installToolWindowActions(): () => void {
         if (id) toggleMaximizeToolWindow(id);
       },
     },
+    // IDEA's DockPinnedMode / DockUnpinnedMode / UndockMode (Float and Window are separate OS windows, not here).
+    ...(
+      [
+        ["dockPinned", "Dock Pinned"],
+        ["dockUnpinned", "Dock Unpinned"],
+        ["undock", "Undock"],
+      ] as const
+    ).map(([mode, title]): Action => ({
+      id: `toolwindow.viewMode.${mode}`,
+      title,
+      category: "Window",
+      keywords: ["tool window", "view mode"],
+      toggled: () => {
+        const id = viewModeTarget();
+        return !!id && viewModeOf(id) === mode;
+      },
+      run: ({ arg }) => {
+        const id = viewModeTarget(arg);
+        if (id) setToolWindowViewMode(id, mode);
+      },
+    })),
     ...(["left", "right", "up", "down"] as const).map((dir): Action => ({
       id: `toolwindow.resize${dir[0]!.toUpperCase()}${dir.slice(1)}`,
       title: { left: "Stretch to Left", right: "Stretch to Right", up: "Stretch to Top", down: "Stretch to Bottom" }[
@@ -256,9 +339,17 @@ export function installToolWindowActions(): () => void {
     })),
   ]);
 
+  // Pressed again with every window hidden, Hide All restores them: its title says so.
+  const retitleHideAll = () =>
+    retitleAction("toolwindow.hideAll", toolWindowsRestorable() ? "Restore Tool Windows" : undefined);
+  retitleHideAll();
+  const unsubscribeHideAll = useToolWindowLayout.subscribe(retitleHideAll);
+
   return () => {
     unsubscribe();
     unsubscribeLayouts();
+    unsubscribeHideAll();
+    retitleAction("toolwindow.hideAll", undefined);
     disposeStatic();
     perWindow.forEach((e) => e.dispose());
     perWindow.clear();

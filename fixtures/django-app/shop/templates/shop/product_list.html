@@ -1,0 +1,25 @@
+{% extends "shop/base.html" %}
+
+{% block title %}{% if single %}{{ products.0.name }}{% else %}Menu{% endif %} · {{ block.super }}{% endblock %}
+
+{% block content %}
+  <ul class="products">
+    {% for product in products %}
+      <li class="{% cycle 'odd' 'even' %}">
+        <a href="{% url 'shop:product' slug=product.slug %}">{{ product.name|title }}</a>
+        <span class="price">€{{ product.price|floatformat:2 }}</span>
+        {% with count=product.tags|length %}
+          {% if count > 1 %}
+            <small>{{ product.tags|join:", " }}</small>
+          {% endif %}
+        {% endwith %}
+      </li>
+    {% empty %}
+      <li>Nothing on the menu today.</li>
+    {% endfor %}
+  </ul>
+  {% comment "Ideas" %}
+    <p>{{ seasonal_specials }}</p>
+  {% endcomment %}
+  {% verbatim %}<script type="text/x-template">{{ clientSide }}</script>{% endverbatim %}
+{% endblock content %}

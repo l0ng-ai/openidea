@@ -6,13 +6,22 @@
 import { writeClipboardText } from "@/platform/clipboard";
 import { isJvmApplication, parseJavaArgs } from "@/platform/javaLaunch";
 import { useRunTargets } from "@/platform/pluginRunTargets";
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type MouseEvent,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import clsx from "clsx";
 import { isTauri, type BeforeLaunchTask, type BuildPolicy, type RunConfig } from "@/platform/ipc";
 import { useWorkflowSettings } from "@/platform/workflowSettings";
 import { relativePath, useProject } from "@/platform/project";
 import { isRemoteWindow } from "@/platform/remote";
-import { useTx, useTxTemplate } from "@/platform/i18n";
+import { txPart, useTx, useTxTemplate } from "@/platform/i18n";
 import {
   Button,
   Checkbox,
@@ -33,6 +42,8 @@ import {
 } from "@/ui";
 import { useContributions, type RunConfigTypeContribution } from "@/workbench/contributions";
 import { TASK_LABELS, taskLabel, type BeforeLaunchKind } from "./beforeLaunch";
+import { ExpandableTextarea } from "./ExpandableTextarea";
+import { CWD_MACROS } from "./cwdMacros";
 import {
   commandLine,
   compoundCycle,
@@ -46,10 +57,24 @@ import {
 } from "./configs";
 import { gradleContainsModule } from "./gradleRun";
 import { EnvDialog } from "./EnvDialog";
+import { PluginArgsInput } from "./PluginArgsInput";
+import { pluginOwnedConfig } from "./pluginArgsCompletion";
 import { useBuildModel } from "@/platform/buildModel";
 import { COMPOUND, formParams, terminalApplies, withParams } from "./types";
+import { frameworkFor } from "./testing";
 import { TomcatSettings } from "./TomcatSettings";
+import { toolWindowTitle } from "@/workbench/toolwindows/title";
 import styles from "./Run.module.css";
+
+const TASK_ICONS: Readonly<Partial<Record<string, string>>> = {
+  build: "build-project",
+  buildModule: "build-project",
+  buildArtifacts: "build-rebuild",
+  dotnetBuild: "build-project",
+  run: "run",
+  tool: "settings",
+  command: "terminal",
+};
 
 /**
  * Debug adapters with a real launch template (`debugger/launch.ts`, `debugger/java.ts`),
@@ -60,7 +85,7 @@ import styles from "./Run.module.css";
 const ADAPTERS: ReadonlyArray<{ id: string; label: string }> = [
   { id: "netcoredbg", label: "netcoredbg (.NET)" },
   { id: "java-debug", label: "java-debug (Java)" },
-  { id: "kotlin-debug-adapter", label: "kotlin-debug-adapter (Kotlin)" },
+  { id: "kotlin-debug-adapter", label: "kotlin-lsp or kotlin-debug-adapter (Kotlin)" },
   { id: "debugpy", label: "debugpy (Python)" },
   { id: "js-debug", label: "js-debug (Node.js / TypeScript)" },
   { id: "delve", label: "Delve (Go)" },
@@ -69,6 +94,7 @@ const ADAPTERS: ReadonlyArray<{ id: string; label: string }> = [
   { id: "gdb", label: "GDB (C, C++)" },
   { id: "php-debug", label: "php-debug (PHP)" },
   { id: "rdbg", label: "rdbg (Ruby)" },
+  { id: "bun-dap", label: "bun-dap (Bun)" },
 ];
 
 /** Options "Modify options" adds to the form: value fields (shown once added) and flags (chips). */
@@ -84,6 +110,7 @@ export type OptionId =
   | "openToolWindow"
   | "focusToolWindow"
   | "isTest"
+  | "watch"
   | "emulateTerminal";
 
 const VALUE_OPTIONS: ReadonlySet<OptionId> = new Set([
@@ -106,13 +133,14 @@ const OPTION_LABELS: Record<OptionId, string> = {
   openToolWindow: "Open run/debug tool window when started",
   focusToolWindow: "Focus run/debug tool window when started",
   isTest: "Show results in the test runner",
+  watch: "Watch for changes",
   emulateTerminal: "Emulate terminal in output console",
 };
 
 const OPTION_GROUPS: ReadonlyArray<{ label: string; options: OptionId[]; process: boolean }> = [
   { label: "Operating System", options: ["allowParallel", "stdinFile", "envFiles", "emulateTerminal"], process: true },
   { label: "Logs", options: ["outputFile", "showOnStdout", "showOnStderr"], process: true },
-  { label: "Test", options: ["isTest"], process: true },
+  { label: "Test", options: ["isTest", "watch"], process: true },
   {
     label: "Before Launch",
     options: ["buildPolicy", "beforeLaunch", "openToolWindow", "focusToolWindow"],
@@ -145,6 +173,8 @@ export function optionSet(config: RunConfig, id: OptionId, openByDefault: boolea
       return !!config.focusToolWindow;
     case "isTest":
       return config.isTest;
+    case "watch":
+      return !!config.watch;
     case "emulateTerminal":
       return !!config.emulateTerminal;
   }
@@ -175,6 +205,8 @@ export function optionPatch(id: OptionId, on: boolean): Partial<RunConfig> {
       return { focusToolWindow: on };
     case "isTest":
       return on ? { isTest: true, emulateTerminal: false } : { isTest: false };
+    case "watch":
+      return { watch: on };
     case "emulateTerminal":
       return { emulateTerminal: on };
   }
@@ -203,7 +235,7 @@ export interface ConfigFormProps {
 
 /** Picks files or a directory in the local file dialog, opened at `from`; empty when cancelled. */
 async function choosePaths(opts: { directory?: boolean; multiple?: boolean; from: string | null }): Promise<string[]> {
-  const { open } = await import("@tauri-apps/plugin-dialog");
+  const { open } = await import("@/platform/dialog");
   const picked = await open({
     directory: !!opts.directory,
     multiple: !!opts.multiple,
@@ -242,6 +274,65 @@ function BrowseButton({
   );
 }
 
+const CWD_MACRO_LABELS: Record<(typeof CWD_MACROS)[number], string> = {
+  PROJECT_DIR: "Project root",
+  ContentRoot: "Content root",
+  MODULE_DIR: "Module directory",
+  MODULE_WORKING_DIR: "Module working directory",
+  USER_HOME: "User home directory",
+};
+
+/** Inserts a path macro at the caret of the working directory field. */
+function CwdMacroButton({
+  input,
+  onInsert,
+}: {
+  input: RefObject<HTMLInputElement | null>;
+  onInsert: (v: string) => void;
+}) {
+  const tx = useTx();
+  const ref = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  const insert = (macro: string) => {
+    const el = input.current;
+    const value = el?.value ?? "";
+    const from = el?.selectionStart ?? value.length;
+    const to = el?.selectionEnd ?? from;
+    onInsert(value.slice(0, from) + macro + value.slice(to));
+    requestAnimationFrame(() => {
+      el?.focus();
+      el?.setSelectionRange(from + macro.length, from + macro.length);
+    });
+  };
+  return (
+    <>
+      <IconButton
+        ref={ref}
+        icon="plus"
+        size="small"
+        iconSize={14}
+        title={tx("Insert Macro…")}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+      />
+      <Menu
+        open={open}
+        onClose={() => setOpen(false)}
+        anchor={ref}
+        placement="bottom-end"
+        aria-label={tx("Macros")}
+        items={CWD_MACROS.filter((m) => m !== "USER_HOME" || !isRemoteWindow()).map((m) => ({
+          id: m,
+          label: `$${m}$`,
+          shortcut: tx(CWD_MACRO_LABELS[m]),
+          run: () => insert(`$${m}$`),
+        }))}
+      />
+    </>
+  );
+}
+
 export function ConfigForm({ config, all, type, errors, template, onChange, modifyRequest }: ConfigFormProps) {
   const openByDefault = useWorkflowSettings((s) => s.run.showOnStart);
   const externalTools = useWorkflowSettings((s) => s.externalTools);
@@ -250,6 +341,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
   const tx = useTx();
   const txTemplate = useTxTemplate();
   const root = useProject((s) => s.project?.root ?? null);
+  const cwdInput = useRef<HTMLInputElement>(null);
   const gradle = useBuildModel((s) => s.model?.gradle);
   const runUsing = useProject((s) => s.settings?.languages?.java?.gradle?.runUsing);
   const delegated =
@@ -263,12 +355,18 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
   });
   const [shown, setShown] = useState<ReadonlySet<OptionId>>(() => new Set());
   const [argsText, setArgsText] = useState<string | null>(null);
+  const setArgs = (text: string) => {
+    setArgsText(text);
+    const args = parseArgs(text);
+    const module = parseJavaArgs(args).mainClass === parseJavaArgs(config.args).mainClass ? config.module : undefined;
+    update({ args, params: {}, module });
+  };
   const [envText, setEnvText] = useState<string | null>(null);
   const [envFilesText, setEnvFilesText] = useState<string | null>(null);
   const [envOpen, setEnvOpen] = useState(false);
   const [modifyOpen, setModifyOpen] = useState(false);
   const [lastRequest, setLastRequest] = useState(modifyRequest);
-  const [taskMenu, setTaskMenu] = useState(false);
+  const [taskMenu, setTaskMenu] = useState<"add" | { index: number; anchor: HTMLButtonElement } | null>(null);
   const modifyRef = useRef<HTMLButtonElement>(null);
   const taskRef = useRef<HTMLButtonElement>(null);
 
@@ -307,6 +405,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
   };
 
   const terminal = terminalApplies(config, type);
+  const watchApplies = config.isTest && frameworkFor(config) === "js";
   // A terminal has no separate input file: the two options exclude each other.
   const blocked = (id: OptionId) =>
     (id === "emulateTerminal" && isShown("stdinFile")) || (id === "stdinFile" && !!config.emulateTerminal);
@@ -317,7 +416,8 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
         (id) =>
           (!compound || id === "beforeLaunch") &&
           (id !== "emulateTerminal" || terminal || !!config.emulateTerminal) &&
-          (id !== "buildPolicy" || buildPolicyApplies(config)),
+          (id !== "buildPolicy" || buildPolicyApplies(config)) &&
+          (id !== "watch" || watchApplies),
       )
       .map((id): MenuItem => ({
         label: OPTION_LABELS[id],
@@ -342,28 +442,33 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
         run: () => addTask("run", c.id),
       })),
     },
-    { label: TASK_LABELS.build, icon: "build-project", run: () => addTask("build") },
+    { label: TASK_LABELS.build, icon: TASK_ICONS.build, run: () => addTask("build") },
     {
       label: TASK_LABELS.buildModule,
-      icon: "build-project",
+      icon: TASK_ICONS.buildModule,
       disabled: config.module == null,
       run: () => addTask("buildModule", config.module ?? ""),
     },
-    { label: TASK_LABELS.buildArtifacts, icon: "build-rebuild", run: () => addTask("buildArtifacts") },
+    { label: TASK_LABELS.buildArtifacts, icon: TASK_ICONS.buildArtifacts, run: () => addTask("buildArtifacts") },
     ...(config.kind === "dotnet"
-      ? [{ label: TASK_LABELS.dotnetBuild, icon: "build-project", run: () => addTask("dotnetBuild") }]
+      ? [{ label: TASK_LABELS.dotnetBuild, icon: TASK_ICONS.dotnetBuild, run: () => addTask("dotnetBuild") }]
       : []),
     {
       label: TASK_LABELS.tool,
       disabled: !externalTools.length,
       submenu: externalTools.map((t) => ({ label: t.name, verbatim: true, run: () => addTask("tool", t.id) })),
     },
-    { label: TASK_LABELS.command, icon: "terminal", run: () => addTask("command") },
+    { label: TASK_LABELS.command, icon: TASK_ICONS.command, run: () => addTask("command") },
     {
       label: TASK_LABELS.toolWindow,
       submenu: [...toolWindows.values()]
-        .sort((a, b) => a.title.localeCompare(b.title))
-        .map((w) => ({ label: w.title, icon: w.icon, run: () => addTask("toolWindow", w.id) })),
+        .map((w) => ({
+          label: toolWindowTitle(w),
+          verbatim: true,
+          icon: w.icon,
+          run: () => addTask("toolWindow", w.id),
+        }))
+        .sort((a, b) => a.label.localeCompare(b.label)),
     },
   ];
   const moveTask = (i: number, d: -1 | 1) => {
@@ -373,6 +478,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
     [next[i], next[j]] = [next[j]!, next[i]!];
     setTasks(next);
   };
+  const taskActions = taskMenu === "add" ? null : taskMenu;
 
   const adapterOptions: SelectOption[] = [
     { value: "", label: "None" },
@@ -387,7 +493,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
   const targetOptions: SelectOption[] = [
     { value: "__default", label: "Default run target" },
     { value: "", label: "Local machine" },
-    ...runTargets.map((t) => ({ value: t.id, label: t.name.trim() || t.id })),
+    ...runTargets.map((t) => ({ value: t.id, verbatim: true, label: t.name.trim() || t.id })),
   ];
   if (config.target && !runTargets.some((t) => t.id === config.target))
     targetOptions.push({ value: config.target, label: txTemplate(`${config.target} (missing)`) });
@@ -401,6 +507,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
       "openToolWindow",
       "focusToolWindow",
       "isTest",
+      "watch",
     ] as const
   ).filter(
     (id) => (!noProcess || id === "openToolWindow" || id === "focusToolWindow") && optionSet(config, id, openByDefault),
@@ -438,7 +545,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
       {config.kind === "tomcat" ? (
         <TomcatSettings config={config} onChange={onChange} />
       ) : (
-        <>
+        <div className={styles.formSettings}>
           {!noProcess && (
             <Field
               label="Run on"
@@ -533,21 +640,22 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
                 />
               </Field>
               <Field label="Arguments">
-                <Input
-                  mono
-                  aria-label="Arguments"
-                  value={argsText ?? formatArgs(config.args)}
-                  placeholder="Space separated; quote with ' or &quot;"
-                  onChange={(e) => {
-                    setArgsText(e.target.value);
-                    const args = parseArgs(e.target.value);
-                    const module =
-                      parseJavaArgs(args).mainClass === parseJavaArgs(config.args).mainClass
-                        ? config.module
-                        : undefined;
-                    update({ args, params: {}, module });
-                  }}
-                />
+                {pluginOwnedConfig(config) ? (
+                  <PluginArgsInput
+                    configId={config.id}
+                    value={argsText ?? formatArgs(config.args)}
+                    placeholder="Space separated; quote with ' or &quot;"
+                    onChange={setArgs}
+                  />
+                ) : (
+                  <Input
+                    mono
+                    aria-label="Arguments"
+                    value={argsText ?? formatArgs(config.args)}
+                    placeholder="Space separated; quote with ' or &quot;"
+                    onChange={(e) => setArgs(e.target.value)}
+                  />
+                )}
               </Field>
             </>
           )}
@@ -558,12 +666,14 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
                 <Field label="Working directory" error={errors.cwd}>
                   <div className={styles.inputWithButton}>
                     <Input
+                      ref={cwdInput}
                       mono
                       aria-label="Working directory"
                       value={config.cwd ?? ""}
                       placeholder="Project root"
                       onChange={(e) => update({ cwd: e.target.value.trim() ? e.target.value : null })}
                     />
+                    <CwdMacroButton input={cwdInput} onInsert={(cwd) => update({ cwd })} />
                     <BrowseButton
                       directory
                       title="Browse…"
@@ -692,62 +802,104 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
 
           {isShown("beforeLaunch") && (
             <Field label="Before launch" error={errors.beforeLaunch} top>
-              <div className={styles.taskList} role="list" aria-label={tx("Before launch tasks")}>
-                {tasks.map((t, i) => (
-                  <div key={i} role="listitem" className={styles.taskRow}>
-                    {t.kind === "command" ? (
-                      <Input
-                        mono
-                        aria-label={txTemplate(`Before launch command ${i + 1}`)}
-                        value={t.target ?? ""}
-                        placeholder="Shell command, e.g. make generate"
-                        onChange={(e) =>
-                          setTasks(tasks.map((x, j) => (j === i ? { ...x, target: e.target.value } : x)))
-                        }
-                      />
-                    ) : (
-                      <span className={styles.taskLabel} title={txTemplate(taskLabel(t, all))}>
-                        {txTemplate(taskLabel(t, all))}
-                      </span>
-                    )}
-                    <span className={styles.taskActions}>
+              <div className={styles.beforeLaunchTasks} role="list" aria-label={tx("Before launch tasks")}>
+                {tasks.map((t, i) => {
+                  const label = txTemplate(taskLabel(t, all));
+                  const target = t.kind === "run" ? all.find((c) => c.id === t.target) : undefined;
+                  const icon = target ? configIcon(target) : TASK_ICONS[t.kind];
+                  const prefix = (
+                    <>
+                      {icon && <Icon name={icon} size={14} />}
+                      <span className={styles.taskOrder}>{i + 1}.</span>
+                    </>
+                  );
+                  const actions = {
+                    "aria-haspopup": "menu" as const,
+                    "aria-expanded": taskActions?.index === i,
+                    onClick: (e: MouseEvent<HTMLButtonElement>) => setTaskMenu({ index: i, anchor: e.currentTarget }),
+                  };
+                  return (
+                    // oxlint-disable-next-line react/no-array-index-key -- tasks of one kind can repeat; position is the identity
+                    <div key={i} role="listitem" className={styles.taskTag}>
+                      {t.kind === "command" ? (
+                        <>
+                          {prefix}
+                          <Input
+                            mono
+                            className={styles.taskCommand}
+                            aria-label={txTemplate(`Before launch command ${i + 1}`)}
+                            value={t.target ?? ""}
+                            placeholder="Shell command, e.g. make generate"
+                            onChange={(e) =>
+                              setTasks(tasks.map((x, j) => (j === i ? { ...x, target: e.target.value } : x)))
+                            }
+                          />
+                          <IconButton icon="more" title="Task Actions" size="small" {...actions} />
+                        </>
+                      ) : (
+                        <button type="button" className={styles.taskName} title={label} {...actions}>
+                          {prefix}
+                          <span className={styles.taskLabel}>{label}</span>
+                        </button>
+                      )}
                       <IconButton
-                        icon="arrow-up"
-                        size="small"
-                        iconSize={12}
-                        title="Move Up"
-                        disabled={i === 0}
-                        onClick={() => moveTask(i, -1)}
-                      />
-                      <IconButton
-                        icon="arrow-down"
-                        size="small"
-                        iconSize={12}
-                        title="Move Down"
-                        disabled={i === tasks.length - 1}
-                        onClick={() => moveTask(i, 1)}
-                      />
-                      <IconButton
-                        icon="minus"
+                        icon="close"
                         size="small"
                         iconSize={12}
                         title="Remove Task"
                         onClick={() => setTasks(tasks.filter((_, j) => j !== i))}
                       />
-                    </span>
-                  </div>
-                ))}
-                <Button
-                  ref={taskRef}
-                  size="small"
-                  variant="ghost"
-                  icon="plus"
-                  aria-haspopup="menu"
-                  onClick={() => setTaskMenu(true)}
-                >
-                  <T>Add task</T>
-                </Button>
-                <Menu open={taskMenu} anchor={taskRef} items={taskItems} onClose={() => setTaskMenu(false)} />
+                    </div>
+                  );
+                })}
+                <div role="listitem">
+                  {tasks.length ? (
+                    <IconButton
+                      ref={taskRef}
+                      title="Add task"
+                      icon="plus"
+                      size="small"
+                      aria-haspopup="menu"
+                      aria-expanded={taskMenu === "add"}
+                      onClick={() => setTaskMenu("add")}
+                    />
+                  ) : (
+                    <Button
+                      ref={taskRef}
+                      size="small"
+                      variant="ghost"
+                      icon="plus"
+                      aria-haspopup="menu"
+                      aria-expanded={taskMenu === "add"}
+                      onClick={() => setTaskMenu("add")}
+                    >
+                      <T>Add task</T>
+                    </Button>
+                  )}
+                </div>
+                <Menu open={taskMenu === "add"} anchor={taskRef} items={taskItems} onClose={() => setTaskMenu(null)} />
+                {taskActions && (
+                  <Menu
+                    open
+                    anchor={taskActions.anchor}
+                    aria-label={tx("Task Actions")}
+                    items={[
+                      {
+                        label: "Move Up",
+                        icon: "arrow-up",
+                        disabled: taskActions.index === 0,
+                        run: () => moveTask(taskActions.index, -1),
+                      },
+                      {
+                        label: "Move Down",
+                        icon: "arrow-down",
+                        disabled: taskActions.index === tasks.length - 1,
+                        run: () => moveTask(taskActions.index, 1),
+                      },
+                    ]}
+                    onClose={() => setTaskMenu(null)}
+                  />
+                )}
               </div>
             </Field>
           )}
@@ -761,11 +913,17 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
                     icon="close"
                     size="small"
                     iconSize={10}
-                    title={tx`Remove '${OPTION_LABELS[id]}'`}
+                    title={tx`Remove '${txPart(OPTION_LABELS[id])}'`}
                     onClick={() => update(optionPatch(id, false))}
                   />
                 </span>
               ))}
+            </div>
+          )}
+
+          {config.watch && watchApplies && !noProcess && (
+            <div className={styles.notice}>
+              <T>Debug runs the tests once, without watching.</T>
             </div>
           )}
 
@@ -789,7 +947,7 @@ export function ConfigForm({ config, all, type, errors, template, onChange, modi
               }}
             />
           )}
-        </>
+        </div>
       )}
     </div>
   );
@@ -810,7 +968,6 @@ function TypeField({
   invalid: boolean;
   onChange: (value: string) => void;
 }) {
-  const tx = useTx();
   const root = useProject((s) => s.project?.root ?? null);
   const listId = `run-field-${field.key}`;
   const [loaded, setLoaded] = useState<ReadonlyArray<{ value: string; label: string; detail?: string }>>([]);
@@ -826,8 +983,9 @@ function TypeField({
   }, [field]);
   if (field.control === "output") return <OutputField label={field.label} text={field.value?.(params) ?? ""} />;
   if (field.control === "select") {
-    const options = [...(field.options ?? []), ...loaded];
-    if (value && !options.some((o) => o.value === value)) options.push({ value, label: value });
+    // Loaded options are detected data (JDKs, build modules), not catalog text.
+    const options: SelectOption[] = [...(field.options ?? []), ...loaded.map((o) => ({ ...o, verbatim: true }))];
+    if (value && !options.some((o) => o.value === value)) options.push({ value, label: value, verbatim: true });
     return (
       <Select
         value={value || (options[0]?.value ?? "")}
@@ -841,14 +999,13 @@ function TypeField({
     return <Checkbox checked={value === "true"} onChange={(on) => onChange(on ? "true" : "")} label={field.label} />;
   if (field.control === "textarea")
     return (
-      <textarea
-        className={clsx(styles.textarea, invalid && styles.textareaInvalid)}
-        aria-label={tx(field.label)}
-        spellCheck={false}
+      <ExpandableTextarea
+        label={field.label}
         value={value}
-        placeholder={tx(field.placeholder)}
-        rows={field.rows ?? 4}
-        onChange={(e) => onChange(e.target.value)}
+        placeholder={field.placeholder}
+        rows={field.rows}
+        invalid={invalid}
+        onChange={onChange}
       />
     );
   const suggestions = field.suggestions?.(all, params) ?? [];

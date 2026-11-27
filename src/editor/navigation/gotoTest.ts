@@ -5,6 +5,7 @@
  * always, in the chooser) "Create New Test…" creates one from the file templates.
  */
 import { basename, dirname } from "@/platform/project";
+import { tx } from "@/platform/i18n";
 import { isTestFile, rootOfPath } from "@/platform/projectRoots";
 import type { RootFolder } from "@/platform/languageSettings";
 import {
@@ -17,13 +18,10 @@ import {
   testNamesFor,
 } from "./testNaming";
 
-export interface ChooserItem {
+export type ChooserItem = {
   label: string;
-  detail?: string;
-  icon?: string;
-  emphasis?: boolean;
   run: () => void | Promise<void>;
-}
+} & ({ kind: "target"; detail: string } | { kind: "create" });
 
 export interface TestNavDeps {
   projectRoot: () => string | null;
@@ -36,6 +34,19 @@ export interface TestNavDeps {
   /** Create New Test… in `directory` (file templates), or a Rust test module in the file itself. */
   createTest: (req: { directory: string; name: string; extension: string; subject: string }) => void;
   createRustTestModule: () => void;
+  /** Name of the top-level class, interface, enum or object around the caret, if any. */
+  classAtCaret?: () => Promise<string | null>;
+}
+
+/** Languages whose files are named after a class but may declare several top-level ones. */
+const CLASS_FILE = /\.(java|kt|scala|groovy|cs)$/;
+
+/** The file name as the class at the caret would have it (`Helper.java` inside `Widget.java`), else the file's own. */
+async function subjectFileName(path: string, deps: TestNavDeps): Promise<string> {
+  const name = basename(path);
+  if (!CLASS_FILE.test(name) || !deps.classAtCaret) return name;
+  const cls = await deps.classAtCaret().catch(() => null);
+  return cls ? cls + splitName(name).ext : name;
 }
 
 const isRustIntegrationTest = (path: string) => path.endsWith(".rs") && /\/tests\/[^/]+\.rs$/.test(path);
@@ -88,7 +99,8 @@ function relLabel(root: string | null, path: string) {
 export async function gotoTestOrSubject(path: string, text: string, deps: TestNavDeps): Promise<void> {
   const roots = deps.roots();
   const root = deps.projectRoot();
-  const name = basename(path);
+  const name = await subjectFileName(path, deps);
+  const { stem, ext } = splitName(name);
   const rank = (paths: string[]) => rankCandidates(path, paths, belowRoot(root, roots));
 
   if (isTestSide(path, roots)) {
@@ -96,13 +108,19 @@ export async function gotoTestOrSubject(path: string, text: string, deps: TestNa
     if (subjects.length === 1) return deps.open(subjects[0]!);
     if (!subjects.length) return deps.hint("No test subject found");
     return deps.choose(
-      `Choose Test Subject for ${splitName(name).stem} (${subjects.length} found)`,
-      subjects.map((p) => ({ label: basename(p), detail: relLabel(root, dirname(p)), run: () => deps.open(p) })),
+      tx`Choose Test Subject for ${stem} (${subjects.length} found)`,
+      subjects.map((p) => ({
+        kind: "target",
+        label: basename(p),
+        detail: relLabel(root, dirname(p)),
+        run: () => deps.open(p),
+      })),
     );
   }
 
   const tests = rank((await findAll(testNamesFor(name), path, deps)).filter((p) => isTestSide(p, roots)));
   const items: ChooserItem[] = tests.map((p) => ({
+    kind: "target",
     label: basename(p),
     detail: relLabel(root, dirname(p)),
     run: () => deps.open(p),
@@ -110,12 +128,16 @@ export async function gotoTestOrSubject(path: string, text: string, deps: TestNa
   // Rust unit tests live in the file's own `#[cfg(test)]` module.
   const inFile = path.endsWith(".rs") ? rustTestModuleOffset(text) : null;
   if (inFile !== null)
-    items.unshift({ label: "mod tests", detail: `${name} (#[cfg(test)])`, run: () => deps.open(path, inFile) });
+    items.unshift({
+      kind: "target",
+      label: "mod tests",
+      detail: `${name} (#[cfg(test)])`,
+      run: () => deps.open(path, inFile),
+    });
   if (items.length === 1) return void (await items[0]!.run());
-  const { ext } = splitName(name);
   const create: ChooserItem = {
+    kind: "create",
     label: "Create New Test…",
-    emphasis: true,
     run: () =>
       path.endsWith(".rs")
         ? deps.createRustTestModule()
@@ -126,5 +148,5 @@ export async function gotoTestOrSubject(path: string, text: string, deps: TestNa
             subject: name,
           }),
   };
-  deps.choose(`Choose Test for ${splitName(name).stem} (${items.length} found)`, [create, ...items]);
+  deps.choose(tx`Choose Test for ${stem} (${items.length} found)`, [...items, create]);
 }

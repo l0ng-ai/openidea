@@ -246,3 +246,58 @@ it("follows a newly opened diff when its Git status arrives later", () => {
   act(() => useVcs.setState({ status: [modified("/p/new.ts")] }));
   expect(useCommit.getState().selection).toEqual(["/p/new.ts"]);
 });
+
+describe("the active diff follows the selected file (#2492)", () => {
+  beforeEach(() => {
+    openDiff.mockClear();
+    useCommit.setState({
+      commitDiffPreview: false,
+      selection: [],
+      groupByDir: false,
+      groupByStaging: false,
+    });
+    useVcs.setState({
+      available: true,
+      root: "/p",
+      repo: "/p",
+      roots: ["/p"],
+      status: [modified("/p/a.ts"), modified("/p/b.ts")],
+    });
+  });
+
+  it("shows the newly selected file in the open diff tab, keeping focus in the tree", () => {
+    editor.input = diffInput(workingDiffData("/p/b.ts"));
+    render(<CommitToolWindow />);
+    selectFirstFile();
+    expect(openDiff).toHaveBeenCalledTimes(1);
+    const [data, opts] = openDiff.mock.calls[0]!;
+    expect(data.path).toBe("/p/a.ts");
+    expect(data.chain?.map((d: { path: string }) => d.path)).toEqual(["/p/a.ts", "/p/b.ts"]);
+    expect(opts).toEqual({ preview: true, focus: false });
+  });
+
+  it.each([
+    ["no tab is open", null],
+    ["the active tab is a file", { kind: "text", key: "/p/b.ts", path: "/p/b.ts" } as EditorInput],
+    [
+      "the active diff compares other revisions",
+      diffInput({
+        path: "/p/b.ts",
+        left: { type: "rev", rev: "old" },
+        right: { type: "rev", rev: "new" },
+      }),
+    ],
+  ])("opens nothing on selection when %s", (_case, input) => {
+    editor.input = input;
+    render(<CommitToolWindow />);
+    selectFirstFile();
+    expect(openDiff).not.toHaveBeenCalled();
+  });
+
+  it("opens nothing when the selection already is the diff's file", () => {
+    editor.input = diffInput(workingDiffData("/p/a.ts"));
+    render(<CommitToolWindow />);
+    selectFirstFile();
+    expect(openDiff).not.toHaveBeenCalled();
+  });
+});

@@ -44,8 +44,9 @@ impl server::Handler for Sshd {
         Ok(if user == "dev" && password == "secret" { Auth::Accept } else { Auth::reject() })
     }
 
-    async fn auth_publickey(&mut self, user: &str, key: &PublicKey) -> Result<Auth, Self::Error> {
-        Ok(if user == "dev" && key.key_data() == self.client_key.key_data() { Auth::Accept } else { Auth::reject() })
+    async fn auth_publickey(&mut self, user: &str, key: server::VerifiedPublicKey<'_>) -> Result<Auth, Self::Error> {
+        let accept = user == "dev" && key.public_key.key_data() == self.client_key.key_data();
+        Ok(if accept { Auth::Accept } else { Auth::reject() })
     }
 
     async fn channel_open_session(
@@ -58,7 +59,8 @@ impl server::Handler for Sshd {
         Ok(())
     }
 
-    /// `ran: <command>` on stdout, `oops` on stderr, exit status 3.
+    /// `ran: <command>` on stdout, `oops` on stderr, exit status 3. `linger` exits but keeps
+    /// the channel open, as when a child it started still holds stdout.
     async fn exec_request(
         &mut self,
         channel: ChannelId,
@@ -69,8 +71,10 @@ impl server::Handler for Sshd {
         session.data(channel, format!("ran: {}", String::from_utf8_lossy(data)).into_bytes())?;
         session.extended_data(channel, 1, b"oops".to_vec())?;
         session.exit_status_request(channel, 3)?;
-        session.eof(channel)?;
-        session.close(channel)?;
+        if data != b"linger" {
+            session.eof(channel)?;
+            session.close(channel)?;
+        }
         Ok(())
     }
 
@@ -93,6 +97,32 @@ impl server::Handler for Sshd {
             let _ = tokio::io::copy_bidirectional(&mut stream, &mut upstream).await;
         });
         Ok(())
+    }
+
+    /// `RemoteForward`: listens on 127.0.0.1:`port` and forwards each connection back to the client.
+    async fn tcpip_forward(
+        &mut self,
+        address: &str,
+        port: &mut u32,
+        session: &mut ServerSession,
+    ) -> Result<bool, Self::Error> {
+        let Ok(listener) = TcpListener::bind(("127.0.0.1", *port as u16)).await else { return Ok(false) };
+        let (handle, address, port) = (session.handle(), address.to_owned(), *port);
+        tokio::spawn(async move {
+            while let Ok((mut socket, peer)) = listener.accept().await {
+                let Ok(channel) = handle
+                    .channel_open_forwarded_tcpip(address.clone(), port, "127.0.0.1", u32::from(peer.port()))
+                    .await
+                else {
+                    continue;
+                };
+                tokio::spawn(async move {
+                    let mut stream = channel.into_stream();
+                    let _ = tokio::io::copy_bidirectional(&mut stream, &mut socket).await;
+                });
+            }
+        });
+        Ok(true)
     }
 }
 
@@ -222,6 +252,19 @@ async fn password_authentication_and_forwarding() {
 }
 
 #[tokio::test]
+async fn command_tunnel_runs_the_command_per_connection() {
+    let env = env().await;
+    let session = Arc::new(env.connect_trusted(&env.target(SshAuth::Password), Some("secret")).await.ok().unwrap());
+    let tunnel = Tunnel::command(session, "docker system dial-stdio").await.unwrap();
+    for _ in 0..2 {
+        let mut s = TcpStream::connect(("127.0.0.1", tunnel.port())).await.unwrap();
+        let mut out = String::new();
+        s.read_to_string(&mut out).await.unwrap();
+        assert_eq!(out, "ran: docker system dial-stdio");
+    }
+}
+
+#[tokio::test]
 async fn forwarding_keeps_the_port_number_when_it_is_free() {
     let env = env().await;
     let target = env.target(SshAuth::Password);
@@ -253,6 +296,36 @@ async fn dropping_a_tunnel_closes_active_connections() {
         0
     );
     assert!(!session.is_closed());
+}
+
+#[tokio::test]
+async fn closing_a_tunnel_lets_go_of_the_session_and_its_connections() {
+    let env = env().await;
+    let session = Arc::new(env.connect_trusted(&env.target(SshAuth::Password), Some("secret")).await.ok().unwrap());
+    let tunnel = Tunnel::listen(session.clone(), "127.0.0.1", env.echo_port).await.unwrap();
+    let port = tunnel.port();
+    let mut socket = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    socket.write_all(b"ping").await.unwrap();
+    let mut reply = [0; 4];
+    socket.read_exact(&mut reply).await.unwrap();
+    assert!(Arc::strong_count(&session) > 2, "the tunnel and its connection hold the session");
+
+    tunnel.close().await;
+    // Nothing is left behind to wait for: only this test holds the session now.
+    assert_eq!(Arc::strong_count(&session), 1);
+    let mut byte = [0];
+    assert_eq!(socket.read(&mut byte).await.unwrap(), 0);
+    assert!(TcpStream::connect(("127.0.0.1", port)).await.is_err());
+    assert!(!session.is_closed());
+}
+
+#[tokio::test]
+async fn closing_an_idle_tunnel_returns_at_once() {
+    let env = env().await;
+    let session = Arc::new(env.connect_trusted(&env.target(SshAuth::Password), Some("secret")).await.ok().unwrap());
+    let tunnel = Tunnel::command(session.clone(), "docker system dial-stdio").await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), tunnel.close()).await.unwrap();
+    assert_eq!(Arc::strong_count(&session), 1);
 }
 
 #[tokio::test]
@@ -291,6 +364,44 @@ async fn runs_commands_and_streams_processes() {
         .unwrap();
     assert_eq!(process.wait().await, Some(3));
     assert_eq!(*seen.lock(), ("ran: python3 main.py".to_owned(), "oops".to_owned()));
+}
+
+#[tokio::test]
+async fn a_process_that_exits_finishes_even_while_its_channel_stays_open() {
+    let env = env().await;
+    let session = env.connect_trusted(&env.target(SshAuth::Password), Some("secret")).await.ok().unwrap();
+    let seen: Arc<Mutex<String>> = Arc::default();
+    let s = seen.clone();
+    let process = session
+        .spawn(
+            "linger",
+            None,
+            Box::new(move |o| {
+                if let Output::Stdout(b) = o {
+                    s.lock().push_str(&String::from_utf8_lossy(b));
+                }
+            }),
+        )
+        .await
+        .unwrap();
+    let code = tokio::time::timeout(std::time::Duration::from_secs(10), process.wait())
+        .await
+        .expect("the exit status must end the process");
+    assert_eq!((code, seen.lock().as_str()), (Some(3), "ran: linger"));
+}
+
+#[tokio::test]
+async fn a_command_that_exits_returns_even_while_its_channel_stays_open() {
+    let env = env().await;
+    let session = env.connect_trusted(&env.target(SshAuth::Password), Some("secret")).await.ok().unwrap();
+    let out = tokio::time::timeout(std::time::Duration::from_secs(10), session.exec("linger", None))
+        .await
+        .expect("the exit status must end the command")
+        .unwrap();
+    assert_eq!(
+        (out.code, out.stdout.as_slice(), out.stderr.as_slice()),
+        (Some(3), b"ran: linger".as_slice(), b"oops".as_slice())
+    );
 }
 
 #[tokio::test]
@@ -357,4 +468,51 @@ async fn accept_new_records_an_unknown_key_and_still_refuses_a_changed_one() {
     std::fs::write(&env.files.known_hosts, format!("[127.0.0.1]:{} {other}\n", env.ssh_port)).unwrap();
     let msg = denied(env.connect(&target, None).await);
     assert!(msg.contains("has changed"), "{msg}");
+}
+
+/// A free local port (bound and released).
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+}
+
+async fn echoes(port: u16) {
+    let mut s = TcpStream::connect(("127.0.0.1", port)).await.expect("forwarded port listens");
+    s.write_all(b"ping").await.unwrap();
+    let mut buf = [0u8; 4];
+    s.read_exact(&mut buf).await.unwrap();
+    assert_eq!(&buf, b"ping");
+}
+
+/// `RemoteForward` and `LocalForward` of `~/.ssh/config` are forwarded while the session lives (#6031).
+#[tokio::test]
+async fn config_port_forwards_follow_the_session() {
+    let mut env = env().await;
+    let (remote, local) = (free_port(), free_port());
+    let config = env._tmp.path().join("ssh_config");
+    std::fs::write(
+        &config,
+        format!(
+            "Host box\n\tHostName 127.0.0.1\n\tStrictHostKeyChecking=no\n\tUserKnownHostsFile=/dev/null\n\
+             \tRemoteForward {remote} 127.0.0.1:{echo}\n\tLocalForward 127.0.0.1:{local} localhost:{echo}\n\
+             \tRemoteForward /tmp/remote.sock /tmp/local.sock\n",
+            echo = env.echo_port
+        ),
+    )
+    .unwrap();
+    env.files.config = Some(config);
+    let target = SshTarget {
+        host: "box".into(),
+        port: Some(env.ssh_port),
+        user: "coder".into(),
+        auth: SshAuth::OpenSsh,
+        ..Default::default()
+    };
+    let session = Arc::new(env.connect(&target, None).await.expect("connects"));
+    session.start_forwards().await;
+    // The SSH host's port reaches the echo server here; the local port reaches it from the SSH host.
+    echoes(remote).await;
+    echoes(local).await;
+    drop(session);
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(TcpStream::connect(("127.0.0.1", local)).await.is_err(), "a closed session stops its LocalForward");
 }

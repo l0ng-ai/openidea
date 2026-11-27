@@ -7,11 +7,29 @@
  * several times a second while only one or two actually changed; the window then falls
  * behind on keystrokes. Rows are still built (cheap); only identical ones are left in place.
  *
- * Remove once xterm's DomRenderer does this itself (xterm 6.0.0 does not).
+ * Rows are also where wide icons get lifted over the next cell ([`ICON_SPAN_CLASS`]): a Nerd
+ * Font icon is often drawn wider than one cell, and the DOM renderer paints the next span's
+ * background over its right part (powerline prompts showed half icons).
+ *
+ * Remove the cache once xterm's DomRenderer does this itself (xterm 6.1.0 does not).
  */
 import type { Terminal } from "@xterm/xterm";
 
 const MARKUP = Symbol("rowMarkup");
+
+/**
+ * Glyphs whose ink can extend past one cell even when their font advance equals the cell:
+ * Nerd Font / Powerline Private Use Area icons plus Nerd Font's non-PUA patched symbols.
+ */
+const ICON = /[\u23FB-\u23FE\u2630\u2665\u26A1\u2B58\uE000-\uF8FF]|[\u{F0000}-\u{10FFFD}]/u;
+/** Lifts a span holding an overhanging glyph over the next one, so the next cell's background doesn't cover it. */
+export const ICON_SPAN_CLASS = "openidea-terminal-icon";
+
+function overhangsCell(span: HTMLElement, maxSpacing: number): boolean {
+  const { letterSpacing } = span.style;
+  if (letterSpacing && Number.parseFloat(letterSpacing) < maxSpacing) return true;
+  return ICON.test(span.textContent ?? "");
+}
 
 type RowElement = HTMLElement & { [MARKUP]?: string };
 
@@ -21,6 +39,7 @@ type BufferLine = unknown;
 interface DomRenderer {
   _rowElements: RowElement[];
   _rowFactory: {
+    defaultSpacing?: number;
     createRow(
       line: BufferLine,
       row: number,
@@ -29,10 +48,12 @@ interface DomRenderer {
       cursorInactiveStyle: unknown,
       cursorX: number,
       cursorBlink: unknown,
+      isBlinkOn: boolean,
       cellWidth: number,
       widthCache: unknown,
       linkStart: number,
       linkEnd: number,
+      blink: { hasBlinkingCells: boolean },
     ): HTMLElement[];
   };
   _bufferService: {
@@ -43,6 +64,9 @@ interface DomRenderer {
   _optionsService: { rawOptions: { cursorBlink?: boolean; cursorStyle?: unknown; cursorInactiveStyle?: unknown } };
   dimensions: { css: { cell: { width: number } } };
   _widthCache: unknown;
+  _textBlinkStateManager: { isBlinkOn: boolean };
+  _setRowBlinkState(row: number, blinking: boolean): void;
+  _updateTextBlinkState(): void;
   renderRows(start: number, end: number): void;
   clear(): void;
   _setCellUnderline(...args: unknown[]): void;
@@ -54,14 +78,18 @@ function forget(renderer: DomRenderer) {
   for (const row of renderer._rowElements) row[MARKUP] = undefined;
 }
 
-/** True when `proto` still looks like the xterm 6.0.0 renderer this was written against. */
+/** True when `proto` still looks like the xterm 6.1 renderer this was written against. */
 function supported(proto: Partial<DomRenderer>): proto is DomRenderer {
   const { renderRows, clear, _setCellUnderline } = proto;
   if (typeof renderRows !== "function" || typeof clear !== "function" || typeof _setCellUnderline !== "function") {
     return false;
   }
   const source = Function.prototype.toString.call(renderRows);
-  return source.includes("_rowFactory.createRow(") && source.includes("replaceChildren(");
+  return (
+    source.includes("_rowFactory.createRow(") &&
+    source.includes("replaceChildren(") &&
+    source.includes("_setRowBlinkState(")
+  );
 }
 
 /** Renders `start..end` like xterm's own `renderRows`, leaving unchanged rows alone. */
@@ -73,11 +101,19 @@ function renderRows(this: DomRenderer, start: number, end: number) {
   const options = this._optionsService.rawOptions;
   const cursorBlink = modes.cursorBlink ?? options.cursorBlink;
   const cursorStyle = modes.cursorStyle ?? options.cursorStyle;
+  const maxSpacing = Math.min(0, this._rowFactory.defaultSpacing ?? 0) - 0.5;
+  const blink = { hasBlinkingCells: false };
   for (let y = start; y <= end; y++) {
     const row = y + buffer.ydisp;
     const element = this._rowElements[y];
+    if (!element) continue;
     const line = buffer.lines.get(row);
-    if (!element || !line) break;
+    if (!line) {
+      // xterm blanks a row whose line the buffer dropped (scrollback trim, resize).
+      element.replaceChildren();
+      this._setRowBlinkState(y, false);
+      continue;
+    }
     const spans = this._rowFactory.createRow(
       line,
       row,
@@ -86,17 +122,24 @@ function renderRows(this: DomRenderer, start: number, end: number) {
       options.cursorInactiveStyle,
       cursorX,
       cursorBlink,
+      this._textBlinkStateManager.isBlinkOn,
       this.dimensions.css.cell.width,
       this._widthCache,
       -1,
       -1,
+      blink,
     );
+    this._setRowBlinkState(y, blink.hasBlinkingCells);
     let markup = "";
-    for (const span of spans) markup += span.outerHTML;
+    for (const span of spans) {
+      if (overhangsCell(span, maxSpacing)) span.classList.add(ICON_SPAN_CLASS);
+      markup += span.outerHTML;
+    }
     if (element[MARKUP] === markup) continue;
     element[MARKUP] = markup;
     element.replaceChildren(...spans);
   }
+  this._updateTextBlinkState();
 }
 
 /**
@@ -120,5 +163,11 @@ export function installDomRowCache(term: Terminal) {
   proto._setCellUnderline = function (this: DomRenderer, ...args: unknown[]) {
     forget(this);
     _setCellUnderline.apply(this, args);
+    const maxSpacing = Math.min(0, this._rowFactory.defaultSpacing ?? 0) - 0.5;
+    for (const row of this._rowElements) {
+      for (const child of row.children) {
+        if (overhangsCell(child as HTMLElement, maxSpacing)) child.classList.add(ICON_SPAN_CLASS);
+      }
+    }
   };
 }

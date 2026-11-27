@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { OutlineItem } from "@/platform/ipc";
 
+const openLocation = vi.hoisted(() => vi.fn());
+vi.mock("../common/open", async (orig) => ({
+  ...(await orig<typeof import("../common/open")>()),
+  openLocation,
+}));
 vi.mock("../structure/store", async (orig) => ({
   ...(await orig<typeof import("../structure/store")>()),
   useLiveOutline: () => undefined,
@@ -9,6 +14,7 @@ vi.mock("../structure/store", async (orig) => ({
 
 const { FileStructureOverlay, useFileStructurePopup } = await import("../structure/StructureView");
 const { useOutline, useStructureOptions } = await import("../structure/store");
+const { useTracking } = await import("../common/tracking");
 
 const item = (name: string, kind: OutlineItem["kind"], line: number, children: OutlineItem[] = []): OutlineItem => ({
   name,
@@ -19,16 +25,19 @@ const item = (name: string, kind: OutlineItem["kind"], line: number, children: O
   children,
 });
 
-function open() {
+function open(
+  items = [
+    item("OrderController", "class", 0, [item("list", "method", 2), item("create", "method", 8)]),
+    item("helper", "function", 22),
+  ],
+  path = "/p/Order.kt",
+) {
   useOutline.setState({
-    path: "/p/Order.kt",
+    path,
     doc: 1,
     loading: false,
     error: null,
-    items: [
-      item("OrderController", "class", 0, [item("list", "method", 2), item("create", "method", 8)]),
-      item("helper", "function", 22),
-    ],
+    items,
   });
   useStructureOptions.setState({ narrowDown: true });
   render(<FileStructureOverlay />);
@@ -37,8 +46,26 @@ function open() {
 }
 
 const rows = () => screen.getAllByRole("treeitem").map((r) => r.textContent);
+const selected = () => screen.queryByRole("treeitem", { selected: true });
+const functionsPath = "/p/functions.ts";
 
-afterEach(() => act(() => useFileStructurePopup.setState({ open: false })));
+function disableNarrowing() {
+  fireEvent.click(screen.getByRole("button", { name: "View Options" }));
+  fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "Narrow down on typing", checked: true }));
+}
+
+function openFunctions(narrowDown: boolean) {
+  useTracking.setState({ caret: { path: functionsPath, doc: 1, line: 6, col: 5, offset: 128 } });
+  const input = open([item("process", "function", 0), item("separate", "function", 6)], functionsPath);
+  if (!narrowDown) disableNarrowing();
+  return input;
+}
+
+afterEach(() => {
+  act(() => useFileStructurePopup.setState({ open: false }));
+  useTracking.setState({ caret: null });
+  openLocation.mockClear();
+});
 
 describe("File Structure popup", () => {
   it("shows the outline as an expanded tree; ←/→ collapse and expand", () => {
@@ -55,9 +82,47 @@ describe("File Structure popup", () => {
     const input = open();
     fireEvent.change(input, { target: { value: "creat" } });
     expect(rows()).toEqual(["OrderController", "create"]);
-    fireEvent.click(screen.getByLabelText("Narrow down on typing"));
+    disableNarrowing();
     expect(useStructureOptions.getState().narrowDown).toBe(false);
     expect(rows()).toEqual(["OrderController", "list", "create", "helper"]);
+  });
+
+  it("leaves the full tree unselected when the highlight query stops matching", () => {
+    const input = openFunctions(false);
+    fireEvent.change(input, { target: { value: "separate" } });
+    expect(selected()).toHaveTextContent("separate");
+    fireEvent.change(input, { target: { value: "separateZ" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(useFileStructurePopup.getState().open).toBe(true);
+    expect(rows()).toEqual(["process", "separate"]);
+    expect(selected()).toBeNull();
+    expect(screen.getByRole("status")).toHaveTextContent("No matches");
+    expect(openLocation).not.toHaveBeenCalled();
+  });
+
+  it.each(["", "separate"])("navigates to the intended symbol for query %j", async (query) => {
+    const input = openFunctions(false);
+    fireEvent.change(input, { target: { value: query } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(openLocation).toHaveBeenCalledWith(functionsPath, { line: 6, col: 4 }, { focus: true }));
+  });
+
+  it("still navigates after an explicit selection in the full tree", async () => {
+    const input = openFunctions(false);
+    fireEvent.change(input, { target: { value: "separateZ" } });
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    expect(selected()).toHaveTextContent("process");
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(openLocation).toHaveBeenCalledWith(functionsPath, { line: 0, col: 4 }, { focus: true }));
+  });
+
+  it("keeps narrow mode empty for an unmatched query", () => {
+    const input = openFunctions(true);
+    fireEvent.change(input, { target: { value: "separateZ" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(screen.getByText("No symbols")).toBeInTheDocument();
+    expect(useFileStructurePopup.getState().open).toBe(true);
+    expect(openLocation).not.toHaveBeenCalled();
   });
 
   it("shows a Vue component's script declarations nested under its script block", () => {

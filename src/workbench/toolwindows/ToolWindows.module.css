@@ -41,6 +41,8 @@
 }
 
 .grid {
+  /* Undocked tool windows are positioned against the grid. */
+  position: relative;
   flex: 1;
   display: grid;
   min-width: 0;
@@ -118,6 +120,81 @@
   border-radius: var(--island-radius);
 }
 
+/*
+ * Undock: the area leaves its (zero) track and lies over the editor at the side's
+ * edge, --undock-size deep; two undocked areas of a side share its length.
+ */
+.undocked {
+  position: absolute;
+  z-index: calc(var(--z-panel) + 1);
+  max-width: 100%;
+  max-height: 100%;
+  box-shadow: var(--shadow-popup);
+}
+.undocked[data-slot^="left"],
+.undocked[data-slot^="right"] {
+  width: var(--undock-size);
+  height: calc(var(--undock-share) * 100% - var(--undock-gap));
+}
+/* The inner edge keeps the resize handle off the content (a tree's scrollbar). */
+.undocked[data-slot^="left"] {
+  left: 0;
+  padding-right: var(--island-gap);
+}
+.undocked[data-slot^="right"] {
+  right: 0;
+  padding-left: var(--island-gap);
+}
+.undocked[data-slot="left"],
+.undocked[data-slot="right"] {
+  top: 0;
+}
+.undocked[data-slot="left-split"],
+.undocked[data-slot="right-split"] {
+  bottom: 0;
+}
+.undocked[data-slot^="bottom"] {
+  bottom: 0;
+  padding-top: var(--island-gap);
+  height: var(--undock-size);
+  width: calc(var(--undock-share) * 100% - var(--undock-gap));
+}
+.undocked[data-slot="bottom"] {
+  left: 0;
+}
+.undocked[data-slot="bottom-split"] {
+  right: 0;
+}
+.grid[data-maximized] .undocked {
+  inset: 0;
+  width: auto;
+  height: auto;
+}
+/* The inner edge of an undocked window resizes it. */
+.undockEdge {
+  position: absolute;
+  z-index: 1;
+  outline: none;
+}
+.undocked[data-slot^="left"] > .undockEdge {
+  inset: 0 0 0 auto;
+  width: var(--island-gap);
+  cursor: col-resize;
+}
+.undocked[data-slot^="right"] > .undockEdge {
+  inset: 0 auto 0 0;
+  width: var(--island-gap);
+  cursor: col-resize;
+}
+.undocked[data-slot^="bottom"] > .undockEdge {
+  inset: 0 0 auto;
+  height: var(--island-gap);
+  cursor: row-resize;
+}
+.undockEdge:focus-visible {
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
 /* Resize handles live in the gaps; a hidden neighbour takes no gap. */
 .gap {
   position: relative;
@@ -133,10 +210,10 @@
   grid-area: gap-bottom;
 }
 .gap[aria-orientation="vertical"] {
-  cursor: ew-resize;
+  cursor: col-resize;
 }
 .gap[aria-orientation="horizontal"] {
-  cursor: ns-resize;
+  cursor: row-resize;
 }
 /* A slightly wider hit area than the gap itself. */
 .gap::before {
@@ -209,7 +286,7 @@
   flex: none;
   width: 0;
   outline: none;
-  cursor: ew-resize;
+  cursor: col-resize;
 }
 .stripeHandle::before {
   content: "";
@@ -266,6 +343,11 @@
   min-height: 44px;
   padding: 6px 2px 5px;
 }
+/* IDEA compact: StripeToolbar.Button.*IconWithName.padding 4 → 3, text padding 6 → 4. */
+:global(:root[data-compact]) .stripeNamed {
+  min-height: 40px;
+  padding: 4px 2px 3px;
+}
 .stripeMore {
   height: var(--stripe-icon-button);
 }
@@ -287,6 +369,12 @@
   background: var(--bg-stripe-selected);
   color: var(--fg-emphasis);
   --icon-color: currentColor;
+}
+.stripeDropOver,
+.stripeDropOver:hover {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  color: var(--fg-emphasis);
 }
 .stripeButton:focus-visible {
   outline-offset: -2px;
@@ -360,15 +448,16 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 6px 0 8px;
+  gap: var(--space-1);
+  padding: 0 var(--space-2);
   color: var(--fg-emphasis);
+  font-size: var(--fs-chrome);
 }
 .headerTabbed {
   border-bottom: 1px solid var(--border);
 }
 .title {
-  flex: none;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -378,12 +467,14 @@
   padding: 0 4px;
 }
 .titleButton {
-  flex: none;
   height: 24px;
+  min-width: 0;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 0 4px;
+  justify-content: flex-end;
+  gap: var(--space-1);
+  padding: 0 0 0 var(--space-1);
+  overflow: hidden;
   border-radius: var(--radius-small);
   transition: background var(--dur-fast) var(--ease);
 }
@@ -405,15 +496,36 @@
 .headerContentOnly {
   margin-left: 0;
 }
-.headerSpacer {
-  flex: 1;
-}
 .headerActions {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   opacity: 0;
   transition: opacity var(--dur) var(--ease);
+}
+.header > .headerActions {
+  flex: none;
+  min-width: 0;
+  max-width: 100%;
+  margin-inline-start: auto;
+}
+.header > .headerActions:not(:first-child) {
+  max-width: calc(100% - var(--space-4) - var(--space-1));
+}
+.headerContributedActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-0-5);
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.headerContributedActions:empty {
+  display: none;
+}
+.headerContributedActions::-webkit-scrollbar {
+  display: none;
 }
 .window:hover .headerActions,
 .window:focus-within .headerActions,

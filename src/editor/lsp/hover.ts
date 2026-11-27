@@ -4,7 +4,15 @@
  * history, `docs.ts`) and code.quickDefinition (⌥Space, definition source popup).
  */
 import { EditorSelection } from "@codemirror/state";
-import { closeHoverTooltips, hasHoverTooltips, hoverTooltip, ViewPlugin, type EditorView } from "@codemirror/view";
+import {
+  closeHoverTooltips,
+  hasHoverTooltips,
+  hoverTooltip,
+  repositionTooltips,
+  ViewPlugin,
+  type EditorView,
+  type TooltipView,
+} from "@codemirror/view";
 import type { Extension } from "@codemirror/state";
 import {
   commands,
@@ -17,9 +25,10 @@ import {
   type RequestId,
 } from "@/platform/ipc";
 import { executeAction } from "@/platform/actions";
+import { tx } from "@/platform/i18n";
 import { shortcutLabel } from "@/platform/keymap";
 import { diagnosticsAt, type PlacedDiagnostic, type EditorDiagnostic } from "./diagnostics";
-import { isEmptyMarkup, languageForPath, renderMarkup } from "./markdown";
+import { isEmptyMarkup, languageForPath } from "./markdown";
 import { selectableText } from "@/ui/selectableText";
 import { docOf, lspRequest, reportLspError } from "./lsp";
 import { requestNavigation } from "./configurationNavigation";
@@ -28,15 +37,18 @@ import { showHint } from "./hint";
 import { caretAnchor, focusPopup, openPopup, useLspPopup, type DefinitionTarget, type DocEntry } from "./popupStore";
 import { selectedLookupDoc, showLookupDocs } from "./completion";
 import { readFileLines, targetLabel, withDocument } from "./files";
-import { docWindowVisible, moveDocPopupToWindow, showInDocWindow } from "./docs";
+import { docWindowVisible, hoverDoc, moveDocPopupToWindow, showInDocWindow } from "./docs";
+import { mountHoverDoc } from "./DocView";
 import { structure } from "@/editor/structure";
 import { basename } from "@/platform/project";
-import { iconNode } from "./iconMarkup";
+import { iconNode } from "@/ui/iconNode";
 import { applyCodeAction, quickFixesAt } from "./intentions";
 import { editorPrefs } from "@/platform/editorSettings";
-import { CONTRIBUTED_HOVER, contributedAt, type ContributedHover } from "@/editor/api";
+import { CONTRIBUTED_HOVER, contributedAtAll, contributedProblemsAt, type ContributedHover } from "@/editor/api";
 import { navigationModifierHeld, onNavigationModifier, pointerTarget } from "@/platform/navigationModifier";
 import { languageSemantics } from "./semantic";
+import { cssVariableHover } from "./cssVariables";
+import { tooltipBounds } from "@/editor/core/cm/setup";
 
 let hoverRequest: RequestId | null = null;
 
@@ -46,10 +58,9 @@ function constructAt(state: EditorView["state"], pos: number, language: string |
 }
 
 export async function requestHover(view: EditorView, pos: number): Promise<Hover | null> {
-  const own = contributedAt<ContributedHover>(view.state, CONTRIBUTED_HOVER, pos);
-  if (own) {
+  for (const own of contributedAtAll<ContributedHover>(view.state, CONTRIBUTED_HOVER, pos)) {
     const h = own(view.state, pos);
-    if (!h) return null;
+    if (!h) continue;
     const range = { start: offsetToPos(view.state.doc, h.from), end: offsetToPos(view.state.doc, h.to) };
     return { contents: { kind: "markdown", value: h.markdown }, range };
   }
@@ -61,6 +72,9 @@ export async function requestHover(view: EditorView, pos: number): Promise<Hover
       contents: { kind: "markdown", value: construct.markdown },
       range: { start: offsetToPos(view.state.doc, construct.from), end: offsetToPos(view.state.doc, construct.to) },
     };
+  // The server would describe the property the `var(--x)` is the value of, from this file only.
+  const variable = await cssVariableHover(view, pos);
+  if (variable) return variable;
   if (hoverRequest !== null && isTauri()) void commands.cancelRequest(hoverRequest);
   const id = (hoverRequest = nextRequestId());
   try {
@@ -74,10 +88,34 @@ export async function requestHover(view: EditorView, pos: number): Promise<Hover
   }
 }
 
-function renderDiagnostics(view: EditorView, diags: PlacedDiagnostic[]): HTMLElement {
+function diagnosticAction(label: string, shortcut: string | undefined, run: () => void): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "cm-lsp-link-button";
+  const text = document.createElement("span");
+  text.className = "cm-lsp-diag-action-label";
+  text.textContent = label;
+  button.appendChild(text);
+  if (shortcut) {
+    const keys = document.createElement("span");
+    keys.className = "cm-lsp-diag-shortcut";
+    keys.textContent = shortcut;
+    keys.setAttribute("aria-hidden", "true");
+    button.appendChild(keys);
+  }
+  button.addEventListener("mousedown", (e) => e.preventDefault());
+  button.addEventListener("click", run);
+  return button;
+}
+
+interface HoverProblem extends PlacedDiagnostic {
+  contributed: boolean;
+}
+
+function renderDiagnostics(view: EditorView, diags: HoverProblem[]): HTMLElement {
   const box = document.createElement("div");
   box.className = "cm-lsp-hover-diagnostics";
-  for (const { diagnostic: d, from, to } of diags) {
+  for (const { diagnostic: d, from, to, contributed } of diags) {
     const row = document.createElement("div");
     row.className = `cm-lsp-diag cm-lsp-diag-${d.severity}`;
     row.appendChild(
@@ -91,58 +129,43 @@ function renderDiagnostics(view: EditorView, diags: PlacedDiagnostic[]): HTMLEle
     msg.className = "cm-lsp-diag-message";
     msg.textContent = d.message;
     row.appendChild(msg);
-    const meta = document.createElement("div");
-    meta.className = "cm-lsp-diag-meta";
+    if (contributed) {
+      box.appendChild(row);
+      continue;
+    }
     if (d.source) {
       const src = document.createElement("span");
       src.className = "cm-lsp-diag-source";
       src.textContent = d.source;
-      meta.appendChild(src);
+      row.appendChild(src);
     }
-    const fix = document.createElement("button");
-    fix.type = "button";
-    fix.className = "cm-lsp-link-button";
-    const keys = shortcutLabel("code.showIntentions");
-    fix.textContent = keys ? `More actions… ${keys}` : "More actions…";
-    if (d.severity !== "hint") offerQuickFix(view, meta, fix, from, to, d);
-    fix.addEventListener("mousedown", (e) => e.preventDefault());
-    fix.addEventListener("click", () => {
+    const actions = document.createElement("div");
+    actions.className = "cm-lsp-diag-actions";
+    const more = diagnosticAction(tx("More actions…"), shortcutLabel("code.showIntentions"), () => {
       view.dispatch({ selection: EditorSelection.cursor(from) });
       view.focus();
       void executeAction("code.showIntentions");
     });
-    meta.appendChild(fix);
-    row.appendChild(meta);
+    actions.appendChild(more);
+    if (d.severity !== "hint") offerQuickFix(view, more, from, to, d);
+    row.appendChild(actions);
     box.appendChild(row);
   }
   return box;
 }
 
 /** IDEA's hover link to the problem's preferred quick fix, shown once the server named one. */
-function offerQuickFix(
-  view: EditorView,
-  meta: HTMLElement,
-  before: HTMLElement,
-  from: number,
-  to: number,
-  diagnostic: EditorDiagnostic,
-) {
+function offerQuickFix(view: EditorView, before: HTMLElement, from: number, to: number, diagnostic: EditorDiagnostic) {
   const doc = view.state.doc;
   void quickFixesAt(view, from, to, diagnostic.problem)
     .then(([action]) => {
       if (!action || view.state.doc !== doc || !before.isConnected) return;
-      const link = document.createElement("button");
-      link.type = "button";
-      link.className = "cm-lsp-link-button";
-      const keys = shortcutLabel("code.applyQuickFix");
-      link.textContent = keys ? `${action.title} ${keys}` : action.title;
-      link.addEventListener("mousedown", (e) => e.preventDefault());
-      link.addEventListener("click", () => {
+      const link = diagnosticAction(action.title, shortcutLabel("code.applyQuickFix"), () => {
         view.dispatch({ effects: closeHoverTooltips });
         view.focus();
         void applyCodeAction(view, action);
       });
-      meta.insertBefore(link, before);
+      before.before(link);
     })
     .catch(() => {});
 }
@@ -150,16 +173,32 @@ function offerQuickFix(
 /**
  * Whether the plain hover (problems + quick documentation) stays out: while
  * ⌘/Ctrl is held the ⌘-hover link and its brief info (`navigation.ts`) own the
- * pointer, as in IDEA; and over an inlay hint, which has its own tooltip.
+ * pointer, as in IDEA. Inlay hints and folded code have their own tooltips.
  */
 export function hoverYields(): boolean {
-  return navigationModifierHeld() || !!pointerTarget()?.closest?.(".cm-lsp-inlay");
+  return navigationModifierHeld() || !!pointerTarget()?.closest?.(".cm-lsp-inlay, .cm-foldPlaceholder");
+}
+
+/** The editor's standard hover card: selectable content in a themed popup. */
+export function hoverCard(children: HTMLElement[]): HTMLElement {
+  const dom = document.createElement("div");
+  dom.className = `cm-lsp-hover ${selectableText}`;
+  for (const child of children) dom.appendChild(child);
+  return dom;
 }
 
 /** Problems always; quick documentation per Settings › Editor › Code Editing. */
 export async function hoverSource(view: EditorView, pos: number) {
   if (hoverYields()) return null;
-  const diags = diagnosticsAt(view, pos);
+  const diags: HoverProblem[] = [
+    ...contributedProblemsAt(view.state, pos).map(({ from, to, severity, message }) => ({
+      from,
+      to,
+      diagnostic: { from, to, severity, message },
+      contributed: true,
+    })),
+    ...diagnosticsAt(view, pos).map((d) => ({ ...d, contributed: false })),
+  ];
   let hover: Hover | null = null;
   if (editorPrefs().codeEditing.quickDocOnHover)
     try {
@@ -178,7 +217,7 @@ export async function hoverSource(view: EditorView, pos: number) {
     const word = view.state.wordAt(pos);
     if (word) ({ from, to } = word);
   }
-  const lang = docOf(view)?.uiMode ?? null;
+  const entry = hover && docEntry(view, pos, hover);
   return {
     pos: from,
     end: to,
@@ -186,9 +225,26 @@ export async function hoverSource(view: EditorView, pos: number) {
     create: () => {
       const dom = document.createElement("div");
       dom.className = `cm-lsp-hover ${selectableText}`;
-      if (diags.length) dom.appendChild(renderDiagnostics(view, diags));
-      if (hover) dom.appendChild(renderMarkup(hover.contents, lang));
-      return { dom };
+      const tooltip: TooltipView = { dom };
+      if (diags.length) {
+        dom.appendChild(renderDiagnostics(view, diags));
+        const fit = ({ left, right }: { left: number; right: number }) => {
+          const width = `${Math.max(0, Math.floor(right - left) - 2)}px`;
+          if (dom.style.getPropertyValue("--cm-diagnostic-hover-width") === width) return false;
+          dom.style.setProperty("--cm-diagnostic-hover-width", width);
+          return true;
+        };
+        tooltip.mount = () => void fit(tooltipBounds(view));
+        tooltip.positioned = (space) => {
+          if (fit(space)) repositionTooltips(view);
+        };
+      }
+      if (!entry) return tooltip;
+      // The same documentation view as F1's popup: links open in place, ← / →, Edit Source.
+      dom.classList.add("cm-lsp-hover-doc");
+      const doc = hoverDoc(entry, () => view.dispatch({ effects: closeHoverTooltips }));
+      tooltip.destroy = mountHoverDoc(dom.appendChild(document.createElement("div")), doc);
+      return tooltip;
     },
   };
 }
@@ -216,7 +272,10 @@ const hoverYieldsToNavigation = ViewPlugin.fromClass(
 
 export function hoverExtension(): Extension {
   return [
-    hoverTooltip(hoverSource, { hoverTime: Math.max(100, editorPrefs().codeEditing.quickDocDelay) }),
+    hoverTooltip(hoverSource, {
+      hoverTime: Math.max(100, editorPrefs().codeEditing.quickDocDelay),
+      hideOnChange: true,
+    }),
     hoverYieldsToNavigation,
   ];
 }
@@ -234,6 +293,20 @@ function definitionOf(doc: number, pos: Pos): () => Promise<Location | null> {
       (locs) => locs[0] ?? null,
       () => null,
     ));
+}
+
+/** The documentation `hover` shows for `pos`, with its declaration for Edit Source. */
+function docEntry(view: EditorView, pos: number, hover: Hover): DocEntry {
+  const ctx = docOf(view);
+  return {
+    markup: hover.contents,
+    language: ctx?.uiMode ?? null,
+    file: ctx?.path,
+    source:
+      ctx && !constructAt(view.state, pos, ctx.language)
+        ? definitionOf(ctx.doc, offsetToPos(view.state.doc, pos))
+        : undefined,
+  };
 }
 
 function showDoc(view: EditorView, entry: DocEntry, at: number) {
@@ -284,19 +357,7 @@ export async function quickDocumentation(view: EditorView) {
       showHint(view, "No documentation found");
       return;
     }
-    const ctx = docOf(view);
-    showDoc(
-      view,
-      {
-        markup: hover.contents,
-        language: ctx?.uiMode ?? null,
-        source:
-          ctx && !constructAt(view.state, pos, ctx.language)
-            ? definitionOf(ctx.doc, offsetToPos(view.state.doc, pos))
-            : undefined,
-      },
-      hover.range ? rangeToOffsets(view.state.doc, hover.range).from : pos,
-    );
+    showDoc(view, docEntry(view, pos, hover), hover.range ? rangeToOffsets(view.state.doc, hover.range).from : pos);
   } catch (e) {
     reportLspError(view, e, true);
   }
@@ -380,12 +441,14 @@ export async function quickDefinition(view: EditorView, kind: "definition" | "ty
       showHint(view, "Cannot read the definition's file");
       return;
     }
+    const { fontFamily, fontSize, fontWeight, lineHeight, tabSize } = getComputedStyle(view.contentDOM);
     openPopup({
       kind: "definition",
       anchor: caretAnchor(view, pos),
       targets,
       index: 0,
       themeClasses: view.themeClasses,
+      codeStyle: { fontFamily, fontSize, fontWeight, lineHeight, tabSize },
     });
   } catch (e) {
     if (!stale()) reportLspError(view, e, true);

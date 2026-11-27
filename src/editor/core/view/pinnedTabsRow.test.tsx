@@ -77,7 +77,22 @@ describe("pinned tabs in a separate row", () => {
   it("middle click closes an editor tab", () => {
     seed([false, false, false], { placement: "top" });
     render(<EditorAreaView />);
-    fireEvent.mouseDown(screen.getByRole("tab", { name: /f2/ }), { button: 1 });
+    const tab = screen.getByRole("tab", { name: /f2/ });
+    fireEvent.mouseDown(tab, { button: 1 });
+    fireEvent.mouseUp(tab, { button: 1 });
+    expect(closeTab).toHaveBeenCalledWith("p1", "t2");
+  });
+
+  // Regression: Settings › Editor Tabs › "Close button position: None" hides the ×
+  // but must not disable middle-click. EditorArea used to pass closable:
+  // showCloseButton, so hiding the button made the tab unclosable.
+  it("middle click still closes when the close button is hidden (position None)", () => {
+    seed([false, false, false], { placement: "top", showCloseButton: false });
+    render(<EditorAreaView />);
+    expect(screen.queryByRole("button", { name: "Close Tab" })).toBeNull();
+    const tab = screen.getByRole("tab", { name: /f2/ });
+    fireEvent.mouseDown(tab, { button: 1 });
+    fireEvent.mouseUp(tab, { button: 1 });
     expect(closeTab).toHaveBeenCalledWith("p1", "t2");
   });
 });

@@ -7,7 +7,9 @@
 //! (or is recorded silently under `StrictHostKeyChecking accept-new`), and a
 //! changed key is refused unless host key checking is off.
 
-use crate::target::{Hop, HostKeyPolicy, SshFiles, SshTarget, expand, home, resolve_hops};
+use crate::target::{
+    ForwardDirection, Hop, HostKeyPolicy, PortForward, SshFiles, SshTarget, expand, home, resolve_hops,
+};
 use ide_core::remote_settings::SshAuth;
 use ide_core::{IdeError, IdeResult, error::ErrorKind};
 use parking_lot::Mutex;
@@ -113,6 +115,18 @@ pub struct Session {
     /// Sessions of the `ProxyJump` hosts, kept alive under `handle`.
     _jumps: Vec<Handle<Client>>,
     label: String,
+    /// The config's `LocalForward` / `RemoteForward`s, started by [`Session::start_forwards`].
+    forwards: Vec<PortForward>,
+    /// `LocalForward` listeners, stopped with the session.
+    listeners: Mutex<Vec<tokio::task::AbortHandle>>,
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        for listener in self.listeners.lock().drain(..) {
+            listener.abort();
+        }
+    }
 }
 
 impl Session {
@@ -158,8 +172,50 @@ impl Session {
             sessions.push(handle);
         }
         let handle = sessions.pop().expect("at least one hop");
-        let label = hops.last().expect("at least one hop").label();
-        Ok(Session { handle, _jumps: sessions, label })
+        let last = hops.last().expect("at least one hop");
+        Ok(Session {
+            handle,
+            _jumps: sessions,
+            label: last.label(),
+            forwards: last.forwards.clone(),
+            listeners: Mutex::default(),
+        })
+    }
+
+    /// Starts the config's `LocalForward` / `RemoteForward`s, as `ssh` does on connecting: the
+    /// SSH host listens for each `RemoteForward` (`tcpip-forward`), this machine for each
+    /// `LocalForward`, until the session closes. A port that cannot be forwarded (in use, refused
+    /// by the server) is skipped with a warning, as `ssh` goes on without it.
+    pub async fn start_forwards(self: &Arc<Self>) {
+        for f in &self.forwards {
+            let what = format!("{}:{} → {}:{}", f.bind, f.port, f.host, f.host_port);
+            match f.direction {
+                ForwardDirection::Remote => match self.handle.tcpip_forward(f.bind.clone(), u32::from(f.port)).await {
+                    Ok(_) => tracing::info!("{}: RemoteForward {what}", self.label),
+                    Err(e) => tracing::warn!("{}: RemoteForward {what} failed: {e}", self.label),
+                },
+                ForwardDirection::Local => {
+                    let bind = match f.bind.as_str() {
+                        "localhost" => "127.0.0.1",
+                        "" => "0.0.0.0",
+                        b => b,
+                    };
+                    match tokio::net::TcpListener::bind((bind, f.port)).await {
+                        Ok(listener) => {
+                            let task = tokio::spawn(local_forward(
+                                listener,
+                                Arc::downgrade(self),
+                                f.host.clone(),
+                                f.host_port,
+                            ));
+                            self.listeners.lock().push(task.abort_handle());
+                            tracing::info!("{}: LocalForward {what}", self.label);
+                        }
+                        Err(e) => tracing::warn!("{}: LocalForward {what} failed: {e}", self.label),
+                    }
+                }
+            }
+        }
     }
 
     /// `user@host:port` of the target.
@@ -194,14 +250,23 @@ impl Session {
         }
         channel.eof().await.map_err(|e| self.failed(e))?;
         let mut out = ExecOutput::default();
-        while let Some(msg) = channel.wait().await {
+        loop {
+            // After the exit status, output still in flight is read until the channel goes quiet: a
+            // background child that inherited stdout keeps the channel open past the exit (as in `spawn`).
+            let msg = match out.code {
+                None => channel.wait().await,
+                Some(_) => tokio::time::timeout(EXIT_DRAIN, channel.wait()).await.ok().flatten(),
+            };
             match msg {
-                ChannelMsg::Data { data } => out.stdout.extend_from_slice(&data),
-                ChannelMsg::ExtendedData { data, ext: 1 } => out.stderr.extend_from_slice(&data),
-                ChannelMsg::ExitStatus { exit_status } => out.code = Some(exit_status),
-                _ => {}
+                Some(ChannelMsg::Data { data }) => out.stdout.extend_from_slice(&data),
+                Some(ChannelMsg::ExtendedData { data, ext: 1 }) => out.stderr.extend_from_slice(&data),
+                Some(ChannelMsg::ExitStatus { exit_status }) => out.code = Some(exit_status),
+                Some(_) => {}
+                None => break,
             }
         }
+        // Closed here, the channel doesn't stay open on the server for that child.
+        let _ = channel.close().await;
         Ok(out)
     }
 
@@ -227,20 +292,35 @@ impl Session {
         }
         let (mut read, write) = channel.split();
         let (tx, rx) = oneshot::channel();
+        let hangup = Arc::new(tokio::sync::Notify::new());
+        let hung_up = hangup.clone();
         let mut on_output = on_output;
         tokio::spawn(async move {
             let mut code = None;
-            while let Some(msg) = read.wait().await {
+            loop {
+                // After the exit status, output still in flight is read until the channel goes
+                // quiet: a child that inherited stdout keeps the channel open past the exit.
+                let msg = match code {
+                    // russh forwards no close to a channel this side closed.
+                    None => tokio::select! {
+                        msg = read.wait() => msg,
+                        () = hung_up.notified() => None,
+                    },
+                    Some(_) => tokio::time::timeout(EXIT_DRAIN, read.wait()).await.ok().flatten(),
+                };
+                let Some(msg) = msg else { break };
                 match msg {
                     ChannelMsg::Data { data } => on_output(Output::Stdout(&data)),
                     ChannelMsg::ExtendedData { data, ext: 1 } => on_output(Output::Stderr(&data)),
                     ChannelMsg::ExitStatus { exit_status } => code = Some(exit_status),
+                    // Closed without a status (hung up): nothing more arrives.
+                    ChannelMsg::Close => break,
                     _ => {}
                 }
             }
             let _ = tx.send(code);
         });
-        Ok(RemoteProcess { write: Arc::new(write), exit: Mutex::new(Some(rx)) })
+        Ok(RemoteProcess { write: Arc::new(write), exit: Mutex::new(Some(rx)), hangup })
     }
 
     /// Writes `data` to `remote` (absolute; its folder is created) through an
@@ -317,6 +397,9 @@ impl Session {
     }
 }
 
+/// How long a process's channel may stay quiet after its exit status before it counts as finished.
+const EXIT_DRAIN: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// A chunk of a remote process's output.
 pub enum Output<'a> {
     Stdout(&'a [u8]),
@@ -327,6 +410,7 @@ pub enum Output<'a> {
 pub struct RemoteProcess {
     write: Arc<ChannelWriteHalf<Msg>>,
     exit: Mutex<Option<oneshot::Receiver<Option<u32>>>>,
+    hangup: Arc<tokio::sync::Notify>,
 }
 
 impl RemoteProcess {
@@ -353,15 +437,60 @@ impl RemoteProcess {
         Ok(())
     }
 
+    /// Closes the channel (an interactive shell hangs up); the process ends without a status.
+    pub async fn close(&self) {
+        let _ = self.write.close().await;
+        self.hangup.notify_one();
+    }
+
     /// Waits for the exit status (`None`: killed, or no status reported). Once.
     pub async fn wait(&self) -> Option<u32> {
-        let rx = self.exit.lock().take()?;
-        rx.await.ok().flatten()
+        self.exit_status().await
+    }
+
+    /// [`Self::wait`] without borrowing the process, so dropping it meanwhile still
+    /// releases the channel. Once.
+    pub fn exit_status(&self) -> impl Future<Output = Option<u32>> + Send + 'static {
+        let rx = self.exit.lock().take();
+        async move { rx?.await.ok().flatten() }
     }
 }
 
 fn io(message: impl Into<String>) -> IdeError {
     IdeError::new(ErrorKind::Io, message)
+}
+
+/// A `LocalForward` listener: each connection goes through a `direct-tcpip` channel to
+/// `host:port` from the SSH host, while the session lives.
+async fn local_forward(listener: tokio::net::TcpListener, session: std::sync::Weak<Session>, host: String, port: u16) {
+    while let Ok((mut socket, _)) = listener.accept().await {
+        let Some(session) = session.upgrade().filter(|s| !s.is_closed()) else { return };
+        let host = host.clone();
+        tokio::spawn(async move {
+            match session.direct_tcpip(&host, port).await {
+                Ok(mut stream) => {
+                    drop(session);
+                    let _ = tokio::io::copy_bidirectional(&mut socket, &mut stream).await;
+                }
+                Err(e) => tracing::warn!("LocalForward: cannot open a channel to {host}:{port}: {e}"),
+            }
+        });
+    }
+}
+
+/// A `RemoteForward` connection: accepted once `host:port` here answers, then copied both ways.
+async fn remote_forward(channel: russh::Channel<Msg>, reply: client::ChannelOpenHandle, host: String, port: u16) {
+    match tokio::net::TcpStream::connect((host.as_str(), port)).await {
+        Ok(mut socket) => {
+            reply.accept().await;
+            let mut stream = channel.into_stream();
+            let _ = tokio::io::copy_bidirectional(&mut socket, &mut stream).await;
+        }
+        Err(e) => {
+            tracing::warn!("RemoteForward: cannot connect to {host}:{port}: {e}");
+            reply.reject(russh::ChannelOpenFailure::ConnectFailed).await;
+        }
+    }
 }
 
 // --- connection ----------------------------------------------------------------
@@ -378,6 +507,8 @@ pub struct Client {
     known_hosts: PathBuf,
     host_key_policy: HostKeyPolicy,
     issue: Arc<Mutex<Option<HostKeyIssue>>>,
+    /// The `RemoteForward`s whose connections this client accepts.
+    remote_forwards: Vec<PortForward>,
 }
 
 impl client::Handler for Client {
@@ -401,6 +532,26 @@ impl client::Handler for Client {
         };
         *self.issue.lock() = Some(issue);
         Ok(false)
+    }
+
+    async fn server_channel_open_forwarded_tcpip(
+        &mut self,
+        channel: russh::Channel<Msg>,
+        _connected_address: &str,
+        connected_port: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        // Only a port this client asked the server to forward is accepted.
+        match self.remote_forwards.iter().find(|f| u32::from(f.port) == connected_port) {
+            Some(f) => {
+                tokio::spawn(remote_forward(channel, reply, f.host.clone(), f.host_port));
+            }
+            None => reply.reject(russh::ChannelOpenFailure::AdministrativelyProhibited).await,
+        }
+        Ok(())
     }
 }
 
@@ -560,6 +711,7 @@ where
         known_hosts: effective_known_hosts,
         host_key_policy: hop.host_key_policy,
         issue: issue.clone(),
+        remote_forwards: hop.forwards.iter().filter(|f| f.direction == ForwardDirection::Remote).cloned().collect(),
     };
     let result = match stream {
         None => client::connect(config, (hop.host.as_str(), hop.port), handler).await,
@@ -600,11 +752,13 @@ async fn with_key(handle: &mut Handle<Client>, user: &str, key: keys::PrivateKey
 }
 
 /// Every identity of the running SSH agent, until one is accepted.
-async fn with_agent(handle: &mut Handle<Client>, user: &str) -> bool {
+async fn with_agent(handle: &mut Handle<Client>, hop: &Hop) -> bool {
+    let user = hop.user.as_str();
+    let Some(socket) = hop.agent.socket() else { return false };
     #[cfg(unix)]
-    let agent = keys::agent::client::AgentClient::connect_env().await;
+    let agent = keys::agent::client::AgentClient::connect_uds(socket).await;
     #[cfg(windows)]
-    let agent = keys::agent::client::AgentClient::connect_named_pipe(r"\\.\pipe\openssh-ssh-agent").await;
+    let agent = keys::agent::client::AgentClient::connect_named_pipe(socket).await;
     let Ok(mut agent) = agent else { return false };
     let Ok(identities) = agent.request_identities().await else { return false };
     let hash = rsa_hash(handle).await;
@@ -653,7 +807,7 @@ async fn authenticate(
             if handle.authenticate_none(user).await.map(|r| r.success()).unwrap_or(false) {
                 return Ok(());
             }
-            if with_agent(handle, user).await {
+            if with_agent(handle, hop).await {
                 return Ok(());
             }
             let files: Vec<PathBuf> = if hop.identity_files.is_empty() {

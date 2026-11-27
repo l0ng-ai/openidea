@@ -1,0 +1,17 @@
+id = "prisma"
+name = "Prisma"
+extensions = ["prisma"]
+line-comment = "//"
+indent = { tab-size = 2, insert-spaces = true }
+tree-sitter = "prisma"
+
+[[language-servers]]
+name = "prisma-language-server"
+command = "prisma-language-server"
+args = ["--stdio"]
+root-markers = ["package.json", "schema.prisma"]
+install-hint = "npm i -g @prisma/language-server"
+
+# Asked for as section `prisma` before every validation; a missing section crashes the server.
+[language-servers.settings.prisma]
+enableDiagnostics = true

@@ -41,6 +41,10 @@ pub struct GradleProject {
     /// Project-relative build script, if any.
     pub build_file: Option<String>,
     pub tasks: Vec<GradleTask>,
+    /// Configurations Gradle can resolve, or null before Gradle reports the project.
+    #[serde(default)]
+    #[specta(optional)]
+    pub resolvable_configurations: Option<Vec<String>>,
     /// Identity path of the nested build holding the project (`:lib` for `includeBuild`,
     /// `:buildSrc`); null for the opened build.
     #[serde(default)]
@@ -204,7 +208,7 @@ pub fn parse_settings(text: &str) -> Settings {
 }
 
 /// `a/b/../c` → `a/c`, without touching the filesystem.
-fn normalize(p: &Path) -> PathBuf {
+pub(crate) fn normalize(p: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for c in p.components() {
         match c {
@@ -301,6 +305,7 @@ fn project_at(root: &Path, path: String, name: String, pdir: &Path) -> GradlePro
         path,
         name,
         tasks,
+        resolvable_configurations: None,
         build: None,
     }
 }
@@ -317,6 +322,8 @@ pub struct ReportedProject {
     pub build_dir: Option<String>,
     #[serde(default)]
     pub source_sets: Vec<ReportedSourceSet>,
+    #[serde(default)]
+    pub resolvable_configurations: Option<Vec<String>>,
     /// Toolchain language version, else target compatibility.
     #[serde(default)]
     pub java: Option<u32>,
@@ -335,6 +342,19 @@ pub struct ReportedSourceSet {
     /// Absolute resource folders.
     #[serde(default)]
     pub res: Vec<String>,
+    /// Set when Gradle changes the resources while copying them (filters, `expand`, renames,
+    /// includes / excludes, extra sources), which the Java language server's copy does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub processed: Option<ProcessedResources>,
+}
+
+/// The task that copies a source set's resources, and where it writes them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessedResources {
+    /// Task name in its project (`processResources`).
+    pub task: String,
+    /// Absolute output folder.
+    pub dir: String,
 }
 
 const MODEL_LINE: &str = "@openidea-model\t";
@@ -344,9 +364,9 @@ pub fn parse_reported_projects(output: &str) -> Vec<ReportedProject> {
     output.lines().filter_map(|l| serde_json::from_str(l.trim_end().strip_prefix(MODEL_LINE)?).ok()).collect()
 }
 
-/// Source roots of the reported source sets: `(absolute folder, is test, is resources)`.
-pub fn reported_source_roots(reported: &[ReportedProject]) -> Vec<(PathBuf, ReportedRoot)> {
-    let mut out: Vec<(PathBuf, ReportedRoot)> = Vec::new();
+/// Source roots of the reported source sets: `(absolute folder, role, absolute folder of its project)`.
+pub fn reported_source_roots(reported: &[ReportedProject]) -> Vec<(PathBuf, ReportedRoot, PathBuf)> {
+    let mut out: Vec<(PathBuf, ReportedRoot, PathBuf)> = Vec::new();
     for p in reported {
         for set in &p.source_sets {
             let (src, res) = if set.test {
@@ -357,14 +377,14 @@ pub fn reported_source_roots(reported: &[ReportedProject]) -> Vec<(PathBuf, Repo
             for (dir, kind) in set.src.iter().map(|d| (d, src)).chain(set.res.iter().map(|d| (d, res))) {
                 let dir = PathBuf::from(dir);
                 // A folder shared by `main` and another set is `main`'s, as in IDEA.
-                if !out.iter().any(|(d, _)| *d == dir) {
-                    out.push((dir, kind));
+                if !out.iter().any(|(d, _, _)| *d == dir) {
+                    out.push((dir, kind, PathBuf::from(&p.dir)));
                 }
             }
         }
         // IDEA excludes the build folder of every module.
         if let Some(b) = &p.build_dir {
-            out.push((PathBuf::from(b), ReportedRoot::Excluded));
+            out.push((PathBuf::from(b), ReportedRoot::Excluded, PathBuf::from(&p.dir)));
         }
     }
     out
@@ -399,6 +419,7 @@ pub fn merge_reported_projects(root: &Path, model: &mut GradleModel, reported: &
             if p.build.as_deref().is_some_and(|b| b.ends_with(":buildSrc")) {
                 project.tasks.clear();
             }
+            project.resolvable_configurations = p.resolvable_configurations.clone();
             project.build = p.build.clone();
             project
         })
@@ -1450,7 +1471,7 @@ dependencies {
             model.projects.push(project);
         }
         assert!(build_files(root, &model).contains(&root.join("included/deps.gradle")));
-        let model = crate::BuildModel { maven: None, gradle: vec![model] };
+        let model = crate::BuildModel { maven: None, gradle: vec![model], sbt: Vec::new() };
         assert_eq!(crate::dependency_coordinates(root, &model)[0].artifact_id, "included");
     }
 
@@ -1617,6 +1638,11 @@ Pattern: clean<TaskName>: Cleans the output files of a task.
                 path: path.into(),
                 dir: ws.join(d).to_string_lossy().into_owned(),
                 build: build.map(Into::into),
+                resolvable_configurations: match path {
+                    ":" => Some(vec!["reviewTools".into(), "runtimeClasspath".into()]),
+                    ":lib:core" => Some(Vec::new()),
+                    _ => None,
+                },
                 ..ReportedProject::default()
             };
             format!("{MODEL_LINE}{}\n", serde_json::to_string(&project).unwrap())
@@ -1645,6 +1671,12 @@ Pattern: clean<TaskName>: Cleans the output files of a task.
         );
         let build_src = &model.projects[2];
         assert!(build_src.tasks.is_empty(), "buildSrc tasks cannot run from the root build");
+        assert_eq!(
+            model.projects[0].resolvable_configurations,
+            Some(vec!["reviewTools".into(), "runtimeClasspath".into()])
+        );
+        assert_eq!(model.projects[1].resolvable_configurations, None);
+        assert_eq!(model.projects[4].resolvable_configurations, Some(Vec::new()));
         assert!(!model.projects[4].tasks.is_empty());
         assert!(build_files(&root, &model).contains(&ws.join("lib/settings.gradle")));
     }

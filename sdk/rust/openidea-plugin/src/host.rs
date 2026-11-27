@@ -7,6 +7,7 @@ use crate::types::*;
 #[cfg(target_arch = "wasm32")]
 mod imp {
     //! Calls through the `openidea:plugin@1.0.0` world.
+    use super::{WebSocketBatch, WebSocketRequest};
     use crate::bindings::openidea::plugin as wit;
     use crate::types::*;
 
@@ -128,6 +129,31 @@ mod imp {
     pub fn remove_window_status_item(id: &str) -> Result<(), Error> {
         wit::ui::remove_window_status_item(id).map_err(error)
     }
+    fn wit_status_item(item: &StatusItem) -> wit::ui::StatusItem {
+        wit::ui::StatusItem { text: item.text.clone(), tooltip: item.tooltip.clone(), command: item.command.clone() }
+    }
+    fn wit_status_menu(menu: &[StatusMenuEntry]) -> Vec<wit::ui::StatusMenuEntry> {
+        menu.iter()
+            .map(|entry| match entry {
+                StatusMenuEntry::Action { label, description, command, argument } => {
+                    wit::ui::StatusMenuEntry::Action(wit::ui::StatusMenuAction {
+                        label: label.clone(),
+                        description: description.clone(),
+                        command: command.clone(),
+                        argument: argument.clone(),
+                    })
+                }
+                StatusMenuEntry::Separator => wit::ui::StatusMenuEntry::Separator,
+                StatusMenuEntry::Header(label) => wit::ui::StatusMenuEntry::Header(label.clone()),
+            })
+            .collect()
+    }
+    pub fn set_status_item_menu(id: &str, item: &StatusItem, menu: &[StatusMenuEntry]) -> Result<(), Error> {
+        wit::ui::set_status_item_menu(id, &wit_status_item(item), &wit_status_menu(menu)).map_err(error)
+    }
+    pub fn set_window_status_item_menu(id: &str, item: &StatusItem, menu: &[StatusMenuEntry]) -> Result<(), Error> {
+        wit::ui::set_window_status_item_menu(id, &wit_status_item(item), &wit_status_menu(menu)).map_err(error)
+    }
     pub fn execute_command(id: &str, arg: Option<&str>) -> Result<Option<String>, Error> {
         wit::command_runner::execute(id, arg).map_err(error)
     }
@@ -149,6 +175,22 @@ mod imp {
         wit::ui::remove_status_item(id)
     }
 
+    pub fn set_console_rules(rules: &[ConsoleRule]) -> Result<(), Error> {
+        let rules: Vec<_> = rules
+            .iter()
+            .map(|r| wit::ui::ConsoleRule {
+                pattern: r.pattern.clone(),
+                ignore_case: r.ignore_case,
+                foreground: r.foreground.clone(),
+                background: r.background.clone(),
+                styles: r.styles.clone(),
+                whole_line: r.whole_line,
+                enabled: r.enabled,
+            })
+            .collect();
+        wit::ui::set_console_rules(&rules).map_err(error)
+    }
+
     pub fn set_context(key: &str, value: ContextValue) -> Result<(), Error> {
         let value = match value {
             ContextValue::Flag(b) => wit::ui::ContextValue::Flag(b),
@@ -164,6 +206,11 @@ mod imp {
 
     pub fn copy_to_clipboard(text: &str) -> Result<(), Error> {
         wit::ui::copy_to_clipboard(text).map_err(error)
+    }
+
+    pub fn read_clipboard() -> Result<ClipboardContent, Error> {
+        let content = wit::ui::read_clipboard().map_err(error)?;
+        Ok(ClipboardContent { text: content.text, image: content.image })
     }
 
     pub fn open_url(url: &str) -> Result<(), Error> {
@@ -183,6 +230,16 @@ mod imp {
 
     pub fn pick(title: &str, items: &[PickItem]) -> Result<Option<String>, Error> {
         wit::ui::pick(title, &pick_items(items)).map_err(error)
+    }
+
+    pub fn pick_file(title: &str, dialog: &FileDialog) -> Result<Option<String>, Error> {
+        let filters = dialog
+            .filters
+            .iter()
+            .map(|f| wit::ui::FileFilter { name: f.name.clone(), extensions: f.extensions.clone() })
+            .collect();
+        wit::ui::pick_file(title, &wit::ui::FileDialog { save: dialog.save, name: dialog.name.clone(), filters })
+            .map_err(error)
     }
 
     pub fn pick_directory(title: &str, initial: Option<&str>) -> Result<Option<String>, Error> {
@@ -240,6 +297,10 @@ mod imp {
         wit::workspace::project_of(path)
     }
 
+    pub fn invoking_project() -> Option<ProjectRes> {
+        wit::workspace::invoking_project()
+    }
+
     pub fn project_root(p: &ProjectRes) -> Result<String, Error> {
         p.root().map_err(error)
     }
@@ -254,6 +315,23 @@ mod imp {
 
     pub fn project_write(p: &ProjectRes, path: &str, text: &str) -> Result<(), Error> {
         p.write_file(path, text).map_err(error)
+    }
+
+    pub fn project_document(p: &ProjectRes, path: &str) -> Result<Document, Error> {
+        wit::editor::document_at(p, path).map(|d| Document { version: d.version, text: d.text }).map_err(error)
+    }
+
+    pub fn project_apply_document_edits(
+        p: &ProjectRes,
+        path: &str,
+        version: u64,
+        edits: &[TextEdit],
+    ) -> Result<u64, Error> {
+        let edits: Vec<wit::types::TextEdit> = edits
+            .iter()
+            .map(|edit| wit::types::TextEdit { range: range_out(edit.range), text: edit.text.clone() })
+            .collect();
+        wit::editor::apply_edits_at(p, path, version, &edits).map_err(error)
     }
 
     pub fn invocation_project(i: InvocationRef<'_>) -> Option<ProjectRes> {
@@ -380,6 +458,36 @@ mod imp {
             .collect::<Vec<_>>();
         wit::decorations::set(path, set, &items).map_err(error)
     }
+    pub fn set_markdown_decorations(path: &str, set: &str, items: &[MarkdownDecoration]) -> Result<(), Error> {
+        let items = items
+            .iter()
+            .map(|d| wit::decorations::MarkdownDecoration {
+                range: range_out(d.range),
+                style: d.style.clone(),
+                hover: d.hover.clone(),
+                after: d.after.clone(),
+                markdown_hover: d.markdown_hover.clone(),
+            })
+            .collect::<Vec<_>>();
+        wit::decorations::set_markdown(path, set, &items).map_err(error)
+    }
+    pub fn set_styled_decorations(path: &str, set: &str, items: &[StyledDecoration]) -> Result<(), Error> {
+        let items = items
+            .iter()
+            .map(|d| wit::decorations::StyledDecoration {
+                range: range_out(d.range),
+                style: d.style.clone(),
+                hover: d.hover.clone(),
+                after: d.after.clone(),
+                markdown_hover: d.markdown_hover.clone(),
+                colors: d.colors.as_ref().map(|c| wit::decorations::DecorationColors {
+                    foreground: c.foreground.clone(),
+                    background: c.background.clone(),
+                }),
+            })
+            .collect::<Vec<_>>();
+        wit::decorations::set_styled(path, set, &items).map_err(error)
+    }
     pub fn clear_decorations(set: &str) -> Result<(), Error> {
         wit::decorations::clear(set).map_err(error)
     }
@@ -397,6 +505,15 @@ mod imp {
     }
     pub fn clear_file_decorations(set: &str) -> Result<(), Error> {
         wit::decorations::clear_file(set).map_err(error)
+    }
+    pub fn set_file_note(path: &str, set: &str, note: &str, tooltip: Option<&str>) -> Result<(), Error> {
+        wit::decorations::set_file_note(path, set, note, tooltip).map_err(error)
+    }
+    pub fn set_file_icon(path: &str, set: &str, icon: &str, tooltip: Option<&str>) -> Result<(), Error> {
+        wit::decorations::set_file_icon(path, set, icon, tooltip).map_err(error)
+    }
+    pub fn set_file_icons(set: &str, items: &[(String, String)]) -> Result<(), Error> {
+        wit::decorations::set_file_icons(set, items).map_err(error)
     }
     pub fn vcs_log(p: &ProjectRes, path: Option<&str>, limit: u32) -> Result<Vec<CommitInfo>, Error> {
         wit::vcs::log(p, path, limit)
@@ -459,6 +576,26 @@ mod imp {
         wit::vcs::remotes(p).map_err(error)
     }
 
+    pub fn vcs_roots(p: &ProjectRes) -> Result<Vec<String>, Error> {
+        wit::vcs::roots(p).map_err(error)
+    }
+
+    pub fn vcs_repository_at(p: &ProjectRes, path: &str) -> Result<Option<RepositoryInfo>, Error> {
+        wit::vcs::repository_at(p, path)
+            .map(|r| {
+                r.map(|r| RepositoryInfo {
+                    root: r.root,
+                    relative_path: r.relative_path,
+                    branch: r.branch,
+                    commit: r.commit,
+                    upstream: r.upstream,
+                    ahead: r.ahead,
+                    remotes: r.remotes,
+                })
+            })
+            .map_err(error)
+    }
+
     pub fn pending_commit() -> Result<Option<CommitDraft>, Error> {
         wit::commit::pending_commit().map(|d| d.map(__draft_in)).map_err(error)
     }
@@ -492,8 +629,17 @@ mod imp {
         wit::events::subscribe_paths(kind, &globs.iter().map(|g| (*g).to_owned()).collect::<Vec<_>>()).map_err(error)
     }
 
+    pub fn subscribe_paths_with_options(kind: &str, options: &crate::SubscriptionOptions) -> Result<(), Error> {
+        let opts = wit::events::SubscriptionOptions { globs: options.globs.clone(), debounce_ms: options.debounce_ms };
+        wit::events::subscribe_paths_with_options(kind, &opts).map_err(error)
+    }
+
     pub fn subscribe(k: EventKind) -> Result<(), Error> {
         wit::events::subscribe(k.name()).map_err(error)
+    }
+
+    pub fn watch_paths(paths: &[&str]) -> Result<(), Error> {
+        wit::events::watch_paths(&paths.iter().map(|p| (*p).to_owned()).collect::<Vec<_>>()).map_err(error)
     }
 
     pub fn unsubscribe(k: EventKind) {
@@ -538,6 +684,10 @@ mod imp {
 
     pub fn project_stat(p: &ProjectRes, path: &str) -> Result<FileStat, Error> {
         p.stat(path).map(file_stat).map_err(error)
+    }
+
+    pub fn project_generation(p: &ProjectRes) -> Result<u64, Error> {
+        p.generation().map_err(error)
     }
 
     fn file_kind(kind: wit::workspace::FileKind) -> FileKind {
@@ -637,6 +787,40 @@ mod imp {
             .map_err(error)
     }
 
+    pub type WebSocketRes = wit::net::Websocket;
+
+    pub fn websocket_connect(project: &ProjectRes, req: &WebSocketRequest) -> Result<WebSocketRes, Error> {
+        let request = wit::net::WebsocketRequest {
+            url: req.url.clone(),
+            headers: req
+                .headers
+                .iter()
+                .map(|(name, value)| wit::net::Header { name: name.clone(), value: value.clone() })
+                .collect(),
+            subprotocol: req.subprotocol.clone(),
+        };
+        wit::net::websocket_connect(project, &request).map_err(error)
+    }
+
+    pub fn websocket_id(connection: &WebSocketRes) -> u64 {
+        connection.id()
+    }
+
+    pub fn websocket_send(connection: &WebSocketRes, bytes: &[u8]) -> Result<(), Error> {
+        connection.send(bytes).map_err(error)
+    }
+
+    pub fn websocket_drain(connection: &WebSocketRes, limit: u32) -> Result<WebSocketBatch, Error> {
+        connection
+            .drain(limit)
+            .map(|batch| WebSocketBatch { messages: batch.messages, closed: batch.closed })
+            .map_err(error)
+    }
+
+    pub fn websocket_close(connection: &WebSocketRes) -> Result<(), Error> {
+        connection.close().map_err(error)
+    }
+
     pub fn secret_set(name: &str, value: &str) -> Result<(), Error> {
         wit::secrets::set(name, value).map_err(error)
     }
@@ -706,6 +890,16 @@ mod imp {
         }
     }
 
+    fn file_diff_to(v: &crate::FileDiff) -> wit::views::FileDiff {
+        wit::views::FileDiff {
+            left: v.left.clone(),
+            right: v.right.clone(),
+            left_label: v.left_label.clone(),
+            right_label: v.right_label.clone(),
+            title: v.title.clone(),
+        }
+    }
+
     fn content_tab_reply_to(v: &crate::ContentTabReply) -> wit::views::ContentTabReply {
         wit::views::ContentTabReply {
             content: v.content.clone(),
@@ -745,6 +939,41 @@ mod imp {
     }
     pub fn database_connect(project: &ProjectRes, id: &str) -> Result<(), Error> {
         wit::database::connect(project, id).map_err(error)
+    }
+    pub fn lsp_request(
+        project: &ProjectRes,
+        server: &str,
+        method: &str,
+        params: Option<&str>,
+    ) -> Result<String, Error> {
+        wit::language_servers::request(project, server, method, params).map_err(error)
+    }
+    pub fn lsp_notify(project: &ProjectRes, server: &str, method: &str, params: Option<&str>) -> Result<(), Error> {
+        wit::language_servers::notify(project, server, method, params).map_err(error)
+    }
+    pub fn build_dependencies(project: &ProjectRes, module: Option<&str>) -> Result<Vec<DependencyNode>, Error> {
+        use wit::build::DependencyStatus as S;
+        wit::build::dependencies(project, module)
+            .map(|nodes| {
+                nodes
+                    .into_iter()
+                    .map(|n| DependencyNode {
+                        group: n.group,
+                        artifact: n.artifact,
+                        version: n.version,
+                        scope: n.scope,
+                        status: match n.status {
+                            S::Resolved => DependencyStatus::Resolved,
+                            S::OmittedForConflict => DependencyStatus::OmittedForConflict,
+                            S::OmittedForDuplicate => DependencyStatus::OmittedForDuplicate,
+                            S::VersionManaged => DependencyStatus::VersionManaged,
+                        },
+                        requested_version: n.requested_version,
+                        parent: n.parent,
+                    })
+                    .collect()
+            })
+            .map_err(error)
     }
     pub fn mcp_stdio_command() -> Option<Vec<String>> {
         wit::mcp::stdio_command()
@@ -797,11 +1026,32 @@ mod imp {
     pub fn start_run(config: &str, args: &[String], debug: bool) -> Result<String, Error> {
         wit::run::start(config, args, debug).map_err(error)
     }
+    pub fn start_run_with_options(
+        config: &str,
+        args: &[String],
+        options: &crate::RunStartOptions,
+    ) -> Result<String, Error> {
+        let mode = options.output_mode.map(|m| match m {
+            crate::OutputMode::Pipes => wit::run::OutputMode::Pipes,
+            crate::OutputMode::Pty => wit::run::OutputMode::Pty,
+        });
+        wit::run::start_with_options(config, args, wit::run::StartOptions { debug: options.debug, output_mode: mode })
+            .map_err(error)
+    }
     pub fn open_terminal_session(key: &str, title: &str, cmd: &super::Command) -> Result<String, Error> {
         wit::views::open_terminal_session(
             key,
             title,
             &wit::process::Command { program: cmd.program.clone(), args: cmd.args.clone(), env: cmd.env.clone() },
+        )
+        .map_err(error)
+    }
+    pub fn open_terminal_session_in(key: &str, title: &str, cmd: &super::Command, cwd: &str) -> Result<String, Error> {
+        wit::views::open_terminal_session_in(
+            key,
+            title,
+            &wit::process::Command { program: cmd.program.clone(), args: cmd.args.clone(), env: cmd.env.clone() },
+            cwd,
         )
         .map_err(error)
     }
@@ -813,6 +1063,12 @@ mod imp {
     }
     pub fn reply_content_tab(request: &str, reply: &crate::ContentTabReply) -> Result<(), Error> {
         wit::views::reply_content_tab(request, &content_tab_reply_to(reply)).map_err(error)
+    }
+    pub fn open_diff(diff: &crate::ContentDiff, file_name: Option<&str>) -> Result<(), Error> {
+        wit::views::open_diff(&content_diff_to(diff), file_name).map_err(error)
+    }
+    pub fn open_file_diff(diff: &crate::FileDiff, file_name: Option<&str>) -> Result<(), Error> {
+        wit::views::open_file_diff(&file_diff_to(diff), file_name).map_err(error)
     }
 
     pub fn open_terminal(title: &str, program: &str, args: &[String]) -> Result<(), Error> {
@@ -838,6 +1094,10 @@ mod imp {
     pub fn extension_contributions(point: &str) -> Result<Vec<crate::Contribution>, Error> {
         let list = wit::extensions::contributions(point).map_err(error)?;
         Ok(list.into_iter().map(|c| crate::Contribution { plugin: c.plugin, data: c.data }).collect())
+    }
+
+    pub fn fork_agent_session(agent: &str, session_id: &str, cwd: &str) -> Result<String, Error> {
+        wit::agents::fork_session(agent, session_id, cwd).map_err(error)
     }
 
     pub fn run_process(
@@ -867,6 +1127,35 @@ mod imp {
     pub fn start(cmd: &crate::host::Command, cwd: Option<&ProjectRes>) -> Result<ChildRes, Error> {
         let c = wit::process::Command { program: cmd.program.clone(), args: cmd.args.clone(), env: cmd.env.clone() };
         wit::process::start(&c, cwd).map_err(error)
+    }
+
+    pub fn run_captured(
+        cmd: &crate::host::Command,
+        cwd: Option<&ProjectRes>,
+        stdin: Option<&str>,
+        options: Option<crate::host::ProcessOptions>,
+    ) -> Result<ProcessOutput, Error> {
+        let c = wit::process::Command { program: cmd.program.clone(), args: cmd.args.clone(), env: cmd.env.clone() };
+        let opts = options.map(|o| wit::process::ProcessOptions {
+            max_output_bytes: o.max_output_bytes,
+            buffer_bytes: o.buffer_bytes,
+        });
+        wit::process::run_captured(&c, cwd, stdin, opts)
+            .map(|o| ProcessOutput { status: o.status, stdout: o.stdout, stderr: o.stderr })
+            .map_err(error)
+    }
+
+    pub fn start_stream(
+        cmd: &crate::host::Command,
+        cwd: Option<&ProjectRes>,
+        options: Option<crate::host::ProcessOptions>,
+    ) -> Result<ChildRes, Error> {
+        let c = wit::process::Command { program: cmd.program.clone(), args: cmd.args.clone(), env: cmd.env.clone() };
+        let opts = options.map(|o| wit::process::ProcessOptions {
+            max_output_bytes: o.max_output_bytes,
+            buffer_bytes: o.buffer_bytes,
+        });
+        wit::process::start_stream(&c, cwd, opts).map_err(error)
     }
 
     pub fn child_poll(child: &ChildRes, max: u32) -> Result<crate::host::Chunk, Error> {
@@ -970,6 +1259,12 @@ impl Project {
     pub fn data_sources(&self) -> Result<Vec<String>, Error> {
         imp::database_sources(&self.inner)
     }
+
+    /// Returns the monotonic generation of this project workspace (API 1.18).
+    /// Incremented whenever the project's filesystem or structure changes.
+    pub fn generation(&self) -> Result<u64, Error> {
+        imp::project_generation(&self.inner)
+    }
     /// Writes directly to the Database secure store, without a read API.
     pub fn set_data_source_credential(&self, id: &str, password: &str) -> Result<(), Error> {
         imp::database_credential(&self.inner, id, password)
@@ -977,6 +1272,31 @@ impl Project {
     /// Normal Database connection/introspection in this project's invoking command/event window.
     pub fn connect_data_source(&self, id: &str) -> Result<(), Error> {
         imp::database_connect(&self.inner, id)
+    }
+
+    /// Sends `method` to the language server named `server` (its name in the language
+    /// definition, e.g. `phoxite`) running for this project and returns the result as
+    /// JSON (API 1.9). `params` is JSON. Requires `lsp:<server>` and a trusted project.
+    ///
+    /// Only the server's own methods pass (`phoxite/laravel/routes`); LSP's own
+    /// (`textDocument/…`, `workspace/…`, `initialize`, `$/…`) are [`Error::Invalid`].
+    /// [`Error::NotFound`] when the server is not running: the call never starts one.
+    pub fn language_server_request(&self, server: &str, method: &str, params: Option<&str>) -> Result<String, Error> {
+        imp::lsp_request(&self.inner, server, method, params)
+    }
+    /// The same for a notification: no answer is awaited.
+    pub fn language_server_notify(&self, server: &str, method: &str, params: Option<&str>) -> Result<(), Error> {
+        imp::lsp_notify(&self.inner, server, method, params)
+    }
+
+    /// The Maven / Gradle dependency graph of `module` (a Maven `groupId:artifactId` or a
+    /// Gradle project path such as `:app`), or of every module with `None` (API 1.10), as
+    /// the IDE last resolved it: no build tool runs. A flat list, each module a root; see
+    /// [`DependencyNode`]. Gradle configurations appear once the Dependency Analyzer has
+    /// read them. An unknown module is [`Error::NotFound`]. Requires `build.read` and a
+    /// trusted project.
+    pub fn build_dependencies(&self, module: Option<&str>) -> Result<Vec<DependencyNode>, Error> {
+        imp::build_dependencies(&self.inner, module)
     }
 
     /// Find in Files with unsaved text, project excludes, cancellation and a 10,000 match cap.
@@ -1031,6 +1351,18 @@ impl Project {
         imp::project_read_bytes(&self.inner, path)
     }
 
+    /// Versioned text of an explicitly named open document. This works from
+    /// background events and requires `project.read` plus `editor.read`.
+    pub fn document(&self, path: &str) -> Result<Document, Error> {
+        imp::project_document(&self.inner, path)
+    }
+
+    /// Applies versioned edits to an explicitly named open document. Returns
+    /// [`Error::Stale`] without writing when its version changed.
+    pub fn apply_document_edits(&self, path: &str, version: u64, edits: &[TextEdit]) -> Result<u64, Error> {
+        imp::project_apply_document_edits(&self.inner, path, version, edits)
+    }
+
     /// Replaces the text of a file inside the project (absolute or
     /// root-relative), or creates it with the directories it needs, at most
     /// 16 MiB: in one step, keeping the file's encoding and BOM (a new file is
@@ -1061,6 +1393,17 @@ impl Project {
     /// Configured remotes (`(name, fetch_url)`), in order. Needs `vcs.read`.
     pub fn vcs_remotes(&self) -> Result<Vec<(String, String)>, Error> {
         imp::vcs_remotes(&self.inner)
+    }
+
+    /// Mapped Git worktrees within or enclosing this project (API 1.16). Needs `vcs.read`.
+    pub fn vcs_roots(&self) -> Result<Vec<String>, Error> {
+        imp::vcs_roots(&self.inner)
+    }
+
+    /// The innermost mapped worktree for an existing file or directory in this project,
+    /// or `None` outside Git (API 1.16). Needs `vcs.read` and a trusted project.
+    pub fn vcs_repository_at(&self, path: &str) -> Result<Option<RepositoryInfo>, Error> {
+        imp::vcs_repository_at(&self.inner, path)
     }
 
     /// Fetches all remotes. Needs `vcs.write`; long-running, so call it in a [`Task`].
@@ -1123,6 +1466,51 @@ pub fn publish_diagnostics(path: &str, items: &[Diagnostic]) -> Result<(), Error
 /// `secrets`). `Error::Cancelled` when the call was superseded.
 pub fn fetch(request: &HttpRequest) -> Result<HttpResponse, Error> {
     imp::fetch(request)
+}
+
+/// A host-owned background WebSocket. Dropping it closes the connection.
+pub struct WebSocket {
+    inner: imp::WebSocketRes,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WebSocketRequest {
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    pub subprotocol: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WebSocketBatch {
+    pub messages: Vec<Vec<u8>>,
+    pub closed: bool,
+}
+
+impl WebSocket {
+    pub fn connect(project: &Project, request: &WebSocketRequest) -> Result<Self, Error> {
+        imp::websocket_connect(&project.inner, request).map(|inner| Self { inner })
+    }
+    pub fn id(&self) -> u64 {
+        imp::websocket_id(&self.inner)
+    }
+    pub fn send(&self, bytes: &[u8]) -> Result<(), Error> {
+        imp::websocket_send(&self.inner, bytes)
+    }
+    pub fn drain(&self, limit: u32) -> Result<WebSocketBatch, Error> {
+        imp::websocket_drain(&self.inner, limit)
+    }
+    pub fn close(&self) -> Result<(), Error> {
+        imp::websocket_close(&self.inner)
+    }
+}
+
+impl Drop for WebSocket {
+    fn drop(&mut self) {
+        // The WIT resource also closes on its own drop. Calling close here
+        // keeps the native mock faithful to that lifecycle; host close is
+        // intentionally idempotent.
+        let _ = imp::websocket_close(&self.inner);
+    }
 }
 
 /// Whether the user stored secret `name` (declared under `[[contributes.secrets]]`).
@@ -1247,8 +1635,8 @@ pub struct Child {
 
 impl Child {
     /// What it printed since the last read, up to 1 MiB per stream, or one
-    /// whole character when `max_bytes` is smaller;
-    /// `status` is `Some` once it ended.
+    /// whole character when `max_bytes` is smaller. `status` is `Some` in the
+    /// chunk that holds the last of its output: poll until it is set.
     pub fn poll(&self, max_bytes: u32) -> Result<Chunk, Error> {
         imp::child_poll(&self.inner, max_bytes)
     }
@@ -1269,6 +1657,7 @@ impl Child {
     }
 
     /// Waits up to `timeout_ms` for it to end (0 only checks), then reads it.
+    /// When more is left than one chunk holds, `status` comes with a later [`poll`](Self::poll).
     pub fn wait(&self, timeout_ms: u32) -> Result<Chunk, Error> {
         imp::child_wait(&self.inner, timeout_ms)
     }
@@ -1278,6 +1667,30 @@ impl Child {
 /// variables; an existing key fails with an error naming it.
 pub fn run_command(cmd: &Command, project: Option<&Project>, stdin: Option<&str>) -> Result<ProcessOutput, Error> {
     imp::run_command(cmd, project.map(|p| &p.inner), stdin)
+}
+
+/// Options for process execution and streaming (API 1.15).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ProcessOptions {
+    /// Maximum bytes captured per stream before returning an error (up to 128 MiB; default 16 MiB).
+    pub max_output_bytes: Option<u32>,
+    /// In-flight buffer size per stream for streaming backpressure (default 256 KiB, max 4 MiB).
+    pub buffer_bytes: Option<u32>,
+}
+
+/// Runs a [`Command`] with configurable capture options (API 1.15).
+pub fn run_captured(
+    cmd: &Command,
+    project: Option<&Project>,
+    stdin: Option<&str>,
+    options: Option<ProcessOptions>,
+) -> Result<ProcessOutput, Error> {
+    imp::run_captured(cmd, project.map(|p| &p.inner), stdin, options)
+}
+
+/// Starts a [`Command`] with backpressure-driven lossless streaming (API 1.15).
+pub fn start_stream(cmd: &Command, project: Option<&Project>, options: Option<ProcessOptions>) -> Result<Child, Error> {
+    imp::start_stream(cmd, project.map(|p| &p.inner), options).map(|inner| Child { inner })
 }
 
 /// Starts a [`Command`] and keeps it running behind a [`Child`] (at most 8 per
@@ -1295,6 +1708,14 @@ pub fn projects() -> Result<Vec<Project>, Error> {
 /// Obtaining the handle needs no capability; reading it still needs `project.read`.
 pub fn project_of(path: &str) -> Option<Project> {
     imp::project_of(path).map(|inner| Project { inner })
+}
+
+/// The project of the window this call serves (API 1.18): the invoking window's in commands
+/// and events, the editor's window's in `gutter_actions` and `hover_actions`; `None` when the
+/// call serves no window. Unlike [`project_of`], it tells overlapping projects apart.
+/// Obtaining the handle needs no capability; reading it still needs `project.read`.
+pub fn invoking_project() -> Option<Project> {
+    imp::invoking_project().map(|inner| Project { inner })
 }
 
 /// A file open in an editor.
@@ -1405,6 +1826,16 @@ pub fn remove_status_item(id: &str) {
     imp::remove_status_item(id)
 }
 
+/// Replaces the plugin's console highlight rules (API 1.12); an empty list removes them.
+/// Every window applies them to the stdout and stderr lines of its Run and Debug consoles;
+/// the plugin never sees the output. The first enabled whole-line rule that matches styles
+/// the line instead of its log level colour; match-only rules style their matches on top, an
+/// earlier rule winning where they overlap. At most 100 rules; an invalid one fails the call
+/// and keeps the previous rules. They go away when the plugin stops. Needs no capability.
+pub fn set_console_rules(rules: &[ConsoleRule]) -> Result<(), Error> {
+    imp::set_console_rules(rules)
+}
+
 /// Sets the plugin's context key that `when` clauses test as `plugin.<id>.<key>`, in
 /// the window the current command or event came from (every window when there is
 /// none): `set_context("connected", true)`. A window's value takes precedence over
@@ -1421,6 +1852,15 @@ pub fn remove_context(key: &str) {
 /// Copies `text` to the system clipboard. Needs `clipboard`.
 pub fn copy_to_clipboard(text: &str) -> Result<(), Error> {
     imp::copy_to_clipboard(text)
+}
+
+/// API 1.11: the clipboard's text and image (PNG bytes) on the user's machine; both `None`
+/// when it holds neither. Needs `clipboard.read`, and works only in a command the user ran
+/// or a view action from a window: event handlers, background work, web view messages
+/// and commands run through [`execute_command`] get `Error::Denied`. Text or an image over
+/// 16 MiB is `Error::Failed`. In a remote project the user confirms first (refused: `Denied`).
+pub fn read_clipboard() -> Result<ClipboardContent, Error> {
+    imp::read_clipboard()
 }
 
 /// Opens an `http://` or `https://` URL in the user's default browser.
@@ -1483,6 +1923,12 @@ pub fn subscribe_paths(kind: &str, globs: &[&str]) -> Result<(), Error> {
     imp::subscribe_paths(kind, globs)
 }
 
+/// Subscribe to project-relative path globs with options (including debounce_ms).
+/// Requires `events`. Register during activation before the events you want to observe (API 1.18).
+pub fn subscribe_paths_with_options(kind: &str, options: &crate::SubscriptionOptions) -> Result<(), Error> {
+    imp::subscribe_paths_with_options(kind, options)
+}
+
 /// Delivers `kind` events to [`crate::Plugin::handle_events`] for the rest of
 /// the session (also after the instance is reclaimed: an event activates the
 /// plugin again). Needs `events` (`events.input` for `ActionPerformed`).
@@ -1494,13 +1940,32 @@ pub fn unsubscribe(kind: EventKind) {
     imp::unsubscribe(kind)
 }
 
+/// Watches files and directories outside the project of the window this call
+/// serves (a command or an event), replacing what the plugin watched for that
+/// project; an empty list stops (API 1.18). Changes arrive as
+/// [`crate::Event::WatchedFilesChanged`].
+///
+/// Each path is absolute (or `~/…`), exists, and is covered by an `fs.read:<path>`
+/// grant where it really is (a link out of the grant is `Denied`). Paths inside the
+/// project are `Invalid`: [`crate::Event::FilesChanged`] reports them. At most 32.
+/// A file is watched across atomic saves, removal and re-creation; a directory for
+/// its own entries, not recursively, and once removed it is no longer watched.
+/// Batches are debounced and coalesced, so read the files again rather than
+/// replaying steps; a rename is the old path removed and the new one created.
+/// Watches end when the project or its window closes or the plugin stops (also when
+/// a grant is revoked); idle reclaim keeps them. Nothing remote is watched: files
+/// behind a URL need the plugin's own refresh. Needs `events`.
+pub fn watch_paths(paths: &[&str]) -> Result<(), Error> {
+    imp::watch_paths(paths)
+}
+
 /// Files outside the open projects, for a program the plugin integrates with
-/// or a tool installed elsewhere. Outside [`fs::plugin_dir`], paths need an
-/// `fs.read:<path>` (reading) or `fs.write:<path>` (writing) grant covering it;
-/// without one a
-/// call returns [`Error::Denied`] naming the capability the manifest has to
-/// declare. Paths are absolute, or start with `~/` for the user's home. A file
-/// inside a project is [`Project::read_file`] / [`Project::write_file`].
+/// or a tool installed elsewhere. Outside [`fs::plugin_dir`] and the plugin's
+/// install directory (read-only), paths need an `fs.read:<path>` (reading) or
+/// `fs.write:<path>` (writing) grant covering it; without one a call returns
+/// [`Error::Denied`] naming the capability the manifest has to declare. Paths
+/// are absolute, or start with `~/` for the user's home. A file inside a
+/// project is [`Project::read_file`] / [`Project::write_file`].
 pub mod fs {
     use super::imp;
     use crate::types::{Error, FileKind, FileStat};
@@ -1595,6 +2060,12 @@ pub fn pick_directory(title: &str, initial: Option<&str>) -> Result<Option<Strin
     imp::pick_directory(title, initial)
 }
 
+/// Choose a file in the invoking window. Returns its absolute host path or `None` on cancellation.
+/// The choice grants no filesystem access and requires an interactive call.
+pub fn pick_file(title: &str, dialog: &FileDialog) -> Result<Option<String>, Error> {
+    imp::pick_file(title, dialog)
+}
+
 /// Requests the normal File > Open flow, including project trust, in the
 /// invoking window (`false`) or a new window (`true`). No capability.
 /// Only commands/events of a window can request this; errors opening the
@@ -1628,6 +2099,20 @@ pub fn set_window_status_item(id: &str, item: &StatusItem) -> Result<(), Error> 
 /// Removes this window's status override, exposing the global item.
 pub fn remove_window_status_item(id: &str) -> Result<(), Error> {
     imp::remove_window_status_item(id)
+}
+
+/// [`set_status_item`] with a menu (API 1.14): clicking the item opens `menu`
+/// anchored to it instead of running the item's command; choosing an action runs
+/// its command. At most 64 entries; an empty menu is the same as [`set_status_item`].
+/// Fails without changing anything when an action names a command the plugin
+/// doesn't declare.
+pub fn set_status_item_menu(id: &str, item: &StatusItem, menu: &[StatusMenuEntry]) -> Result<(), Error> {
+    imp::set_status_item_menu(id, item, menu)
+}
+
+/// [`set_window_status_item`] with a menu, as [`set_status_item_menu`] (API 1.14).
+pub fn set_window_status_item_menu(id: &str, item: &StatusItem, menu: &[StatusMenuEntry]) -> Result<(), Error> {
+    imp::set_window_status_item_menu(id, item, menu)
 }
 
 /// An approved byte stream on the project machine (the server in remote projects).
@@ -1705,7 +2190,8 @@ pub fn output_reveal(channel: &str) -> Result<(), Error> {
 pub fn open_editors() -> Result<Vec<OpenEditor>, Error> {
     imp::open_editors()
 }
-/// Opens a project file (project.read) or plugin-dir file, optionally selecting a range.
+/// Opens a project file (project.read), a plugin-dir file, or a file in the
+/// plugin's install directory, optionally selecting a range.
 /// Only available in commands/events of a window.
 pub fn open_editor(path: &str, selection: Option<Range>) -> Result<(), Error> {
     imp::editor_open(path, selection)
@@ -1717,6 +2203,17 @@ pub fn problems(path: Option<&str>) -> Result<Vec<FileProblems>, Error> {
 /// Replace a file's editor decorations. Requires project.read; 10,000 items/file, 50 sets.
 pub fn set_decorations(path: &str, set: &str, items: &[Decoration]) -> Result<(), Error> {
     imp::set_decorations(path, set, items)
+}
+/// Replace a file's editor decorations with Markdown hover cards (API 1.16).
+/// Requires project.read; the same limits and set ids as [`set_decorations`].
+pub fn set_markdown_decorations(path: &str, set: &str, items: &[MarkdownDecoration]) -> Result<(), Error> {
+    imp::set_markdown_decorations(path, set, items)
+}
+/// Replace a file's editor decorations with items that carry their own `#rrggbb` / `#rrggbbaa`
+/// foreground and background (API 1.17); an item may leave `style` empty when it has colors.
+/// Requires project.read; the same limits and set ids as [`set_decorations`].
+pub fn set_styled_decorations(path: &str, set: &str, items: &[StyledDecoration]) -> Result<(), Error> {
+    imp::set_styled_decorations(path, set, items)
 }
 /// Clear this plugin's editor decoration set in all projects. Requires project.read.
 pub fn clear_decorations(set: &str) -> Result<(), Error> {
@@ -1730,14 +2227,43 @@ pub fn set_file_decoration(path: &str, set: &str, item: &FileDecoration) -> Resu
 pub fn clear_file_decorations(set: &str) -> Result<(), Error> {
     imp::clear_file_decorations(set)
 }
+/// Set a note shown after a file's name in the project tree, replacing this tree set's
+/// annotation for the file (API 1.7). One line of at most 200 characters. Requires project.read.
+pub fn set_file_note(path: &str, set: &str, note: &str, tooltip: Option<&str>) -> Result<(), Error> {
+    imp::set_file_note(path, set, note, tooltip)
+}
+/// Set a `[[contributes.fileIcons]]` icon for a file or folder in the project tree, replacing
+/// this tree set's annotation for the path (API 1.8). Requires project.read.
+pub fn set_file_icon(path: &str, set: &str, icon: &str, tooltip: Option<&str>) -> Result<(), Error> {
+    imp::set_file_icon(path, set, icon, tooltip)
+}
+/// Replace all `(path, icon)` entries of a tree icon set at once (API 1.8; at most 10,000 entries).
+/// Requires project.read.
+pub fn set_file_icons(set: &str, items: &[(String, String)]) -> Result<(), Error> {
+    imp::set_file_icons(set, items)
+}
 
 /// Starts an owned run configuration in the invoking window. Its id receives run-exited.
 pub fn start_run(config: &str, args: &[String], debug: bool) -> Result<String, Error> {
     imp::start_run(config, args, debug)
 }
+/// Starts an owned run configuration with launch options (API 1.18). Its id receives run-exited.
+pub fn start_run_with_options(
+    config: &str,
+    args: &[String],
+    options: &crate::RunStartOptions,
+) -> Result<String, Error> {
+    imp::start_run_with_options(config, args, options)
+}
 /// Opens/reuses a keyed, approved terminal with append-only environment variables.
 pub fn open_terminal_session(key: &str, title: &str, cmd: &Command) -> Result<String, Error> {
     imp::open_terminal_session(key, title, cmd)
+}
+/// [`open_terminal_session`] started in `cwd` (API 1.18): a directory of the window's
+/// project relative to its root (`""` is the root), which must exist and stay inside the
+/// project. Trust and the approved program stay the project's.
+pub fn open_terminal_session_in(key: &str, title: &str, cmd: &Command, cwd: &str) -> Result<String, Error> {
+    imp::open_terminal_session_in(key, title, cmd, cwd)
 }
 /// Writes to this plugin's running keyed terminal in the invoking window.
 pub fn write_terminal(key: &str, text: &str) -> Result<(), Error> {
@@ -1750,6 +2276,16 @@ pub fn open_content_tab(tab: &crate::ContentTab) -> Result<(), Error> {
 /// Replies to a content-tab-action event in its originating window.
 pub fn reply_content_tab(request: &str, reply: &crate::ContentTabReply) -> Result<(), Error> {
     imp::reply_content_tab(request, reply)
+}
+/// API 1.7: opens two texts in the invoking window's diff viewer; `file_name` picks the
+/// syntax highlighting.
+pub fn open_diff(diff: &crate::ContentDiff, file_name: Option<&str>) -> Result<(), Error> {
+    imp::open_diff(diff, file_name)
+}
+/// API 1.10: like [`open_diff`] for a file missing on one side (`None`: added or deleted); the
+/// diff viewer shows the other side alone. Both sides `None` is `Error::Invalid`.
+pub fn open_file_diff(diff: &crate::FileDiff, file_name: Option<&str>) -> Result<(), Error> {
+    imp::open_file_diff(diff, file_name)
 }
 
 /// Registers/replaces a read-only project target. Requires the program's process grant.
@@ -1782,4 +2318,15 @@ pub fn mcp_stdio_command() -> Option<Vec<String>> {
 /// to refresh what was derived from them. Needs `engines.openidea = "^1.4"`.
 pub fn extension_contributions(point: &str) -> Result<Vec<crate::Contribution>, Error> {
     imp::extension_contributions(point)
+}
+
+/// Fork a recorded native agent session into a new task in the open project,
+/// returning the new task id (API 1.18). Requires the `agents` capability and an
+/// invoking window. The session must belong to that window's project and have
+/// been recorded in `cwd`; the host builds the fork invocation and names the
+/// fork's session id for claude (codex assigns its own). `agent` is a
+/// native provider (`claude` or `codex`). The new task's first turn continues the
+/// recording as the agent's own fork. Needs `engines.openidea = "^1.18"`.
+pub fn fork_agent_session(agent: &str, session_id: &str, cwd: &str) -> Result<String, Error> {
+    imp::fork_agent_session(agent, session_id, cwd)
 }

@@ -8,9 +8,10 @@
  */
 import { useMemo, useRef, useState, type MouseEvent } from "react";
 import clsx from "clsx";
-import { useActions, allActions, type Action } from "@/platform/actions";
-import { defaultPreset, formatBinding, type Keymap, PRESET_TITLES, PRESETS, useKeymap } from "@/platform/keymap";
-import { call, commands } from "@/platform/ipc";
+import { allActions, useActions, type Action } from "@/platform/actions";
+import { defaultPreset, formatBinding, type Keymap, PRESET_TITLES, PRESETS } from "@/platform/keymap";
+import { readDesktopText, writeDesktopText } from "@/platform/desktopFiles";
+import { notifications } from "@/workbench/contributions";
 import { ask, confirm, showError } from "@/workbench/messages";
 import {
   HighlightedText,
@@ -39,6 +40,9 @@ import {
   isModified,
   isKeymapAction,
   keymapName,
+  keymapSearchLabels,
+  parseShortcutQuery,
+  shortcutQueryMatches,
   removeBinding,
   removeConflicts,
   renameKeymap,
@@ -52,11 +56,11 @@ import {
 } from "./model";
 import { groupIcon, groupPath, groupRank } from "./groups";
 import { KeymapNameDialog } from "./KeymapDialogs";
-import { parseIdeaKeymap } from "./ideaKeymapImport";
+import { parseIdeaKeymap } from "@/platform/ideaKeymap";
 import { RecordShortcutDialog } from "./RecordShortcutDialog";
 import { StrokeRecorder } from "./StrokeRecorder";
 import styles from "./Keymap.module.css";
-import { tx } from "@/platform/i18n";
+import { tx, txPart } from "@/platform/i18n";
 
 type KNode =
   | { kind: "group"; key: string; name: string; path: string[]; children: KNode[] }
@@ -64,14 +68,24 @@ type KNode =
 
 type GroupNode = Extract<KNode, { kind: "group" }>;
 
-export function keymapSearchLabels(): string[] {
-  const draft = useKeymap.getState();
-  return allActions()
-    .filter((a) => isKeymapAction(a, draft))
-    .map((a) => a.title);
-}
+export { keymapSearchLabels };
 
 const groupKey = (path: readonly string[]) => `grp:${path.join("/")}`;
+
+/**
+ * The JSON written by "Export Keymap as JSON…": the keymap's name, the preset
+ * it is based on, and every configurable action's resolved bindings, so the
+ * mapping can be read or compared to IDEA offline.
+ */
+export function keymapJson(name: string, basedOn: string, actions: readonly Action[], draft: KeymapDraft): string {
+  const bindings: Keymap = {};
+  for (const action of actions) {
+    if (!isKeymapAction(action, draft)) continue;
+    const keys = resolveBindings(draft, action.id);
+    if (keys.length) bindings[action.id] = keys;
+  }
+  return JSON.stringify({ name, basedOn, actions: bindings }, null, 2);
+}
 
 function sortGroup(g: GroupNode): void {
   const actions = g.children.filter((c) => c.kind === "action");
@@ -110,6 +124,7 @@ export function buildKeymapTree(
     return parent;
   };
   const q = query.toLowerCase();
+  const typedShortcut = query ? parseShortcutQuery(query) : null;
   for (const action of actions) {
     const bindings = resolveBindings(draft, action.id);
     if (!isKeymapAction(action, draft)) continue;
@@ -118,7 +133,9 @@ export function buildKeymapTree(
       hits = wordMatch(action.title, query);
       if (!hits) {
         const other =
-          action.id.toLowerCase().includes(q) || (action.keywords ?? []).some((k) => k.toLowerCase().includes(q));
+          action.id.toLowerCase().includes(q) ||
+          (action.keywords ?? []).some((k) => k.toLowerCase().includes(q)) ||
+          (!!typedShortcut && shortcutQueryMatches(bindings, typedShortcut));
         if (!other) continue;
         hits = [];
       }
@@ -213,7 +230,12 @@ export function KeymapPage() {
     ...Object.keys(PRESETS).map((id) => ({ value: id, label: PRESET_TITLES[id] ?? id })),
     ...Object.entries(customs)
       .sort(([, a], [, b]) => a.name.localeCompare(b.name))
-      .map(([id, k]) => ({ value: id, label: k.name, detail: tx`based on ${PRESET_TITLES[k.parent] ?? k.parent}` })),
+      .map(([id, k]) => ({
+        value: id,
+        verbatim: true,
+        label: k.name,
+        detail: tx`based on ${txPart(PRESET_TITLES[k.parent] ?? k.parent)}`,
+      })),
   ];
 
   const confirmDelete = async () => {
@@ -231,12 +253,12 @@ export function KeymapPage() {
   };
 
   const importIdeaKeymap = async () => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
+    const { open } = await import("@/platform/dialog");
     const path = await open({ multiple: false, filters: [{ name: tx("IntelliJ IDEA Keymap"), extensions: ["xml"] }] });
     if (!path) return;
     let parsed;
     try {
-      parsed = parseIdeaKeymap(await call(commands.fsReadText(path)));
+      parsed = parseIdeaKeymap(await readDesktopText(path));
     } catch (e) {
       await showError(tx("Import Keymap"), e instanceof Error ? e.message : String(e));
       return;
@@ -251,7 +273,7 @@ export function KeymapPage() {
       body: (
         <>
           <div>
-            {tx`Imported '${name}' (based on ${PRESET_TITLES[parsed.parent] ?? parsed.parent}): ${parsed.applied} actions.`}
+            {tx`Imported '${name}' (based on ${txPart(PRESET_TITLES[parsed.parent] ?? parsed.parent)}): ${parsed.applied} actions.`}
           </div>
           {unknown.length > 0 && <div>{tx`Not available in OpenIDEA (${unknown.length}): ${unknown.join(", ")}.`}</div>}
           {parsed.skippedShortcuts > 0 && <div>{tx`Skipped ${parsed.skippedShortcuts} unsupported shortcuts.`}</div>}
@@ -261,6 +283,39 @@ export function KeymapPage() {
     });
   };
 
+  const exportKeymap = async () => {
+    const { save } = await import("@/platform/dialog");
+    const name = keymapName(selectedId, customs);
+    const path = await save({
+      title: tx("Export Keymap"),
+      defaultPath: `${name.replace(/[/\\:*?"<>|]/g, "_")}.json`,
+      filters: [{ name: tx("OpenIDEA Keymap"), extensions: ["json"] }],
+    });
+    if (!path) return;
+    const json = keymapJson(
+      name,
+      isCustom ? (customs[selectedId]?.parent ?? draft.preset) : selectedId,
+      allActions(),
+      draft,
+    );
+    try {
+      await writeDesktopText(path, json);
+      notifications().notify({
+        level: "info",
+        title: tx("Keymap exported"),
+        body: path,
+        key: "keymap.export",
+      });
+    } catch (e) {
+      notifications().notify({
+        level: "error",
+        title: tx("Cannot export keymap"),
+        body: e instanceof Error ? e.message : String(e),
+        key: "keymap.export",
+      });
+    }
+  };
+
   const gearMenu = (): MenuItem[] => [
     {
       label: "Duplicate…",
@@ -268,6 +323,7 @@ export function KeymapPage() {
       run: () => setNameDialog({ mode: "duplicate", initial: copyName(keymapName(selectedId, customs), customs) }),
     },
     { label: "Import IntelliJ IDEA Keymap…", run: () => void importIdeaKeymap() },
+    { label: "Export Keymap as JSON…", run: () => void exportKeymap() },
     {
       label: "Rename…",
       icon: "edit",
@@ -325,26 +381,27 @@ export function KeymapPage() {
   return (
     <div className={styles.page}>
       <div className={styles.presetRow}>
-        <span className={styles.presetLabel}>
-          <SearchLabel text="Keymap:" />
-        </span>
-        <Select
-          value={selectedId}
-          aria-label="Keymap"
-          className={styles.presetSelect}
-          options={keymapOptions}
-          onChange={selectKeymap}
-        />
-        <IconButton
-          ref={gearRef}
-          icon="settings"
-          title="Show Scheme Actions"
-          onClick={() => {
-            const r = gearRef.current?.getBoundingClientRect();
-            showContextMenu(r ? { x: r.left, y: r.bottom + 2 } : { x: 0, y: 0 }, gearMenu());
-          }}
-        />
-        <span className={styles.spacer} />
+        <div className={styles.presetGroup}>
+          <span className={styles.presetLabel}>
+            <SearchLabel text="Keymap:" />
+          </span>
+          <Select
+            value={selectedId}
+            aria-label="Keymap"
+            className={styles.presetSelect}
+            options={keymapOptions}
+            onChange={selectKeymap}
+          />
+          <IconButton
+            ref={gearRef}
+            icon="settings"
+            title="Show Scheme Actions"
+            onClick={() => {
+              const r = gearRef.current?.getBoundingClientRect();
+              showContextMenu(r ? { x: r.left, y: r.bottom + 2 } : { x: 0, y: 0 }, gearMenu());
+            }}
+          />
+        </div>
         {overrideCount > 0 && (
           <span className={styles.modifiedNote}>
             {overrideCount === 1 ? tx`${overrideCount} modified action` : tx`${overrideCount} modified actions`}
@@ -353,68 +410,71 @@ export function KeymapPage() {
       </div>
 
       <div className={styles.toolbar}>
-        {byShortcut ? (
-          <div className={styles.shortcutFilter}>
-            <Icon name="keyboard" size={14} className={styles.leading} />
-            <StrokeRecorder
-              autoFocus
-              chord
-              value={shortcut}
-              onChange={setShortcut}
-              placeholder="Press a shortcut to find actions"
-              aria-label="Find actions by shortcut"
-              className={styles.filterRecorder}
-            />
-            {shortcut && (
-              <IconButton icon="close" title="Clear" size="small" iconSize={12} onClick={() => setShortcut("")} />
-            )}
-          </div>
-        ) : (
-          <SearchField
-            className={styles.search}
-            value={query}
-            onChange={setQuery}
-            placeholder="Search actions"
-            aria-label="Search actions"
+        <div className={styles.treeActions}>
+          <IconButton icon="expand-all" title="Expand All" onClick={() => setCollapsed(new Set())} />
+          <IconButton icon="collapse-all" title="Collapse All" onClick={() => setCollapsed(new Set(allGroups))} />
+          <IconButton
+            icon="plus"
+            title="Add Keyboard Shortcut"
+            disabled={!leadAction}
+            onClick={() => {
+              if (!leadAction) return;
+              setRecordMouse(false);
+              setRecordFor(leadAction);
+            }}
           />
-        )}
-        <IconButton
-          icon="keyboard"
-          title="Find Actions by Shortcut"
-          pressed={byShortcut}
-          onClick={() => {
-            setByShortcut((v) => !v);
-            setShortcut("");
-          }}
-        />
-        <IconButton
-          icon="filter"
-          title="Clear Filtering"
-          disabled={!filtering}
-          onClick={() => {
-            setQuery("");
-            setShortcut("");
-          }}
-        />
-        <span className={styles.toolbarSep} aria-hidden />
-        <IconButton icon="expand-all" title="Expand All" onClick={() => setCollapsed(new Set())} />
-        <IconButton icon="collapse-all" title="Collapse All" onClick={() => setCollapsed(new Set(allGroups))} />
-        <span className={styles.spacer} />
-        <IconButton
-          icon="plus"
-          title="Add Keyboard Shortcut"
-          disabled={!leadAction}
-          onClick={() => {
-            if (!leadAction) return;
-            setRecordMouse(false);
-            setRecordFor(leadAction);
-          }}
-        />
+        </div>
+        <div className={styles.filterGroup}>
+          {byShortcut ? (
+            <div className={styles.shortcutFilter}>
+              <Icon name="keyboard" size={14} className={styles.leading} />
+              <StrokeRecorder
+                autoFocus
+                chord
+                value={shortcut}
+                onChange={setShortcut}
+                placeholder="Press a shortcut to find actions"
+                aria-label="Find actions by shortcut"
+                className={styles.filterRecorder}
+              />
+              {shortcut && (
+                <IconButton icon="close" title="Clear" size="small" iconSize={12} onClick={() => setShortcut("")} />
+              )}
+            </div>
+          ) : (
+            <SearchField
+              className={styles.search}
+              value={query}
+              onChange={setQuery}
+              placeholder="Search actions"
+              aria-label="Search actions"
+            />
+          )}
+          <IconButton
+            icon="keyboard"
+            title="Find Actions by Shortcut"
+            pressed={byShortcut}
+            onClick={() => {
+              setByShortcut((v) => !v);
+              setShortcut("");
+            }}
+          />
+          <IconButton
+            icon="filter"
+            title="Clear Filtering"
+            disabled={!filtering}
+            onClick={() => {
+              setQuery("");
+              setShortcut("");
+            }}
+          />
+        </div>
       </div>
 
       <div className={styles.treeWrap}>
         <Tree<KNode>
           aria-label="Actions"
+          horizontalScroll
           roots={roots}
           getKey={(n) => n.key}
           getLabel={(n) => (n.kind === "group" ? n.name : n.action.title)}
@@ -459,7 +519,7 @@ export function KeymapPage() {
                 <span className={styles.catName}>{n.name}</span>
               </span>
             ) : (
-              <span className={styles.actionRow}>
+              <span className={styles.actionRow} title={n.action.title}>
                 <span className={styles.actionIcon}>{n.action.icon && <Icon name={n.action.icon} size={14} />}</span>
                 <HighlightedText
                   className={clsx(styles.actionTitle, n.modified && styles.modified)}
@@ -469,7 +529,7 @@ export function KeymapPage() {
                 />
                 <span className={styles.bindings}>
                   {n.bindings.map((b) => (
-                    <Kbd key={b} binding={b} className={styles.kbd} />
+                    <Kbd key={b} binding={b} />
                   ))}
                 </span>
               </span>

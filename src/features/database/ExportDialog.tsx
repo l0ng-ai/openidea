@@ -10,6 +10,7 @@ import { notifications } from "@/workbench/contributions";
 import {
   DEFAULT_EXPORT_OPTIONS,
   EXPORT_FORMATS,
+  SQL_FORMATS,
   exportData,
   type ExportData,
   type ExportFormat,
@@ -77,7 +78,7 @@ export function ExportDialog({
 
   const browse = async () => {
     try {
-      const { save } = await import("@tauri-apps/plugin-dialog");
+      const { save } = await import("@/platform/dialog");
       const f = EXPORT_FORMATS.find((x) => x.id === format)!;
       const path = await save({ defaultPath: file, filters: [{ name: f.label, extensions: [f.extension] }] });
       if (path) setFile(path);
@@ -169,7 +170,7 @@ export function ExportDialog({
           <CodePreview
             className={styles.exportPreviewText}
             aria-label="Export preview"
-            sql={format === "sql"}
+            sql={SQL_FORMATS.has(format)}
             text={preview + (data.rows.length > PREVIEW_ROWS ? `\n… ${data.rows.length - PREVIEW_ROWS} more rows` : "")}
           />
         </div>

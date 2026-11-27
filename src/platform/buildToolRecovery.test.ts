@@ -45,3 +45,24 @@ it.each([
 ])("leaves unrelated failures alone: %s", (message) => {
   expect(buildToolRecovery(message)).toEqual({ body: message, actions: [] });
 });
+
+it("links tsserver running out of memory to the language server settings", () => {
+  const message =
+    "tsserver stopped because it reached its memory limit and is restarted, so code intelligence may pause or miss results. Raise typescript.tsserver.maxTsServerMemory (in MB) in the server's Workspace Configuration.";
+  const result = buildToolRecovery(message);
+  expect(result.body).toBe(message);
+  expect(result.actions.map((a) => a.label)).toEqual(["Language Servers…"]);
+  result.actions[0]!.run();
+  expect(executeAction).toHaveBeenCalledWith("file.settings", "languages.servers");
+});
+
+it("explains a plugin prefix Maven cannot resolve offline and links Maven settings", () => {
+  const message =
+    "No plugin found for prefix 'help' in the current project and in the plugin groups [org.apache.maven.plugins, org.codehaus.mojo] available from the repositories [local (C:\\Users\\dev\\.m2\\repository)]";
+  const result = buildToolRecovery(message);
+  expect(result.body).toContain("turn offline mode off and reload once");
+  expect(result.body).toContain(message);
+  expect(result.actions.map((a) => a.label)).toEqual(["Open Maven Settings"]);
+  result.actions[0]!.run();
+  expect(executeAction).toHaveBeenCalledWith("file.settings", "build.maven");
+});

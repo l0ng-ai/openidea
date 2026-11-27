@@ -1,8 +1,23 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import clsx from "clsx";
+import type { GroupImperativeHandle, Layout } from "react-resizable-panels";
 import type { RunConfig } from "@/platform/ipc";
 import type { RunTargetValid } from "@/platform/remoteSettings";
-import { useWorkflowSettings } from "@/platform/workflowSettings";
-import { EmptyState, IconButton, SplitGroup, SplitHandle, SplitPanel, Tabs, type TabItem, T } from "@/ui";
+import { useAgentRunSettings, useWorkflowSettings } from "@/platform/workflowSettings";
+import {
+  EmptyState,
+  Icon,
+  IconButton,
+  Menu,
+  type MenuItem,
+  SplitGroup,
+  SplitHandle,
+  SplitPanel,
+  Tabs,
+  type TabItem,
+  T,
+  showContextMenu,
+} from "@/ui";
 import { executeAction } from "@/platform/actions";
 import { formatBinding, hostBinding, shortcutLabel } from "@/platform/keymap";
 import { ConsoleModel } from "./console";
@@ -14,8 +29,8 @@ import {
   acceptsInput,
   baseConfigOf,
   canRunSelectedTests,
+  canUpdateSnapshots,
   clearConsole,
-  closeSessionTab,
   closeStdin,
   debugSession,
   failedTests,
@@ -23,23 +38,40 @@ import {
   rerunSession,
   resizeTerminal,
   runSelectedTests,
+  toggleRerunAutomatically,
   runtime,
   sendStdin,
   setPendingInput,
   stopSession,
+  updateSnapshots,
   useRun,
   writeTerminal,
   type RunSession,
   isLive,
+  pinSession,
 } from "./store";
 import { rerunFailedConfigs } from "./testing/rerun";
-import { TestTreeView, formatDuration } from "./TestTreeView";
-import { StackTracePanel, closeStackTrace, useStackTraces, type StackTraceTab } from "./stackTrace";
+import { formatDuration, frameworkFor, nodeOutput } from "./testing";
+import { TestStatusBar, TestTreeView } from "./TestTreeView";
+import { StackTracePanel, useStackTraces, type StackTraceTab } from "./stackTrace";
+import { ThreadDumpPanel } from "./threadDump/ThreadDumpPanel";
+import { isJvmRun } from "./threadDump/actions";
+import { closeRunTab, runTabMenu } from "./runTabs";
 import { showApplicationUpdate, useApplicationUpdates } from "./applicationUpdate";
 import { isUpdatable } from "./updatePolicies";
+import { useFlutterRunApps } from "@/workbench/flutterRunApps";
+import { canHotReload, hotReload, hotRestart, supportsHotReload } from "./flutterHotReload";
 import { configIcon } from "./configs";
+import { agentName } from "./agentConfig";
+import { archivedAgentSessions, closeAgentArchive } from "./agentRuns";
 import styles from "./Run.module.css";
 import { tx } from "@/platform/i18n";
+import { SERVICES_WINDOW } from "@/workbench/contributions";
+
+const TEST_SPLIT_DEFAULTS = {
+  horizontal: { tests: 34, console: 66 },
+  vertical: { tests: 48, console: 52 },
+};
 
 function failed(s: RunSession): boolean {
   return s.status === "failed" || (s.status === "finished" && s.exitCode !== 0 && !s.stopped);
@@ -59,15 +91,11 @@ export function sessionIcon(s: RunSession): string {
 
 export function SessionPanel({
   session,
-  onRerun,
-  onDebug,
-  onStop,
+  showLifecycle = true,
 }: {
   session: RunSession;
-  onRerun?: (() => void) | null;
-  /** Override the Debug button (Services: rerun the attached debugger's launch); null disables it. */
-  onDebug?: (() => void) | null;
-  onStop?: () => void;
+  /** False in the Services detail: the window's own toolbar already offers Run/Debug/Stop for the selection. */
+  showLifecycle?: boolean;
 }) {
   const updating = useApplicationUpdates((s) => s.ids.has(session.id));
   const version = useRun((s) => s.versions[session.id] ?? 0);
@@ -79,7 +107,44 @@ export function SessionPanel({
   const softWrap = wrapOverride ?? defaultWrap;
   const [selectedTest, setSelectedTest] = useState<string | null>(null);
   const [findOpen, setFindOpen] = useState(false);
+  const body = useRef<HTMLDivElement>(null);
+  const moreButton = useRef<HTMLButtonElement>(null);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [compactToolbar, setCompactToolbar] = useState(false);
+  const [stackedTests, setStackedTests] = useState(false);
+  const testSplit = useRef<GroupImperativeHandle>(null);
+  const testLayouts = useRef<Record<keyof typeof TEST_SPLIT_DEFAULTS, Layout>>({ ...TEST_SPLIT_DEFAULTS });
+  const testOrientation = stackedTests ? "vertical" : "horizontal";
+  const hasRuntime = !!rt;
+  const hasTests = !!rt?.tests;
+  const canUpdateApplication = isUpdatable(session.config);
+  const hasFlutterActions = supportsHotReload(session.config);
+  const reloadable = canHotReload(session, useFlutterRunApps());
+  const canDumpThreads = isJvmRun(session.config);
+  // Eight standard buttons with group spacing and insets, then 24 px plus gap per extra button
+  // (Rerun Failed Tests in a test run, else Up / Down the Stack Trace, which overflow with the toggles).
+  const fullToolbarWidth =
+    228 +
+    26 * ((hasTests ? 1 : 2) + Number(canUpdateApplication) + Number(canDumpThreads) + 2 * Number(hasFlutterActions));
+  useLayoutEffect(() => {
+    const pane = body.current;
+    if (!hasRuntime || !pane || (!showLifecycle && !hasTests)) return;
+    const measure = () => {
+      const width = pane.clientWidth;
+      if (showLifecycle) setCompactToolbar(width < fullToolbarWidth);
+      if (hasTests) setStackedTests(width < 560);
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const resize = new ResizeObserver(measure);
+    resize.observe(pane);
+    return () => resize.disconnect();
+  }, [hasRuntime, hasTests, showLifecycle, fullToolbarWidth]);
+  useLayoutEffect(() => {
+    if (hasTests) testSplit.current?.setLayout(testLayouts.current[testOrientation]);
+  }, [hasTests, testOrientation]);
   const running = isLive(session);
+  const testsRunning = testsRun(session, rt?.tests) === "running";
   const cwd = runDirectory(session.config.cwd);
   const baseConfig = useRun(() => baseConfigOf(session));
   // Test results mutate in place; their version refreshes the selection.
@@ -107,20 +172,48 @@ export function SessionPanel({
       ? resolvedSelection?.request === failedSelection && resolvedSelection.supported
       : failedSelection.length > 0;
 
-  // Selecting a test with captured output shows just that output (like IDEA).
+  // Selecting a test or a group with captured output shows just that output (like IDEA).
   const testModel = useMemo(() => {
     const node = selectedTest ? rt?.tests?.get(selectedTest) : undefined;
-    if (!node || node.output.length === 0) return null;
+    const output = node ? nodeOutput(node) : [];
+    if (output.length === 0) return null;
     const m = new ConsoleModel();
-    m.append({ kind: "stdout", text: node.output.join("\n") + "\n" });
+    m.append({ kind: "stdout", text: output.join("\n") + "\n" });
     return m;
   }, [selectedTest, rt, version]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!rt) return null;
-  const toggleWrap = () => setWrapOverride(!softWrap);
+  const overflowConsoleToggles = showLifecycle && compactToolbar && !rt.terminal;
+  const consoleToggles = [
+    { label: "Scroll to End", icon: "scroll-to-end", checked: follow, run: () => setFollow((v) => !v) },
+    { label: "Soft-Wrap", icon: "soft-wrap", checked: softWrap, run: () => setWrapOverride(!softWrap) },
+  ];
+  // IDEA's console toolbar names Previous / Next Occurrence after what they step through here.
+  const stackTraceActions = rt.tests
+    ? []
+    : [
+        { label: "Up the Stack Trace", icon: "arrow-up", action: "navigate.prevOccurrence" },
+        { label: "Down the Stack Trace", icon: "arrow-down", action: "navigate.nextOccurrence" },
+      ];
+  const moreItems: MenuItem[] = [{ kind: "action", action: "run.editConfigs", arg: session.config.id }];
+  if (overflowConsoleToggles) {
+    moreItems.unshift(...stackTraceActions.map((a) => ({ kind: "action" as const, ...a })), ...consoleToggles, {
+      kind: "separator",
+    });
+  }
+  const stopButton = (
+    <IconButton
+      icon="stop"
+      title={session.status === "stopping" ? tx`Stopping… (click to kill)` : "Stop"}
+      tone={running ? "danger" : "default"}
+      disabled={!running}
+      onClick={() => void stopSession(session.id)}
+    />
+  );
 
   const consoleColumn = (
     <div className={styles.consoleColumn}>
+      {rt.tests && <TestStatusBar results={rt.tests} version={version} running={testsRunning} />}
       {rt.console.dropped > 0 && !testModel && (
         <div className={styles.notice}>{tx`${rt.console.dropped.toLocaleString()} earlier lines were discarded`}</div>
       )}
@@ -129,6 +222,15 @@ export function SessionPanel({
           <button type="button" className={styles.noticeLink} onClick={() => setSelectedTest(null)}>
             <T>Show all output</T>
           </button>
+          {selectedTest && canUpdateSnapshots(session.id, [selectedTest]) && (
+            <button
+              type="button"
+              className={styles.noticeLink}
+              onClick={() => void updateSnapshots(session.id, [selectedTest])}
+            >
+              <T>Update Snapshot</T>
+            </button>
+          )}
         </div>
       )}
       {rt.terminal && !testModel ? (
@@ -150,6 +252,8 @@ export function SessionPanel({
           onFindOpenChange={setFindOpen}
           cwd={cwd}
           onClear={() => clearConsole(session.id)}
+          // A test run's Previous / Next Occurrence go through its failed tests.
+          occurrences={rt.tests ? undefined : showLifecycle ? "run" : SERVICES_WINDOW}
           input={
             !testModel && acceptsInput(session)
               ? {
@@ -167,93 +271,165 @@ export function SessionPanel({
   );
 
   return (
-    <div className={styles.session}>
-      <div className={styles.toolbar} role="toolbar" aria-orientation="vertical" aria-label={tx("Run actions")}>
-        <IconButton
-          icon="rerun"
-          title="Rerun"
-          shortcut={shortcutLabel("run.rerun")}
-          disabled={onRerun === null}
-          onClick={onRerun ?? (() => rerunSession(session.id))}
-        />
-        {/* Switch the launch mode: the same configuration started under the debugger. */}
-        <IconButton
-          icon="debug"
-          title="Debug"
-          shortcut={shortcutLabel("run.debug")}
-          disabled={onDebug === null}
-          onClick={onDebug ?? (() => void debugSession(session.id))}
-        />
-        {rt.tests && (
-          <IconButton
-            icon="rerun"
-            tone="danger"
-            title="Rerun Failed Tests"
-            shortcut={shortcutLabel("run.rerunFailed")}
-            disabled={!canRerunFailed}
-            onClick={() => void rerunFailed(session.id)}
-          />
-        )}
-        <IconButton
-          icon="stop"
-          title={session.status === "stopping" ? tx`Stopping… (click to kill)` : "Stop"}
-          tone={running || onStop ? "danger" : "default"}
-          disabled={!running && !onStop}
-          onClick={onStop ?? (() => void stopSession(session.id))}
-        />
-        {isUpdatable(session.config) && (
-          <IconButton
-            icon="refresh"
-            title="Update Application"
-            shortcut={shortcutLabel("run.updateApplication")}
-            disabled={session.status !== "running" || updating}
-            onClick={() => showApplicationUpdate(session.id)}
-          />
-        )}
-        <div className={styles.toolbarSep} />
-        {!rt.terminal && (
-          <>
+    <div className={clsx(styles.session, showLifecycle && styles.topToolbarSession)}>
+      <div
+        className={styles.toolbar}
+        role="toolbar"
+        aria-orientation={showLifecycle ? "horizontal" : "vertical"}
+        aria-label={tx("Run actions")}
+      >
+        {showLifecycle && (
+          <div className={styles.toolbarGroup}>
             <IconButton
-              icon="search"
-              title="Find…"
-              shortcut={formatBinding(hostBinding("Meta+F"))}
-              pressed={findOpen}
-              onClick={() => setFindOpen((v) => !v)}
+              icon="rerun"
+              title="Rerun"
+              shortcut={shortcutLabel("run.rerun")}
+              onClick={() => rerunSession(session.id)}
             />
+            {!hasFlutterActions && stopButton}
+            {/* Switch the launch mode: the same configuration started under the debugger. */}
             <IconButton
-              icon="scroll-to-end"
-              title="Scroll to End"
-              pressed={follow}
-              onClick={() => setFollow((v) => !v)}
+              icon="debug"
+              title="Debug"
+              shortcut={shortcutLabel("run.debug")}
+              onClick={() => void debugSession(session.id)}
             />
-            <IconButton icon="soft-wrap" title="Soft-Wrap" pressed={softWrap} onClick={toggleWrap} />
-          </>
+            {rt.tests && (
+              <IconButton
+                icon="rerun"
+                tone="danger"
+                title="Rerun Failed Tests"
+                shortcut={shortcutLabel("run.rerunFailed")}
+                disabled={!canRerunFailed}
+                onClick={() => void rerunFailed(session.id)}
+              />
+            )}
+            {canUpdateApplication && (
+              <IconButton
+                icon="refresh"
+                title="Update Application"
+                shortcut={shortcutLabel("run.updateApplication")}
+                disabled={session.status !== "running" || updating}
+                onClick={() => showApplicationUpdate(session.id)}
+              />
+            )}
+            {canDumpThreads && (
+              <IconButton
+                icon="thread-dump"
+                title="Dump Threads"
+                action="run.dumpThreads"
+                actionArg={session.id}
+                disabled={session.status !== "running"}
+              />
+            )}
+            {hasFlutterActions && (
+              <>
+                {stopButton}
+                <IconButton
+                  icon="hot-reload"
+                  title="Hot Reload"
+                  shortcut={shortcutLabel("run.flutterHotReload")}
+                  disabled={!reloadable}
+                  onClick={() => hotReload(session.id)}
+                />
+                <IconButton
+                  icon="refresh"
+                  title="Hot Restart"
+                  shortcut={shortcutLabel("run.flutterHotRestart")}
+                  disabled={!reloadable}
+                  onClick={() => hotRestart(session.id)}
+                />
+              </>
+            )}
+          </div>
         )}
-        <IconButton icon="trash" title="Clear All" onClick={() => clearConsole(session.id)} />
-        <div className={styles.toolbarSep} />
-        <IconButton
-          icon="settings"
-          title="Edit Configurations…"
-          onClick={() => void executeAction("run.editConfigs", session.config.id)}
-        />
+        <div className={styles.toolbarGroup}>
+          {!rt.terminal && (
+            <>
+              <IconButton
+                icon="search"
+                title="Find…"
+                shortcut={formatBinding(hostBinding("Meta+F"))}
+                pressed={findOpen}
+                onClick={() => setFindOpen((v) => !v)}
+              />
+              {!overflowConsoleToggles && (
+                <>
+                  {stackTraceActions.map(({ label, icon, action }) => (
+                    <IconButton key={label} icon={icon} title={label} action={action} />
+                  ))}
+                  {consoleToggles.map(({ label, icon, checked, run }) => (
+                    <IconButton key={label} icon={icon} title={label} pressed={checked} onClick={run} />
+                  ))}
+                </>
+              )}
+            </>
+          )}
+          <IconButton icon="trash" title="Clear All" onClick={() => clearConsole(session.id)} />
+        </div>
+        <div className={styles.toolbarGroup}>
+          {showLifecycle ? (
+            <>
+              <IconButton
+                ref={moreButton}
+                icon="more-horizontal"
+                title="More Actions"
+                aria-haspopup="menu"
+                aria-expanded={moreOpen}
+                onClick={() => setMoreOpen((open) => !open)}
+              />
+              <Menu
+                open={moreOpen}
+                anchor={moreButton}
+                aria-label="More Actions"
+                placement="bottom-end"
+                items={moreItems}
+                onClose={() => setMoreOpen(false)}
+              />
+            </>
+          ) : (
+            <IconButton
+              icon="settings"
+              title="Edit Configurations…"
+              onClick={() => void executeAction("run.editConfigs", session.config.id)}
+            />
+          )}
+        </div>
       </div>
-      <div className={styles.sessionBody}>
+      <div ref={body} className={styles.sessionBody}>
         {rt.tests ? (
-          <SplitGroup orientation="horizontal" id={`run-tests-${session.id}`} className={styles.testSplit}>
-            <SplitPanel id="tests" defaultSize="32%" minSize="140px">
+          <SplitGroup
+            orientation={testOrientation}
+            id={`run-tests-${session.id}`}
+            className={styles.testSplit}
+            groupRef={testSplit}
+            defaultLayout={TEST_SPLIT_DEFAULTS[testOrientation]}
+            onLayoutChanged={(layout, meta) => {
+              if (meta.isUserInteraction) testLayouts.current[testOrientation] = meta.requestedLayout ?? layout;
+            }}
+          >
+            <SplitPanel id="tests" minSize={stackedTests ? "28%" : "140px"}>
               <TestTreeView
                 results={rt.tests}
                 version={version}
                 cwd={cwd}
-                running={running}
+                running={testsRunning}
+                name={session.config.name}
                 selected={selectedTest}
                 onSelect={setSelectedTest}
+                canUpdateSnapshots={(ids) => canUpdateSnapshots(session.id, ids)}
+                onUpdateSnapshots={(ids) => void updateSnapshots(session.id, ids)}
                 canRunTests={(ids) => canRunSelectedTests(session.id, ids)}
                 onRunTests={(ids, debug) => void runSelectedTests(session.id, ids, debug)}
+                rerunAutomatically={
+                  frameworkFor(session.config) === "js"
+                    ? { on: !!session.watching && running, toggle: () => toggleRerunAutomatically(session.id) }
+                    : undefined
+                }
               />
             </SplitPanel>
             <SplitHandle />
-            <SplitPanel id="console" minSize="200px">
+            <SplitPanel id="console" minSize={stackedTests ? "28%" : "200px"}>
               {consoleColumn}
             </SplitPanel>
           </SplitGroup>
@@ -265,19 +441,35 @@ export function SessionPanel({
   );
 }
 
+/**
+ * Whether a session's tests still run: a watch run's are done at the end of each cycle, like a
+ * finished run (status, Sort by Duration, Select First Failed).
+ */
+export function testsRun(session: RunSession, tests: { finished: boolean } | null | undefined): "running" | "done" {
+  return isLive(session) && !(session.watching && tests?.finished) ? "running" : "done";
+}
+
 function sessionItems(sessions: readonly RunSession[], targets: readonly RunTargetValid[]): TabItem[] {
-  return sessions.map((s) => ({
-    id: s.id,
-    label: remoteLabel(s.config, targets),
-    text: remoteLabel(s.config, targets),
-    icon: sessionIcon(s),
-    color: failed(s) ? "var(--danger)" : undefined,
-    closable: true,
-    tooltip:
+  return sessions.map((s) => {
+    const label = remoteLabel(s.config, targets);
+    const outcome =
       s.status === "finished"
         ? tx`Finished in ${formatDuration((s.endedAt ?? s.startedAt) - s.startedAt)}, exit code ${s.exitCode ?? "?"}`
-        : undefined,
-  }));
+        : undefined;
+    return {
+      id: s.id,
+      label,
+      text: label,
+      verbatim: true,
+      icon: sessionIcon(s),
+      color: failed(s) ? "var(--danger)" : undefined,
+      // An agent's command that ended, however it ended.
+      dimmed: agentName(s.config) !== null && !isLive(s),
+      closable: true,
+      pinned: s.pinned,
+      tooltip: outcome ? `${label} · ${outcome}` : label,
+    };
+  });
 }
 
 /** The selected tab: a run session or an analyzed stack trace (IDEA shows both in Run). */
@@ -300,23 +492,80 @@ export function RunTabs() {
   const traces = useStackTraces((s) => s.tabs);
   const runTargets = useWorkflowSettings((s) => s.runTargets);
   const active = useRun((s) => s.activeSession);
+  const { tabLimit } = useAgentRunSettings();
   const current = currentTab(sessions, traces, active);
   if (!current) return null;
+  const archived = archivedAgentSessions(sessions, tabLimit);
+  const shown = archived.length ? sessions.filter((s) => !archived.includes(s)) : sessions;
   const items: TabItem[] = [
-    ...sessionItems(sessions, runTargets),
-    ...traces.map((t) => ({ id: t.id, label: t.title, text: t.title, closable: true })),
+    ...sessionItems(shown, runTargets),
+    ...traces.map((t) => ({ id: t.id, label: t.title, text: t.title, closable: true, tooltip: t.title })),
   ];
+  const activeId = "session" in current ? current.session.id : current.trace.id;
   return (
     <Tabs
       variant="compact"
+      layout="fit"
       className={styles.tabs}
       aria-label="Run sessions"
       items={items}
-      activeId={"session" in current ? current.session.id : current.trace.id}
+      activeId={activeId}
       onSelect={(id) => useRun.setState({ activeSession: id })}
-      onClose={(id) => (traces.some((t) => t.id === id) ? closeStackTrace(id) : void closeSessionTab(id))}
+      onClose={(id) => void closeRunTab(id)}
+      onTogglePin={(id) => {
+        const s = sessions.find((x) => x.id === id);
+        if (s) pinSession(s.id, !s.pinned);
+      }}
+      onContextMenu={(id, e) => {
+        e.preventDefault();
+        showContextMenu(e, runTabMenu(id), { owner: e.currentTarget });
+      }}
       panelIdPrefix="openidea-run"
+      trailing={archived.length > 0 && <AgentArchive sessions={archived} activeId={activeId} />}
     />
+  );
+}
+
+/** The folder of archived agent tabs at the end of the strip, with their number. */
+function AgentArchive({ sessions, activeId }: { sessions: RunSession[]; activeId: string }) {
+  const anchor = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  const holdsActive = sessions.some((s) => s.id === activeId);
+  const count = sessions.length;
+  return (
+    <>
+      <button
+        ref={anchor}
+        type="button"
+        className={styles.agentArchive}
+        data-active={holdsActive || undefined}
+        aria-label={tx`Archived agent tabs: ${count}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <Icon name="folder" size={14} />
+        <span className={styles.agentArchiveCount}>{tx`Archived (${count})`}</span>
+      </button>
+      <Menu
+        open={open}
+        anchor={anchor}
+        onClose={() => setOpen(false)}
+        aria-label="Archived agent tabs"
+        items={[
+          ...sessions.map((s) => ({
+            id: s.id,
+            label: s.config.name,
+            verbatim: true,
+            icon: sessionIcon(s),
+            checked: s.id === activeId,
+            run: () => useRun.setState({ activeSession: s.id }),
+          })),
+          { kind: "separator" as const },
+          { label: "Close All Archived Tabs", run: () => closeAgentArchive() },
+        ]}
+      />
+    </>
   );
 }
 
@@ -364,6 +613,8 @@ export function RunView() {
       >
         {"session" in current ? (
           <SessionPanel key={id} session={current.session} />
+        ) : current.trace.kind === "threads" ? (
+          <ThreadDumpPanel key={id} tab={current.trace} />
         ) : (
           <StackTracePanel key={id} tab={current.trace} />
         )}

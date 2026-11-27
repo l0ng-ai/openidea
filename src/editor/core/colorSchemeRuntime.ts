@@ -67,7 +67,7 @@ export function installColorScheme(): () => void {
       : null;
   observer?.observe(document.documentElement, {
     attributes: true,
-    attributeFilter: ["data-theme", "data-contrast", "data-color-theme", "data-plugin-theme"],
+    attributeFilter: ["data-theme", "data-contrast", "data-color-theme", "data-plugin-theme", "data-red-green"],
   });
   return () => {
     unsubscribe();

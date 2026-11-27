@@ -1,7 +1,8 @@
 import type { RemoteTarget } from "./ipc";
-import { isTauri } from "./ipc";
+import { call, commands, isTauri } from "./ipc";
 import { usePlatform } from "./platformInfo";
 import { useRemote } from "./remote";
+import { isWebMode } from "./webBridge";
 
 function wslSharePath(path: string, target: RemoteTarget | null): string {
   if (target?.kind !== "wsl" || !path.startsWith("/")) return path;
@@ -49,6 +50,7 @@ export function revealInFileManagerLabel(os = usePlatform.getState().os): string
  * Windows through their `\\wsl.localhost` share.
  */
 export function canRevealInFileManager(target = windowTarget(), os = usePlatform.getState().os): boolean {
+  if (isWebMode()) return false;
   return target === null || (target.kind === "wsl" && os === "windows");
 }
 
@@ -60,10 +62,34 @@ export async function revealInFileManager(
   paths: string | readonly string[],
   target = windowTarget(),
 ): Promise<boolean> {
-  if (!isTauri() || !canRevealInFileManager(target)) return false;
+  if (!isTauri() || isWebMode() || !canRevealInFileManager(target)) return false;
   const list = (typeof paths === "string" ? [paths] : paths).map((path) => fileManagerPath(path, undefined, target));
   if (!list.length) return false;
   const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
   await revealItemInDir(list.length === 1 ? list[0]! : [...list]);
   return true;
+}
+
+/**
+ * Whether this desktop can launch files of `target` (default: this window's). Only this desktop's own
+ * projects qualify: the backend refuses remote windows (SSH, dev container, WSL), whose files live on
+ * their server.
+ */
+export function canOpenWithSystemApp(target = windowTarget()): boolean {
+  return isTauri() && !isWebMode() && target === null;
+}
+
+/**
+ * Launches `path` with its associated application. The backend checks that the window is trusted and
+ * that the file lies inside its project. False when this desktop cannot, or the launch was refused.
+ */
+export async function openWithSystemApp(path: string, target = windowTarget()): Promise<boolean> {
+  if (!canOpenWithSystemApp(target)) return false;
+  try {
+    await call(commands.fsOpenWithSystem(path));
+    return true;
+  } catch (e) {
+    console.warn(`cannot open ${path} with its application`, e);
+    return false;
+  }
 }

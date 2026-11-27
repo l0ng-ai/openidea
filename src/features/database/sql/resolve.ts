@@ -48,6 +48,14 @@ const NOT_COLUMNS = new Set(
     "TRAILING BOTH NOWAIT SKIP LOCKED SHARE MODE BINARY UNSIGNED SIGNED"
   ).split(" "),
 );
+/** Snowflake: select-list modifiers, sampling words, pseudo-columns and date parts. */
+const SNOWFLAKE_NOT_COLUMNS = new Set(
+  (
+    "EXCLUDE RENAME REPLACE BERNOULLI SYSTEM BLOCK SEED REPEATABLE LEVEL RESPECT QUARTER WEEK WEEKOFYEAR DAYOFWEEK " +
+    "DAYOFYEAR DAYOFMONTH MILLISECOND MICROSECOND NANOSECOND YEARS MONTHS DAYS HOURS MINUTES SECONDS WEEKS YY YYYY " +
+    "MM MON DD HH MI SS MS US NS"
+  ).split(" "),
+);
 
 export function findTable(
   model: DbCompletion | null,
@@ -129,6 +137,7 @@ export class SqlResolver {
     const toks = this.lexed.tokens;
     const t = toks[i]!;
     if (!isName(t) || (t.kind === "word" && CLAUSE_WORDS.has(t.upper))) return null;
+    if (this.driver === "snowflake" && isVariantKey(toks, i)) return null;
     const prev = toks[i - 1];
     const next = toks[i + 1];
     const name = identName(t);
@@ -148,6 +157,9 @@ export class SqlResolver {
       if (cte) return { ...span, symbol: { kind: "cte", name: cte.name, def: { from: cte.from, to: cte.to } } };
       if (this.model?.tables.some((x) => eq(x.schema, name))) return this.schema(name, span);
       if (!checked || PSEUDO_TABLES.has(name.toUpperCase()) || ctx.kind === "none") return { ...span, symbol: null };
+      // Snowflake `database.schema.table.column`: other databases are not in the model.
+      if (this.driver === "snowflake" && isP(toks[i + 3], ".") && isP(toks[i + 5], ".") && isName(toks[i + 6]))
+        return { ...span, symbol: null };
       return { ...span, symbol: null, problem: `Unable to resolve symbol '${name}'` };
     }
 
@@ -170,6 +182,8 @@ export class SqlResolver {
         if (table) return { ...span, symbol: { kind: "table", table } };
         if (!loaded || (a.verb !== "DROP" && a.verb !== "ALTER" && !checked)) return { ...span, symbol: null };
         if (schema && !this.model!.tables.some((x) => eq(x.schema, schema))) return { ...span, symbol: null };
+        // Snowflake `database.schema.table`: the table may live in a database the model does not hold.
+        if (this.driver === "snowflake" && qualifier && qualifier.length > 1) return { ...span, symbol: null };
         return { ...span, symbol: null, problem: `Unable to resolve table '${name}'` };
       }
       case "afterTable":
@@ -177,7 +191,8 @@ export class SqlResolver {
       case "insertColumns": {
         const cols = this.columnsOf(ctx.target);
         const col = cols?.find((c) => eq(c.name, name));
-        if (col || !cols) return { ...span, symbol: col ? this.columnSymbol(ctx.target, col) : null };
+        if (col || !cols || ctx.target.database)
+          return { ...span, symbol: col ? this.columnSymbol(ctx.target, col) : null };
         return { ...span, symbol: null, problem: `Unable to resolve column '${name}'` };
       }
       case "afterInsertColumns":
@@ -196,13 +211,21 @@ export class SqlResolver {
       const cols = this.columnsOf(ref);
       const col = cols?.find((c) => eq(c.name, name));
       if (col) return { ...span, symbol: this.columnSymbol(ref, col) };
-      if (!cols || !checked) return { ...span, symbol: null };
+      if (!cols || !checked || ref.database) return { ...span, symbol: null };
       return { ...span, symbol: null, problem: `Unable to resolve column '${name}'` };
     }
 
     // A bare word: a column unless it is a function, a type, a keyword or an alias being defined.
-    if (isP(next, "(") || isP(prev, "::") || (prev?.kind === "word" && prev.upper === "AS")) return null;
-    if (t.kind === "word" && (isReserved(t.text) || NOT_COLUMNS.has(t.upper) || this.words.has(t.upper))) return null;
+    if (isP(next, "(") || isP(next, "=>") || isP(prev, "::") || (prev?.kind === "word" && prev.upper === "AS"))
+      return null;
+    if (
+      t.kind === "word" &&
+      (isReserved(t.text, this.driver) ||
+        NOT_COLUMNS.has(t.upper) ||
+        this.words.has(t.upper) ||
+        (this.driver === "snowflake" && (SNOWFLAKE_NOT_COLUMNS.has(t.upper) || t.upper.startsWith("METADATA$"))))
+    )
+      return null;
     // `count(*) n`, `x total`: an alias after an expression.
     if (
       prev &&
@@ -224,7 +247,7 @@ export class SqlResolver {
       checked &&
       loaded &&
       a.refs.length > 0 &&
-      a.refs.every((r) => this.columnsOf(r) !== null) &&
+      a.refs.every((r) => this.columnsOf(r) !== null && !r.database) &&
       clause !== "other" &&
       clause !== "values" &&
       clause !== "limit" &&
@@ -267,7 +290,8 @@ export class SqlResolver {
   private columnsOf(ref: TableRef): Array<{ name: string; column?: DbCompletionColumn }> | null {
     if (ref.columns) return ref.columns.length ? ref.columns.map((name) => ({ name })) : null;
     const table = findTable(this.model, ref.schema, ref.name, this.driver);
-    return table ? table.columns.map((c) => ({ name: c.name, column: c })) : null;
+    // A table listed without columns is one whose columns were not read (a large Snowflake database).
+    return table?.columns.length ? table.columns.map((c) => ({ name: c.name, column: c })) : null;
   }
 
   private columnSymbol(ref: TableRef, col: { name: string; column?: DbCompletionColumn }): SqlSymbol {
@@ -293,6 +317,17 @@ export class SqlResolver {
     }
     return out;
   }
+}
+
+/** Whether name token `i` is a key of a Snowflake VARIANT path: `src:a.b`, `src['a'].b`. */
+function isVariantKey(toks: readonly Token[], i: number): boolean {
+  let j = i;
+  while (isP(toks[j - 1], ".")) {
+    if (isP(toks[j - 2], "]")) return true;
+    if (!isName(toks[j - 2])) return false;
+    j -= 2;
+  }
+  return isP(toks[j - 1], ":") && toks[j - 1]!.to === toks[j]!.from;
 }
 
 /** Whether token `i` follows INSERT / REPLACE INTO (so a `(` after it lists columns). */

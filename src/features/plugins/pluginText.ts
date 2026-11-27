@@ -75,10 +75,13 @@ export function usePluginT(pluginId: string): PluginTranslate {
 /** The keys of each point's declaration that are shown text; ids, names of secrets and option values are not. */
 const TEXT_KEYS: Record<string, readonly string[]> = {
   commands: ["title", "category"],
+  searchCategories: ["title"],
   menus: ["submenu"],
   views: ["title"],
   markerIcons: ["tooltip"],
   customEditors: ["title"],
+  dialogs: ["title"],
+  runAnything: ["title"],
   statusBar: ["text", "tooltip"],
   settings: ["title"],
   fileTemplates: ["name"],

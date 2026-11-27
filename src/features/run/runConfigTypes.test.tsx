@@ -91,6 +91,14 @@ it.each([undefined, false])(
 );
 
 describe("configuration types", () => {
+  it("runs a new Shell Script in a terminal, other new types in the plain console", () => {
+    expect(newConfigOfType(typeFor("shell")!, []).emulateTerminal).toBe(true);
+    expect(newConfigOfType(typeFor("jar-application")!, []).emulateTerminal).toBeUndefined();
+    // A template that turned it off still wins.
+    const template = { ...newConfigOfType(typeFor("shell")!, []), emulateTerminal: false };
+    expect(newConfigOfType(typeFor("shell")!, [], template).emulateTerminal).toBe(false);
+  });
+
   it("shows the JAR fields, validates the path and edits shared working directory and environment", () => {
     const type = typeFor("jar-application")!;
     const config = newConfigOfType(type, []);
@@ -114,6 +122,27 @@ describe("configuration types", () => {
     expect(screen.getByLabelText("Environment variables")).toHaveValue("MODE=test");
     fireEvent.change(screen.getByLabelText("Path to JAR"), { target: { value: "new.jar" } });
     expect(change.mock.calls.at(-1)?.[0]).toMatchObject({ args: ["-Xmx1g", "-jar", "new.jar", "hello"] });
+  });
+
+  it("inserts a path macro at the caret of the working directory (#4755)", () => {
+    const type = typeFor("jar-application")!;
+    const config = withParams(newConfigOfType(type, []), { jarPath: "app.jar" });
+    const change = vi.fn();
+    render(
+      <ConfigForm
+        config={{ ...config, cwd: "/web" }}
+        all={[]}
+        type={type}
+        errors={{}}
+        onChange={change}
+        modifyRequest={0}
+      />,
+    );
+    const field = screen.getByLabelText<HTMLInputElement>("Working directory");
+    field.setSelectionRange(0, 0);
+    fireEvent.click(screen.getByRole("button", { name: "Insert Macro…" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /\$PROJECT_DIR\$/ }));
+    expect(change.mock.calls.at(-1)?.[0]).toMatchObject({ cwd: "$PROJECT_DIR$/web" });
   });
 
   it("runs an Application with the chosen JRE and the classpath of the chosen module", () => {
@@ -140,6 +169,41 @@ describe("configuration types", () => {
       module: "",
     });
     expect(formParams(saved)).toMatchObject({ mainClass: "a.Main", module: "." });
+  });
+
+  it("shows build module names as written in Chinese", async () => {
+    const { _resetI18nForTests, setLocale, tx } = await import("@/platform/i18n");
+    await setLocale("zh");
+    useProject.setState({ project: { root: "/p" } as never });
+    useBuildPresentation.setState({ modules: new Map([["dev", "maven"]]) });
+    try {
+      // Precondition: the zh catalog translates the word, so a translated label would differ.
+      expect(tx("dev")).not.toBe("dev");
+      const type = typeFor("application")!;
+      const form = (module: string) =>
+        render(
+          <ConfigForm
+            config={withParams(newConfigOfType(type, []), { mainClass: "a.Main", module })}
+            all={[]}
+            type={type}
+            errors={{}}
+            onChange={vi.fn()}
+            modifyRequest={0}
+          />,
+        );
+      // A saved module the build no longer has.
+      const { unmount } = form("test");
+      expect(screen.getByRole("button", { name: tx("Use classpath of module") })).toHaveTextContent(/^test$/);
+      unmount();
+      // The build's modules, loaded when the form opens.
+      form("");
+      fireEvent.click(screen.getByRole("button", { name: tx("Use classpath of module") }));
+      expect(await screen.findByRole("option", { name: "dev" })).toBeInTheDocument();
+    } finally {
+      useProject.setState({ project: null });
+      useBuildPresentation.setState({ modules: new Map() });
+      _resetI18nForTests();
+    }
   });
 
   it("sets the before launch build policy of a Java configuration", async () => {
@@ -353,6 +417,47 @@ describe("configuration types", () => {
       task: "test TEST=test/a_test.rb",
     });
     expect(rake(["-T"])).toMatchObject({ options: "-T", task: "" });
+  });
+
+  it("Python runs a script or module and round-trips detected command lines", () => {
+    const python = typeFor("python")!;
+    expect(newConfigOfType(python, [])).toMatchObject({
+      kind: "python",
+      command: "python3",
+      args: [],
+      isTest: false,
+      debugAdapter: "debugpy",
+    });
+    expect(missingParams(newConfigOfType(python, []), python)).toHaveProperty("script");
+    expect(
+      python.commandLine({ mode: "module", module: " uvicorn ", script: "ignored.py", args: "app:app --reload" }),
+    ).toEqual({ command: "python3", args: ["-m", "uvicorn", "app:app", "--reload"] });
+
+    const lines: Array<{ command: string; args: string[]; params: Record<string, string> }> = [
+      {
+        command: ".venv/bin/python",
+        args: ["-u", "src/my app.py", "--port", "8000"],
+        params: { mode: "script", script: "src/my app.py", runnerArgs: "-u", args: "--port 8000" },
+      },
+      {
+        command: "uv",
+        args: ["run", "python", "manage.py", "runserver"],
+        params: { mode: "script", script: "manage.py", runnerArgs: "run python", args: "runserver" },
+      },
+      {
+        command: "python3",
+        args: ["-X", "utf8", "-m", "pkg.cli", "serve"],
+        params: { mode: "module", module: "pkg.cli", runnerArgs: "-X utf8", args: "serve" },
+      },
+    ];
+    for (const { command, args, params } of lines) {
+      const config = { ...newConfigOfType(python, []), command, args, params: undefined };
+      expect(formParams(config, python)).toMatchObject({ command, ...params });
+    }
+    // No script or module to show in the form: it stays a plain command.
+    expect(
+      formParams({ ...newConfigOfType(python, []), args: ["-c", "print(1)"], params: undefined }, python),
+    ).toBeNull();
   });
 
   it("Django tests round-trip commandLine / paramsFrom and always report to the test tree", () => {
@@ -893,7 +998,7 @@ describe("debug-only types (Remote JVM Debug)", () => {
 describe("Current File", () => {
   it("is always offered in the chooser", () => {
     expect(buildRows([], "")[0]).toMatchObject({ type: "current" });
-    expect(buildRows([cfg("a")], "cur").map((r) => r.type)).toEqual(["current", "edit"]);
+    expect(buildRows([cfg("a")], "cur").map((r) => r.type)).toEqual(["current", "section", "edit"]);
     selectConfig(CURRENT_FILE);
     expect(useRun.getState().selectedId).toBe(CURRENT_FILE);
   });
@@ -952,3 +1057,36 @@ it.each(["maven", "gradle", "delegated", "absolute", "legacy"])(
     }
   },
 );
+
+describe("detected plugin configurations in ConfigForm", () => {
+  it("exposes Emulate terminal in output console and disables Redirect input when active", async () => {
+    const pluginCfg = cfg("plugin:go-task:dev", {
+      name: "dev",
+      kind: "plugin",
+      command: "task",
+      args: ["dev"],
+      detected: true,
+      emulateTerminal: true,
+    });
+    const onChange = vi.fn();
+    render(
+      <ConfigForm
+        config={pluginCfg}
+        all={[pluginCfg]}
+        type={typeFor(pluginCfg.kind)}
+        errors={{}}
+        onChange={onChange}
+        modifyRequest={0}
+      />,
+    );
+    expect(screen.getByText(/Detected from the project/)).toBeTruthy();
+    expect(screen.getByText("Emulate terminal in output console")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Modify options/ }));
+    const redirectItem = await screen.findByRole("menuitemcheckbox", { name: "Redirect input" });
+    expect((redirectItem as HTMLButtonElement).getAttribute("aria-disabled")).toBe("true");
+    const termItem = screen.getByRole("menuitemcheckbox", { name: "Emulate terminal in output console" });
+    expect(termItem.getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(termItem);
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ emulateTerminal: false }));
+  });
+});

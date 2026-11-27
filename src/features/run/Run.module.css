@@ -12,6 +12,31 @@
   background: none;
 }
 
+/* Archived agent tabs (`run_command`), after the run tabs. */
+.agentArchive {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-1);
+  height: 22px;
+  margin: 0 4px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius-small);
+  background: none;
+  color: var(--fg-muted);
+  font: inherit;
+}
+.agentArchive:hover {
+  background: var(--bg-hover);
+}
+.agentArchive[data-active] {
+  color: var(--accent);
+}
+.agentArchiveCount {
+  font-size: var(--fs-small);
+}
+
 .panel {
   flex: 1;
   display: flex;
@@ -25,21 +50,57 @@
   min-width: 0;
 }
 
+.topToolbarSession {
+  flex-direction: column;
+}
+
 .toolbar {
   flex: none;
   width: 32px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 4px 0;
   border-right: 1px solid var(--border);
+  min-height: 0;
+  /* A pane shorter than the buttons (the Services detail) scrolls them with the wheel
+     instead of growing the pane and adding a second scrollbar. */
+  overflow-y: auto;
+  scrollbar-width: none;
 }
-.toolbarSep {
+.toolbar::-webkit-scrollbar {
+  display: none;
+}
+.toolbarGroup {
+  display: flex;
+  flex: none;
+  flex-direction: inherit;
+  align-items: center;
+  gap: var(--space-0-5);
+  max-width: 100%;
+}
+.toolbarGroup + .toolbarGroup::before {
+  content: "";
   width: 16px;
   height: 1px;
   margin: 3px 0;
   background: var(--border-strong);
+}
+.topToolbarSession .toolbar {
+  width: auto;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: var(--space-0-5) var(--space-2);
+  padding: var(--space-0-5) var(--space-1);
+  border-right: none;
+  border-bottom: 1px solid var(--border);
+}
+.topToolbarSession .toolbarGroup {
+  flex-wrap: wrap;
+}
+.topToolbarSession .toolbarGroup::before {
+  display: none;
 }
 
 .sessionBody {
@@ -78,6 +139,9 @@
   color: var(--link-hover);
   text-decoration: underline;
 }
+.noticeLink + .noticeLink {
+  margin-left: var(--space-3);
+}
 
 /* Console */
 
@@ -95,14 +159,14 @@
   border: none;
   border-radius: 4px;
   color: var(--fg-secondary);
-  background: var(--bg-toolbar);
+  background: var(--bg-elev);
   opacity: 0.6;
 }
 
 .consoleFindOpen:hover,
 .consoleFindOpen:focus-visible {
   opacity: 1;
-  color: var(--fg-primary);
+  color: var(--fg-strong);
 }
 
 .consoleWrap {
@@ -150,8 +214,8 @@
   top: 0;
   left: 0;
   min-width: 100%;
-  padding: 0 12px;
-  line-height: 20px;
+  padding: 0 var(--space-3);
+  line-height: inherit;
   white-space: pre;
   tab-size: 4;
 }
@@ -183,6 +247,10 @@
   color: var(--link-hover);
   text-decoration-color: currentColor;
 }
+/* The link Up / Down the Stack Trace stepped to (IDEA selects it). */
+.currentLink {
+  background: var(--bg-editor-selection);
+}
 
 /* Test runner */
 
@@ -191,25 +259,59 @@
   flex-direction: column;
   height: 100%;
   min-width: 0;
-  border-right: 1px solid var(--border);
 }
-.testHeader {
+.testToolbar,
+.testStatusBar {
   flex: none;
   display: flex;
   align-items: center;
-  gap: 8px;
-  height: 28px;
-  padding: 0 4px 0 10px;
+  min-height: 28px;
   border-bottom: 1px solid var(--border);
+}
+.testToolbar {
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  padding: var(--space-0-5) var(--space-1);
+}
+
+.testFilters {
+  display: flex;
+  gap: var(--space-0-5);
+  padding-inline-end: var(--space-1);
+  border-inline-end: 1px solid var(--border);
+}
+.testStatusBar {
+  gap: var(--space-2);
+  padding: var(--space-0-5) var(--space-2);
+  border-block-end-width: var(--space-0-5);
   font-size: var(--fs-ui);
   color: var(--fg-secondary);
 }
+.testStatusBar[data-outcome="passed"] {
+  border-block-end-color: var(--success);
+}
+.testStatusBar[data-outcome="skipped"] {
+  border-block-end-color: var(--warning);
+}
+.testStatusBar[data-running] {
+  border-block-end-color: var(--accent);
+}
+.testStatusBar[data-outcome="failed"] {
+  border-block-end-color: var(--danger);
+}
 .testCounts {
   display: flex;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: var(--space-0-5) var(--space-2);
   min-width: 0;
-  overflow: hidden;
   white-space: nowrap;
+}
+.testStatus {
+  flex: none;
+}
+.testTotalDuration {
+  color: var(--fg-subtle);
+  font-variant-numeric: tabular-nums;
 }
 .testTree {
   flex: 1;
@@ -218,7 +320,7 @@
 .testRow {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
   flex: 1;
 }
@@ -237,8 +339,11 @@
   flex: none;
   padding-right: 8px;
   color: var(--fg-subtle);
-  font-family: var(--font-mono);
   font-size: var(--fs-small);
+  font-variant-numeric: tabular-nums;
+}
+.testTree [aria-selected="true"] .testDuration {
+  color: var(--fg);
 }
 .testEmpty {
   padding: 12px;
@@ -267,20 +372,26 @@
 .widget {
   display: flex;
   align-items: center;
-  gap: 4px;
+  min-width: 0;
+  gap: var(--space-1);
 }
 .widgetChooser {
+  min-width: 0;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   max-width: 260px;
-  height: 30px;
-  border-radius: 6px;
+  height: var(--h-toolbar-widget);
+  border-radius: var(--radius-toolbar-dropdown);
+}
+.widgetDevice {
+  composes: widgetChooser;
+  max-width: 180px;
 }
 .widgetButton {
-  width: 30px;
-  height: 30px;
-  border-radius: 6px;
+  width: var(--titlebar-tool-button);
+  height: var(--titlebar-tool-button);
+  border-radius: var(--radius-toolbar-button);
 }
 .widgetLoading {
   display: inline-flex;
@@ -322,8 +433,10 @@
   padding: 0;
   border: none;
   line-height: 0;
-  background: var(--warning);
-  color: var(--fg-on-accent);
+}
+/* Stays the red Stop button, like IDEA. White is too faint on the dark theme's --danger. */
+.widgetStopping svg {
+  color: var(--bg-elev);
 }
 .widgetFilled:hover:not(:disabled) {
   filter: brightness(0.94);
@@ -342,9 +455,10 @@
   flex: none;
 }
 .widgetButtons {
+  flex: none;
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 .widgetRun:not(:disabled) {
   color: var(--success);
@@ -352,20 +466,35 @@
 /* Configuration chooser */
 
 .chooser {
-  width: 340px;
-  padding: 0 0 4px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-block-end: var(--space-1);
 }
 .chooserSearch {
+  flex: none;
   padding: 6px 8px;
   border-bottom: 1px solid var(--border-popup);
 }
+/* The list fills what is left of the viewport once the popup is capped by the window, not its full height. */
+.chooserViewport {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.chooserViewport > .chooserList {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+}
 .chooserList {
   height: 100%;
+  overflow-x: hidden;
 }
 .chooserRow {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-1-5);
   width: 100%;
   min-width: 0;
 }
@@ -402,7 +531,10 @@
   font-weight: 500;
 }
 .chooserMuted {
-  flex: none;
+  min-width: 0;
+  max-width: 35%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--fg-faint);
   font-size: var(--fs-small);
 }
@@ -420,9 +552,21 @@
   opacity: 0.55;
 }
 .chooserCaption {
+  flex: none;
   padding: 6px 10px 0;
   color: var(--fg-secondary);
   font-weight: 500;
+}
+.typeChooser {
+  width: 280px;
+}
+.typeChooser .chooserCaption {
+  padding: var(--space-2) var(--space-3) 0;
+  color: var(--fg-strong);
+  font-weight: 600;
+}
+.typeChooser .chooserSearch {
+  padding: var(--space-1) var(--space-3);
 }
 .chooserMnemonic {
   flex: none;
@@ -433,6 +577,7 @@
 }
 /* IDEA's popup ad text. */
 .chooserHint {
+  flex: none;
   padding: 4px 10px 0;
   border-top: 1px solid var(--border-popup);
   color: var(--fg-faint);
@@ -440,7 +585,19 @@
 }
 .chooserActions {
   display: flex;
+  flex: none;
   margin-right: -4px;
+}
+.chooserSeparator {
+  flex: 1;
+  height: 1px;
+  margin: 0 4px;
+  background: var(--border-popup);
+}
+/* IDEA: the number of configurations after "All Configurations". */
+.chooserCount {
+  margin-left: 6px;
+  color: var(--fg-faint);
 }
 .badge {
   flex: none;
@@ -471,6 +628,7 @@
   flex: 1;
 }
 .editSidebar {
+  container: run-config-navigation / inline-size;
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -481,7 +639,7 @@
 .editToolbar {
   flex: none;
   display: flex;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 4px 6px;
   border-bottom: 1px solid var(--border-popup);
 }
@@ -499,7 +657,7 @@
 .editItem {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   width: 100%;
   height: var(--h-row);
   padding: 0 12px 0 20px;
@@ -514,6 +672,22 @@
   background: var(--bg-selected-strong);
   color: var(--fg-strong);
 }
+.editTarget {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 25%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.editItem .failed {
+  flex: none;
+}
+@container run-config-navigation (max-width: 220px) {
+  .editItem .chooserMuted {
+    display: none;
+  }
+}
 .editForm {
   flex: 1;
   min-width: 0;
@@ -522,24 +696,41 @@
   padding: 12px 16px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .configFields {
+  flex: 1;
+  min-height: 0;
   display: grid;
   grid-template-columns: fit-content(40%) minmax(0, 1fr);
+  grid-template-rows: [notice] auto [header] auto [options] minmax(0, 1fr);
   column-gap: var(--space-3);
-  row-gap: var(--space-2);
-  align-content: start;
   min-width: 0;
 }
-.configFields > * {
+.configFields > *,
+.formSettings > * {
   grid-column: 1 / -1;
   min-width: 0;
 }
-.configFields:not(.configFieldsTomcat) > .field,
+.configFields > .notice {
+  grid-row: notice;
+}
+.configFields:not(.configFieldsTomcat) > .notice,
+.configFields:not(.configFieldsTomcat) > .formHeader {
+  margin-bottom: var(--space-2);
+}
 .configFields:not(.configFieldsTomcat) > .formHeader,
-.configFields:not(.configFieldsTomcat) > .formHeader > .field {
+.configFields:not(.configFieldsTomcat) > .formHeader > .field,
+.formSettings > .field {
   grid-template-columns: subgrid;
+}
+.formSettings {
+  display: grid;
+  grid-row: options;
+  grid-template-columns: subgrid;
+  row-gap: var(--space-2);
+  align-content: start;
+  overflow: auto;
 }
 .formHeader > .field {
   grid-column: 1 / -1;
@@ -548,8 +739,6 @@
   overflow: hidden;
 }
 .configFieldsTomcat {
-  flex: 1;
-  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
@@ -586,7 +775,7 @@
   grid-template-columns: fit-content(40%) minmax(0, 1fr);
   align-items: start;
   column-gap: var(--space-3);
-  row-gap: 4px;
+  row-gap: var(--space-1);
   min-width: 0;
 }
 .fieldTop {
@@ -604,7 +793,7 @@
 .fieldControl {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   min-width: 0;
 }
 .fieldControl > * {
@@ -619,6 +808,7 @@
 }
 .editGroupName {
   color: var(--fg-strong);
+  font-weight: 600;
 }
 .editEmpty {
   flex: 1;
@@ -626,7 +816,7 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 24px 12px;
   color: var(--fg-subtle);
   text-align: center;
@@ -652,9 +842,10 @@
 }
 .formHeader {
   display: grid;
+  grid-row: header;
   grid-template-columns: minmax(0, 1fr);
   align-items: center;
-  gap: 16px;
+  gap: var(--space-4);
   padding-bottom: 10px;
   border-bottom: 1px solid var(--border-popup);
 }
@@ -682,13 +873,13 @@
 .storeProjectGroup {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
 }
 .formSection {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .formSectionTitle {
   flex: 1;
@@ -699,12 +890,12 @@
 .formSection .noticeLink {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
 }
 .inputWithButton {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   min-width: 0;
 }
 .inputWithButton > :first-child {
@@ -727,6 +918,45 @@
   font-size: var(--fs-ui);
   outline: none;
 }
+.textareaWithButton {
+  position: relative;
+  min-width: 0;
+}
+.textareaWithButton > textarea {
+  display: block;
+  width: 100%;
+  padding-inline-end: calc(var(--space-3) + var(--space-4));
+}
+.textareaWithButton > button {
+  position: absolute;
+  inset-block-start: var(--space-1);
+  inset-inline-end: var(--space-1);
+}
+.expandedEditor {
+  width: 512px;
+  height: 272px;
+}
+.expandedEditorBody {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: var(--space-2);
+  gap: var(--space-2);
+}
+/* One visual line per line of text: a long argument scrolls instead of wrapping. */
+.expandedTextarea {
+  flex: 1;
+  min-height: 0;
+  resize: none;
+  white-space: pre;
+  overflow: auto;
+}
+.expandedEditorActions {
+  display: flex;
+  justify-content: flex-end;
+  flex: none;
+  gap: var(--space-2);
+}
 .textarea:focus {
   box-shadow: inset 0 0 0 1px var(--focus-ring);
 }
@@ -737,7 +967,7 @@
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 4px;
+  gap: var(--space-1);
 }
 .taskList > button:last-of-type {
   align-self: flex-start;
@@ -746,16 +976,49 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   min-height: var(--h-row);
 }
 .taskRow > :first-child {
   min-width: 0;
 }
-.taskActions {
+.beforeLaunchTasks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+}
+.taskTag {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-1);
+  min-width: 0;
+  max-width: 100%;
+  min-height: var(--h-list-row);
+  padding-inline: var(--space-2) var(--space-1);
+  border-radius: var(--radius-small);
+  background: var(--bg-elev);
+  color: var(--fg);
+  font-size: var(--fs-ui);
+}
+.taskName {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  min-height: var(--h-list-row);
+  text-align: start;
+}
+.taskName:hover {
+  color: var(--fg-strong);
+}
+.taskOrder {
+  flex: none;
+  color: var(--fg-muted);
+}
+.taskTag .taskCommand {
+  width: 24ch;
+  height: var(--h-control-small);
 }
 .taskLabel {
   overflow: hidden;
@@ -765,12 +1028,12 @@
 .chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-1-5);
 }
 .chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 2px 4px 2px 10px;
   border-radius: 999px;
   background: var(--bg-elev);
@@ -792,15 +1055,27 @@
 .emptyHints li::before {
   content: "— ";
 }
-.envDialog {
+.envWindow {
+  height: 500px;
+}
+.envWindow > [data-dialog-body] {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 12px 16px;
+}
+.envDialog {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
 }
 .envPanel {
   display: flex;
+  flex: 1;
   flex-direction: column;
+  min-height: calc(var(--h-row) * 3 + var(--space-3));
+  overflow: hidden;
   border: 1px solid var(--border-popup);
   border-radius: var(--radius-small);
 }
@@ -808,25 +1083,42 @@
   opacity: 0.55;
 }
 .envGrid {
-  height: 140px;
+  flex: 1;
+  min-height: 0;
   overflow: auto;
+  scrollbar-gutter: stable;
+  scroll-padding-top: var(--h-row);
 }
 .envHeader,
 .envGridRow {
   display: grid;
-  grid-template-columns: 2fr 3fr;
-  gap: 4px;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+  gap: var(--space-1);
   align-items: center;
-  padding: 0 8px;
+  padding: 0 var(--space-2);
   min-height: var(--h-row);
 }
 .envHeader {
   position: sticky;
   top: 0;
-  background: var(--bg-popup, var(--bg));
+  z-index: 1;
+  background: var(--bg-popup);
   color: var(--fg-subtle);
-  font-size: var(--fs-small);
+  font-size: var(--fs-ui);
   border-bottom: 1px solid var(--border-popup);
+}
+.envGridRow input {
+  width: 100%;
+  height: var(--h-row);
+}
+.envGridRow input:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--focus-ring);
+  border-radius: var(--radius-small);
+}
+.envError {
+  color: var(--danger);
+  font-size: var(--fs-ui);
+  overflow-wrap: anywhere;
 }
 .envSystemRow {
   color: var(--fg-subtle);
@@ -839,12 +1131,12 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--font-mono);
-  font-size: var(--fs-small);
+  font-size: var(--fs-ui);
 }
 .editPreview {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   margin-top: 8px;
   padding: 8px 10px;
   border-radius: var(--radius-small);
@@ -859,7 +1151,7 @@
 .footerError {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   color: var(--danger);
   font-size: var(--fs-ui);
   min-width: 0;
@@ -896,8 +1188,49 @@
 .dialogBody {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   padding: 12px 16px;
+}
+.exportReport {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4) var(--space-1);
+  font-size: var(--fs-ui);
+}
+
+.exportFormats,
+.exportOutput {
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.exportReport legend {
+  margin-block-end: var(--space-2);
+  padding: 0;
+  color: var(--fg-strong);
+  font-weight: 600;
+}
+
+.exportFormats {
+  display: grid;
+  justify-items: start;
+  gap: var(--space-1);
+}
+
+.exportOutput {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.exportOutput > label {
+  max-inline-size: 120px;
+  overflow-wrap: anywhere;
+  color: var(--fg);
 }
 
 /* Folded console lines ("<N internal lines>"). */
@@ -908,22 +1241,24 @@
   border-radius: 3px;
   padding: 0 6px;
   font: inherit;
-  cursor: pointer;
 }
 .fold:hover {
   color: var(--fg);
 }
 .foldToggle {
-  display: inline-flex;
-  align-items: center;
-  margin-left: 6px;
-  padding: 0 2px;
+  position: sticky;
+  inset-inline-start: 0;
+  z-index: 1;
+  display: inline-grid;
+  place-items: center;
+  width: var(--space-3);
+  margin-inline-start: calc(-1 * var(--space-3));
+  padding: 0;
   border: none;
-  border-radius: 3px;
-  background: none;
+  border-radius: var(--radius-small);
+  background: var(--bg-app);
   color: var(--fg-faint);
-  vertical-align: middle;
-  cursor: pointer;
+  vertical-align: top;
 }
 .foldToggle:hover {
   color: var(--fg);
@@ -984,7 +1319,7 @@
   flex: none;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 2px 0 8px;
   border-bottom: 1px solid var(--border-popup);
   margin-bottom: 6px;
@@ -1005,6 +1340,11 @@
   align-items: center;
   gap: 10px;
 }
+.tomcatFieldError {
+  margin-left: 136px;
+  color: var(--danger);
+  font-size: var(--fs-small);
+}
 .tomcatRowLabel {
   color: var(--fg-secondary);
   font-size: var(--fs-ui);
@@ -1013,13 +1353,13 @@
 .tomcatSection {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   margin-top: 2px;
 }
 .tomcatSectionHeader {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   color: var(--fg-secondary);
   font-size: var(--fs-ui);
   font-weight: 500;
@@ -1033,7 +1373,7 @@
   display: flex;
   align-items: center;
   flex-wrap: nowrap;
-  gap: 8px;
+  gap: var(--space-2);
   padding-left: 14px;
 }
 .tomcatBrowserSelect {
@@ -1052,7 +1392,6 @@
   box-shadow: inset 0 0 0 1px var(--border-button);
   color: var(--fg);
   font-size: var(--fs-ui);
-  cursor: pointer;
   flex: none;
 }
 .tomcatDotsBtn:hover {
@@ -1062,7 +1401,7 @@
   display: grid;
   grid-template-columns: 40px 1fr;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   padding-left: 34px;
 }
 .tomcatUrlLabel {
@@ -1121,20 +1460,20 @@
 .tomcatServerSettingsGrid {
   display: grid;
   grid-template-columns: minmax(220px, 260px) 1fr;
-  gap: 16px 24px;
+  gap: var(--space-4) 24px;
   align-items: start;
   padding-left: 14px;
 }
 .tomcatPortsCol {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .tomcatPortField {
   display: grid;
   grid-template-columns: 90px 1fr;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .tomcatFlagsCol {
   display: flex;
@@ -1147,7 +1486,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
   padding: 8px 4px 2px;
   margin-top: 4px;
   border-top: 1px solid var(--border-popup);
@@ -1156,7 +1495,7 @@
 .tomcatWarningText {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   color: var(--warning, var(--fg-strong));
   font-size: var(--fs-ui);
   font-weight: 500;
@@ -1176,14 +1515,14 @@
 .appServersToolbar {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 4px 6px;
   border-bottom: 1px solid var(--border-popup);
 }
 .appServersToolbarPlain {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   padding: 2px 0;
 }
 .appServersList {
@@ -1198,7 +1537,7 @@
   padding: 12px 16px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .appServerFieldRow {
   display: grid;
@@ -1227,7 +1566,7 @@
 .appServersLibHeader {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   padding: 2px 8px;
   font-size: var(--fs-ui);
   color: var(--fg-secondary);
@@ -1235,7 +1574,7 @@
 .appServersLibRow {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   width: 100%;
   padding: 2px 8px 2px 24px;
   font-family: var(--font-mono);
@@ -1297,7 +1636,7 @@
   display: grid;
   grid-template-columns: 72px 1fr 90px;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-height: var(--h-row);
   padding: 0 10px;
   font-size: var(--fs-ui);
@@ -1306,9 +1645,6 @@
   color: var(--fg-subtle);
   font-size: var(--fs-small);
   border-bottom: 1px solid var(--border-popup);
-}
-.tomcatLogRow {
-  cursor: pointer;
 }
 .tomcatLogRow:hover {
   background: var(--bg-hover);
@@ -1328,7 +1664,7 @@
   display: grid;
   grid-template-columns: 1fr 2fr;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-height: var(--h-row);
   padding: 0 10px;
   font-size: var(--fs-ui);
@@ -1362,13 +1698,13 @@
 .tomcatDebugConnectionSection {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
   margin-top: 2px;
 }
 .tomcatDebugTransportRow {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: var(--space-4);
 }
 .tomcatDebugPortRow {
   display: flex;
@@ -1384,7 +1720,7 @@
 .tomcatRadioLabel {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1-5);
   color: var(--fg-subtle);
   font-size: var(--fs-ui);
 }
@@ -1398,17 +1734,16 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 16px;
+  gap: var(--space-4);
   margin-top: 4px;
 }
 .tomcatSectionToggle {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   color: var(--fg-secondary);
   font-size: var(--fs-ui);
   font-weight: 500;
-  cursor: pointer;
 }
 .addServerDialogBody {
   display: flex;
@@ -1425,11 +1760,51 @@
 .addServerErrorRow {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   color: var(--fg);
   font-size: var(--fs-ui);
 }
 .addServerErrorIcon {
   color: var(--danger);
   flex: none;
+}
+
+/* Completion popup of a plugin run configuration's Arguments field. */
+.argsPopup {
+  min-width: 260px;
+  max-width: min(640px, 70vw);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.argsListWrap {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 4px 0;
+  box-sizing: content-box;
+}
+.argsList {
+  flex: 1;
+}
+.argsRow {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.argsLabel {
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.argsDetail {
+  margin-left: auto;
+  color: var(--fg-subtle);
+  font-size: var(--fs-small);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }

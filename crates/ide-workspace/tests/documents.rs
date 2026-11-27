@@ -1,5 +1,4 @@
 use ide_core::error::ErrorKind;
-use ide_core::event::NotifyLevel;
 use ide_core::{ChangeSet, DocId, IdeEvent, LanguageId, Pos, Range, SharedSink, TextChange, TextEdit};
 use ide_text::{AppliedChange, LineEnding};
 use ide_workspace::documents::DocumentObserver;
@@ -202,7 +201,7 @@ fn ui_modes_are_redetected_without_a_language_change() {
     let opened = rec.log.lock().len();
 
     fs::write(&marker, "{}").unwrap();
-    assert_eq!(docs.ui_mode_of(&template).as_deref(), Some("Angular Template"));
+    assert_eq!(docs.language_of(&template, None).ui_mode.as_deref(), Some("Angular Template"));
     assert_eq!(docs.redetect_languages(), vec![a.id]);
     assert_eq!(docs.snapshot(a.id).unwrap().ui_mode.as_deref(), Some("Angular Template"));
     assert!(docs.redetect_languages().is_empty());
@@ -226,6 +225,227 @@ fn ui_modes_are_redetected_without_a_language_change() {
 
 fn dirty_events(events: &[IdeEvent]) -> Vec<bool> {
     events.iter().filter_map(|e| if let IdeEvent::DocDirty { dirty, .. } = e { Some(*dirty) } else { None }).collect()
+}
+
+fn assert_failed_save_preserves_edit(f: &Fixture, doc: DocId, text: &str, before: usize) {
+    let snapshot = f.docs.snapshot(doc).unwrap();
+    assert!(snapshot.dirty, "failed save marked the document clean");
+    assert_eq!(snapshot.text, text, "failed save changed the unsaved buffer");
+    assert!(!dirty_events(&f.events.lock()[before..]).contains(&false), "failed save emitted a clean-state event");
+}
+
+#[test]
+fn unencodable_save_preserves_the_dirty_buffer_and_disk_bytes() {
+    let f = fixture();
+    let path = f.root.join("notes.txt");
+    fs::write(&path, b"caf\xe9").unwrap();
+    let doc = f.docs.open(&path).unwrap().id;
+    assert_eq!(f.docs.set_encoding(doc, "windows-1252", true).unwrap().encoding, "windows-1252");
+    let reloaded = f.docs.snapshot(doc).unwrap();
+    assert_eq!(reloaded.text, "café");
+    f.docs.edit(doc, reloaded.version, change(4, 4, "漢")).unwrap();
+    let original = fs::read(&path).unwrap();
+
+    let before = f.events.lock().len();
+    let err = f.docs.save(doc).expect_err("Windows-1252 cannot encode the edit");
+
+    assert_eq!(err.kind, ErrorKind::InvalidInput, "{err}");
+    assert_failed_save_preserves_edit(&f, doc, "café漢", before);
+    assert_eq!(fs::read(&path).unwrap(), original, "failed encoding changed disk bytes");
+}
+
+#[cfg(unix)]
+#[test]
+fn permission_denied_save_preserves_the_edit_and_can_be_retried() {
+    use std::os::unix::fs::PermissionsExt;
+
+    struct RestorePermissions<'a>(&'a Path, fs::Permissions);
+
+    impl Drop for RestorePermissions<'_> {
+        fn drop(&mut self) {
+            let result = fs::set_permissions(self.0, self.1.clone());
+            if !std::thread::panicking() {
+                result.expect("restore fixture permissions");
+            }
+        }
+    }
+
+    let f = fixture();
+    let path = f.root.join("notes.txt");
+    fs::write(&path, b"original").unwrap();
+    let doc = f.docs.open(&path).unwrap().id;
+    f.docs.edit(doc, 0, change(0, 8, "edited")).unwrap();
+
+    {
+        let _dir_permissions = RestorePermissions(&f.root, fs::metadata(&f.root).unwrap().permissions());
+        let _file_permissions = RestorePermissions(&path, fs::metadata(&path).unwrap().permissions());
+        // Deny both sibling temp-file creation and the fallback write to the existing file.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+        fs::set_permissions(&f.root, fs::Permissions::from_mode(0o555)).unwrap();
+        let sibling = fs::OpenOptions::new().write(true).create_new(true).open(f.root.join("probe"));
+        let in_place = fs::OpenOptions::new().write(true).open(&path);
+        for (probe, access) in [(sibling, "create a sibling file"), (in_place, "open the target for writing")] {
+            match probe {
+                Ok(_) => {
+                    eprintln!("skipping permission-denied save: test process can {access} despite permission bits");
+                    return;
+                }
+                Err(err) => assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied, "{access}: {err}"),
+            }
+        }
+
+        let before = f.events.lock().len();
+        let err = f.docs.save(doc).expect_err("neither atomic nor in-place save should be writable");
+
+        assert_eq!(err.kind, ErrorKind::PermissionDenied, "{err}");
+        assert_failed_save_preserves_edit(&f, doc, "edited", before);
+        assert_eq!(fs::read(&path).unwrap(), b"original", "failed write changed disk bytes");
+    }
+
+    let before = f.events.lock().len();
+    f.docs.save(doc).expect("retry after restoring file and directory permissions");
+
+    assert_eq!(fs::read(&path).unwrap(), b"edited");
+    assert!(!f.docs.snapshot(doc).unwrap().dirty, "successful retry left the document dirty");
+    assert_eq!(dirty_events(&f.events.lock()[before..]), vec![false]);
+}
+
+#[test]
+fn save_to_a_path_replaced_by_a_directory_preserves_the_dirty_buffer() {
+    let f = fixture();
+    let path = f.root.join("notes.txt");
+    fs::write(&path, b"original").unwrap();
+    let doc = f.docs.open(&path).unwrap().id;
+    f.docs.edit(doc, 0, change(0, 8, "edited")).unwrap();
+    assert!(f.docs.snapshot(doc).unwrap().dirty);
+    fs::remove_file(&path).unwrap();
+    fs::create_dir(&path).unwrap();
+
+    let before = f.events.lock().len();
+    f.docs.save(doc).expect_err("save must not replace a directory with a file");
+
+    assert_failed_save_preserves_edit(&f, doc, "edited", before);
+    assert!(fs::symlink_metadata(&path).unwrap().is_dir(), "save removed the replacement directory");
+    assert_eq!(fs::read_dir(&path).unwrap().count(), 0, "save left artifacts inside the replacement directory");
+    assert_eq!(fs::read_dir(&f.root).unwrap().count(), 1, "save left artifacts beside the replacement directory");
+}
+
+#[test]
+fn autosave_checks_the_disk_before_the_watcher_reports_a_change() {
+    let f = fixture();
+    let path = f.root.join("notes.txt");
+    fs::write(&path, "alpha\nbeta\n").unwrap();
+    let info = f.docs.open(&path).unwrap();
+    f.docs.edit(info.id, 0, change(0, 5, "edited")).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    // An external write (git checkout, another editor) whose watcher event has not arrived yet.
+    fs::write(&path, "alpha\nbeta external\n").unwrap();
+
+    assert!(!f.docs.autosave(info.id).unwrap());
+    assert_eq!(fs::read_to_string(&path).unwrap(), "alpha\nbeta external\n");
+    assert!(f.docs.snapshot(info.id).unwrap().dirty);
+    assert!(
+        f.events.lock().iter().any(|e| matches!(e, IdeEvent::DocDiskConflict { doc, .. } if *doc == info.id)),
+        "the refused autosave must surface the conflict"
+    );
+}
+
+/// Writes `bytes` with an mtime clearly after the current one, whatever the filesystem's granularity.
+fn rewrite_later(path: &Path, bytes: &[u8]) {
+    let mtime = fs::metadata(path).unwrap().modified().unwrap() + std::time::Duration::from_secs(2);
+    fs::write(path, bytes).unwrap();
+    fs::File::options().write(true).open(path).unwrap().set_modified(mtime).unwrap();
+}
+
+#[test]
+fn rewriting_the_same_bytes_is_no_disk_conflict() {
+    let f = fixture();
+    let path = f.root.join("notes.txt");
+    fs::write(&path, "alpha\nbeta\n").unwrap();
+    let info = f.docs.open(&path).unwrap();
+    f.docs.edit(info.id, 0, change(0, 5, "edited")).unwrap();
+    // A touch, or a tool rewriting the file unchanged: only the mtime moves.
+    rewrite_later(&path, b"alpha\nbeta\n");
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
+    assert!(f.docs.autosave(info.id).unwrap(), "autosave stopped on a file whose bytes did not change");
+    assert_eq!(fs::read_to_string(&path).unwrap(), "edited\nbeta\n");
+    assert!(!f.events.lock().iter().any(|e| matches!(e, IdeEvent::DocDiskConflict { .. })));
+}
+
+#[test]
+fn autosave_ignores_a_rewrite_of_the_same_bytes_before_the_watcher_reports_it() {
+    let f = fixture();
+    let path = f.root.join("notes.txt");
+    fs::write(&path, "alpha\nbeta\n").unwrap();
+    let info = f.docs.open(&path).unwrap();
+    f.docs.edit(info.id, 0, change(0, 5, "edited")).unwrap();
+    rewrite_later(&path, b"alpha\nbeta\n");
+    assert!(f.docs.autosave(info.id).unwrap(), "autosave stopped on a file whose bytes did not change");
+    assert_eq!(fs::read_to_string(&path).unwrap(), "edited\nbeta\n");
+}
+
+/// Opens `bytes`, edits the buffer, then rewrites the file as `external` (same text, other bytes).
+fn assert_other_bytes_conflict(name: &str, bytes: &[u8], external: &[u8]) {
+    let f = fixture();
+    let path = f.root.join(name);
+    fs::write(&path, bytes).unwrap();
+    let info = f.docs.open(&path).unwrap();
+    f.docs.edit(info.id, 0, change(0, 0, "x")).unwrap();
+    rewrite_later(&path, external);
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
+    assert!(!f.docs.autosave(info.id).unwrap(), "{name}: autosave overwrote other bytes of the same text");
+    assert_eq!(fs::read(&path).unwrap(), external);
+}
+
+#[test]
+fn the_same_text_in_other_bytes_is_still_a_disk_conflict() {
+    assert_other_bytes_conflict("crlf.txt", b"alpha\nbeta\n", b"alpha\r\nbeta\r\n");
+    assert_other_bytes_conflict("bom.txt", b"alpha\n", b"\xEF\xBB\xBFalpha\n");
+    // Same length: only the byte comparison tells them apart.
+    assert_other_bytes_conflict("utf16.txt", b"\xFF\xFEa\x00\n\x00", b"\xFE\xFF\x00a\x00\n");
+}
+
+#[test]
+fn autosave_leaves_a_file_changed_on_disk_after_an_edit() {
+    let f = fixture();
+    let path = f.root.join("notes.txt");
+    fs::write(&path, "alpha\nbeta\n").unwrap();
+    let info = f.docs.open(&path).unwrap();
+    f.docs.edit(info.id, 0, change(0, 5, "edited")).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    fs::write(&path, "alpha\nbeta external\n").unwrap();
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
+
+    assert!(!f.docs.autosave(info.id).unwrap());
+    assert_eq!(fs::read_to_string(&path).unwrap(), "alpha\nbeta external\n");
+    assert!(f.docs.snapshot(info.id).unwrap().dirty);
+
+    // An explicit save overwrites, as the warning says; autosave works again after it.
+    f.docs.save(info.id).unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), "edited\nbeta\n");
+    f.docs.edit(info.id, 1, change(0, 0, "x")).unwrap();
+    assert!(f.docs.autosave(info.id).unwrap());
+    assert_eq!(fs::read_to_string(&path).unwrap(), "xedited\nbeta\n");
+    let transitions: Vec<_> = f
+        .events
+        .lock()
+        .iter()
+        .filter_map(|event| match event {
+            IdeEvent::DocDirty { doc, dirty, version } if *doc == info.id => Some((*version, *dirty)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(transitions, [(1, true), (1, false), (2, true), (2, false)]);
+}
+
+#[test]
+fn closing_a_modified_buffer_reports_it_clean() {
+    let f = fixture();
+    let info = f.docs.open_untitled(None).unwrap();
+    f.docs.edit(info.id, 0, change(0, 0, "draft")).unwrap();
+    assert_eq!(dirty_events(&f.events.lock()), vec![true]);
+    f.docs.close(info.id);
+    assert_eq!(dirty_events(&f.events.lock()), vec![true, false]);
 }
 
 #[test]
@@ -345,6 +565,35 @@ fn backend_edits_emit_patches() {
 }
 
 #[test]
+fn versioned_background_edits_are_marked_non_undoable() {
+    let f = fixture();
+    let path = f.root.join("remote.txt");
+    fs::write(&path, "one").unwrap();
+    let doc = f.docs.open(&path).unwrap().id;
+    let patches = || {
+        f.events
+            .lock()
+            .iter()
+            .filter_map(|event| match event {
+                IdeEvent::DocPatched { workspace_edit, .. } => Some(*workspace_edit),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+
+    // A command's versioned edit stays an editor Undo step; a background one doesn't.
+    let edit = |text: &str| [TextEdit { range: Range::new(Pos::new(0, 0), Pos::new(0, 0)), new_text: text.into() }];
+    assert_eq!(f.docs.apply_edits_at(doc, 0, &edit("a")).unwrap(), Some(1));
+    assert_eq!(f.docs.apply_background_edits_at(doc, 1, &edit("b")).unwrap(), Some(2));
+    assert_eq!(patches(), [false, true]);
+    assert_eq!(f.docs.apply_background_edits_at(doc, 1, &edit("stale")).unwrap(), None);
+    assert_eq!(
+        f.docs.apply_edits_at(doc, 0, &[TextEdit { range: Range::default(), new_text: "stale".into() }]).unwrap(),
+        None
+    );
+}
+
+#[test]
 fn external_change_in_two_places_patches_each() {
     let f = fixture();
     let path = f.root.join("two.txt");
@@ -390,14 +639,30 @@ fn external_changes() {
     fs::write(&path, "something else\n").unwrap();
     f.docs.on_disk_changed(std::slice::from_ref(&path));
     assert_eq!(f.docs.snapshot(id).unwrap().text, "// alpha\nBETA\ngamma\n");
-    let warnings =
-        f.events.lock().iter().filter(|e| matches!(e, IdeEvent::Notify { level: NotifyLevel::Warning, .. })).count();
+    let warnings = f
+        .events
+        .lock()
+        .iter()
+        .filter(|e| matches!(e, IdeEvent::DocDiskConflict { path: p, .. } if *p == path.to_string_lossy()))
+        .count();
     assert_eq!(warnings, 1);
     // The same disk state is reported only once.
     f.docs.on_disk_changed(std::slice::from_ref(&path));
-    let warnings =
-        f.events.lock().iter().filter(|e| matches!(e, IdeEvent::Notify { level: NotifyLevel::Warning, .. })).count();
+    let warnings = f
+        .events
+        .lock()
+        .iter()
+        .filter(|e| matches!(e, IdeEvent::DocDiskConflict { path: p, .. } if *p == path.to_string_lossy()))
+        .count();
     assert_eq!(warnings, 1);
+
+    // Load Changes from Disk drops the buffer's changes; autosave writes again afterwards.
+    f.docs.discard_and_reload(id).unwrap();
+    let reloaded = f.docs.snapshot(id).unwrap();
+    assert_eq!((reloaded.text.as_str(), reloaded.dirty), ("something else\n", false));
+    f.docs.edit(id, reloaded.version, change(0, 0, "# ")).unwrap();
+    assert!(f.docs.autosave(id).unwrap());
+    assert_eq!(fs::read_to_string(&path).unwrap(), "# something else\n");
 
     // Unknown paths are ignored.
     f.docs.on_disk_changed(&[f.root.join("other.txt")]);
@@ -486,11 +751,15 @@ fn reload_and_convert_encoding() {
     let (bytes, _, _) = encoding_rs::GBK.encode("中文内容");
     fs::write(&path, &bytes).unwrap();
     let info = f.docs.open(&path).unwrap();
-    assert_eq!(f.docs.set_encoding(info.id, "gbk", true).unwrap(), "gbk");
+    let encoding = f.docs.set_encoding(info.id, "gbk", true).unwrap();
+    assert_eq!(encoding.encoding, "gbk");
+    assert!(!encoding.has_bom);
     assert_eq!(f.docs.snapshot(info.id).unwrap().text, "中文内容");
 
     // Convert: same text, written in the new encoding on save.
-    assert_eq!(f.docs.set_encoding(info.id, "utf-8", false).unwrap(), "utf-8");
+    let encoding = f.docs.set_encoding(info.id, "utf-8", false).unwrap();
+    assert_eq!(encoding.encoding, "utf-8");
+    assert!(!encoding.has_bom);
     f.docs.save(info.id).unwrap();
     assert_eq!(fs::read_to_string(&path).unwrap(), "中文内容");
 
@@ -499,6 +768,71 @@ fn reload_and_convert_encoding() {
     // Reload refuses unsaved changes.
     f.docs.edit(info.id, f.docs.snapshot(info.id).unwrap().version, change(0, 0, "x")).unwrap();
     assert!(f.docs.set_encoding(info.id, "gbk", true).is_err());
+}
+
+#[test]
+fn external_changes_keep_a_chosen_encoding() {
+    // Valid UTF-8 bytes, so detection alone would read them as UTF-8.
+    let (first, changed) = (b"caf\xC3\xA9".as_slice(), b"caf\xC3\xA9 \xC3\xA8".as_slice());
+    for (encoding, reload) in [("windows-1252", true), ("gbk", true), ("windows-1252", false)] {
+        let f = fixture();
+        let path = f.root.join("legacy.txt");
+        fs::write(&path, first).unwrap();
+        let info = f.docs.open(&path).unwrap();
+        assert_eq!(info.encoding, "utf-8");
+        if reload {
+            f.docs.set_encoding(info.id, encoding, true).unwrap();
+        } else {
+            // Convert, then save: the file is now in the chosen encoding.
+            f.docs.replace_all(info.id, "café").unwrap();
+            f.docs.set_encoding(info.id, encoding, false).unwrap();
+            f.docs.save(info.id).unwrap();
+        }
+        let expected =
+            |bytes: &[u8]| encoding_rs::Encoding::for_label(encoding.as_bytes()).unwrap().decode(bytes).0.into_owned();
+        let changed = if reload { changed.to_vec() } else { ide_vfs::encode("café è", encoding, false).unwrap() };
+        fs::write(&path, &changed).unwrap();
+        f.docs.on_disk_changed(std::slice::from_ref(&path));
+        let snapshot = f.docs.snapshot(info.id).unwrap();
+        assert_eq!(snapshot.text, expected(&changed), "{encoding} reload={reload}");
+        assert_eq!(snapshot.encoding, encoding, "{encoding} reload={reload}");
+        assert!(!snapshot.dirty);
+    }
+}
+
+#[test]
+fn external_changes_redetect_an_encoding_the_user_never_chose() {
+    let f = fixture();
+    let path = f.root.join("plain.txt");
+    fs::write(&path, "plain").unwrap();
+    let info = f.docs.open(&path).unwrap();
+    fs::write(&path, ide_vfs::encode("wide", "utf-16le", true).unwrap()).unwrap();
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
+    let snapshot = f.docs.snapshot(info.id).unwrap();
+    assert_eq!((snapshot.text.as_str(), snapshot.encoding.as_str()), ("wide", "utf-16le"));
+}
+
+#[test]
+fn utf8_bom_is_added_and_removed_on_save() {
+    let f = fixture();
+    let path = f.root.join("bom.txt");
+    fs::write(&path, "text").unwrap();
+    let info = f.docs.open(&path).unwrap();
+    assert!(!info.has_bom);
+
+    assert!(f.docs.set_bom(info.id, true).unwrap().has_bom);
+    assert_eq!(fs::read(&path).unwrap(), b"text", "written on save only");
+    f.docs.save(info.id).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"\xEF\xBB\xBFtext");
+    assert_eq!(f.docs.snapshot(info.id).unwrap().text, "text");
+
+    assert!(!f.docs.set_bom(info.id, false).unwrap().has_bom);
+    f.docs.save(info.id).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"text");
+
+    // Other encodings have no BOM to toggle.
+    f.docs.set_encoding(info.id, "gbk", false).unwrap();
+    assert!(f.docs.set_bom(info.id, true).is_err());
 }
 
 #[cfg(unix)]
@@ -629,14 +963,14 @@ fn editorconfig_applies_on_open_and_save() {
 fn virtual_documents_are_read_only_and_keyed_by_uri() {
     let f = fixture();
     let uri = "jdt://contents/a.jar/p/C.class?=x";
-    let info = f.docs.open_virtual(uri, LanguageId::new("java"), "class C {}\n").unwrap();
+    let info = f.docs.open_virtual(uri, LanguageId::new("java"), "class C {}\n", "utf-8", false, true).unwrap();
     assert_eq!(info.uri.as_deref(), Some(uri));
     assert_eq!(info.path, PathBuf::from(uri));
     assert!(info.read_only && !info.dirty);
     assert_eq!(info.language.as_str(), "java");
 
     // Re-opening shares the document; edits and saves never reach a file.
-    let again = f.docs.open_virtual(uri, LanguageId::new("java"), "ignored").unwrap();
+    let again = f.docs.open_virtual(uri, LanguageId::new("java"), "ignored", "utf-8", false, true).unwrap();
     assert_eq!(again.id, info.id);
     assert_eq!(again.text, "class C {}\n");
     let err = f.docs.edit(info.id, info.version, change(0, 0, "x")).unwrap_err();
@@ -648,6 +982,68 @@ fn virtual_documents_are_read_only_and_keyed_by_uri() {
     f.docs.close(info.id);
     assert!(f.docs.snapshot(info.id).is_err());
     assert_eq!(*f.rec.log.lock(), vec!["open v0 java".to_owned(), "close".to_owned()]);
+}
+
+#[test]
+fn virtual_documents_carry_their_encoding_and_reload_capability() {
+    let f = fixture();
+    // Archive sources decoded by the backend report the charset actually used.
+    let uri = "jar:///m2/lib-1.0-sources.jar!/p/C.java";
+    let info = f.docs.open_virtual(uri, LanguageId::new("java"), "中文", "gbk", false, true).unwrap();
+    assert_eq!((info.encoding.as_str(), info.has_bom, info.can_reload_encoding), ("gbk", false, true));
+    let bom =
+        f.docs.open_virtual("jar:///m2/b.jar!/p/B.java", LanguageId::new("java"), "x", "utf-8", true, true).unwrap();
+    assert!(bom.has_bom);
+    // Server-generated content (decompiled) cannot be re-decoded.
+    let decompiled = f
+        .docs
+        .open_virtual(
+            "csharp:/p/App.csproj/decompiled/Lib.cs",
+            LanguageId::new("csharp"),
+            "class Lib {}",
+            "utf-8",
+            false,
+            false,
+        )
+        .unwrap();
+    assert!(!decompiled.can_reload_encoding);
+    // File-backed documents can always be re-read from disk.
+    let path = f.root.join("f.txt");
+    fs::write(&path, "x").unwrap();
+    assert!(f.docs.open(&path).unwrap().can_reload_encoding);
+}
+
+#[test]
+fn virtual_documents_reload_with_another_encoding_without_becoming_editable() {
+    let f = fixture();
+    let uri = "jdt://contents/a.jar/p/C.class?=x";
+    let info = f.docs.open_virtual(uri, LanguageId::new("java"), "涓枃", "utf-8", false, true).unwrap();
+    let encoding = f.docs.replace_virtual(info.id, "中文", "gbk", false).unwrap();
+    assert_eq!((encoding.encoding.as_str(), encoding.has_bom), ("gbk", false));
+    let snap = f.docs.snapshot(info.id).unwrap();
+    assert_eq!(snap.text, "中文");
+    assert_eq!(snap.encoding, "gbk");
+    assert!(snap.read_only && !snap.dirty, "reloading is not an edit");
+    assert!(snap.version > info.version);
+    assert_eq!(f.docs.virtual_uri(info.id).unwrap().as_deref(), Some(uri));
+    // The replacement reached observers and the event stream (editors resync).
+    assert!(f.rec.log.lock().iter().any(|l| l.starts_with("change v") && l.contains("中文")));
+    assert!(f.events.lock().iter().any(|e| matches!(e, IdeEvent::DocPatched { doc, .. } if *doc == info.id)));
+
+    // Read-only protection is unchanged.
+    assert_eq!(f.docs.edit(info.id, snap.version, change(0, 0, "x")).unwrap_err().kind, ErrorKind::PermissionDenied);
+    assert!(f.docs.set_encoding(info.id, "utf-8", false).is_err());
+    assert!(f.docs.set_encoding(info.id, "gbk", true).is_err(), "the op layer routes virtual reloads");
+    assert!(f.docs.set_bom(info.id, true).is_err());
+    f.docs.save(info.id).unwrap();
+
+    // Unknown encodings are refused; file-backed documents are not virtual.
+    assert!(f.docs.replace_virtual(info.id, "x", "not-an-encoding", false).is_err());
+    let path = f.root.join("f.txt");
+    fs::write(&path, "x").unwrap();
+    let file = f.docs.open(&path).unwrap();
+    assert!(f.docs.replace_virtual(file.id, "y", "utf-8", false).is_err());
+    assert_eq!(f.docs.virtual_uri(file.id).unwrap(), None);
 }
 
 #[test]
@@ -843,4 +1239,626 @@ fn properties_ascii_noop_and_charset_conversion() {
     f.docs.set_encoding(doc.id, "utf-16le", true).unwrap();
     assert_eq!(f.docs.snapshot(doc.id).unwrap().text, "a=世界😀");
     assert!(!f.docs.is_dirty(doc.id).unwrap());
+}
+
+#[test]
+fn untitled_buffers_are_editable_and_saved_to_a_chosen_path() {
+    let f = fixture();
+    let mut defaults = f.docs.file_defaults();
+    defaults.line_ending = LineEnding::Lf;
+    f.docs.set_file_defaults(defaults);
+    let info = f.docs.open_untitled(None).unwrap();
+    assert_eq!(info.path, PathBuf::from("untitled:Untitled-1"));
+    assert_eq!(info.uri.as_deref(), Some("untitled:Untitled-1"));
+    assert_eq!(info.language, LanguageId::plain_text());
+    assert!(!info.read_only && !info.dirty && !info.large);
+
+    // Editing works; nothing is written anywhere.
+    let version = f.docs.edit(info.id, info.version, change(0, 0, "fn main() {}\n")).unwrap();
+    assert!(f.docs.is_dirty(info.id).unwrap());
+    f.docs.save(info.id).unwrap();
+    assert!(f.docs.is_dirty(info.id).unwrap(), "an untitled buffer has no file to save to");
+
+    // Save As: the buffer reaches the disk and becomes a regular file document
+    // (same id, re-keyed, language re-detected, missing parents created).
+    let target = f.root.join("new/nested/main.rs");
+    let saved = f.docs.save_as(info.id, &target).unwrap();
+    assert_eq!(saved.id, info.id);
+    assert_eq!(saved.path, target);
+    assert_eq!(saved.uri, None);
+    assert_eq!(saved.language, LanguageId::new("rust"));
+    assert!(!saved.dirty);
+    assert_eq!(fs::read_to_string(&target).unwrap(), "fn main() {}\n");
+    assert_eq!(f.docs.by_path(&target), Some(info.id));
+    assert_eq!(f.docs.by_path(Path::new("untitled:Untitled-1")), None);
+    f.docs.edit(info.id, version, change(0, 0, "// hi\n")).unwrap();
+    assert!(f.docs.autosave(info.id).unwrap(), "Save As records the disk state autosave checks");
+    assert!(!f.docs.is_dirty(info.id).unwrap());
+    assert_eq!(fs::read_to_string(&target).unwrap(), "// hi\nfn main() {}\n");
+
+    // Re-opening the file references the same buffer (split editors share it).
+    let again = f.docs.open(&target).unwrap();
+    assert_eq!(again.id, info.id);
+    f.docs.close(again.id);
+    assert!(f.docs.snapshot(info.id).is_ok());
+    f.docs.close(info.id);
+    assert!(f.docs.snapshot(info.id).is_err());
+}
+
+#[test]
+fn save_as_rejects_paths_opened_elsewhere_and_reuses_free_names() {
+    let f = fixture();
+    let first = f.root.join("taken.txt");
+    fs::write(&first, "taken").unwrap();
+    let taken = f.docs.open(&first).unwrap();
+
+    let a = f.docs.open_untitled(None).unwrap();
+    let b = f.docs.open_untitled(None).unwrap();
+    assert_eq!(a.path, PathBuf::from("untitled:Untitled-1"));
+    assert_eq!(b.path, PathBuf::from("untitled:Untitled-2"));
+    f.docs.edit(a.id, a.version, change(0, 0, "draft")).unwrap();
+
+    let err = f.docs.save_as(a.id, &first).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+    assert!(f.docs.is_dirty(a.id).unwrap(), "nothing was written");
+    assert_eq!(fs::read_to_string(&first).unwrap(), "taken");
+
+    let err = f.docs.save_as(a.id, Path::new("untitled:Untitled-2")).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+
+    // The smallest free name is minted again after a buffer closes.
+    f.docs.close(a.id);
+    let c = f.docs.open_untitled(None).unwrap();
+    assert_eq!(c.path, PathBuf::from("untitled:Untitled-1"));
+
+    // Non-untitled documents cannot be re-keyed.
+    let err = f.docs.save_as(taken.id, &f.root.join("other.txt")).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+}
+
+#[test]
+fn untitled_buffers_take_file_defaults_and_refuse_encoding_reloads() {
+    let f = fixture();
+    let mut defaults = f.docs.file_defaults();
+    defaults.line_ending = LineEnding::CrLf;
+    defaults.encoding = "utf-8".into();
+    defaults.utf8_bom = true;
+    f.docs.set_file_defaults(defaults);
+    let info = f.docs.open_untitled(None).unwrap();
+    assert_eq!(info.line_ending, LineEnding::CrLf);
+    assert!(info.has_bom);
+    assert!(!info.can_reload_encoding, "there is no file to re-read yet");
+
+    // Converting the encoding of the unsaved text works; re-decoding does not.
+    let encoding = f.docs.set_encoding(info.id, "utf-16le", false).unwrap();
+    assert_eq!(encoding.encoding, "utf-16le");
+    let err = f.docs.set_encoding(info.id, "utf-8", true).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::InvalidInput);
+
+    // Disk syncs never touch an untitled buffer.
+    f.docs.edit(info.id, info.version, change(0, 0, "draft")).unwrap();
+    f.docs.sync_after_disk_change();
+    assert!(f.docs.is_dirty(info.id).unwrap());
+    assert_eq!(f.docs.snapshot(info.id).unwrap().text, "draft");
+}
+
+/// Previews and diffs show a file in the language opening it gives: from the hashbang of
+/// the shown text (a revision's), else of its open buffer or the file on disk.
+#[test]
+fn language_of_a_closed_file_reads_the_hashbang() {
+    let tmp = tempfile::tempdir().unwrap();
+    let sink: SharedSink = Arc::new(|_: IdeEvent| {});
+    let docs = Documents::new(
+        sink,
+        Box::new(|p: &Path, first: Option<&str>| match first {
+            Some(l) if l.starts_with("#!/usr/bin/env bash") => LanguageId::new("shellscript"),
+            Some(l) if l.starts_with("#!/usr/bin/env python") => LanguageId::new("python"),
+            _ if p.extension().is_some_and(|e| e == "sh") => LanguageId::new("shellscript"),
+            _ => LanguageId::plain_text(),
+        }),
+    );
+    let deploy = tmp.path().join("deploy");
+    fs::write(&deploy, "#!/usr/bin/env bash\necho hi\n").unwrap();
+    let language = |first: Option<&str>| docs.language_of(&deploy, first).language.to_string();
+
+    assert_eq!(language(None), "shellscript", "the file's own first line");
+    assert_eq!(language(Some("#!/usr/bin/env python3")), "python", "the shown revision's first line");
+    assert_eq!(language(Some("echo")), LanguageId::plain_text().to_string());
+    assert_eq!(docs.language_of(&tmp.path().join("gone"), None).language, LanguageId::plain_text());
+
+    let doc = docs.open(&deploy).unwrap();
+    let all = Range::new(Pos::new(0, 0), Pos::new(0, 19));
+    docs.apply_edits(doc.id, &[TextEdit { range: all, new_text: "#!/usr/bin/env python3".into() }]).unwrap();
+    assert_eq!(language(None), "python", "the open buffer's first line");
+}
+
+fn latin_project(f: &Fixture) {
+    let mut defaults = f.docs.file_defaults();
+    defaults.project_fallback = "iso-8859-15".into();
+    f.docs.set_file_defaults(defaults);
+}
+
+#[test]
+fn ascii_file_in_a_latin_project_saves_new_characters_in_the_project_encoding() {
+    let f = fixture();
+    latin_project(&f);
+    let path = f.root.join("A.java");
+    fs::write(&path, b"class A {}\n").unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "iso-8859-15");
+    f.docs.edit(doc.id, doc.version, change(0, 0, "// ação €\n")).unwrap();
+    f.docs.save(doc.id).unwrap();
+
+    assert_eq!(fs::read(&path).unwrap(), b"// a\xe7\xe3o \xa4\nclass A {}\n");
+}
+
+#[test]
+fn ascii_file_stays_utf8_when_the_project_encoding_is_utf8() {
+    let f = fixture();
+    let path = f.root.join("A.java");
+    fs::write(&path, b"class A {}\n").unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "utf-8");
+    f.docs.edit(doc.id, doc.version, change(0, 0, "// ç\n")).unwrap();
+    f.docs.save(doc.id).unwrap();
+
+    assert_eq!(fs::read(&path).unwrap(), "// ç\nclass A {}\n".as_bytes());
+}
+
+#[test]
+fn utf8_text_with_accents_keeps_utf8_in_a_latin_project() {
+    let f = fixture();
+    latin_project(&f);
+    let path = f.root.join("A.java");
+    fs::write(&path, "// ação\n").unwrap();
+
+    assert_eq!(f.docs.open(&path).unwrap().encoding, "utf-8");
+}
+
+#[test]
+fn typing_a_character_latin9_lacks_into_an_ascii_file_fails_the_save() {
+    let f = fixture();
+    latin_project(&f);
+    let path = f.root.join("A.java");
+    fs::write(&path, b"class A {}\n").unwrap();
+    let doc = f.docs.open(&path).unwrap();
+    f.docs.edit(doc.id, doc.version, change(0, 0, "// 漢\n")).unwrap();
+
+    let before = f.events.lock().len();
+    let err = f.docs.save(doc.id).expect_err("ISO-8859-15 cannot encode the edit");
+
+    assert_eq!(err.kind, ErrorKind::InvalidInput, "{err}");
+    assert_failed_save_preserves_edit(&f, doc.id, "// 漢\nclass A {}\n", before);
+    assert_eq!(fs::read(&path).unwrap(), b"class A {}\n");
+}
+
+#[test]
+fn editorconfig_utf8_charset_wins_over_a_latin_project_for_ascii_files() {
+    let f = fixture();
+    latin_project(&f);
+    fs::write(f.root.join(".editorconfig"), "root = true\n[*.java]\ncharset = utf-8\n").unwrap();
+    let path = f.root.join("A.java");
+    fs::write(&path, b"class A {}\n").unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "utf-8");
+    f.docs.edit(doc.id, doc.version, change(0, 0, "// é\n")).unwrap();
+    f.docs.save(doc.id).unwrap();
+
+    assert_eq!(fs::read(&path).unwrap(), "// é\nclass A {}\n".as_bytes());
+}
+
+#[test]
+fn ascii_properties_file_stays_utf8_by_default() {
+    let f = fixture();
+    let path = f.root.join("messages.properties");
+    fs::write(&path, b"greeting=Hello\n").unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "utf-8", "the properties encoding only decodes bytes that are not UTF-8");
+    f.docs.edit(doc.id, doc.version, change(9, 14, "Olá")).unwrap();
+    f.docs.save(doc.id).unwrap();
+
+    assert_eq!(fs::read(&path).unwrap(), "greeting=Olá\n".as_bytes());
+}
+
+#[test]
+fn latin_properties_file_still_decodes_with_the_properties_encoding() {
+    let f = fixture();
+    let path = f.root.join("messages.properties");
+    fs::write(&path, b"greeting=Ol\xe1\n").unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "windows-1252");
+    assert_eq!(f.docs.text_of(&path).as_deref(), Some("greeting=Olá\n"));
+}
+
+#[test]
+fn editorconfig_charset_leaves_a_bomless_utf16_file_alone() {
+    let f = fixture();
+    fs::write(f.root.join(".editorconfig"), "root = true\n[*.txt]\ncharset = latin1\n").unwrap();
+    let path = f.root.join("a.txt");
+    fs::write(&path, b"a\x00b\x00c\x00d\x00").unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "utf-16le");
+    f.docs.edit(doc.id, doc.version, change(4, 4, "e")).unwrap();
+    f.docs.save(doc.id).unwrap();
+
+    assert_eq!(fs::read(&path).unwrap(), b"a\x00b\x00c\x00d\x00e\x00");
+}
+
+#[test]
+fn an_external_change_keeps_the_editorconfig_charset_of_an_ascii_file() {
+    let f = fixture();
+    latin_project(&f);
+    fs::write(f.root.join(".editorconfig"), "root = true\n[*.java]\ncharset = utf-8\n").unwrap();
+    let path = f.root.join("A.java");
+    fs::write(&path, b"class A {}\n").unwrap();
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "utf-8");
+
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    fs::write(&path, b"class B {}\n").unwrap();
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
+
+    let reloaded = f.docs.snapshot(doc.id).unwrap();
+    assert_eq!((reloaded.text.as_str(), reloaded.encoding.as_str()), ("class B {}\n", "utf-8"));
+}
+
+#[test]
+fn editorconfig_charset_applies_to_a_native_to_ascii_properties_file() {
+    let f = fixture();
+    let mut defaults = f.docs.file_defaults();
+    defaults.native_to_ascii = true;
+    f.docs.set_file_defaults(defaults);
+    fs::write(f.root.join(".editorconfig"), "root = true\n[*.properties]\ncharset = latin1\n").unwrap();
+    let path = f.root.join("messages.properties");
+    fs::write(&path, b"greeting=Ol\\u00e1\n").unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "windows-1252", "the escapes are ASCII bytes");
+    assert_eq!(f.docs.text_of(&path).as_deref(), Some("greeting=Olá\n"));
+}
+
+/// Undoing back to the text on disk leaves the document clean (as in IntelliJ);
+/// redo, a save in between, or a pending line-ending change make it modified again.
+#[test]
+fn undo_back_to_the_disk_text_leaves_the_document_clean() {
+    let f = fixture();
+    let path = f.root.join("undo.txt");
+    fs::write(&path, "alpha\n").unwrap();
+    let id = f.docs.open(&path).unwrap().id;
+    let v = f.docs.edit(id, 0, change(0, 0, "x")).unwrap();
+    assert!(f.docs.is_dirty(id).unwrap());
+    let v = f.docs.edit(id, v, change(0, 1, "")).unwrap();
+    assert!(!f.docs.is_dirty(id).unwrap(), "undo back to the disk text");
+    let v = f.docs.edit(id, v, change(0, 0, "x")).unwrap();
+    assert!(f.docs.is_dirty(id).unwrap(), "redo");
+    assert_eq!(dirty_events(&f.events.lock()), vec![true, false, true]);
+
+    // After saving "xalpha", undoing to "alpha" differs from the file again.
+    f.docs.save(id).unwrap();
+    let v = f.docs.edit(id, v, change(0, 1, "")).unwrap();
+    assert!(f.docs.is_dirty(id).unwrap(), "undo past a save");
+    let v = f.docs.edit(id, v, change(0, 0, "x")).unwrap();
+    assert!(!f.docs.is_dirty(id).unwrap(), "redo back to the saved text");
+
+    // A pending line-ending change is written on save whatever the text.
+    f.docs.set_line_ending(id, LineEnding::CrLf).unwrap();
+    let v = f.docs.edit(id, v, change(0, 0, "y")).unwrap();
+    f.docs.edit(id, v, change(0, 1, "")).unwrap();
+    assert!(f.docs.is_dirty(id).unwrap(), "line ending still differs from the file");
+}
+
+/// A buffer undone back to the disk text follows a checkout instead of warning about it.
+#[test]
+fn undo_back_to_the_disk_text_reloads_on_checkout() {
+    let f = fixture();
+    let path = f.root.join("undo.txt");
+    fs::write(&path, "alpha\n").unwrap();
+    let id = f.docs.open(&path).unwrap().id;
+    let v = f.docs.edit(id, 0, change(0, 0, "x")).unwrap();
+    f.docs.edit(id, v, change(0, 1, "")).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    fs::write(&path, "checked out\n").unwrap();
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
+    assert_eq!(f.docs.snapshot(id).unwrap().text, "checked out\n");
+}
+
+fn project_encoding(f: &Fixture, label: &str) {
+    let mut defaults = f.docs.file_defaults();
+    defaults.project_fallback = label.into();
+    f.docs.set_file_defaults(defaults);
+}
+
+fn latin9_editorconfig(f: &Fixture) {
+    fs::write(f.root.join(".editorconfig"), "root = true\n[*.java]\ncharset = iso-8859-15\n").unwrap();
+}
+
+#[test]
+fn editorconfig_charset_applies_to_an_existing_ascii_file_over_the_project_encoding() {
+    let f = fixture();
+    project_encoding(&f, "gbk");
+    latin9_editorconfig(&f);
+    let path = f.root.join("A.java");
+    fs::write(&path, b"class A {}\n").unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "iso-8859-15");
+    f.docs.edit(doc.id, doc.version, change(0, 0, "// ação €\n")).unwrap();
+    f.docs.save(doc.id).unwrap();
+
+    assert_eq!(fs::read(&path).unwrap(), b"// a\xe7\xe3o \xa4\nclass A {}\n");
+}
+
+#[test]
+fn editorconfig_charset_decodes_a_legacy_file_over_the_project_encoding() {
+    let f = fixture();
+    project_encoding(&f, "gbk");
+    latin9_editorconfig(&f);
+    let path = f.root.join("A.java");
+    let bytes = b"// a\xe7\xe3o \xa4\n";
+    fs::write(&path, bytes).unwrap();
+
+    assert_eq!(f.docs.detect_encoding(&path, bytes), encoding_rs::ISO_8859_15);
+    for loaded in [f.docs.load_file(&path).unwrap(), f.docs.load_file_bounded(&path, 1024).unwrap()] {
+        assert_eq!((loaded.text.as_str(), loaded.encoding.as_str()), ("// ação €\n", "iso-8859-15"));
+    }
+
+    let doc = f.docs.open(&path).unwrap();
+
+    assert_eq!((doc.text.as_str(), doc.encoding.as_str()), ("// ação €\n", "iso-8859-15"));
+}
+
+#[test]
+fn editorconfig_charset_survives_a_reload_from_disk() {
+    let f = fixture();
+    project_encoding(&f, "gbk");
+    latin9_editorconfig(&f);
+    let path = f.root.join("A.java");
+    fs::write(&path, b"class A {}\n").unwrap();
+    let doc = f.docs.open(&path).unwrap();
+
+    fs::write(&path, b"class A { int changed; }\n").unwrap();
+    f.docs.sync_from_disk();
+
+    let reloaded = f.docs.snapshot(doc.id).unwrap();
+    assert_eq!((reloaded.text.as_str(), reloaded.encoding.as_str()), ("class A { int changed; }\n", "iso-8859-15"));
+}
+
+#[test]
+fn editorconfig_without_a_usable_charset_leaves_the_encoding_alone() {
+    let open = |project: Option<&str>, editorconfig: &str, enabled: bool| {
+        let f = fixture();
+        let mut defaults = f.docs.file_defaults();
+        if let Some(project) = project {
+            defaults.project_fallback = project.into();
+        }
+        defaults.editorconfig = enabled;
+        f.docs.set_file_defaults(defaults);
+        fs::write(f.root.join(".editorconfig"), format!("root = true\n[*.java]\n{editorconfig}\n")).unwrap();
+        let path = f.root.join("A.java");
+        fs::write(&path, b"class A {}\n").unwrap();
+        f.docs.open(&path).unwrap().encoding
+    };
+
+    assert_eq!(open(None, "indent_size = 2", true), "utf-8", "nothing configured");
+    assert_eq!(open(None, "charset = ebcdic", true), "utf-8", "unknown charset");
+    assert_eq!(open(Some("iso-8859-15"), "indent_size = 2", true), "iso-8859-15", "no charset: the project's");
+    assert_eq!(open(Some("iso-8859-15"), "charset = ebcdic", true), "iso-8859-15", "unknown charset: the project's");
+    assert_eq!(open(Some("iso-8859-15"), "charset = gbk", false), "iso-8859-15", "EditorConfig support is off");
+    assert_eq!(open(Some("iso-8859-15"), "charset = utf-16le", true), "iso-8859-15", "UTF-16 is detected, not assumed");
+}
+
+#[test]
+fn utf16_text_without_a_bom_keeps_utf16_under_a_utf8_charset() {
+    let f = fixture();
+    fs::write(f.root.join(".editorconfig"), "root = true\n[*.java]\ncharset = utf-8\n").unwrap();
+    let path = f.root.join("A.java");
+    fs::write(&path, ide_vfs::encode("class A {}\n", "utf-16le", false).unwrap()).unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+
+    assert_eq!((doc.text.as_str(), doc.encoding.as_str()), ("class A {}\n", "utf-16le"));
+}
+
+#[test]
+fn valid_utf8_text_keeps_utf8_under_a_legacy_charset() {
+    let f = fixture();
+    latin9_editorconfig(&f);
+    let path = f.root.join("A.java");
+    fs::write(&path, "// ação\n").unwrap();
+
+    assert_eq!(f.docs.open(&path).unwrap().encoding, "utf-8");
+}
+
+#[test]
+fn editorconfig_utf8_charset_survives_a_reload_from_disk() {
+    let f = fixture();
+    latin_project(&f);
+    fs::write(f.root.join(".editorconfig"), "root = true\n[*.java]\ncharset = utf-8\n").unwrap();
+    let path = f.root.join("A.java");
+    fs::write(&path, b"class A {}\n").unwrap();
+    let doc = f.docs.open(&path).unwrap();
+
+    fs::write(&path, b"class A { int changed; }\n").unwrap();
+    f.docs.sync_from_disk();
+
+    let reloaded = f.docs.snapshot(doc.id).unwrap();
+    assert_eq!((reloaded.text.as_str(), reloaded.encoding.as_str()), ("class A { int changed; }\n", "utf-8"));
+}
+
+#[test]
+fn editorconfig_charset_wins_over_the_properties_encoding() {
+    let f = fixture();
+    fs::write(f.root.join(".editorconfig"), "root = true\n[*.properties]\ncharset = iso-8859-15\n").unwrap();
+    let path = f.root.join("messages.properties");
+    fs::write(&path, b"price=10 \xa4\n").unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+
+    assert_eq!((doc.text.as_str(), doc.encoding.as_str()), ("price=10 €\n", "iso-8859-15"));
+    assert_eq!(f.docs.detect_encoding(&path, b"price=10\n"), encoding_rs::ISO_8859_15);
+    assert_eq!(f.docs.detect_encoding(&f.root.join("unmatched.txt"), b"price=10\n"), encoding_rs::UTF_8);
+}
+
+#[test]
+fn switching_editorconfig_support_off_stops_the_charset_on_reload() {
+    let f = fixture();
+    project_encoding(&f, "gbk");
+    latin9_editorconfig(&f);
+    let path = f.root.join("A.java");
+    fs::write(&path, b"class A {}\n").unwrap();
+    let doc = f.docs.open(&path).unwrap();
+    let mut defaults = f.docs.file_defaults();
+    defaults.editorconfig = false;
+    f.docs.set_file_defaults(defaults);
+
+    fs::write(&path, b"class A { int changed; }\n").unwrap();
+    f.docs.sync_from_disk();
+
+    assert_eq!(f.docs.snapshot(doc.id).unwrap().encoding, "gbk");
+}
+
+#[test]
+fn a_file_declared_utf8_that_is_not_utf8_is_decoded_with_the_project_encoding() {
+    let f = fixture();
+    latin_project(&f);
+    fs::write(f.root.join(".editorconfig"), "root = true\n[*.java]\ncharset = utf-8\n").unwrap();
+    let path = f.root.join("A.java");
+    fs::write(&path, b"// a\xe7\xe3o \xa4\n").unwrap();
+
+    let doc = f.docs.open(&path).unwrap();
+
+    assert_eq!((doc.text.as_str(), doc.encoding.as_str()), ("// ação €\n", "iso-8859-15"));
+}
+
+/// `[editor.encodings.mappings]` as the host hands it over: project paths with their labels.
+fn encoding_mappings(f: &Fixture, entries: &[(&str, &str)]) {
+    let mut defaults = f.docs.file_defaults();
+    defaults.mappings = entries.iter().map(|(rel, label)| (in_root(f, rel), (*label).to_owned())).collect();
+    f.docs.set_file_defaults(defaults);
+}
+
+fn in_root(f: &Fixture, rel: &str) -> PathBuf {
+    rel.split('/').fold(f.root.clone(), |path, segment| path.join(segment))
+}
+
+#[test]
+fn encoding_mapping_of_a_file_survives_closing_and_reopening_it() {
+    let f = fixture();
+    let path = f.root.join("A.java");
+    fs::write(&path, "// ação\n").unwrap();
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "utf-8");
+    f.docs.set_encoding(doc.id, "iso-8859-15", true).unwrap();
+    let chosen = f.docs.snapshot(doc.id).unwrap();
+    assert_eq!(chosen.text, "// aÃ§Ã£o\n");
+    f.docs.close(doc.id);
+
+    encoding_mappings(&f, &[("A.java", "iso-8859-15")]);
+    let reopened = f.docs.open(&path).unwrap();
+    assert_eq!((reopened.encoding.as_str(), reopened.text.as_str()), ("iso-8859-15", chosen.text.as_str()));
+    // A later change on disk is read in the remembered encoding too.
+    fs::write(&path, b"// a\xe7\xe3o \xa4\n").unwrap();
+    f.docs.on_disk_changed(std::slice::from_ref(&path));
+    let reloaded = f.docs.snapshot(reopened.id).unwrap();
+    assert_eq!((reloaded.encoding.as_str(), reloaded.text.as_str()), ("iso-8859-15", "// ação €\n"));
+    assert_eq!(f.docs.load_file(&path).unwrap().encoding, "iso-8859-15", "closed-file readers agree");
+}
+
+#[test]
+fn encoding_mapping_of_a_file_to_utf8_holds_in_a_latin_project() {
+    let f = fixture();
+    latin_project(&f);
+    let path = f.root.join("A.java");
+    fs::write(&path, b"class A {}\n").unwrap();
+    encoding_mappings(&f, &[("A.java", "utf-8")]);
+
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!(doc.encoding, "utf-8");
+    f.docs.edit(doc.id, doc.version, change(0, 0, "// é\n")).unwrap();
+    f.docs.save(doc.id).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), "// é\nclass A {}\n".as_bytes());
+}
+
+#[test]
+fn encoding_mapping_of_a_file_beats_editorconfig_and_a_folder_mapping_loses_to_it() {
+    let f = fixture();
+    let mut defaults = f.docs.file_defaults();
+    defaults.project_fallback = "gbk".into();
+    f.docs.set_file_defaults(defaults);
+    fs::write(f.root.join(".editorconfig"), "root = true\n[*.java]\ncharset = latin1\nend_of_line = crlf\n").unwrap();
+    fs::create_dir(f.root.join("src")).unwrap();
+    for name in ["src/A.java", "src/B.java", "src/notes.txt", "other.txt"] {
+        fs::write(in_root(&f, name), b"plain ascii\n").unwrap();
+    }
+    fs::write(in_root(&f, "src/new.txt"), b"").unwrap();
+    fs::write(in_root(&f, "src/latin.txt"), b"a\xe7\xe3o \xa4\n").unwrap();
+    encoding_mappings(&f, &[("src", "iso-8859-15"), ("src/A.java", "koi8-r")]);
+    let open = |name: &str| f.docs.open(&in_root(&f, name)).unwrap();
+
+    let file = open("src/A.java");
+    assert_eq!(file.encoding, "koi8-r", "the file's own mapping beats .editorconfig");
+    assert_eq!(file.line_ending, LineEnding::CrLf, ".editorconfig still sets the rest");
+    assert_eq!(open("src/B.java").encoding, "windows-1252", ".editorconfig beats the folder mapping");
+    assert_eq!(open("src/notes.txt").encoding, "iso-8859-15", "the folder mapping beats the project encoding");
+    assert_eq!(open("src/new.txt").encoding, "iso-8859-15", "a new file takes its folder's encoding");
+    assert_eq!(open("other.txt").encoding, "gbk");
+    let latin = open("src/latin.txt");
+    assert_eq!((latin.encoding.as_str(), latin.text.as_str()), ("iso-8859-15", "ação €\n"));
+}
+
+#[test]
+fn encoding_mapping_of_a_folder_is_left_out_where_editorconfig_sets_the_charset() {
+    let f = fixture();
+    let mut defaults = f.docs.file_defaults();
+    defaults.project_fallback = "gbk".into();
+    f.docs.set_file_defaults(defaults);
+    fs::write(f.root.join(".editorconfig"), "root = true\n[*.java]\ncharset = latin1\n").unwrap();
+    fs::create_dir(f.root.join("src")).unwrap();
+    let path = in_root(&f, "src/B.java");
+    fs::write(&path, b"// \xd6\xd0\n").unwrap();
+    let unmapped = f.docs.open(&path).unwrap();
+    f.docs.close(unmapped.id);
+
+    encoding_mappings(&f, &[("src", "koi8-r")]);
+    let mapped = f.docs.open(&path).unwrap();
+    assert_eq!((mapped.encoding, mapped.text), (unmapped.encoding, unmapped.text));
+    assert_eq!(f.docs.load_file(&path).unwrap().encoding, "windows-1252", "closed-file readers agree");
+}
+
+#[test]
+fn encoding_mapping_a_file_no_longer_decodes_in_falls_back_to_detection() {
+    let f = fixture();
+    latin_project(&f);
+    let path = f.root.join("A.java");
+    fs::write(&path, b"// a\xe7\xe3o\n").unwrap();
+    encoding_mappings(&f, &[("A.java", "utf-8")]);
+
+    let doc = f.docs.open(&path).unwrap();
+    assert_eq!((doc.encoding.as_str(), doc.text.as_str()), ("iso-8859-15", "// ação\n"));
+}
+
+#[test]
+fn without_encoding_mappings_files_open_as_before() {
+    let f = fixture();
+    let settings = ide_core::settings::Settings::default();
+    f.docs.set_file_defaults(ide_workspace::FileDefaults::from_settings(&settings, Some(&f.root)));
+    assert!(f.docs.file_defaults().mappings.is_empty());
+    for (name, bytes) in [
+        ("ascii.java", &b"class A {}\n"[..]),
+        ("utf8.java", "// ação\n".as_bytes()),
+        ("latin.java", &b"// a\xe7\xe3o de gra\xe7a, cora\xe7\xe3o\n"[..]),
+        ("empty.java", &b""[..]),
+    ] {
+        let path = f.root.join(name);
+        fs::write(&path, bytes).unwrap();
+        let detected = ide_vfs::load_text(&path).unwrap();
+        let doc = f.docs.open(&path).unwrap();
+        assert_eq!((doc.encoding, doc.text), (detected.encoding, detected.text), "{name}");
+    }
 }

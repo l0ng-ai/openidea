@@ -12,6 +12,7 @@ vi.mock("@/platform/ipc", async (original) => {
       buildSync: mocks.sync,
       runStart: mocks.start,
       runConfigs: async () => ({ status: "ok", data: [] }),
+      showSystemNotification: async () => ({ status: "ok", data: null }),
     },
   };
 });
@@ -24,6 +25,7 @@ vi.mock("@tauri-apps/api/core", async (original) => ({
 
 import { useProject } from "@/platform/project";
 import { provideNotificationService } from "@/workbench/contributions";
+import { notificationServiceImpl, useNotifications } from "@/workbench/notificationStore";
 import { resetBuild, syncTool, useBuild } from "../features/build-tools/store";
 import { resetRuns, startRun } from "../features/run/store";
 
@@ -36,6 +38,7 @@ beforeEach(() => {
 afterEach(() => {
   resetBuild();
   resetRuns();
+  useNotifications.setState({ items: [] });
 });
 
 it.each(["maven", "gradle"] as const)("offers settings for %s sync failures, returned or thrown", async (tool) => {
@@ -59,6 +62,29 @@ it.each(["maven", "gradle"] as const)("offers settings for %s sync failures, ret
       actions: [expect.objectContaining({ label: `Open ${tool === "maven" ? "Maven" : "Gradle"} Settings` })],
     }),
   );
+});
+
+// #4092: the failure balloon outlived the reload that fixed it.
+it.each(["maven", "gradle"] as const)("a clean %s reload takes down the failure balloon", async (tool) => {
+  provideNotificationService(notificationServiceImpl);
+  const name = tool === "maven" ? "Maven" : "Gradle";
+  const shown = () =>
+    useNotifications
+      .getState()
+      .items.filter((n) => n.balloon)
+      .map((n) => n.title);
+  mocks.sync.mockRejectedValueOnce(new Error("cannot start mvn.cmd: program not found"));
+  await syncTool(tool);
+  expect(shown()).toEqual([`Cannot reload ${name} projects`]);
+
+  const clean = (tool === "maven"
+    ? { maven: { syncError: null }, gradle: [] }
+    : { maven: null, gradle: [{ syncError: null }] }) as unknown as BuildModel;
+  mocks.sync.mockResolvedValueOnce({ status: "ok", data: clean });
+  await syncTool(tool);
+  expect(shown()).toEqual([]);
+  // Still in the Notifications tool window.
+  expect(useNotifications.getState().items.map((n) => n.title)).toEqual([`Cannot reload ${name} projects`]);
 });
 
 it.each(["maven", "gradle"] as const)("offers settings when a %s run cannot start", async (kind) => {

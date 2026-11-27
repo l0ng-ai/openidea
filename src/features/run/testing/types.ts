@@ -14,6 +14,8 @@ export interface TestLocation {
   resolve: "path" | "name" | "rubyTest";
   /** JVM frames: the class's binary name; `path` is then the file under its package directory. */
   className?: string;
+  /** No line: the describe chain and name of a JS test to find in the file (Cypress reports none). */
+  test?: string[];
 }
 
 export type TestEvent =
@@ -21,7 +23,11 @@ export type TestEvent =
   | { type: "result"; path: string[]; status: Exclude<TestStatus, "running">; durationMs?: number }
   | { type: "location"; path: string[]; location: TestLocation }
   | { type: "output"; path: string[]; line: string }
-  | { type: "summary"; passed?: number; failed?: number; skipped?: number; durationMs?: number };
+  | { type: "summary"; passed?: number; failed?: number; skipped?: number; durationMs?: number }
+  /** A watch mode cycle begins: its results replace the previous ones. */
+  | { type: "reset" }
+  /** A watch mode cycle has reported all its results. */
+  | { type: "end" };
 
 export interface TestOutputParser {
   feed(line: string): TestEvent[];
@@ -41,6 +47,15 @@ export function parseDuration(text: string | undefined): number | undefined {
     total += m[2] === "ms" ? v : m[2] === "m" || m[2] === "min" ? v * 60_000 : v * 1000;
   }
   return matched ? Math.round(total * 1000) / 1000 : undefined;
+}
+
+/** Formats a duration the way the test tree shows it: `850 ms`, `1.25 s`, `2 m 5 s`. */
+export function formatDuration(ms: number | undefined): string {
+  if (ms === undefined) return "";
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1).replace(/\.?0+$/, "")} s`;
+  const s = Math.round(ms / 1000);
+  return `${Math.floor(s / 60)} m ${s % 60} s`;
 }
 
 /**

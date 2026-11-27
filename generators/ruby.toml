@@ -1,0 +1,48 @@
+id = "ruby"
+name = "Ruby"
+group = "Ruby"
+icon = "project-ruby"
+description = "A Ruby application with a Gemfile, or a gem from bundle gem."
+
+[[requires]]
+program = "bundle"
+hint = "Install Ruby with Bundler: https://www.ruby-lang.org/en/documentation/installation/"
+
+[[fields]]
+id = "kind"
+label = "Type:"
+type = "choice"
+segmented = true
+options = [{ value = "app", label = "Application" }, { value = "gem", label = "Gem" }]
+default = "app"
+
+[[fields]]
+id = "test"
+label = "Test framework:"
+type = "choice"
+segmented = true
+options = [{ value = "minitest", label = "Minitest" }, { value = "rspec", label = "RSpec" }]
+default = "minitest"
+visible = { kind = "gem" }
+
+[[steps]]
+label = "Running bundle init"
+program = "bundle"
+args = ["init"]
+when = { kind = "app" }
+
+[[steps]]
+label = "Running bundle gem"
+program = "bundle"
+cwd = "parent"
+args = ["gem", "{{name}}", "--test={{test}}", "--ci=none", "--linter=none", "--no-coc", "--no-mit", "--no-changelog"]
+when = { kind = "gem" }
+
+[[files]]
+path = "main.rb"
+when = { kind = "app" }
+content = '''
+# frozen_string_literal: true
+
+puts "Hello, World!"
+'''

@@ -40,6 +40,18 @@ describe("static notebook output sanitization", () => {
     expect(document.querySelector("body div")?.hasAttribute("style")).toBe(false);
   });
 
+  it("themes the output frame from the supplied palette and ignores unsafe colour values", () => {
+    const palette = { fg: "#d1d3d9", bg: "#191a1c", border: "#40434a", headerBg: "#212326", scheme: "dark" as const };
+    const html = staticOutputDocument("<table><tr><th>a</th></tr></table>", palette);
+    expect(html).toContain("background:#191a1c");
+    expect(html).toContain("color-scheme:dark");
+    expect(html).toContain("border:1px solid #40434a");
+    const hostile = staticOutputDocument("<p>x</p>", { ...palette, bg: "red;}</style><script>alert(1)</script>" });
+    expect(hostile).not.toContain("<script>");
+    expect(hostile).toContain("background:white");
+    expect(staticOutputDocument("<p>x</p>")).toContain("background:white");
+  });
+
   it("retains safe SVG chart paint, local definitions and raster images but removes active/external SVG", () => {
     const url = sanitizedSvgUrl(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">
       <script>alert(1)</script><foreignObject><div>host markup</div></foreignObject>

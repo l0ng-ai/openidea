@@ -1,15 +1,36 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunConfig } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
 import { menuGroupItems, registerMenuGroup } from "@/workbench/contributions";
 import type { MenuItem } from "@/ui";
-import { choiceItems, contextMenuItems } from "./contextRun";
-import { OPTIMISTIC, produceContextChoices } from "./producers";
+import { canDebugProduced, choiceItems, compiledDebugPlan, contextMenuItems, projectContext } from "./contextRun";
+import { OPTIMISTIC, produceContext, produceContextChoices, type ToolEnv } from "./producers";
 import { gutterTestState, markerIcon, targetMenuItems } from "./runGutter";
 import { useRun } from "./store";
 import type { RunTarget } from "./targets";
 import { TestResults } from "./testing";
 import { clearTestStates, recordTestStates } from "./testing/states";
+import { setInvokeRoute } from "@/platform/tauriCore";
+
+const mocks = vi.hoisted(() => ({
+  tauri: { value: false },
+  read: { value: null as string | null },
+  toolEnv: { value: null as ((...args: unknown[]) => unknown) | null },
+}));
+
+vi.mock("@/platform/ipc", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/platform/ipc")>();
+  return { ...actual, isTauri: () => mocks.tauri.value };
+});
+
+vi.mock("./runtimes", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./runtimes")>();
+  return {
+    ...actual,
+    toolEnv: (...args: Parameters<typeof actual.toolEnv>) =>
+      mocks.toolEnv.value ? mocks.toolEnv.value(...args) : actual.toolEnv(...args),
+  };
+});
 
 const ROOT = "/work/app";
 const SCRATCHES = "/Users/me/scratches";
@@ -61,6 +82,18 @@ describe("run context menu group", () => {
     expect(items[0]).toMatchObject({ arg: { path: `${SCRATCHES}/hi.ts`, line: 0, dir: false } });
   });
 
+  it("editor: offers Run / Debug '<script>' on a package.json script line", () => {
+    const text = '{\n  "scripts": {\n    "dev": "vite",\n    "build": "vite build"\n  }\n}\n';
+    // Line 2 (0-based) is the "dev" entry.
+    const items = contextMenuItems("editor", { paths: [`${ROOT}/package.json`], text, line: 2 });
+    expect(items.map((i) => ("label" in i ? i.label : i.kind))).toEqual(["Run 'dev'", "Debug 'dev'"]);
+    expect(items[0]).toMatchObject({ icon: "run" });
+    expect(items[1]).toMatchObject({ icon: "debug" });
+    // Other lines get the usual menu.
+    const other = contextMenuItems("editor", { paths: [`${ROOT}/package.json`], text, line: 0 });
+    expect(other.map((i) => ("label" in i ? i.label : i.kind))).not.toContain("Run 'dev'");
+  });
+
   it("editor: the element at the caret names the entries", () => {
     const text = "describe('math', () => {\n  it('adds', () => {\n    expect(1).toBe(1);\n  });\n});\n";
     const at = (line: number) => contextMenuItems("editor", { paths: [`${ROOT}/src/m.test.ts`], text, line })[0];
@@ -80,6 +113,73 @@ describe("run context menu group", () => {
     const items = contextMenuItems("projectView", { paths: [`${ROOT}/src/__tests__`], dirs: [true] });
     expect(items[0]).toMatchObject({ label: "Run 'Tests in '__tests__''", arg: { dir: true } });
     expect(contextMenuItems("projectView", { paths: [`${ROOT}/src/components`], dirs: [true] })).toEqual([]);
+  });
+
+  it("project view: Run / Debug '<project>' on a .NET project file (#5635)", () => {
+    const items = contextMenuItems("projectView", { paths: [`${ROOT}/src/App/App.csproj`], dirs: [false] });
+    expect(items[0]).toMatchObject({
+      action: "run.runContext",
+      label: "Run 'App'",
+      icon: "run",
+      arg: { path: `${ROOT}/src/App/App.csproj`, dir: false },
+    });
+    expect(items[1]).toMatchObject({ action: "run.debugContext", label: "Debug 'App'", icon: "debug" });
+    // A solution or a shared props file gets no Run / Debug entries.
+    expect(contextMenuItems("projectView", { paths: [`${ROOT}/src/App/App.sln`], dirs: [false] })).toEqual([]);
+    expect(contextMenuItems("projectView", { paths: [`${ROOT}/Directory.Build.props`], dirs: [false] })).toEqual([]);
+  });
+
+  it("routes an attached Spring Boot main and its tests through the member's Maven build", () => {
+    const member = "/work/spring";
+    const project = useProject.getState().project!;
+    useProject.setState({ project: { ...project, workspace: { version: 1, name: "app", projects: [ROOT, member] } } });
+    const maven: RunConfig = { ...npmTest, kind: "maven", command: "mvn", args: ["test"], debugAdapter: null };
+    useRun.setState({
+      configs: [
+        { ...maven, id: "maven:test" },
+        { ...maven, id: "member:test", cwd: member },
+      ],
+    });
+    const content = [
+      "package demo;",
+      "import org.springframework.boot.SpringApplication;",
+      "import org.springframework.boot.autoconfigure.SpringBootApplication;",
+      "@SpringBootApplication",
+      "public class App {",
+      "  public static void main(String[] args) { SpringApplication.run(App.class, args); }",
+      "}",
+    ].join("\n");
+    const main = { ...projectContext(), path: `${member}/src/main/java/demo/App.java`, content, line: 5 };
+    expect(produceContext(main, OPTIMISTIC)?.config).toMatchObject({
+      kind: "spring-boot",
+      module: member,
+      args: ["-cp", "${classpath}", "demo.App"],
+    });
+    expect(
+      produceContext(
+        {
+          ...main,
+          path: `${member}/src/test/java/demo/AppTest.java`,
+          content: "package demo;\nclass AppTest {\n  @Test\n  void starts() {}\n}",
+          line: 3,
+        },
+        OPTIMISTIC,
+      )?.config,
+    ).toMatchObject({
+      kind: "maven",
+      cwd: member,
+      args: [
+        "test",
+        "-Dtest=demo.AppTest#starts",
+        "-Dsurefire.failIfNoSpecifiedTests=false",
+        "-DskipTests=false",
+        "-Dmaven.test.skip=false",
+      ],
+    });
+    expect(produceContext({ ...main, path: `${ROOT}/src/main/java/demo/App.java` }, OPTIMISTIC)?.config).toMatchObject({
+      kind: "spring-boot",
+      module: "",
+    });
   });
 
   it("shows nothing when no producer matches or for several paths", () => {
@@ -197,5 +297,182 @@ describe("run gutter popup", () => {
     );
     // `main` targets never show results.
     expect(gutterTestState({ line: 0, kind: "main", name: "main", path: [] }, path)).toBeNull();
+  });
+});
+
+describe("Debug entry", () => {
+  const config = (c: Partial<RunConfig>) =>
+    ({ id: "c", name: "c", command: "", args: [], cwd: "", env: {}, ...c }) as RunConfig;
+  const MAIN_ZIG = [
+    'const std = @import("std");',
+    "pub fn main() !void {",
+    '    std.debug.print("hi\\n", .{});',
+    "}",
+  ].join("\n");
+  const CALC_ZIG = [
+    'const std = @import("std");',
+    'test "adds two numbers" {',
+    "    try std.testing.expect(true);",
+    "}",
+  ].join("\n");
+  const zigEnv: ToolEnv = {
+    tool: (n) => (n === "zig" ? { path: "/bin/zig", version: "0.17.1" } : null),
+    compileDir: "/tmp/openidea-run",
+  };
+
+  it("is offered for Maven and Gradle tests, which run with a JDWP agent", () => {
+    const mavenTest = config({ kind: "maven", command: "mvn", args: ["test", "-Dtest=A#b"], isTest: true });
+    expect(canDebugProduced({ name: "A.b", scope: "element", config: mavenTest })).toBe(true);
+    const gradleTest = config({
+      kind: "gradle",
+      command: "./gradlew",
+      args: [":app:test", "--tests", "A.b"],
+      isTest: true,
+    });
+    expect(canDebugProduced({ name: "A.b", scope: "element", config: gradleTest })).toBe(true);
+    expect(
+      canDebugProduced({ name: "lint", scope: "file", config: config({ kind: "npm", args: ["run", "lint"] }) }),
+    ).toBe(false);
+  });
+
+  beforeEach(() => {
+    useProject.setState({ project: { name: "app", root: ROOT, trusted: true, isGit: false, settings: {} } as never });
+    useRun.setState({ configs: [], loaded: true });
+    mocks.tauri.value = true;
+    mocks.toolEnv.value = () => zigEnv;
+    // Bindings' `typedError` wraps the raw invoke result: `fs_read_text` resolves to its text.
+    setInvokeRoute((cmd) =>
+      cmd === "fs_read_text" ? Promise.resolve(mocks.read.value) : Promise.reject(new Error("not stubbed")),
+    );
+  });
+  afterEach(() => {
+    mocks.tauri.value = false;
+    mocks.read.value = null;
+    mocks.toolEnv.value = null;
+    setInvokeRoute(null);
+    useProject.setState({ project: null });
+    useRun.setState({ configs: [], loaded: false });
+  });
+
+  it("re-debug of a saved zig file config rebuilds the build-then-debug plan", async () => {
+    mocks.read.value = MAIN_ZIG;
+    const saved = config({
+      id: "context:file:src/main.zig",
+      kind: "zig",
+      command: "zig",
+      args: ["run", "src/main.zig"],
+      cwd: null,
+    });
+    const plan = await compiledDebugPlan(saved);
+    expect(plan?.debug).toBeTruthy();
+    expect(plan!.debug!.build.command).toMatch(
+      /zig build-exe src\/main\.zig -femit-bin=\/tmp\/openidea-run\/main-\w+$/,
+    );
+    expect(plan!.debug!.config).toMatchObject({
+      kind: "native",
+      debugAdapter: "codelldb",
+      params: { language: "zig" },
+    });
+  });
+
+  it("re-debug of a saved zig test config re-targets its test", async () => {
+    mocks.read.value = CALC_ZIG;
+    const saved = config({
+      id: "context:file:src/calc.zig#adds two numbers",
+      kind: "zig",
+      command: "zig",
+      args: ["test", "src/calc.zig", "--test-filter", "adds two numbers"],
+      cwd: null,
+    });
+    const plan = await compiledDebugPlan(saved);
+    expect(plan?.debug).toBeTruthy();
+    expect(plan!.debug!.build.command).toMatch(
+      /zig test src\/calc\.zig --test-filter 'adds two numbers' --test-no-exec/,
+    );
+    expect(plan!.debug!.config.args).toEqual([]);
+  });
+
+  it("leaves other configurations alone", async () => {
+    expect(await compiledDebugPlan(config({ id: "c", kind: "shell", command: "make" }))).toBeNull();
+    expect(
+      await compiledDebugPlan(config({ id: "user:x", kind: "zig", command: "zig", args: ["run", "x.zig"], cwd: null })),
+    ).toBeNull();
+  });
+});
+
+describe("Go tests in the project view", () => {
+  const goTest: RunConfig = {
+    ...npmTest,
+    id: "go:test",
+    name: "go test ./...",
+    kind: "go",
+    command: "go",
+    args: ["test", "./..."],
+    debugAdapter: "delve",
+  };
+  const view = (path: string, dir: boolean) =>
+    labels(contextMenuItems("projectView", { paths: [path], dirs: [dir] })).filter((l) => !l.startsWith("run.modify"));
+
+  beforeEach(() => {
+    useProject.setState({ project: { name: "app", root: ROOT, trusted: true, isGit: false, settings: {} } as never });
+    useRun.setState({ configs: [goTest], loaded: true });
+  });
+  afterEach(() => {
+    useProject.setState({ project: null });
+    useRun.setState({ configs: [], loaded: false });
+  });
+
+  it("a package directory and the module root: Run / Debug 'go test <package>/...'", () => {
+    expect(view(`${ROOT}/cart`, true)).toEqual([
+      "run.runContext|Run 'go test cart/...'|run",
+      "run.debugContext|Debug 'go test cart/...'|debug",
+    ]);
+    expect(view(ROOT, true)[0]).toBe("run.runContext|Run 'go test ./...'|run");
+    expect(view(`${ROOT}/cart/testdata`, true)).toEqual([]);
+  });
+});
+
+describe("Run with Fuzzing", () => {
+  const goTest: RunConfig = {
+    ...npmTest,
+    id: "go:test",
+    name: "go test ./...",
+    kind: "go",
+    command: "go",
+    args: ["test", "./..."],
+    debugAdapter: "delve",
+  };
+  const text = "package parse\nfunc TestParse(t *testing.T) {}\nfunc FuzzParse(f *testing.F) {\n}\n";
+  const path = `${ROOT}/parse/parse_test.go`;
+  const target = (line: number, name: string): RunTarget => ({ line, kind: "test", name, path: [name] });
+  const itemLabels = (items: MenuItem[]) => items.map((i) => ("label" in i ? (i.label ?? "") : "---"));
+
+  beforeEach(() => {
+    useProject.setState({ project: { name: "app", root: ROOT, trusted: true, isGit: false, settings: {} } as never });
+    useRun.setState({ configs: [goTest], loaded: true });
+  });
+  afterEach(() => {
+    useProject.setState({ project: null });
+    useRun.setState({ configs: [], loaded: false });
+  });
+
+  it("the gutter offers it on a Fuzz function, after Run and Debug", () => {
+    expect(itemLabels(targetMenuItems(target(2, "FuzzParse"), path, text))).toEqual([
+      "Run 'FuzzParse in parse'",
+      "Debug 'FuzzParse in parse'",
+      "Run 'FuzzParse in parse' with Fuzzing",
+      "---",
+      "Modify Run Configuration…",
+    ]);
+    expect(itemLabels(targetMenuItems(target(1, "TestParse"), path, text)).some((l) => /Fuzzing/.test(l))).toBe(false);
+  });
+
+  it("the editor menu offers it under More Run/Debug at a Fuzz function only", () => {
+    const at = (line: number) => labels(contextMenuItems("editor", { paths: [path], text, line }));
+    expect(at(2)).toContain("Run 'FuzzParse in parse' with Fuzzing");
+    expect(at(1).some((l) => /Fuzzing/.test(l))).toBe(false);
+    expect(
+      labels(contextMenuItems("projectView", { paths: [path], dirs: [false] })).some((l) => /Fuzzing/.test(l)),
+    ).toBe(false);
   });
 });

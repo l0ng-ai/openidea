@@ -9,22 +9,27 @@ mod angular;
 pub mod apply;
 pub mod arduino;
 mod astro;
+pub mod container_python;
 mod discover;
 mod exec;
+pub mod flutter;
 pub mod go;
 pub mod godot;
 pub mod java;
 pub mod jdtls;
+pub mod jdtls_workspaces;
 pub mod libraries;
 pub mod locate;
 pub mod lombok;
 pub mod maven_profiles;
 mod npm;
+mod path_aliases;
 pub mod php;
 pub mod pinned;
 pub mod python;
 pub mod ruby;
 mod vue;
+mod zig;
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -50,6 +55,12 @@ pub enum SdkKind {
     /// Maven homes.
     Maven,
     Ruby,
+    /// Zig toolchain directories.
+    Zig,
+    /// .NET SDKs of the `dotnet` on the search path; `version` is what `global.json` pins.
+    Dotnet,
+    /// Flutter SDK roots.
+    Flutter,
 }
 
 /// One installed interpreter / toolchain.

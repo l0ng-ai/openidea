@@ -8,7 +8,14 @@ const mock = vi.hoisted(() => ({
   session: { hasSelection: true, send: vi.fn(), copySelection: vi.fn() },
   settings: { terminal: { overrideIdeShortcuts: true } },
 }));
-vi.mock("./loader", () => ({ terminalRuntime: () => ({ sessionFromElement: () => mock.session }) }));
+vi.mock("./loader", () => ({
+  terminalRuntime: () => ({
+    sessionFromElement: () => mock.session,
+    // CLI editor tabs have no tool-window Close/Find of their own.
+    cliSessionFromElement: () => undefined,
+    isCliSession: () => false,
+  }),
+}));
 vi.mock("@/platform/workflowSettings", () => ({ workflowSettings: () => mock.settings }));
 
 beforeEach(() => usePlatform.setState({ os: "windows" }));

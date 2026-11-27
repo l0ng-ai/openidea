@@ -12,11 +12,16 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-/// `p` as the UI sees it: `C:\a\b` and `\\?\C:\a\b` become `C:/a/b`.
+/// `p` as the UI sees it: `C:\a\b`, `c:\a\b` and `\\?\C:\a\b` become `C:/a/b`.
 pub fn to_ipc(p: &Path) -> String {
     #[cfg(windows)]
     {
-        dunce::simplified(p).to_string_lossy().replace('\\', "/")
+        let mut s = dunce::simplified(p).to_string_lossy().replace('\\', "/");
+        // The UI compares path strings; a drive letter is case-insensitive.
+        if s.as_bytes().get(1) == Some(&b':') {
+            s[..1].make_ascii_uppercase();
+        }
+        s
     }
     #[cfg(not(windows))]
     {
@@ -144,5 +149,8 @@ mod tests {
         assert_eq!(to_ipc(Path::new(r"\\?\C:\a\b")), "C:/a/b");
         assert_eq!(to_ipc(&Path::new("C:/a").join("b")), "C:/a/b");
         assert_eq!(serde_json::to_string(&IpcPath::from(r"C:\a\b")).unwrap(), r#""C:/a/b""#);
+        assert_eq!(to_ipc(Path::new(r"c:\a\b")), "C:/a/b");
+        assert_eq!(to_ipc(Path::new(r"\\?\d:\a")), "D:/a");
+        assert_eq!(to_ipc(Path::new(r"\\server\share\a")), "//server/share/a");
     }
 }

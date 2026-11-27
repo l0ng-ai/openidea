@@ -10,6 +10,7 @@ import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate
 import { getChunks, type Chunk, type MergeView } from "@codemirror/merge";
 import { changedLineGutters, chunkKind, type DiffKind } from "./cm";
 import { arrowButton } from "./diffControls";
+import styles from "./DiffEditor.module.css";
 
 type Side = "a" | "b";
 
@@ -170,10 +171,182 @@ function loadRatio(fallback = 50): number {
 }
 
 /**
+ * The scroll machinery of a side-by-side diff's panes: added to both editors,
+ * attached to their MergeView, and torn down with the diff.
+ */
+export interface DiffPanes {
+  /** Extensions for both editors. */
+  extension: Extension;
+  attach(mv: MergeView): void;
+  /** Turns synchronized scrolling on (bringing the other pane along) or off. */
+  setSync(on: boolean): void;
+  /** Scrolls one pane, the other following. */
+  scrollTo(side: Side, options: ScrollToOptions): void;
+  destroy(): void;
+}
+
+/**
+ * Scroll synchronization for the padded panes of an aligned side-by-side diff:
+ * MergeView pads the panes so their lines lay out identically, so one `scrollTop`
+ * fits both. Each pane scrolls itself, which keeps its horizontal scrollbar at
+ * the pane's bottom edge — a content-tall scroller would render it at the bottom
+ * of the content, out of reach until the diff is scrolled to its end.
+ */
+export class PaddedPanes implements DiffPanes {
+  readonly extension: Extension;
+  private mv: MergeView | null = null;
+  private sync: boolean;
+  private scrolling: Side | null = null;
+  private scrollTimer: ReturnType<typeof setTimeout> | undefined;
+  private wheelLeader: Side | null = null;
+  private wheelTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The scroll position a pane was last moved to by the other one, to tell its echo from the user. */
+  private readonly moved: Record<Side, number | null> = { a: null, b: null };
+  private readonly cleanup: (() => void)[] = [];
+
+  constructor(sync: boolean) {
+    this.sync = sync;
+    this.extension = EditorView.updateListener.of((u) => {
+      if (u.heightChanged && !u.docChanged && this.mv) {
+        const side: Side | null = u.view === this.mv.a ? "a" : u.view === this.mv.b ? "b" : null;
+        if (side && this.moved[side] !== null) this.moved[side] = u.view.scrollDOM.scrollTop;
+      }
+    });
+  }
+
+  attach(mv: MergeView) {
+    this.mv = mv;
+    for (const side of ["a", "b"] as const) {
+      const el = this.view(side).scrollDOM;
+      const onScroll = () => this.scrolled(side);
+      const onWheel = () => {
+        this.interruptScroll();
+        this.leadWheel(side);
+      };
+      const onPointer = () => {
+        this.interruptScroll();
+        this.clearWheel();
+      };
+      el.addEventListener("scroll", onScroll, { passive: true });
+      el.addEventListener("wheel", onWheel, { passive: true });
+      el.addEventListener("pointerdown", onPointer);
+      this.cleanup.push(() => {
+        el.removeEventListener("scroll", onScroll);
+        el.removeEventListener("wheel", onWheel);
+        el.removeEventListener("pointerdown", onPointer);
+      });
+    }
+    this.resync();
+  }
+
+  /** Brings the left pane in line with the right one. */
+  resync() {
+    if (this.mv && this.sync) this.follow("b");
+  }
+
+  setSync(on: boolean) {
+    if (on === this.sync) return;
+    this.interruptScroll();
+    this.clearWheel();
+    this.sync = on;
+    this.resync();
+  }
+
+  scrollTo(side: Side, options: ScrollToOptions) {
+    this.interruptScroll();
+    this.clearWheel();
+    this.scrolling = this.sync ? side : null;
+    this.releaseScroll();
+    this.view(side).scrollDOM.scrollTo(options);
+  }
+
+  /**
+   * Marks `side` as the source of a layout-driven scroll (a soft-wrap toggle re-anchors it), so the
+   * other pane's delayed reflow follows it instead of being mistaken for a user scroll pulling back.
+   */
+  leadScroll(side: Side) {
+    this.clearWheel();
+    this.scrolling = this.sync ? side : null;
+    this.releaseScroll();
+  }
+
+  destroy() {
+    clearTimeout(this.scrollTimer);
+    clearTimeout(this.wheelTimer);
+    for (const f of this.cleanup) f();
+    this.mv = null;
+  }
+
+  private view(side: Side): EditorView {
+    return side === "a" ? this.mv!.a : this.mv!.b;
+  }
+
+  private scrolled(from: Side) {
+    if (this.scrolling) {
+      // A follower's delayed layout scroll must not pull back the navigation source.
+      this.follow(this.scrolling);
+      this.releaseScroll();
+      return;
+    }
+    if (this.wheelLeader) {
+      this.moved[from] = null;
+      if (from === this.wheelLeader) {
+        this.leadWheel(from);
+        if (this.sync) this.follow(from);
+      } else if (this.sync) {
+        this.follow(this.wheelLeader);
+      }
+      return;
+    }
+    const el = this.view(from).scrollDOM;
+    const moved = this.moved[from];
+    const echo = moved !== null && Math.abs(el.scrollTop - moved) <= 1;
+    this.moved[from] = null;
+    if (!echo && this.sync) this.follow(from);
+  }
+
+  private leadWheel(side: Side) {
+    this.wheelLeader = this.sync ? side : null;
+    clearTimeout(this.wheelTimer);
+    if (this.wheelLeader) this.wheelTimer = setTimeout(() => (this.wheelLeader = null), 150);
+  }
+
+  private clearWheel() {
+    this.wheelLeader = null;
+    clearTimeout(this.wheelTimer);
+  }
+
+  private follow(from: Side) {
+    const to: Side = from === "a" ? "b" : "a";
+    const el = this.view(to).scrollDOM;
+    const top = this.view(from).scrollDOM.scrollTop;
+    if (Math.abs(el.scrollTop - top) < 1) return;
+    const before = el.scrollTop;
+    el.scrollTop = top;
+    if (el.scrollTop !== before) this.moved[to] = el.scrollTop;
+  }
+
+  private releaseScroll() {
+    clearTimeout(this.scrollTimer);
+    if (this.scrolling) this.scrollTimer = setTimeout(() => (this.scrolling = null), 150);
+  }
+
+  private interruptScroll() {
+    const side = this.scrolling;
+    this.scrolling = null;
+    clearTimeout(this.scrollTimer);
+    if (side && this.mv) {
+      const el = this.view(side).scrollDOM;
+      el.scrollTo({ top: el.scrollTop, behavior: "instant" });
+    }
+  }
+}
+
+/**
  * Scroll synchronization and the divider for a MergeView whose panes are not
  * padded into alignment. Add `extension` to both editors, then `attach` the view.
  */
-export class UnalignedPanes {
+export class UnalignedPanes implements DiffPanes {
   readonly extension: Extension;
   private mv: MergeView | null = null;
   private readonly divider = document.createElement("div");
@@ -188,6 +361,8 @@ export class UnalignedPanes {
   private sync: boolean;
   private scrolling: Side | null = null;
   private scrollTimer: ReturnType<typeof setTimeout> | undefined;
+  private wheelLeader: Side | null = null;
+  private wheelTimer: ReturnType<typeof setTimeout> | undefined;
   private frame = -1;
   private resize: ResizeObserver | null = null;
   private readonly cleanup: (() => void)[] = [];
@@ -200,7 +375,19 @@ export class UnalignedPanes {
       opts.initialRatio != null && Number.isFinite(opts.initialRatio)
         ? Math.min(MAX_RATIO, Math.max(MIN_RATIO, opts.initialRatio))
         : loadRatio();
-    this.extension = [gapMarks, changedLineGutters, EditorView.updateListener.of(() => this.schedule())];
+    this.extension = [
+      gapMarks,
+      changedLineGutters,
+      EditorView.updateListener.of((u) => {
+        // When CodeMirror's measure adjusts a follower pane's scrollTop after line heights resolve,
+        // update the expected echo so the layout adjustment is not mistaken for a user scroll.
+        if (u.heightChanged && !u.docChanged && this.mv) {
+          const side: Side | null = u.view === this.mv.a ? "a" : u.view === this.mv.b ? "b" : null;
+          if (side && this.moved[side].top !== null) this.moved[side].top = u.view.scrollDOM.scrollTop;
+        }
+        this.schedule();
+      }),
+    ];
     this.divider.className = "cm-diffDivider";
     // A lone arrow is centred in the divider; a pair keeps to the two edges.
     this.divider.classList.toggle("cm-diffDivider-lone", !!opts.arrows && opts.arrows.toA !== opts.arrows.toB);
@@ -223,13 +410,20 @@ export class UnalignedPanes {
     for (const side of ["a", "b"] as const) {
       const el = this.view(side).scrollDOM;
       const onScroll = () => this.scrolled(side);
-      const onPointer = () => this.interruptScroll();
+      const onWheel = () => {
+        this.interruptScroll();
+        this.leadWheel(side);
+      };
+      const onPointer = () => {
+        this.interruptScroll();
+        this.clearWheel();
+      };
       el.addEventListener("scroll", onScroll, { passive: true });
-      el.addEventListener("wheel", onPointer, { passive: true });
+      el.addEventListener("wheel", onWheel, { passive: true });
       el.addEventListener("pointerdown", onPointer);
       this.cleanup.push(() => {
         el.removeEventListener("scroll", onScroll);
-        el.removeEventListener("wheel", onPointer);
+        el.removeEventListener("wheel", onWheel);
         el.removeEventListener("pointerdown", onPointer);
       });
     }
@@ -302,6 +496,7 @@ export class UnalignedPanes {
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       this.interruptScroll();
+      this.leadWheel("b");
       mv.b.scrollDOM.scrollBy(e.deltaX, e.deltaY);
     };
     this.divider.addEventListener("wheel", onWheel, { passive: false });
@@ -310,7 +505,17 @@ export class UnalignedPanes {
       this.resize = new ResizeObserver(() => this.schedule());
       this.resize.observe(this.divider);
     }
-    requestAnimationFrame(() => this.resync());
+    const editors = this.divider.parentElement!;
+    const measuring = styles.measuringPanes!;
+    editors.classList.add(measuring);
+    // Both editors have queued their initial measurements. Reveal the panes with the first divider
+    // drawing after those measurements, so estimated gutter positions never reach the screen.
+    this.frame = requestAnimationFrame(() => {
+      if (this.sync) this.follow("b");
+      this.draw();
+      editors.classList.remove(measuring);
+    });
+    this.cleanup.push(() => editors.classList.remove(measuring));
   }
 
   /** Brings the left pane in line with the right one. */
@@ -323,15 +528,28 @@ export class UnalignedPanes {
   setSync(on: boolean) {
     if (on === this.sync) return;
     this.interruptScroll();
+    this.clearWheel();
     this.sync = on;
     this.resync();
   }
 
   scrollTo(side: Side, options: ScrollToOptions) {
     this.interruptScroll();
+    this.clearWheel();
     this.scrolling = this.sync ? side : null;
     this.releaseScroll();
     this.view(side).scrollDOM.scrollTo(options);
+  }
+
+  private leadWheel(side: Side) {
+    this.wheelLeader = this.sync ? side : null;
+    clearTimeout(this.wheelTimer);
+    if (this.wheelLeader) this.wheelTimer = setTimeout(() => (this.wheelLeader = null), 150);
+  }
+
+  private clearWheel() {
+    this.wheelLeader = null;
+    clearTimeout(this.wheelTimer);
   }
 
   private releaseScroll() {
@@ -351,6 +569,7 @@ export class UnalignedPanes {
 
   destroy() {
     clearTimeout(this.scrollTimer);
+    clearTimeout(this.wheelTimer);
     if (this.frame >= 0) cancelAnimationFrame(this.frame);
     this.resize?.disconnect();
     for (const f of this.cleanup) f();
@@ -379,6 +598,19 @@ export class UnalignedPanes {
       // A follower's delayed layout scroll must not pull back the navigation source.
       this.follow(this.scrolling);
       this.releaseScroll();
+      this.schedule();
+      return;
+    }
+    if (this.wheelLeader) {
+      // Keep the actively wheel-scrolled pane in charge so follower measure adjustments never pull it back.
+      const moved = this.moved[side];
+      moved.top = moved.left = null;
+      if (side === this.wheelLeader) {
+        this.leadWheel(side);
+        if (this.sync) this.follow(side);
+      } else if (this.sync) {
+        this.follow(this.wheelLeader);
+      }
       this.schedule();
       return;
     }

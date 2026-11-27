@@ -87,7 +87,7 @@ async fn create_or_replace(call: &Call, path: PathBuf, text: Option<String>, ove
         return Ok(());
     }
     let edit = crate::ops::lsp::prepare_workspace_edit(&call.host, call.window(), edit).await?;
-    crate::ops::lsp::apply_workspace_edit(&call.host, call.window(), edit).await
+    crate::ops::lsp::apply_agent_workspace_edit(&call.host, call.window(), edit).await
 }
 
 /// The open document of `path`, or a transient one (`true`: close it after use).
@@ -112,16 +112,17 @@ fn whole_range(text: &str) -> Range {
 /// Whether two paths name the same file (language servers report canonical paths; on a
 /// case-insensitive file system `a.txt` and `A.txt` are one file).
 fn same_file(a: &Path, b: &Path) -> bool {
-    if a == b || matches!((dunce::canonicalize(a), dunce::canonicalize(b)), (Ok(x), Ok(y)) if x == y) {
-        return true;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if let (Ok(x), Ok(y)) = (std::fs::metadata(a), std::fs::metadata(b)) {
-            return x.dev() == y.dev() && x.ino() == y.ino();
-        }
-    }
+    a == b || matches!((dunce::canonicalize(a), dunce::canonicalize(b)), (Ok(x), Ok(y)) if x == y) || same_inode(a, b)
+}
+
+#[cfg(unix)]
+fn same_inode(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    matches!((std::fs::metadata(a), std::fs::metadata(b)), (Ok(x), Ok(y)) if x.dev() == y.dev() && x.ino() == y.ino())
+}
+
+#[cfg(not(unix))]
+fn same_inode(_: &Path, _: &Path) -> bool {
     false
 }
 
@@ -316,7 +317,7 @@ async fn apply_op(call: &Call, op: FileOp, notes: &mut Vec<String>) -> IdeResult
                 preconditions: Vec::new(),
             };
             let edit = crate::ops::lsp::prepare_workspace_edit(&host, call.window(), edit).await?;
-            crate::ops::lsp::apply_workspace_edit(&host, call.window(), edit).await
+            crate::ops::lsp::apply_agent_workspace_edit(&host, call.window(), edit).await
         }
         FileOp::Update { path: first, move_to, hunks, or } => {
             // A plain diff's other names count when its `+++` path does not exist.
@@ -399,7 +400,7 @@ async fn apply_op(call: &Call, op: FileOp, notes: &mut Vec<String>) -> IdeResult
                 edit.files.push(FileEdit::Rename { from: path.into(), to: to.into() });
             }
             let edit = crate::ops::lsp::prepare_workspace_edit(&host, call.window(), edit).await?;
-            crate::ops::lsp::apply_workspace_edit(&host, call.window(), edit).await?;
+            crate::ops::lsp::apply_agent_workspace_edit(&host, call.window(), edit).await?;
             if dirty {
                 notes.push(format!("{shown}: patched the unsaved editor buffer"));
             }

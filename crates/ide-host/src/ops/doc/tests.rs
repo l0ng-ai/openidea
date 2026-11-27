@@ -1,6 +1,6 @@
 use super::*;
 use crate::{HostConfig, Project};
-use ide_core::{IdeEvent, TextChange, event::NotifyLevel};
+use ide_core::{IdeEvent, TextChange};
 use parking_lot::Mutex;
 use std::{path::Path, sync::Arc};
 
@@ -28,36 +28,31 @@ impl Fixture {
         let events = Arc::new(Mutex::new(Vec::new()));
         let captured = events.clone();
         let host = Host::new(HostConfig {
-            config_dir: base.join("config"),
-            data_dir: base.join("data"),
-            local_data_dir: base.join("data"),
-            languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-            syntax: Arc::default(),
             sink_for: Box::new(move |_| {
                 let events = captured.clone();
                 Arc::new(move |event| events.lock().push(event))
             }),
-            owner: |w| w,
-            runtime: tokio::runtime::Handle::current(),
-            project_environment: false,
+            ..HostConfig::for_test(&base)
         });
         let project = host.open_project("main", &root).unwrap();
         Self { _temp: temp, host, project, events, path, outside }
     }
 
     async fn open(&self, path: &Path) -> DocumentInfo {
-        open(&self.host, "main", path.to_path_buf()).await.unwrap()
+        doc_open(&self.host, "main", path.to_path_buf()).await.unwrap()
     }
 
     async fn sync(&self) {
-        sync_from_disk(&self.host, "main").await.unwrap();
+        doc_sync_from_disk(&self.host, "main").await.unwrap();
     }
 
     fn document_events(&self) -> Vec<IdeEvent> {
         self.events
             .lock()
             .iter()
-            .filter(|e| matches!(e, IdeEvent::DocPatched { .. } | IdeEvent::DocDirty { .. } | IdeEvent::Notify { .. }))
+            .filter(|e| {
+                matches!(e, IdeEvent::DocPatched { .. } | IdeEvent::DocDirty { .. } | IdeEvent::DocDiskConflict { .. })
+            })
             .cloned()
             .collect()
     }
@@ -95,13 +90,14 @@ async fn unchanged_document_has_no_patch_or_event() {
 async fn dirty_document_keeps_edits_and_warns_once() {
     let f = Fixture::new();
     let original = f.open(&f.path).await;
-    edit(
+    doc_edit(
         &f.host,
         "main",
         original.id,
         original.version,
         ChangeSet { changes: vec![TextChange { from: 0, to: 0, insert: "local ".into() }] },
     )
+    .await
     .unwrap();
     f.events.lock().clear();
     std::fs::write(&f.path, "external replacement\n").unwrap();
@@ -109,7 +105,7 @@ async fn dirty_document_keeps_edits_and_warns_once() {
     let loaded = f.project.documents.snapshot(original.id).unwrap();
     assert_eq!(loaded.text, "local original\n");
     assert!(loaded.dirty);
-    assert!(matches!(f.document_events().as_slice(), [IdeEvent::Notify { level: NotifyLevel::Warning, .. }]));
+    assert!(matches!(f.document_events().as_slice(), [IdeEvent::DocDiskConflict { .. }]));
     f.events.lock().clear();
     f.sync().await;
     assert!(f.document_events().is_empty());
@@ -176,8 +172,11 @@ async fn binary_and_virtual_documents_are_skipped() {
     std::fs::write(&path, b"\0\0binary payload").unwrap();
     let binary = f.open(&path).await;
     assert!(binary.read_only);
-    let virtual_doc =
-        f.project.documents.open_virtual("test://virtual", ide_core::LanguageId::plain_text(), "virtual").unwrap();
+    let virtual_doc = f
+        .project
+        .documents
+        .open_virtual("test://virtual", ide_core::LanguageId::plain_text(), "virtual", "utf-8", false, false)
+        .unwrap();
     std::fs::write(&path, "now ordinary text").unwrap();
     f.events.lock().clear();
     f.sync().await;
@@ -193,9 +192,127 @@ async fn synchronization_only_changes_the_calling_windows_documents() {
     let other_root = f.outside.parent().unwrap().join("other-project");
     std::fs::create_dir(&other_root).unwrap();
     let other = f.host.open_project("other", &other_root).unwrap();
-    let other_doc = open(&f.host, "other", f.outside.clone()).await.unwrap();
+    let other_doc = doc_open(&f.host, "other", f.outside.clone()).await.unwrap();
     std::fs::write(&f.outside, "external change in shared file\n").unwrap();
     f.sync().await;
     assert_eq!(f.project.documents.snapshot(original.id).unwrap().text, "external change in shared file\n");
     assert_eq!(other.documents.snapshot(other_doc.id).unwrap().text, other_doc.text);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rearrange_returns_utf16_edits_that_put_methods_in_order() {
+    let f = Fixture::new();
+    let path = f.project.root.join("board.py");
+    let text = "class Board:\n    def 移动(self):\n        return '→'\n\n    def __init__(self):\n        self.名前 = 1  # 初始化\n";
+    std::fs::write(&path, text).unwrap();
+    let doc = f.open(&path).await.id;
+    let edits = doc_rearrange(&f.host, "main", doc).await.unwrap();
+    let mut rearranged = ide_text::Document::new(text);
+    rearranged.apply_edits(&edits).unwrap();
+    assert_eq!(
+        rearranged.text(),
+        "class Board:\n    def __init__(self):\n        self.名前 = 1  # 初始化\n\n    def 移动(self):\n        return '→'\n"
+    );
+    // Already in order, or broken: nothing to do.
+    std::fs::write(&path, rearranged.text()).unwrap();
+    f.sync().await;
+    assert!(doc_rearrange(&f.host, "main", doc).await.unwrap().is_empty());
+    std::fs::write(&path, "class A:\n    def b(self\n    def __init__(self): ...\n").unwrap();
+    f.sync().await;
+    assert!(doc_rearrange(&f.host, "main", doc).await.unwrap().is_empty());
+}
+
+const MAPPINGS_CHANGED: &str = "editor.encodings.mappings";
+
+impl Fixture {
+    fn project_settings(&self) -> PathBuf {
+        self.project.settings.file(ide_workspace::settings::SettingsScope::Project).unwrap().to_path_buf()
+    }
+
+    fn mappings_changed(&self) -> usize {
+        let events = self.events.lock();
+        events.iter().filter(|e| matches!(e, IdeEvent::SettingsChanged { key } if key == MAPPINGS_CHANGED)).count()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remembered_encoding_is_written_once_and_used_when_the_file_is_reopened() {
+    let f = Fixture::new();
+    let settings = f.project_settings();
+    std::fs::write(&f.path, "ação\n").unwrap();
+    let doc = f.open(&f.path).await;
+    assert_eq!(doc.encoding, "utf-8");
+    // Changing the encoding alone (Reload from Disk, an RPC client) keeps nothing.
+    doc_set_encoding(&f.host, "main", doc.id, "iso-8859-15".into(), true).await.unwrap();
+    assert!(!settings.exists());
+
+    doc_remember_encoding(&f.host, "main", doc.id).await.unwrap();
+    let written = std::fs::read_to_string(&settings).unwrap();
+    assert_eq!(written, "[editor.encodings.mappings]\n\"node_modules/file.txt\" = \"iso-8859-15\"\n");
+    assert_eq!(f.mappings_changed(), 1);
+
+    // The same choice again leaves the file alone.
+    let stamp = std::fs::metadata(&settings).unwrap().modified().unwrap();
+    doc_remember_encoding(&f.host, "main", doc.id).await.unwrap();
+    assert_eq!(std::fs::read_to_string(&settings).unwrap(), written);
+    assert_eq!(std::fs::metadata(&settings).unwrap().modified().unwrap(), stamp);
+    assert_eq!(f.mappings_changed(), 1);
+
+    doc_close(&f.host, "main", doc.id).await.unwrap();
+    let reopened = f.open(&f.path).await;
+    assert_eq!((reopened.encoding.as_str(), reopened.text.as_str()), ("iso-8859-15", "aÃ§Ã£o\n"));
+
+    // A file outside the project has no place in the project's settings.
+    let outside = f.open(&f.outside).await;
+    doc_set_encoding(&f.host, "main", outside.id, "iso-8859-15".into(), true).await.unwrap();
+    doc_remember_encoding(&f.host, "main", outside.id).await.unwrap();
+    assert_eq!(std::fs::read_to_string(&settings).unwrap(), written);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn converted_encoding_is_remembered_once_the_file_is_saved_in_it() {
+    let f = Fixture::new();
+    let settings = f.project_settings();
+    std::fs::write(&f.path, "ação\n").unwrap();
+    let doc = f.open(&f.path).await;
+    doc_set_encoding(&f.host, "main", doc.id, "iso-8859-15".into(), false).await.unwrap();
+    doc_remember_encoding(&f.host, "main", doc.id).await.unwrap();
+    // The file is still UTF-8 on disk: closing without saving must not leave it mapped.
+    assert!(!settings.exists());
+    doc_close(&f.host, "main", doc.id).await.unwrap();
+    let reopened = f.open(&f.path).await;
+    assert_eq!((reopened.encoding.as_str(), reopened.text.as_str()), ("utf-8", "ação\n"));
+
+    doc_set_encoding(&f.host, "main", reopened.id, "iso-8859-15".into(), false).await.unwrap();
+    doc_remember_encoding(&f.host, "main", reopened.id).await.unwrap();
+    doc_save(&f.host, "main", reopened.id).await.unwrap();
+    assert_eq!(std::fs::read(&f.path).unwrap(), b"a\xe7\xe3o\n");
+    assert_eq!(
+        std::fs::read_to_string(&settings).unwrap(),
+        "[editor.encodings.mappings]\n\"node_modules/file.txt\" = \"iso-8859-15\"\n"
+    );
+    assert_eq!(f.mappings_changed(), 1);
+    // Later saves keep nothing more.
+    doc_save(&f.host, "main", reopened.id).await.unwrap();
+    assert_eq!(f.mappings_changed(), 1);
+
+    doc_close(&f.host, "main", reopened.id).await.unwrap();
+    let again = f.open(&f.path).await;
+    assert_eq!((again.encoding.as_str(), again.text.as_str()), ("iso-8859-15", "ação\n"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn encoding_stays_changed_when_it_cannot_be_remembered() {
+    let f = Fixture::new();
+    let settings = f.project_settings();
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    std::fs::write(&settings, "[editor\n").unwrap();
+    let doc = f.open(&f.path).await;
+    doc_set_encoding(&f.host, "main", doc.id, "iso-8859-15".into(), true).await.unwrap();
+
+    let err = doc_remember_encoding(&f.host, "main", doc.id).await.unwrap_err();
+    assert_eq!(err.kind, ide_core::error::ErrorKind::InvalidInput);
+    assert_eq!(std::fs::read_to_string(&settings).unwrap(), "[editor\n");
+    assert_eq!(f.project.documents.snapshot(doc.id).unwrap().encoding, "iso-8859-15");
+    assert_eq!(f.mappings_changed(), 0);
 }

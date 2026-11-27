@@ -4,8 +4,9 @@
 //! `docker` with the Compose plugin must be on `PATH`.
 #![cfg(unix)]
 
-use ide_core::NullSink;
-use ide_host::{Host, HostConfig, ops};
+mod common;
+
+use ide_host::{Host, ops};
 use ide_run::{OutputChunk, RunConfig};
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
@@ -15,17 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 fn host(base: &Path) -> Arc<Host> {
-    Arc::new(Host::new(HostConfig {
-        config_dir: base.join("config"),
-        data_dir: base.join("data"),
-        local_data_dir: base.join("data"),
-        languages: Arc::new(ide_language::LanguageRegistry::load(None).unwrap()),
-        syntax: Arc::default(),
-        sink_for: Box::new(|_| Arc::new(NullSink)),
-        owner: |w| w,
-        runtime: tokio::runtime::Handle::current(),
-        project_environment: false,
-    }))
+    Arc::new(Host::new(common::host_config(base)))
 }
 
 fn config(id: &str, target: &str, root: &Path, args: &[&str]) -> RunConfig {
@@ -50,15 +41,16 @@ type Output = Arc<Mutex<String>>;
 async fn start(host: &Host, config: RunConfig) -> (ide_core::RunId, Output) {
     let out: Output = Arc::default();
     let sink = out.clone();
-    let info = ops::run::start(
+    let info = ops::run::run_start(
         host,
         "main",
         config,
-        Arc::new(move |chunk| match chunk {
+        ide_host::ops::Channel::new(move |chunk| match chunk {
             OutputChunk::Stdout { text } | OutputChunk::Stderr { text } | OutputChunk::System { text } => {
                 sink.lock().push_str(&text)
             }
         }),
+        None,
     )
     .await
     .unwrap();
@@ -145,7 +137,7 @@ async fn runs_in_docker_and_compose_containers() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert_ne!(containers("label=openidea.run=sleep"), "", "{}", out.lock());
-    ops::run::stop(&host, "main", id).unwrap();
+    ops::run::run_stop(&host, "main", id).unwrap();
     let out = finished(&out, 30).await;
     assert!(out.contains(" stop openidea-sleep-"), "{out}");
     for _ in 0..100 {

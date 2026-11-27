@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { dropZoneAt, isOutsideWindow, startPointerDrag } from "./pointerDrag";
+import { beginDrag, dropZoneAt, isOutsideWindow, startPointerDrag } from "./pointerDrag";
 
 const fire = (type: string, buttons: number, x = 0, y = 0) =>
   window.dispatchEvent(new MouseEvent(type, { bubbles: true, buttons, clientX: x, clientY: y }));
@@ -47,6 +47,54 @@ describe("startPointerDrag with a reordered macOS tap", () => {
     fire("pointerup", 0, 60, 0);
     expect(onEnd).toHaveBeenCalledWith(true, expect.objectContaining({ x: 60 }));
   });
+
+  it.each([
+    ["dropped", () => fire("pointerup", 0, 40, 0)],
+    ["cancelled with Escape", () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))],
+  ])("wraps the ghost in its source's context and removes both when %s", (_, end) => {
+    const source = document.body.appendChild(document.createElement("div"));
+    startPointerDrag(
+      { button: 0, clientX: 0, clientY: 0, altKey: false },
+      source,
+      { type: "t", payload: "" },
+      { ghostContext: "strip editor" },
+    );
+    fire("pointermove", 1, 40, 0);
+    const ghost = document.querySelector<HTMLElement>("[aria-hidden]")!;
+    const context = ghost.parentElement!;
+    expect(context.parentElement).toBe(document.body);
+    expect([...context.classList]).toEqual(["strip", "editor"]);
+    expect(context.style.display).toBe("contents");
+    expect(ghost.style.position).toBe("fixed");
+    end();
+    expect(context.isConnected).toBe(false);
+    expect(document.body.children).toHaveLength(1);
+  });
+
+  it("puts the ghost straight into the body without a context", () => {
+    start();
+    fire("pointermove", 1, 40, 0);
+    expect(document.querySelector("[aria-hidden]")!.parentElement).toBe(document.body);
+    fire("pointerup", 0, 40, 0);
+    expect(document.querySelector("[aria-hidden]")).toBeNull();
+  });
+
+  it("clears a text selection that began before the drag threshold (#3334)", () => {
+    const text = document.body.appendChild(document.createElement("p"));
+    text.textContent = "dragging a file must not select this";
+    const range = document.createRange();
+    range.selectNodeContents(text);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    const { onStart } = start();
+    fire("pointermove", 1, 40, 0);
+    fire("pointerup", 0, 40, 0);
+
+    expect(onStart).toHaveBeenCalledOnce();
+    expect(window.getSelection()?.rangeCount).toBe(0);
+  });
 });
 
 const viewport = { left: 0, top: 0, right: 1280, bottom: 800 };
@@ -74,5 +122,19 @@ describe("isOutsideWindow", () => {
     expect(isOutsideWindow(viewport, 1280, 400)).toBe(true);
     expect(isOutsideWindow(viewport, 640, -1)).toBe(true);
     expect(isOutsideWindow(viewport, 640, 800)).toBe(true);
+  });
+});
+
+describe("beginDrag", () => {
+  it("clears the selection and marks the drag until it ends (#3334)", () => {
+    const text = document.body.appendChild(document.createElement("p"));
+    text.textContent = "selected before the drag";
+    window.getSelection()!.selectAllChildren(text);
+    const end = beginDrag();
+    expect(window.getSelection()?.rangeCount).toBe(0);
+    expect(document.documentElement.classList.length).toBe(1);
+    end();
+    expect(document.documentElement.classList.length).toBe(0);
+    text.remove();
   });
 });

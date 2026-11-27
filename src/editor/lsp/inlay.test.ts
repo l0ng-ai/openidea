@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EditorState, StateEffect } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import type { InlayHint } from "@/bindings";
@@ -10,11 +10,22 @@ vi.mock("@/workbench/contributions", async (orig) => {
   const actual = await orig<typeof import("@/workbench/contributions")>();
   return { ...actual, maybeEditorService: () => ({ openFile }) };
 });
+const ipc = vi.hoisted(() => ({
+  lspInlayHints: vi.fn(),
+  settingsSet: vi.fn(),
+}));
+vi.mock("@/platform/ipc", async (orig) => {
+  const real = await orig<typeof import("@/platform/ipc")>();
+  return { ...real, isTauri: () => true, commands: { ...real.commands, ...ipc } };
+});
 
 const { inlayDecorations, inlayExtension, inlayMenuItems } = await import("./inlay");
+const { lspDoc } = await import("./lsp");
 const { usePlatform } = await import("@/platform/platformInfo");
 const { resetNavigationModifier } = await import("@/platform/navigationModifier");
 const { useContextMenuStore } = await import("@/ui");
+const { emitLocalIdeEvent } = await import("@/platform/ipc");
+const { useProject } = await import("@/platform/project");
 
 const hint: InlayHint = {
   position: { line: 0, col: 5 },
@@ -31,6 +42,7 @@ const hint: InlayHint = {
       location: { path: "/p/foo.rs", range: { start: { line: 4, col: 7 }, end: { line: 4, col: 10 } } },
     },
   ],
+  textEdits: [],
 };
 
 const views: EditorView[] = [];
@@ -38,6 +50,115 @@ afterEach(() => {
   views.splice(0).forEach((v) => v.destroy());
   resetNavigationModifier();
   vi.clearAllMocks();
+});
+
+const ctx = { doc: 7, path: "/p/a.rs", language: "rust", uiMode: "Rust", readOnly: false };
+const ok = <T>(data: T) => ({ status: "ok" as const, data });
+const unavailable = {
+  status: "error" as const,
+  error: { kind: "unavailable" as const, message: "zls is not running", data: null },
+};
+
+/** An editor whose background hint plugin talks to the mocked backend. */
+function editor() {
+  const view = new EditorView({
+    state: EditorState.create({ doc: "let x = foo();", extensions: [lspDoc.of(ctx), inlayExtension()] }),
+    parent: document.body,
+  });
+  views.push(view);
+  return view;
+}
+const shown = (view: EditorView) => view.dom.querySelectorAll(".cm-lsp-inlay").length;
+const afterPass = () => vi.advanceTimersByTimeAsync(500);
+
+describe("background inlay hints", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    ipc.lspInlayHints.mockReset();
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it("shows hints for the visible range once fetched", async () => {
+    ipc.lspInlayHints.mockResolvedValue(ok([hint]));
+    const view = editor();
+    await afterPass();
+    expect(ipc.lspInlayHints).toHaveBeenCalledWith(7, expect.anything());
+    expect(shown(view)).toBe(1);
+  });
+
+  it("keeps the shown hints while the server is busy answering empty, and clears once it settles", async () => {
+    ipc.lspInlayHints.mockResolvedValue(ok([hint]));
+    const view = editor();
+    await afterPass();
+    expect(shown(view)).toBe(1);
+    // zls reloading its build configuration answers with nothing while busy.
+    ipc.lspInlayHints.mockResolvedValue(ok([]));
+    emitLocalIdeEvent({ type: "languageServer", server: 1, name: "zls", status: "busy", message: null });
+    view.dispatch({ changes: { from: view.state.doc.length, insert: " " } });
+    await afterPass();
+    // The hints stay (mapped through the edit) instead of blinking away.
+    expect(shown(view)).toBe(1);
+    // Once the spell ends (LONG_BUSY_MS in availability.ts), a settled empty answer applies.
+    await vi.advanceTimersByTimeAsync(1600);
+    emitLocalIdeEvent({ type: "languageServer", server: 1, name: "zls", status: "ready", message: null });
+    await afterPass();
+    expect(shown(view)).toBe(0);
+  });
+
+  it("keeps the shown hints while the server restarts instead of wiping them", async () => {
+    ipc.lspInlayHints.mockResolvedValue(ok([hint]));
+    const view = editor();
+    await afterPass();
+    expect(shown(view)).toBe(1);
+    // A failed pass while the server is starting marks the back-off; further refreshes keep what is shown.
+    emitLocalIdeEvent({ type: "languageServer", server: 2, name: "zls", status: "starting", message: null });
+    ipc.lspInlayHints.mockResolvedValue(unavailable);
+    view.dispatch({ changes: { from: view.state.doc.length, insert: " " } });
+    await afterPass();
+    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
+    await afterPass();
+    expect(shown(view)).toBe(1);
+    // Once the back-off expires (DEFAULT_BACKOFF_MS in availability.ts), the next refresh applies the fresh answer.
+    emitLocalIdeEvent({ type: "languageServer", server: 2, name: "zls", status: "ready", message: null });
+    ipc.lspInlayHints.mockResolvedValue(ok([]));
+    await vi.advanceTimersByTimeAsync(15_100);
+    view.dispatch({ changes: { from: view.state.doc.length, insert: " " } });
+    await afterPass();
+    expect(shown(view)).toBe(0);
+  });
+
+  it("shows closing labels at the end of the line unless they are turned off", async () => {
+    const closing: InlayHint = {
+      ...hint,
+      kind: "closingLabel",
+      label: "// foo",
+      position: { line: 0, col: 14 },
+      parts: [],
+    };
+    ipc.lspInlayHints.mockResolvedValue(ok([hint, closing]));
+    const view = editor();
+    await afterPass();
+    expect(view.dom.querySelector(".cm-lsp-inlay-closingLabel")?.textContent).toBe("// foo");
+    useProject.setState({ settings: { editor: { inlay: { closingLabels: false } } } as never });
+    await afterPass();
+    expect(shown(view)).toBe(1);
+    expect(view.dom.querySelector(".cm-lsp-inlay-closingLabel")).toBeNull();
+    useProject.setState({ settings: null });
+  });
+
+  it("clears the hints of a server that is down and not coming back", async () => {
+    ipc.lspInlayHints.mockResolvedValue(ok([hint]));
+    const view = editor();
+    await afterPass();
+    expect(shown(view)).toBe(1);
+    emitLocalIdeEvent({ type: "languageServer", server: 3, name: "zls", status: "stopped", message: null });
+    ipc.lspInlayHints.mockResolvedValue(unavailable);
+    view.dispatch({ changes: { from: view.state.doc.length, insert: " " } });
+    await afterPass();
+    view.dispatch({ changes: { from: view.state.doc.length, insert: "!" } });
+    await afterPass();
+    expect(shown(view)).toBe(0);
+  });
 });
 
 function editorWith(hints: InlayHint[]) {
@@ -76,6 +197,16 @@ describe("inlay hints", () => {
       "Inlay Hints Settings…",
     ]);
     expect((inlayMenuItems("parameter")[0] as { label: string }).label).toBe("Disable Parameter name hints");
+  });
+
+  it.each([
+    ["type", "types"],
+    ["closingLabel", "closingLabels"],
+  ] as const)("turns %s hints off with the editor.inlay.%s setting", async (kind, key) => {
+    ipc.settingsSet.mockResolvedValue(ok({}));
+    const disable = inlayMenuItems(kind)[0] as { run: () => void };
+    disable.run();
+    await vi.waitFor(() => expect(ipc.settingsSet).toHaveBeenCalledWith("global", `editor.inlay.${key}`, "false"));
   });
 
   it("uses type declaration navigation for a plain type hint after an identifier", () => {

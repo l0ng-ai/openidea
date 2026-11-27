@@ -1,6 +1,7 @@
 /**
- * Remote ports forwarded to this machine, remembered per host (or dev container) and folder and
- * forwarded again on reconnect. A dev container also forwards its `forwardPorts` on its own.
+ * Remote ports forwarded to this machine, remembered per SSH host, WSL distribution or dev
+ * container and folder, and forwarded again on reconnect. A dev container also forwards its
+ * `forwardPorts` on its own.
  */
 import { create } from "zustand";
 import type { ForwardedPort } from "@/bindings";
@@ -16,6 +17,8 @@ function savedKey(): string | null {
   switch (session?.target.kind) {
     case "ssh":
       return `${SAVED_KEY}${session.target.config}:${session.root}`;
+    case "wsl":
+      return `${SAVED_KEY}wsl:${session.target.distro}:${session.root}`;
     case "devContainer":
       return `${SAVED_KEY}devcontainer:${JSON.stringify([session.target.folder, session.target.config])}`;
     default:
@@ -67,14 +70,6 @@ export function parsePort(text: string): number | null {
 }
 
 export async function forwardPort(port: number): Promise<ForwardedPort | null> {
-  if (useRemote.getState().session?.target.kind === "wsl") {
-    notifications().notify({
-      group: "remote",
-      level: "error",
-      title: tx("Forwarding ports is not supported in a WSL project yet"),
-    });
-    return null;
-  }
   try {
     const forwarded = await call(commands.remoteForwardPort(port));
     await refreshPorts(true);
@@ -102,6 +97,7 @@ export async function restorePorts(): Promise<void> {
   const saved = savedPorts();
   for (const port of saved) {
     if (useRemote.getState().session !== session) return;
+    // oxlint-disable-next-line no-await-in-loop -- the session is rechecked before each forward; a disconnect during one forward must stop the rest.
     await call(commands.remoteForwardPort(port)).catch(() => null);
   }
   const ports = await commands.remoteForwardedPorts().catch(() => []);

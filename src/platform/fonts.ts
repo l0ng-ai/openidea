@@ -69,9 +69,12 @@ async function loadUserFont(name: string, alias: string): Promise<void> {
   const buffer = await invoke<ArrayBuffer>("user_font_data", { family: name });
   const headerLength = new DataView(buffer).getUint32(0, true);
   const start = 4 + headerLength;
-  const faces: { weight: number; style: string; offset: number; length: number }[] = JSON.parse(
-    new TextDecoder().decode(buffer.slice(4, start)),
-  );
+  const faces: {
+    weight: number;
+    style: string;
+    offset: number;
+    length: number;
+  }[] = JSON.parse(new TextDecoder().decode(buffer.slice(4, start)));
   await Promise.all(
     faces.map(async ({ weight, style, offset, length }) => {
       const face = new FontFace(alias, buffer.slice(start + offset, start + offset + length), {
@@ -88,9 +91,34 @@ async function loadUserFont(name: string, alias: string): Promise<void> {
   );
 }
 
+/**
+ * Linux: WebKitGTK looks a family up through fontconfig, and a rule that strongly aliases
+ * unknown families (CJK locales put Noto Sans CJK first) makes "JetBrains Mono" resolve to that
+ * proportional face instead of falling through to the bundled one (#5770). There the bundled
+ * face is named alone unless the native catalog lists an installed JetBrains Mono.
+ */
+let monoInstalled: boolean | null = null;
+const bundledMonoOnly = () => guessOs() === "linux" && monoInstalled !== true;
+const BUNDLED_MONO_STACK = '"JetBrains Mono Variable", ui-monospace, monospace';
+
+/** Records whether the system has JetBrains Mono installed (`installed`: the native catalog, not the bundled list). */
+export function noteInstalledFonts(installed: readonly string[], root?: HTMLElement): void {
+  monoInstalled = installed.some((name) => name.trim().toLowerCase() === BUNDLED_MONO_FAMILY.toLowerCase());
+  installMonoStack(root);
+}
+
+/** Overrides `--font-mono` with the bundled face alone where the system name can't be trusted (see above). */
+export function installMonoStack(root: HTMLElement | undefined = globalThis.document?.documentElement): void {
+  if (!root) return;
+  if (bundledMonoOnly()) root.style.setProperty("--font-mono", BUNDLED_MONO_STACK);
+  else root.style.removeProperty("--font-mono");
+}
+
 /** One resolver for primary, fallback and UI families, matching the bundled CSS registrations. */
 export function familyFaces(family: string): readonly string[] {
   const name = familyName(family);
+  if (name.toLowerCase() === BUNDLED_MONO_FAMILY.toLowerCase() && bundledMonoOnly())
+    return ['"JetBrains Mono Variable"'];
   const bundled = BUNDLED_FACES.get(name.toLowerCase());
   if (bundled) return bundled;
   if (!name || !isTauri() || guessOs() !== "macos" || typeof FontFace === "undefined") return [quoteFontFamily(name)];
@@ -106,6 +134,111 @@ export function familyFaces(family: string): readonly string[] {
     userFonts.set(key, entry);
   }
   return [quoteFontFamily(entry.alias), quoteFontFamily(name)];
+}
+
+/** Common Nerd Font installs; the full-width faces before their Mono variants, which shrink icons to one cell. */
+const NERD_FONTS = [
+  "Symbols Nerd Font",
+  "Symbols Nerd Font Mono",
+  "JetBrainsMono Nerd Font",
+  "JetBrainsMono Nerd Font Mono",
+  "MesloLGS NF",
+  "MesloLGS Nerd Font",
+  "Hack Nerd Font",
+  "FiraCode Nerd Font",
+  "Hasklug Nerd Font",
+  "CaskaydiaCove Nerd Font",
+];
+
+/**
+ * CJK faces, named after the icon fonts on a grid's font stack. Such a renderer measures each
+ * glyph once to derive its per-cell letter spacing, and when the face drawing wide characters is
+ * only implicit (the webview's own fallback) that measurement and the rendering can disagree by
+ * about a pixel per character: every wide character then takes less than its two cells, and rows
+ * that mix CJK with a full-width background — pi's overlay panel, a boxed CLI — drift left, by up
+ * to two cells across one panel. Naming the face makes measurement and rendering use the same one,
+ * whatever its own advance, and two cells stay two cells. The webview skips missing families, so
+ * one list covers every platform.
+ */
+export const CJK_FALLBACK_FACES = [
+  "Microsoft YaHei",
+  "PingFang SC",
+  "Noto Sans CJK SC",
+  "Noto Sans SC",
+  "Source Han Sans SC",
+];
+/**
+ * Monospace faces Linux and Windows ship, named before `CJK_FALLBACK_FACES` on a grid's font
+ * stack. Those CJK faces carry proportional Latin glyphs: when the chosen family and the
+ * `--font-mono` stack (macOS-only past the bundled font) don't take, plain text would be drawn by
+ * one of them inside cells measured for its widest glyph, every letter adrift in a wide cell.
+ * None of these has CJK glyphs, so wide characters still reach the named CJK faces.
+ */
+export const LATIN_MONO_FALLBACK_FACES = [
+  "DejaVu Sans Mono",
+  "Liberation Mono",
+  "Noto Sans Mono",
+  "Cascadia Mono",
+  "Consolas",
+];
+/** In running text the proportional faces give icons their own width instead of one cell's. */
+const UI_NERD_FONTS = [
+  "JetBrainsMono Nerd Font Propo",
+  "MesloLGS Nerd Font Propo",
+  "Hack Nerd Font Propo",
+  "FiraCode Nerd Font Propo",
+  "Hasklug Nerd Font Propo",
+  "CaskaydiaCove Nerd Font Propo",
+  ...NERD_FONTS,
+];
+
+/** Nerd Font naming: the patched families ("… Nerd Font") and their v3 short forms ("… NF"). */
+const NERD_FONT_NAME = /nerd\s*font|\bnf\b/i;
+const NERD_FONT_MONO = /(?:nerd\s*font|\bnf\b)\s+mono$/i;
+const NERD_FONT_PROPO = /(?:nerd\s*font|\bnf\b)\s+propo$/i;
+
+/**
+ * Nerd Font families among `installed`, full faces first (their icons keep the wide
+ * prompt glyph), then the Mono variants that shrink icons to one cell, Propo last.
+ */
+export function nerdFontFamilies(installed: readonly string[]): string[] {
+  const rank = (name: string) => (NERD_FONT_MONO.test(name) ? 1 : NERD_FONT_PROPO.test(name) ? 2 : 0);
+  return installed.filter((name) => NERD_FONT_NAME.test(name)).sort((a, b) => rank(a) - rank(b));
+}
+
+/** Discovered installs beyond the known list (`discoverNerdFonts`), in the same order. */
+let discoveredNerdFonts: readonly string[] = [];
+
+/**
+ * Feeds the terminal fallback from the native font catalog, loaded off startup: a Nerd
+ * Font outside the known list (Maple Mono NF CN, Cascadia Code NF…) otherwise never
+ * reaches the font stack, and unlike Windows Terminal the webview does no per-glyph
+ * system fallback, so prompt icons (#3723) render as boxes.
+ */
+export function discoverNerdFonts(installed: readonly string[]): void {
+  const known = new Set(NERD_FONTS.map((name) => name.toLowerCase()));
+  discoveredNerdFonts = nerdFontFamilies(installed).filter((name) => !known.has(name.toLowerCase()));
+}
+
+/** Installed Nerd Fonts, resolved like any family, for prompt-theme icons (powerlevel10k, starship). */
+export function nerdFontFaces(): string[] {
+  return [...NERD_FONTS, ...discoveredNerdFonts].flatMap(familyFaces);
+}
+
+/**
+ * The icon font for UI text (Nerd Font icons in agent task titles): the first installed
+ * Nerd Font, proportional faces first. Any one has the whole icon set, so the others aren't
+ * probed or loaded. Without the installed families (browser), every candidate by name.
+ * A family outside the known list fills in from the same discovery, Propo first.
+ */
+export function uiIconFaces(installed?: readonly string[]): string[] {
+  if (!installed) return UI_NERD_FONTS.flatMap(familyFaces);
+  const names = new Set(installed.map((name) => name.toLowerCase()));
+  const family = UI_NERD_FONTS.find((name) => names.has(name.toLowerCase()));
+  if (family) return [...familyFaces(family)];
+  const found = nerdFontFamilies(installed);
+  const pick = found.find((name) => NERD_FONT_PROPO.test(name)) ?? found[0];
+  return pick ? [...familyFaces(pick)] : [];
 }
 
 /** The `--font-mono` stack, resolved (canvas / xterm can't use `var()`). */
@@ -126,6 +259,40 @@ export function monoFontFamily(family: string | undefined, fallback = "", base =
   return [...head, ...(fb ? familyFaces(fb) : []), base].join(", ");
 }
 
+/** Tools › Terminal › Font, shared by the terminal and the Run console. */
+export interface MonoFontChoice {
+  useEditorFont: boolean;
+  fontFamily: string;
+  fallbackFontFamily: string;
+  fontSize: number;
+}
+
+export interface EditorFontChoice {
+  fontFamily?: string | null;
+  fallbackFont?: string | null;
+  fontSize?: number | null;
+}
+
+/**
+ * The family and size Settings › Tools › Terminal resolves against Editor › Font.
+ * The console uses the terminal's choice too, so the font picker there controls
+ * both the terminal and Run output; `base` is `var(--font-mono)` for CSS consumers
+ * and the resolved stack for canvas consumers (xterm).
+ */
+export function resolveMonoFont(
+  choice: MonoFontChoice | undefined,
+  editor: EditorFontChoice | undefined,
+  base = "var(--font-mono)",
+): { family: string; size: number } {
+  const useEditor = choice?.useEditorFont !== false;
+  const family = (useEditor ? editor?.fontFamily : choice?.fontFamily) || BUNDLED_MONO_FAMILY;
+  const fallback = useEditor
+    ? choice?.fallbackFontFamily.trim() || editor?.fallbackFont || ""
+    : choice?.fallbackFontFamily.trim() || "";
+  const size = (useEditor ? editor?.fontSize : choice?.fontSize) || 13;
+  return { family: monoFontFamily(family, fallback, base), size };
+}
+
 /**
  * Resolves once the faces `family` uses at `size` are loaded, so code that measures
  * glyphs (xterm's cell size) measures the real font rather than the swap fallback.
@@ -142,8 +309,11 @@ export async function fontsLoaded(family: string, size: number): Promise<void> {
   }
 }
 
+/** The theme's platform fallback stack from tokens.css (the Windows CJK faces, else the system UI font). */
+const UI_PLATFORM_FALLBACK = "var(--ui-platform-fonts, var(--ui-system-fonts))";
+
 /** Bundled aliases also apply when selected for the interface; `fallback` covers glyphs `family` lacks (empty = none). */
 export function uiFontFamily(family: string, fallback = ""): string {
   const fb = familyName(fallback);
-  return [...familyFaces(family), ...(fb ? familyFaces(fb) : []), "system-ui", "sans-serif"].join(", ");
+  return [...familyFaces(family), ...(fb ? familyFaces(fb) : []), UI_PLATFORM_FALLBACK].join(", ");
 }

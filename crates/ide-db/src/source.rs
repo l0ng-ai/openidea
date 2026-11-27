@@ -6,9 +6,10 @@
 use ide_core::{IdeError, IdeResult, IpcPath, project_dir};
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use std::collections::BTreeMap;
 use std::path::Path;
 
-const FILE: &str = "data-sources.toml";
+pub(crate) const FILE: &str = "data-sources.toml";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -22,17 +23,20 @@ pub enum DbDriver {
     Clickhouse,
     /// Oracle Database (pure-Rust thin driver, no client library).
     Oracle,
+    Snowflake,
+    Jdbc,
 }
 
 impl DbDriver {
     pub fn default_port(self) -> Option<u16> {
         match self {
-            DbDriver::Sqlite => None,
+            DbDriver::Sqlite | DbDriver::Jdbc => None,
             DbDriver::Postgres => Some(5432),
             DbDriver::Mysql => Some(3306),
             DbDriver::SqlServer => Some(1433),
             DbDriver::Clickhouse => Some(8123),
             DbDriver::Oracle => Some(1521),
+            DbDriver::Snowflake => Some(443),
         }
     }
 }
@@ -98,6 +102,9 @@ pub struct DbIntrospection {
     pub databases: Vec<String>,
     pub all_schemas: bool,
     pub schemas: Vec<String>,
+    /// A database can replace the source's schema rules with all schemas or a list of exact names.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub schemas_by_database: BTreeMap<String, DbSchemaSelection>,
     /// `pg_catalog`, `information_schema`, `mysql`…, and service databases (`rdsadmin`…).
     pub show_system: bool,
     /// PostgreSQL template databases (`template0`, `template1`).
@@ -114,9 +121,115 @@ impl Default for DbIntrospection {
             databases: Vec::new(),
             all_schemas: true,
             schemas: Vec::new(),
+            schemas_by_database: BTreeMap::new(),
             show_system: false,
             show_templates: false,
             object_filter: String::new(),
+        }
+    }
+}
+
+impl DbIntrospection {
+    pub(crate) fn with_visibility_from(self, source: &Self) -> Self {
+        Self {
+            all_databases: source.all_databases,
+            databases: source.databases.clone(),
+            all_schemas: source.all_schemas,
+            schemas: source.schemas.clone(),
+            schemas_by_database: source.schemas_by_database.clone(),
+            object_filter: source.object_filter.clone(),
+            ..self
+        }
+    }
+
+    /// Whether the tree shows this schema: every one with `all_schemas`, otherwise it has to
+    /// match one of the `schemas` patterns. The completion model uses the same test, so it
+    /// offers exactly the tables the tree lists (and does not read the ones it never shows).
+    pub fn shows_schema(&self, name: &str) -> bool {
+        self.all_schemas
+            || self.schemas.iter().map(|p| p.trim()).filter(|p| !p.is_empty()).any(|p| schema_matches(p, name))
+    }
+}
+
+/// `*` matches any run of characters, `?` a single one; a pattern without wildcards matches the
+/// name as typed (the dialog fills names from the list the server returned, so case is settled).
+fn schema_matches(pattern: &str, name: &str) -> bool {
+    if !pattern.contains('*') && !pattern.contains('?') {
+        return pattern == name;
+    }
+    let p: Vec<char> = pattern.chars().collect();
+    let n: Vec<char> = name.chars().collect();
+    let (mut pi, mut ni) = (0, 0);
+    // Position of the last `*` and how much of the name it has already swallowed.
+    let mut star: Option<(usize, usize)> = None;
+    while ni < n.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == n[ni]) {
+            pi += 1;
+            ni += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star = Some((pi, ni));
+            pi += 1;
+        } else if let Some((at, taken)) = star {
+            pi = at + 1;
+            ni = taken + 1;
+            star = Some((at, taken + 1));
+        } else {
+            return false;
+        }
+    }
+    p[pi..].iter().all(|&c| c == '*')
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(default)]
+pub struct DbSchemaSelection {
+    pub all: bool,
+    pub names: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum DbVisibilityChange {
+    Databases { selection: DbSchemaSelection },
+    Schemas { selection: DbSchemaSelection },
+    DatabaseSchemas { database: String, selection: Option<DbSchemaSelection> },
+}
+
+impl DbVisibilityChange {
+    pub(crate) fn apply(self, introspection: &mut DbIntrospection, available: &[String]) {
+        let available: std::collections::HashSet<_> = available.iter().map(String::as_str).collect();
+        let keep_names = |before: &mut Vec<String>, selection: DbSchemaSelection, exact: bool| {
+            if selection.all || (!exact && before.iter().any(|name| name.contains(['*', '?']))) {
+                return;
+            }
+            before.retain(|name| !available.contains(if exact { name.as_str() } else { name.trim() }));
+            let mut seen: std::collections::HashSet<_> = before.iter().cloned().collect();
+            before.extend(
+                selection
+                    .names
+                    .into_iter()
+                    .filter(|name| (exact || !name.contains(['*', '?'])) && seen.insert(name.clone())),
+            );
+        };
+        match self {
+            Self::Databases { selection } => {
+                introspection.all_databases = selection.all;
+                keep_names(&mut introspection.databases, selection, false);
+            }
+            Self::Schemas { selection } => {
+                introspection.all_schemas = selection.all;
+                keep_names(&mut introspection.schemas, selection, false);
+            }
+            Self::DatabaseSchemas { database, selection } => match selection {
+                Some(selection) => {
+                    let rule = introspection.schemas_by_database.entry(database).or_default();
+                    rule.all = selection.all;
+                    keep_names(&mut rule.names, selection, true);
+                }
+                None => {
+                    introspection.schemas_by_database.remove(&database);
+                }
+            },
         }
     }
 }
@@ -129,6 +242,37 @@ impl Default for DbIntrospection {
 pub struct DbProperty {
     pub name: String,
     pub value: String,
+}
+
+/// How a Snowflake data source signs in. The data source's one saved secret is what the
+/// method needs: the private key's passphrase, the password, or the token.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum DbSnowflakeAuth {
+    /// RSA key pair: a JWT signed with the private key file.
+    #[default]
+    KeyPair,
+    /// User name and password.
+    Password,
+    /// Programmatic access token.
+    Token,
+    /// OAuth access token.
+    OAuth,
+    /// Single sign-on in the web browser.
+    Browser,
+}
+
+/// Snowflake connection settings beyond the shared ones: the account identifier is
+/// [`DataSource::host`], the schema [`DbOptions::default_schema`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DbSnowflake {
+    pub warehouse: String,
+    pub role: String,
+    pub auth: DbSnowflakeAuth,
+    /// PEM private key of [`DbSnowflakeAuth::KeyPair`]; `~/` is the home directory. Only the
+    /// path is stored: the key is read from the file at each login.
+    pub private_key_file: String,
 }
 
 /// How the SSH tunnel authenticates (shared with Settings › SSH Configurations).
@@ -152,12 +296,23 @@ pub struct DbSsh {
     pub save_secret: bool,
 }
 
+/// A foreground program that forwards an IDE-assigned loopback port to the database.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DbExternalTunnel {
+    pub executable: String,
+    pub arguments: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase", default)]
 pub struct DataSource {
     pub id: String,
     pub name: String,
     pub driver: DbDriver,
+    /// An app-wide driver profile id; classpaths never come from a project.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub jdbc_driver: String,
     pub host: String,
     pub port: Option<u16>,
     pub database: String,
@@ -171,6 +326,8 @@ pub struct DataSource {
     pub read_only: bool,
     /// SSH tunnel settings (`None`: never configured; kept but unused when not `enabled`).
     pub ssh: Option<DbSsh>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_tunnel: Option<DbExternalTunnel>,
     /// Wire-compatible product preset (`cockroachdb`, `tidb`…; empty: the driver itself).
     pub vendor: String,
     pub color: Option<DbColor>,
@@ -185,6 +342,8 @@ pub struct DataSource {
     pub options: DbOptions,
     pub introspection: DbIntrospection,
     pub properties: Vec<DbProperty>,
+    /// Snowflake settings (`None`: not a Snowflake data source, or all defaults).
+    pub snowflake: Option<DbSnowflake>,
     /// Stored app-wide and listed in every project. Implied by the file it is read from,
     /// so not written to it.
     pub global: bool,
@@ -202,6 +361,7 @@ impl Default for DataSource {
             id: String::new(),
             name: String::new(),
             driver: DbDriver::Sqlite,
+            jdbc_driver: String::new(),
             host: "localhost".into(),
             port: None,
             database: String::new(),
@@ -211,6 +371,7 @@ impl Default for DataSource {
             save_password: false,
             read_only: false,
             ssh: None,
+            external_tunnel: None,
             vendor: String::new(),
             color: None,
             comment: String::new(),
@@ -222,6 +383,7 @@ impl Default for DataSource {
             options: DbOptions::default(),
             introspection: DbIntrospection::default(),
             properties: Vec::new(),
+            snowflake: None,
             global: false,
             plugin_owner: None,
             plugin_source_id: None,
@@ -273,6 +435,7 @@ pub fn scheme_driver(scheme: &str) -> Option<DbDriver> {
         "sqlite" | "sqlite3" => Some(DbDriver::Sqlite),
         "clickhouse" | "http" | "https" => Some(DbDriver::Clickhouse),
         "oracle" | "oracledb" => Some(DbDriver::Oracle),
+        "snowflake" => Some(DbDriver::Snowflake),
         _ => None,
     }
 }
@@ -349,10 +512,34 @@ pub fn parse_url(raw: &str) -> IdeResult<ParsedUrl> {
 }
 
 impl DataSource {
+    pub(crate) fn select_database(&mut self, database: Option<&str>) {
+        if let Some(db) = database {
+            // The configured schema belongs to the configured database.
+            if self.driver == DbDriver::Snowflake && !self.database.eq_ignore_ascii_case(db) {
+                self.options.default_schema.clear();
+            }
+            self.database = db.to_owned();
+        }
+    }
+
+    pub(crate) fn same_except_visibility(&self, other: &Self) -> bool {
+        if self == other {
+            return true;
+        }
+        let introspection = other.introspection.clone().with_visibility_from(&self.introspection);
+        *self == Self { introspection, ..other.clone() }
+    }
+
     /// The settings to connect with: with [`DataSource::url_only`], host, port,
     /// database, user, SSL and driver properties come from the URL (properties
     /// of the Advanced tab still apply after the URL's).
     pub fn resolved(&self) -> IdeResult<DataSource> {
+        if self.driver == DbDriver::Jdbc {
+            if !self.url.starts_with("jdbc:") {
+                return Err(IdeError::invalid("Enter a JDBC URL starting with jdbc:"));
+            }
+            return Ok(self.clone());
+        }
         if !self.url_only {
             return Ok(self.clone());
         }
@@ -375,6 +562,9 @@ impl DataSource {
         }
         let mut properties = Vec::new();
         for (k, v) in u.params {
+            if s.driver == DbDriver::Snowflake && s.snowflake_url_parameter(&k, &v) {
+                continue;
+            }
             match k.to_ascii_lowercase().as_str() {
                 "sslmode" | "ssl-mode" => {
                     s.ssl = match v.to_ascii_lowercase().replace('-', "_").as_str() {
@@ -405,9 +595,38 @@ impl DataSource {
         Ok(s)
     }
 
+    /// Applies a parameter of a Snowflake JDBC URL that names a connection setting.
+    fn snowflake_url_parameter(&mut self, name: &str, value: &str) -> bool {
+        let settings = self.snowflake.get_or_insert_with(DbSnowflake::default);
+        match name.to_ascii_lowercase().as_str() {
+            "db" | "database" => self.database = value.to_owned(),
+            "schema" => self.options.default_schema = value.to_owned(),
+            "warehouse" => settings.warehouse = value.to_owned(),
+            "role" => settings.role = value.to_owned(),
+            "private_key_file" => settings.private_key_file = value.to_owned(),
+            "authenticator" => {
+                settings.auth = match value.to_ascii_lowercase().as_str() {
+                    "snowflake_jwt" => DbSnowflakeAuth::KeyPair,
+                    "externalbrowser" => DbSnowflakeAuth::Browser,
+                    "oauth" => DbSnowflakeAuth::OAuth,
+                    "programmatic_access_token" => DbSnowflakeAuth::Token,
+                    "snowflake" => DbSnowflakeAuth::Password,
+                    _ => return false,
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// The Snowflake settings (defaults when none were saved).
+    pub fn snowflake(&self) -> DbSnowflake {
+        self.snowflake.clone().unwrap_or_default()
+    }
+
     /// The password written in the URL of a [`DataSource::url_only`] data source.
     pub fn url_password(&self) -> Option<String> {
-        if !self.url_only {
+        if self.driver == DbDriver::Jdbc || !self.url_only {
             return None;
         }
         parse_url(&self.url).ok()?.password
@@ -422,7 +641,11 @@ struct SourcesFile {
 
 /// The project's data sources.
 pub fn load(root: &Path) -> IdeResult<Vec<DataSource>> {
-    read(&project_dir::path(root, FILE))
+    let mut sources = read(&project_dir::path(root, FILE))?;
+    for source in &mut sources {
+        source.global = false;
+    }
+    Ok(sources)
 }
 
 /// Saves the project's data sources.
@@ -539,6 +762,81 @@ mod tests {
     }
 
     #[test]
+    fn visibility_change_preserves_patterns_unavailable_names_and_other_scopes() {
+        let mut introspection = DbIntrospection {
+            schemas: vec!["app_*".into(), "unavailable_?".into()],
+            databases: vec!["reporting".into(), "offline".into()],
+            schemas_by_database: BTreeMap::from([
+                ("reporting".into(), DbSchemaSelection { all: false, names: vec!["private".into()] }),
+                ("sandbox".into(), DbSchemaSelection { all: false, names: vec!["experiments".into()] }),
+            ]),
+            show_system: true,
+            ..Default::default()
+        };
+        DbVisibilityChange::Schemas { selection: DbSchemaSelection { all: false, names: vec!["demo".into()] } }
+            .apply(&mut introspection, &["app_sales".into(), "demo".into()]);
+        assert_eq!(introspection.schemas, ["app_*", "unavailable_?"]);
+        DbVisibilityChange::Databases { selection: DbSchemaSelection { all: false, names: vec!["sandbox".into()] } }
+            .apply(&mut introspection, &["reporting".into(), "sandbox".into()]);
+        assert_eq!(introspection.databases, ["offline", "sandbox"]);
+        DbVisibilityChange::DatabaseSchemas {
+            database: "reporting".into(),
+            selection: Some(DbSchemaSelection {
+                all: false,
+                names: vec!["finance".into(), "finance".into(), "private".into()],
+            }),
+        }
+        .apply(&mut introspection, &["public".into(), "finance".into()]);
+        assert_eq!(introspection.schemas_by_database["reporting"].names, ["private", "finance"]);
+        assert_eq!(introspection.schemas_by_database["sandbox"].names, ["experiments"]);
+        assert!(introspection.show_system);
+    }
+
+    #[test]
+    fn schema_override_can_omit_default_fields() {
+        let introspection: DbIntrospection = toml::from_str(
+            r#"
+            [schemasByDatabase.reporting]
+            all = true
+
+            [schemasByDatabase.sandbox]
+            names = ["finance"]
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            introspection.schemas_by_database,
+            BTreeMap::from([
+                ("reporting".into(), DbSchemaSelection { all: true, names: vec![] }),
+                ("sandbox".into(), DbSchemaSelection { all: false, names: vec!["finance".into()] }),
+            ])
+        );
+    }
+
+    #[test]
+    fn round_trips_database_schema_overrides() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = DataSource {
+            id: "postgres".into(),
+            name: "PostgreSQL Demo".into(),
+            driver: DbDriver::Postgres,
+            introspection: DbIntrospection {
+                all_schemas: false,
+                schemas: vec!["app_*".into()],
+                schemas_by_database: BTreeMap::from([
+                    ("analytics".into(), DbSchemaSelection { all: true, names: vec![] }),
+                    ("reporting.eu".into(), DbSchemaSelection { all: false, names: vec!["public".into()] }),
+                    ("sandbox".into(), DbSchemaSelection { all: false, names: vec![] }),
+                ]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        save(tmp.path(), std::slice::from_ref(&source)).unwrap();
+        assert_eq!(load(tmp.path()).unwrap(), vec![source]);
+    }
+
+    #[test]
     fn sqlserver_defaults() {
         assert_eq!(DbDriver::SqlServer.default_port(), Some(1433));
         assert_eq!(scheme_driver("sqlserver"), Some(DbDriver::SqlServer));
@@ -612,5 +910,93 @@ mod tests {
         assert_eq!(secure.resolved().unwrap().ssl, DbSslMode::VerifyFull);
         let error = parse_url("clickhouse://reader:secret@db.example:invalid/default").unwrap_err();
         assert!(!error.message.contains("secret"));
+    }
+
+    #[test]
+    fn snowflake_settings_round_trip_and_stay_out_of_other_sources() {
+        let tmp = tempfile::tempdir().unwrap();
+        let snowflake = DataSource {
+            id: "sf".into(),
+            name: "warehouse".into(),
+            driver: DbDriver::Snowflake,
+            host: "myorg-myaccount".into(),
+            user: "jane".into(),
+            database: "ANALYTICS".into(),
+            save_password: true,
+            snowflake: Some(DbSnowflake {
+                warehouse: "COMPUTE_WH".into(),
+                role: "ANALYST".into(),
+                auth: DbSnowflakeAuth::KeyPair,
+                private_key_file: "~/.ssh/rsa_key.p8".into(),
+            }),
+            ..Default::default()
+        };
+        let other = DataSource { id: "pg".into(), name: "pg".into(), driver: DbDriver::Postgres, ..Default::default() };
+        save(tmp.path(), &[snowflake.clone(), other.clone()]).unwrap();
+        assert_eq!(load(tmp.path()).unwrap(), vec![snowflake, other]);
+        let text = std::fs::read_to_string(project_dir::path(tmp.path(), FILE)).unwrap();
+        assert_eq!(text.matches("snowflake]").count(), 1, "{text}");
+        assert!(text.contains("driver = \"snowflake\""), "{text}");
+        assert!(text.contains("auth = \"keyPair\""), "{text}");
+        assert!(text.contains("privateKeyFile = \"~/.ssh/rsa_key.p8\""), "{text}");
+        assert_eq!(DbDriver::Snowflake.default_port(), Some(443));
+        assert_eq!(DataSource::default().snowflake(), DbSnowflake::default());
+    }
+
+    #[test]
+    fn snowflake_jdbc_urls_name_the_session_settings() {
+        let s = DataSource {
+            driver: DbDriver::Snowflake,
+            url_only: true,
+            url: "jdbc:snowflake://myorg-myaccount.snowflakecomputing.com:443/?warehouse=COMPUTE_WH&db=ANALYTICS\
+                  &schema=PUBLIC&role=ANALYST&user=jane&authenticator=snowflake_jwt\
+                  &private_key_file=%7E%2Fkeys%2Frsa_key.p8&QUERY_TAG=ide"
+                .into(),
+            ..Default::default()
+        };
+        let r = s.resolved().unwrap();
+        assert_eq!(r.host, "myorg-myaccount.snowflakecomputing.com");
+        assert_eq!(r.port, Some(443));
+        assert_eq!(r.user, "jane");
+        assert_eq!(r.database, "ANALYTICS");
+        assert_eq!(r.options.default_schema, "PUBLIC");
+        assert_eq!(
+            r.snowflake(),
+            DbSnowflake {
+                warehouse: "COMPUTE_WH".into(),
+                role: "ANALYST".into(),
+                auth: DbSnowflakeAuth::KeyPair,
+                private_key_file: "~/keys/rsa_key.p8".into(),
+            }
+        );
+        assert_eq!(r.properties, vec![DbProperty { name: "QUERY_TAG".into(), value: "ide".into() }]);
+        let browser = DataSource {
+            url: "snowflake://xy12345.eu-central-1.snowflakecomputing.com/DB?authenticator=externalbrowser".into(),
+            ..s
+        };
+        let r = browser.resolved().unwrap();
+        assert_eq!(r.database, "DB");
+        assert_eq!(r.snowflake().auth, DbSnowflakeAuth::Browser);
+        assert_eq!(scheme_driver("snowflake"), Some(DbDriver::Snowflake));
+    }
+
+    #[test]
+    fn introspection_shows_only_the_picked_schemas() {
+        let mut i = DbIntrospection::default();
+        assert!(i.shows_schema("SYS"), "the default reads every schema");
+
+        i.all_schemas = false;
+        assert!(!i.shows_schema("SYS"), "nothing picked: the tree lists nothing either");
+
+        i.schemas = vec!["XMCB".into(), " APP_* ".into()];
+        assert!(i.shows_schema("XMCB"));
+        assert!(i.shows_schema("APP_INFO"));
+        assert!(!i.shows_schema("APP"), "`*` needs the text that follows it");
+        assert!(!i.shows_schema("SYS"));
+        assert!(!i.shows_schema("xmcb"), "patterns match the names the server returned");
+
+        i.schemas = vec!["?".into()];
+        assert!(i.shows_schema("A"));
+        assert!(!i.shows_schema("AB"));
     }
 }

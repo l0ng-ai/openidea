@@ -1,11 +1,10 @@
-#[allow(unused_imports)]
-use super::*;
 use crate::Host;
-use crate::rpc::Dispatcher;
+use ide_command::command;
 use ide_core::{IdeError, IdeResult};
 use ide_run::RunConfig;
 use ide_run::import::{RunImport, RunImportSource};
 
+#[command(trust = trusted)]
 pub async fn run_dotnet_resolve(host: &Host, window: &str, config: RunConfig, debug: bool) -> IdeResult<RunConfig> {
     host.require_trust(window)?;
     if !matches!(config.kind.as_str(), "dotnet" | "dotnet-test")
@@ -30,6 +29,7 @@ fn application_cache(project: &crate::project::Project, id: &str) -> std::path::
     project.cache_dir.join("application-update").join(format!("{:x}", hash.finish()))
 }
 
+#[command(trust = trusted)]
 pub async fn run_application_build(
     host: &Host,
     window: &str,
@@ -74,6 +74,7 @@ pub async fn run_application_build(
     .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
+#[command(trust = trusted)]
 pub async fn run_application_publish(
     host: &Host,
     window: &str,
@@ -96,43 +97,61 @@ pub async fn run_application_publish(
 }
 
 /// Configuration templates: per-type defaults applied to new configurations.
-pub fn run_templates(host: &Host, window: &str) -> IdeResult<Vec<RunConfig>> {
+#[command(trust = trusted)]
+pub async fn run_templates(host: &Host, window: &str) -> IdeResult<Vec<RunConfig>> {
     let root = host.project(window)?.root.clone();
-    ide_run::load_templates(&root)
+    crate::ops::blocking(move || ide_run::load_templates(&root)).await
 }
 
-pub fn run_save_templates(host: &Host, window: &str, templates: Vec<RunConfig>) -> IdeResult<()> {
+#[command(trust = trusted)]
+pub async fn run_save_templates(host: &Host, window: &str, templates: Vec<RunConfig>) -> IdeResult<()> {
     let root = host.project(window)?.root.clone();
-    ide_run::save_templates(&root, &templates)
+    crate::ops::blocking(move || ide_run::save_templates(&root, &templates)).await
 }
 
 /// Project files run configurations can be imported from (`.vscode/launch.json`).
-pub fn run_import_sources(host: &Host, window: &str) -> IdeResult<Vec<RunImportSource>> {
+#[command(trust = trusted)]
+pub async fn run_import_sources(host: &Host, window: &str) -> IdeResult<Vec<RunImportSource>> {
     let root = host.project(window)?.root.clone();
-    Ok(ide_run::import::available(&root))
+    crate::ops::blocking(move || Ok(ide_run::import::available(&root))).await
 }
 
-/// Configurations read from `source`, not saved; names already in `existing` (the
-/// configurations being edited) are skipped.
-pub fn run_import_configs(
+/// Configurations read from `source`, not saved; names already in `existing` are skipped.
+#[command(trust = trusted)]
+pub async fn run_import_configs(
     host: &Host,
     window: &str,
     source: RunImportSource,
     existing: Vec<RunConfig>,
 ) -> IdeResult<RunImport> {
+    // `existing`: the configurations being edited.
     host.require_trust(window)?;
     let root = host.project(window)?.root.clone();
-    ide_run::import_configs(&root, source, &existing)
+    crate::ops::blocking(move || ide_run::import_configs(&root, source, &existing)).await
 }
 
 /// The environment runs inherit when "Include system environment variables" is on.
-pub fn run_system_env(_host: &Host, _window: &str) -> std::collections::BTreeMap<String, String> {
+#[command(trust = always)]
+pub fn run_system_env() -> std::collections::BTreeMap<String, String> {
     ide_run::system_env()
 }
 
-/// Writes the Gradle init script that adds `jvm_args` to the JVMs the build forks
-/// (`bootRun`, `run`, tests) and returns its path, for `--init-script`.
-pub async fn run_gradle_jvm_args_script(_host: &Host, _window: &str, jvm_args: Vec<String>) -> IdeResult<String> {
+/// Variables of the `.env` files a debug launch names, for the debugger to start with.
+#[command(trust = trusted)]
+pub async fn run_env_files(files: Vec<std::path::PathBuf>) -> IdeResult<std::collections::BTreeMap<String, String>> {
+    // In order (later files win): the same files a run loads, over the system environment
+    // debug adapters inherit.
+    crate::ops::blocking(move || {
+        ide_run::envfile::load(&files, &ide_run::system_env())
+            .map_err(|e| IdeError::not_found(format!("cannot read .env file: {e}")))
+    })
+    .await
+}
+
+/// Writes the Gradle init script adding `jvm_args` to the JVMs the build forks; returns its path.
+#[command(trust = always)]
+pub async fn run_gradle_jvm_args_script(jvm_args: Vec<String>) -> IdeResult<String> {
+    // The forked JVMs: `bootRun`, `run`, tests; the path is for `--init-script`.
     tokio::task::spawn_blocking(move || {
         ide_run::gradle_jvm::write_init_script(&ide_run::gradle_jvm::default_dir(), &jvm_args)
             .map(|p| p.to_string_lossy().into_owned())
@@ -142,9 +161,10 @@ pub async fn run_gradle_jvm_args_script(_host: &Host, _window: &str, jvm_args: V
     .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
-/// Writes one of the IDE's Gradle init scripts (`text`; the file is named `<name>-<hash>`) on
-/// the machine that runs the build, for `--init-script`, and returns its path.
-pub async fn run_gradle_init_script(_host: &Host, _window: &str, name: String, text: String) -> IdeResult<String> {
+/// Writes one of the IDE's Gradle init scripts where the build runs; returns its path.
+#[command(trust = trusted)]
+pub async fn run_gradle_init_script(name: String, text: String) -> IdeResult<String> {
+    // `text`; the file is named `<name>-<hash>`, for `--init-script`.
     if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
         return Err(IdeError::invalid(format!("invalid init script name {name:?}")));
     }
@@ -159,6 +179,7 @@ pub async fn run_gradle_init_script(_host: &Host, _window: &str, name: String, t
 
 /// Results from the JUnit XML reports (Surefire, Failsafe, Gradle) of the module at
 /// `module` (relative to the project root) written since `since_ms` (Unix epoch, ms).
+#[command(trust = trusted)]
 pub async fn run_test_reports(
     host: &Host,
     window: &str,
@@ -173,6 +194,7 @@ pub async fn run_test_reports(
         .map_err(|e| IdeError::internal(e.to_string()))
 }
 
+#[command(trust = trusted)]
 pub async fn run_tomcat_home(host: &Host, window: &str, home: String) -> IdeResult<ide_run::tomcat::TomcatHome> {
     host.require_trust(window)?;
     let root = host.project(window)?.root.clone();
@@ -181,6 +203,7 @@ pub async fn run_tomcat_home(host: &Host, window: &str, home: String) -> IdeResu
         .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
+#[command(trust = trusted)]
 pub async fn run_tomcat_installations(
     host: &Host,
     window: &str,
@@ -191,17 +214,93 @@ pub async fn run_tomcat_installations(
         .map_err(|e| IdeError::internal(e.to_string()))
 }
 
+/// Id prefix of a Project Structure WAR artifact (a project without a build tool).
+const PROJECT_ARTIFACT: &str = "project:";
+
+fn project_web_artifacts(ps: &ide_core::settings::ProjectStructureSettings) -> Vec<ide_build::web::WebArtifact> {
+    ide_build::compile::structure_web_artifacts(ps)
+        .into_iter()
+        .map(|a| ide_build::web::WebArtifact {
+            id: format!("{PROJECT_ARTIFACT}{}", a.name),
+            name: a.name.split(':').next().unwrap_or(&a.name).to_owned(),
+            module: if a.module == "." { String::new() } else { a.module.clone() },
+            tool: "project".into(),
+        })
+        .collect()
+}
+
+/// Compiles the project and packs the Project Structure artifact `name` as the WAR Tomcat
+/// deploys, recorded in `base` like a build tool's archive.
+fn build_project_war(
+    root: &std::path::Path,
+    settings: &ide_core::settings::Settings,
+    detected: &[ide_workspace::roots::SourceFolder],
+    name: &str,
+    base: &std::path::Path,
+    cache: &std::path::Path,
+) -> IdeResult<()> {
+    use ide_build::compile;
+    let (ps, roots, jdk) = crate::ops::build::structure_inputs(root, settings, detected);
+    let artifact = ps
+        .artifacts
+        .iter()
+        .find(|a| a.name == name)
+        .ok_or_else(|| IdeError::invalid(format!("No artifact named {name} in Project Structure › Artifacts")))?;
+    let war = base.join("artifact").join(format!(
+        "{}.war",
+        name.split(':').next().unwrap_or(name).replace(|c: char| !c.is_alphanumeric() && c != '-', "_")
+    ));
+    let plan = compile::structure_war_plan(
+        root,
+        &ps,
+        &roots,
+        jdk.as_ref(),
+        &settings.languages.java.language_level,
+        artifact,
+        &war,
+        cache,
+    )?;
+    let result = compile::run(root, &plan, &ide_core::CancellationToken::new(), &|_| {})?;
+    if !result.success {
+        let first = result.messages.iter().find(|m| m.severity == ide_core::Severity::Error);
+        let text = match first {
+            Some(m) => match (&m.path, m.range) {
+                (Some(path), Some(range)) => {
+                    format!("{}:{}: {}", std::path::PathBuf::from(path.clone()).display(), range.start.line + 1, m.text)
+                }
+                _ => m.text.clone(),
+            },
+            None => "the build failed".into(),
+        };
+        return Err(IdeError::invalid(format!("Cannot build {name}: {text}")));
+    }
+    std::fs::create_dir_all(base)?;
+    std::fs::write(base.join("artifact-id.txt"), format!("{PROJECT_ARTIFACT}{name}"))?;
+    std::fs::write(base.join("artifact-path.txt"), war.to_string_lossy().as_bytes())?;
+    Ok(())
+}
+
+#[command(trust = trusted)]
 pub async fn run_tomcat_artifacts(host: &Host, window: &str) -> IdeResult<Vec<ide_build::web::WebArtifact>> {
     host.require_trust(window)?;
     let project = host.project(window)?;
     tokio::task::spawn_blocking(move || {
-        let model = crate::ops::build::load(&project.root, &project.build_cache_dir(), &project.settings.effective());
-        ide_build::web::artifacts(&project.root, &model)
+        let settings = project.settings.effective();
+        let model = crate::ops::build::load(&project.root, &project.build_cache_dir(), &settings);
+        let mut artifacts = ide_build::web::artifacts(&project.root, &model);
+        // Without a build tool, the Project Structure's WAR artifacts are built by the IDE.
+        if model.maven.is_none() && model.gradle.is_empty() {
+            let detected = project.detected_roots.read().clone();
+            let (ps, _, _) = crate::ops::build::structure_inputs(&project.root, &settings, &detected);
+            artifacts.extend(project_web_artifacts(&ps));
+        }
+        artifacts
     })
     .await
     .map_err(|e| IdeError::internal(e.to_string()))
 }
 
+#[command(trust = trusted)]
 pub async fn run_tomcat_build(host: &Host, window: &str, config: RunConfig) -> IdeResult<Option<RunConfig>> {
     host.require_trust(window)?;
     if config.extras.params.get("deployment").is_some_and(|v| v != "artifact") {
@@ -218,16 +317,35 @@ pub async fn run_tomcat_build(host: &Host, window: &str, config: RunConfig) -> I
             .filter(|s| !s.is_empty())
             .or_else(|| artifacts.first().map(|a| &a.id))
             .ok_or_else(|| IdeError::invalid("Choose a WAR artifact"))?;
+        // One deployment of the config (`ide_run::tomcat::deployment_configs`); its build records go to its own directory.
         let base = ide_run::tomcat::effective_base_dir(&project.root, &project.cache_dir, &config)?;
+        let base = ide_run::tomcat::state_dir(&base, &config);
+        if let Some(name) = id.strip_prefix(PROJECT_ARTIFACT) {
+            let settings = project.settings.effective();
+            let detected = project.detected_roots.read().clone();
+            build_project_war(&project.root, &settings, &detected, name, &base, &project.build_cache_dir())?;
+            return Ok(None);
+        }
         // "Build before launch" is skipped when the built WAR is already newer than the
-        // module's sources, so a repeated run does not rebuild (IDEA's up-to-date check).
-        if ide_run::tomcat::artifact_is_current(&project.root, &base, &config) {
+        // sources of every module in the build, so a repeated run does not rebuild (IDEA's
+        // up-to-date check) but a change in a dependency module does.
+        let modules: Vec<std::path::PathBuf> = model
+            .maven
+            .iter()
+            .flat_map(|m| m.projects.iter().map(|p| p.dir.as_str()))
+            .chain(model.gradle.iter().flat_map(|g| g.projects.iter().map(|p| p.dir.as_str())))
+            .map(std::path::PathBuf::from)
+            .collect();
+        if ide_run::tomcat::artifact_is_current(&project.root, &base, &config, &modules) {
             return Ok(None);
         }
         let mut plan = ide_build::web::build(&project.root, &model, id, &base)?;
         plan.env.extend(config.env.clone());
         let mut build = RunConfig {
-            id: format!("tomcat-build:{}", config.id),
+            id: match config.extras.params.get("deploymentIndex") {
+                Some(i) => format!("tomcat-build:{}:{i}", config.id),
+                None => format!("tomcat-build:{}", config.id),
+            },
             name: format!("Build {}", config.name),
             kind: if id.starts_with("maven:") { "maven" } else { "gradle" }.into(),
             command: plan.command.clone(),
@@ -256,6 +374,7 @@ pub async fn run_tomcat_build(host: &Host, window: &str, config: RunConfig) -> I
     .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
+#[command(trust = trusted)]
 pub async fn run_tomcat_update(host: &Host, window: &str, config: RunConfig, mode: String) -> IdeResult<()> {
     host.require_trust(window)?;
     let project = host.project(window)?;
@@ -267,8 +386,7 @@ pub async fn run_tomcat_update(host: &Host, window: &str, config: RunConfig, mod
         .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
-/// Updates a running Tomcat artifact deployment from the module's compiled output and web
-/// resources (`ide_run::tomcat::sync_outputs`). `false`: rebuild the WAR instead.
+#[command(trust = trusted)]
 pub async fn run_tomcat_sync(
     host: &Host,
     window: &str,
@@ -277,6 +395,8 @@ pub async fn run_tomcat_sync(
     class_paths: Vec<String>,
     resources_only: bool,
 ) -> IdeResult<bool> {
+    // Updates a running Tomcat artifact deployment from the module's compiled output and web
+    // resources (`ide_run::tomcat::sync_outputs`). `false`: rebuild the WAR instead.
     host.require_trust(window)?;
     let project = host.project(window)?;
     if !host.processes.list().iter().any(|r| r.running && r.config_id == config.id) {
@@ -290,55 +410,35 @@ pub async fn run_tomcat_sync(
         let class_paths: Vec<_> =
             class_paths.iter().filter_map(|p| dunce::canonicalize(project.root.join(p)).ok()).collect();
         let base = ide_run::tomcat::effective_base_dir(&project.root, &project.cache_dir, &config)?;
-        ide_run::tomcat::sync_outputs(&base, &module, &class_paths, resources_only)
+        ide_run::tomcat::sync_outputs(
+            &ide_run::tomcat::state_dir(&base, &config),
+            &module,
+            &class_paths,
+            resources_only,
+        )
     })
     .await
     .map_err(|e| IdeError::internal(e.to_string()))?
 }
 
-/// Commands of this module the remote server answers.
-pub(crate) fn register(d: &mut Dispatcher) {
-    d.add("run_dotnet_resolve", |c| async move {
-        run_dotnet_resolve(&c.host, &c.window, c.arg("config")?, c.arg("debug")?).await
-    });
-    d.add("run_application_build", |c| async move {
-        run_application_build(&c.host, &c.window, c.arg("config")?, c.arg("module")?).await
-    });
-    d.add("run_application_publish", |c| async move {
-        run_application_publish(&c.host, &c.window, c.arg("config")?, c.arg("classPaths")?, c.arg("mainClass")?).await
-    });
-    d.add("run_tomcat_home", |c| async move { run_tomcat_home(&c.host, &c.window, c.arg("home")?).await });
-    d.add("run_tomcat_installations", |c| async move { run_tomcat_installations(&c.host, &c.window).await });
-    d.add("run_tomcat_artifacts", |c| async move { run_tomcat_artifacts(&c.host, &c.window).await });
-    d.add("run_tomcat_build", |c| async move { run_tomcat_build(&c.host, &c.window, c.arg("config")?).await });
-    d.add("run_tomcat_sync", |c| async move {
-        run_tomcat_sync(
-            &c.host,
-            &c.window,
-            c.arg("config")?,
-            c.arg("module")?,
-            c.arg("classPaths")?,
-            c.arg("resourcesOnly")?,
-        )
-        .await
-    });
-    d.add("run_tomcat_update", |c| async move {
-        run_tomcat_update(&c.host, &c.window, c.arg("config")?, c.arg("mode")?).await
-    });
-    d.add("run_templates", |c| async move { run_templates(&c.host, &c.window) });
-    d.add("run_save_templates", |c| async move { run_save_templates(&c.host, &c.window, c.arg("templates")?) });
-    d.add("run_import_sources", |c| async move { run_import_sources(&c.host, &c.window) });
-    d.add("run_import_configs", |c| async move {
-        run_import_configs(&c.host, &c.window, c.arg("source")?, c.arg("existing")?)
-    });
-    d.add("run_system_env", |c| async move { Ok(run_system_env(&c.host, &c.window)) });
-    d.add("run_gradle_jvm_args_script", |c| async move {
-        run_gradle_jvm_args_script(&c.host, &c.window, c.arg("jvmArgs")?).await
-    });
-    d.add("run_gradle_init_script", |c| async move {
-        run_gradle_init_script(&c.host, &c.window, c.arg("name")?, c.arg("text")?).await
-    });
-    d.add("run_test_reports", |c| async move {
-        run_test_reports(&c.host, &c.window, c.arg("module")?, c.arg("sinceMs")?).await
-    });
-}
+ide_command::domain!(
+    run_commands:
+    run_application_build,
+    run_application_publish,
+    run_dotnet_resolve,
+    run_env_files,
+    run_gradle_init_script,
+    run_gradle_jvm_args_script,
+    run_import_configs,
+    run_import_sources,
+    run_save_templates,
+    run_system_env,
+    run_templates,
+    run_test_reports,
+    run_tomcat_artifacts,
+    run_tomcat_build,
+    run_tomcat_home,
+    run_tomcat_installations,
+    run_tomcat_sync,
+    run_tomcat_update,
+);

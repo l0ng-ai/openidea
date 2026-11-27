@@ -180,21 +180,27 @@ export function typeColumnText(
   return !detail || /^auto[- ]?import$/i.test(detail) ? source : `${detail} (${source})`;
 }
 
-const WORD_CHAR = /[\p{L}\p{N}_$]/u;
+const WORD_CHAR = /[\p{L}\p{N}\p{M}_$]/u;
 
 /** End of the identifier starting at `pos` in `line` (for ⇥ Replace without a server range). */
 export function identifierEnd(text: string, pos: number): number {
   let i = pos;
-  while (i < text.length && WORD_CHAR.test(text[i]!)) i++;
+  for (const char of text.slice(pos)) {
+    if (!WORD_CHAR.test(char)) break;
+    i += char.length;
+  }
   return i;
 }
 
 /** Completion trigger character for the text just before the caret, if any. */
-export function triggerCharacter(before: string): string | null {
+export function triggerCharacter(before: string, language?: string): string | null {
   const last = before.slice(-1);
   if (last === ".") return before.slice(-2) === ".." ? null : ".";
   if (last === ":") return before.slice(-2) === "::" ? ":" : null;
   if (last === ">") return before.slice(-2) === "->" ? ">" : null;
   if (last === "@") return "@";
+  // In Java, `(` right after an annotation name asks the server for its attributes, like IDEA;
+  // a method call's `(` does not open the popup.
+  if (last === "(") return language === "java" && /@[\w$.]+\s*\($/.test(before) ? "(" : null;
   return null;
 }

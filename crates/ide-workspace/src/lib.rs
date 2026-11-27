@@ -18,14 +18,15 @@ pub mod roots;
 pub mod settings;
 pub mod text_refs;
 pub mod unity;
+pub mod unreal;
 pub mod window_groups;
 pub mod workspace;
 
-pub use documents::{DetectLanguage, DocumentInfo, Documents, TextSnapshot};
+pub use documents::{DetectLanguage, DocumentEncoding, DocumentInfo, DocumentLanguage, Documents, TextSnapshot};
 pub use editorconfig::{EditorConfig, EditorConfigProps};
 pub use file_defaults::FileDefaults;
 pub use file_moves::{FileMove, FileMoves, UndoOutcome};
-pub use history::{DirectoryHistory, HistoryEntry, HistoryKind, LocalHistory, Retention};
+pub use history::{DeletionUndo, DirectoryHistory, HistoryEntry, HistoryKind, LocalHistory, Retention};
 pub use recent::{RecentProject, RecentProjectGroup, RecentProjects};
 pub use roots::{ProjectRoots, RootKind, SourceFolder};
 pub use settings::{SettingsScope, SettingsStore};

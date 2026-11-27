@@ -1,0 +1,86 @@
+id = "php"
+name = "PHP"
+group = "PHP"
+icon = "project-php"
+description = "A Composer project with PSR-4 autoloading."
+
+[[requires]]
+program = "php"
+min = "8.2"
+hint = "Install PHP 8.2 or later: https://www.php.net/downloads"
+
+[[requires]]
+program = "composer"
+hint = "Install Composer: https://getcomposer.org/download/"
+
+[[fields]]
+id = "vendor"
+label = "Vendor:"
+type = "text"
+pattern = '^[a-z0-9]([_.-]?[a-z0-9]+)*$'
+default = "acme"
+
+[[fields]]
+id = "namespace"
+label = "Namespace:"
+type = "text"
+pattern = '^[A-Za-z_][A-Za-z0-9_]*(\\[A-Za-z_][A-Za-z0-9_]*)*$'
+default = "{{vendor|pascal}}\\{{name|pascal}}"
+
+[[files]]
+path = "composer.json"
+content = '''
+{
+    "name": "{{vendor}}/{{name|kebab}}",
+    "type": "project",
+    "require": {
+        "php": ">=8.2"
+    },
+    "autoload": {
+        "psr-4": {
+            "{{namespace|json}}\\": "src/"
+        }
+    }
+}
+'''
+
+[[files]]
+path = "src/App.php"
+content = '''
+<?php
+
+declare(strict_types=1);
+
+namespace {{namespace}};
+
+final class App
+{
+    public function greet(string $name): string
+    {
+        return "Hello, {$name}!";
+    }
+}
+'''
+
+[[files]]
+path = "public/index.php"
+content = '''
+<?php
+
+declare(strict_types=1);
+
+require __DIR__ . '/../vendor/autoload.php';
+
+echo (new \{{namespace}}\App())->greet('World'), PHP_EOL;
+'''
+
+[[files]]
+path = ".gitignore"
+content = '''
+vendor/
+'''
+
+[[after]]
+label = "Generating the autoloader"
+program = "composer"
+args = ["dump-autoload", "--no-interaction"]

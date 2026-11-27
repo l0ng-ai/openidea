@@ -1,0 +1,2 @@
+{ "currency": "EUR",
+    "discounts": [ 5, 10,15 ] }

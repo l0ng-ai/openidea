@@ -35,20 +35,31 @@ export function parseColor(input: string): Rgba | null {
   return null;
 }
 
+const probes = new WeakMap<HTMLElement, HTMLElement>();
+
+/**
+ * `var(name)` (a `color-mix()`, `hsl()`, …) as the browser computes it under `root`. One hidden
+ * element per root stays for it: inserting one per token restyled the whole page each time.
+ */
+export function computedTokenColor(name: string, root: HTMLElement = document.documentElement): string {
+  let probe = probes.get(root);
+  if (probe?.parentElement !== root) {
+    probe = root.ownerDocument.createElement("span");
+    probe.hidden = true;
+    probe.dataset.tokenProbe = "";
+    root.appendChild(probe);
+    probes.set(root, probe);
+  }
+  probe.style.color = `var(${name})`;
+  return getComputedStyle(probe).color;
+}
+
 /** The computed colour of token `name` on `root`, whatever syntax the theme wrote it in. */
 export function resolveTokenColor(name: string, root: HTMLElement = document.documentElement): Rgba | null {
   if (typeof getComputedStyle === "undefined") return null;
   const raw = getComputedStyle(root).getPropertyValue(name).trim();
   if (!raw) return null;
-  const direct = parseColor(raw);
-  if (direct) return direct;
-  const probe = root.ownerDocument.createElement("span");
-  probe.hidden = true;
-  probe.style.color = `var(${name})`;
-  root.appendChild(probe);
-  const color = getComputedStyle(probe).color;
-  probe.remove();
-  return parseColor(color);
+  return parseColor(raw) ?? parseColor(computedTokenColor(name, root));
 }
 
 const byte = (v: number) => Math.min(255, Math.max(0, Math.round(v)));

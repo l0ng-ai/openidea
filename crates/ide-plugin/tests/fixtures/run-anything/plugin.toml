@@ -1,0 +1,23 @@
+id = "test.run-anything"
+name = "Run Anything fixture"
+version = "0.1.0"
+description = "Test fixture for [[contributes.runAnything]], the run-anything-provider export and run configuration completion (API 1.18)."
+engines.openidea = "^1.18"
+wasm = "dist/plugin.wasm"
+
+[[contributes.runAnything]]
+prefix = "task"
+title = "Tasks"
+
+[[contributes.commands]]
+id = "ran"
+title = "Tasks Run So Far"
+
+[capabilities]
+optional = ["process:task"]
+
+[[contributes.runDetectors]]
+id = "tasks"
+name = "Task"
+files = ["Taskfile.yml"]
+command = "task"

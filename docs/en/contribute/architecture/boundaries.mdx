@@ -51,6 +51,6 @@ Put it in Rust if any of these is true:
 
 Keep it in the frontend if it is about how something looks or responds to input, and works from data the backend already provides.
 
-When it lands in Rust, place it by domain: logic in the crate that owns the domain (or a new `crates/ide-<domain>`), the shared command implementation in `ide-host::ops`, and a thin adapter in `src-tauri/src/commands/<domain>.rs`. No domain logic in `src-tauri`.
+When it lands in Rust, place it by domain: logic in the crate that owns the domain (or a new `crates/ide-<domain>`), and the command declared on its implementation in `ide-host::ops` (see [IPC](/en/contribute/architecture/ipc#commands)); only a command that needs Tauri itself is written in `src-tauri/src/commands/<domain>.rs`. No domain logic in `src-tauri`.
 
 When it lands in the frontend, it is a feature folder under `src/features/<name>/` that registers actions and contributions. It must not import another feature; see [Frontend](/en/contribute/architecture/frontend).

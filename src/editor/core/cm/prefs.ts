@@ -37,7 +37,7 @@ import { markdownImages } from "./markdownImages";
 import { selectionMarks } from "./selectionMarks";
 import { seamlessSelection } from "./selectionLayer";
 import { useEditorRegistry } from "@/editor/api";
-import type { EditorExtras } from "@/platform/editorSettings";
+import { editorPrefs, type EditorExtras } from "@/platform/editorSettings";
 import { openideaHighlightStyle } from "./highlight";
 import {
   cursorHumpLeft,
@@ -48,12 +48,28 @@ import {
   selectHumpLeft,
   selectHumpRight,
 } from "./editing";
-import { enterInLineComment, lineCommentStyle, type LineCommentStyle } from "./comments";
-import { enterInDocComment } from "./docComment";
-import { skipClosingQuote, smartBackspace, smartBackspaceApplies, tabOut } from "./smartKeys";
+import { enterAfterDocLineComment, enterInLineComment, lineCommentStyle, type LineCommentStyle } from "./comments";
+import { enterInBlockComment, enterInDocComment, enterInDocstring } from "./docComment";
+import { renderDocComments } from "./renderedDocs";
+import {
+  rustLifetimeQuote,
+  skipClosingBracket,
+  enterInStringLiteral,
+  semicolonAtStatementEnd,
+  skipClosingQuote,
+  smartAngleBrackets,
+  smartBackspace,
+  smartBackspaceApplies,
+  tabOut,
+  templateBrace,
+} from "./smartKeys";
+import { linkedTags } from "./linkedTags";
+import { textDrag } from "./textDrag";
 import { stringClipboard } from "./stringClipboard";
 import { filterCopiedText } from "./clipboard";
 import { LINE_INSET } from "./lineInset";
+import { codeLensPositions } from "./codeLens";
+import { wheelZoomStep } from "@/platform/wheelZoom";
 
 // --- soft wraps ---------------------------------------------------------------
 
@@ -77,7 +93,7 @@ export function matchesFilePatterns(patterns: string, path: string): boolean {
 }
 
 export function softWrapActive(softWrap: boolean | undefined, prefs: EditorExtras, path: string): boolean {
-  return !!softWrap && matchesFilePatterns(prefs.general.softWrapFiles || "*", path);
+  return (softWrap ?? true) && matchesFilePatterns(prefs.general.softWrapFiles || "*", path);
 }
 
 const wrapIndentCache = new Map<number, Decoration>();
@@ -218,6 +234,15 @@ function leadingColumns(text: string, tabSize: number): number {
   return col;
 }
 
+/** Indentation of the nearest non-empty line above `line` (1-based), for pastes onto a blank line in languages without an indent engine. */
+function previousLineIndent(state: EditorState, line: number): number | null {
+  for (let n = line - 1; n >= 1; n--) {
+    const prev = state.doc.line(n);
+    if (/\S/.test(prev.text)) return leadingColumns(prev.text, state.tabSize);
+  }
+  return null;
+}
+
 /** Reformat on paste › Indent Block: re-indents a pasted block to the caret's indentation. */
 export function indentPastedText(
   text: string,
@@ -273,7 +298,11 @@ export function pasteReindentFilter(mode: "indentBlock" | "indentEachLine") {
     let targetCol = leadingColumns(atIndent ? before : line.text, tabSize);
     let prefix = "";
     if (atIndent) {
-      const proper = getIndentation(start, line.from);
+      let proper = getIndentation(start, line.from);
+      if (!targetCol && !proper) {
+        const above = previousLineIndent(start, line.number);
+        if (above) proper = above;
+      }
       if (proper !== null && proper !== targetCol) {
         targetCol = proper;
         prefix = indentString(start, proper);
@@ -353,25 +382,43 @@ export function richTextHtml(view: EditorView, from: number, to: number): string
   return `<pre style="font-family:${cs.fontFamily.replace(/"/g, "'")};font-size:${cs.fontSize};color:${cs.color};background:${bg}">${html}</pre>`;
 }
 
-const richCopy = EditorView.domEventHandlers({
-  copy(e, view) {
-    const sel = view.state.selection;
-    if (sel.ranges.length !== 1 || sel.main.empty || !e.clipboardData) return false;
-    const { from, to } = sel.main;
-    const text = view.state.sliceDoc(from, to);
-    if (filterCopiedText(view.state, text) !== text) return false;
-    try {
-      const html = richTextHtml(view, from, to);
-      e.clipboardData.clearData();
-      e.clipboardData.setData("text/plain", view.state.sliceDoc(from, to));
-      e.clipboardData.setData("text/html", html);
-      e.preventDefault();
-      return true;
-    } catch {
-      return false;
-    }
-  },
-});
+/** The format Copy as Plain Text / Copy as Rich Text forces on the copy in progress. */
+let forcedCopyFormat: "plain" | "rich" | null = null;
+
+/** Edit › Copy as Plain Text / Copy as Rich Text: one copy in `format`, whatever Rich-Text Copy is set to. */
+export function copyAs(view: EditorView, format: "plain" | "rich"): void {
+  forcedCopyFormat = format;
+  try {
+    view.focus();
+    document.execCommand("copy");
+  } finally {
+    forcedCopyFormat = null;
+  }
+}
+
+const richCopy = (byDefault: boolean) =>
+  EditorView.domEventHandlers({
+    copy(e, view) {
+      if ((forcedCopyFormat ?? (byDefault ? "rich" : "plain")) === "plain") return false;
+      const sel = view.state.selection;
+      if (sel.ranges.length !== 1 || sel.main.empty || !e.clipboardData) return false;
+      const { from, to } = sel.main;
+      const text = view.state.sliceDoc(from, to);
+      if (filterCopiedText(view.state, text) !== text) return false;
+      try {
+        const html = richTextHtml(view, from, to);
+        e.clipboardData.clearData();
+        e.clipboardData.setData("text/plain", view.state.sliceDoc(from, to));
+        e.clipboardData.setData("text/html", html);
+        e.preventDefault();
+        return true;
+      } catch {
+        return false;
+      }
+    },
+  });
+const richCopyByDefault = richCopy(true);
+const plainCopyByDefault = richCopy(false);
 
 // --- caret / scrolling / mouse ----------------------------------------------
 
@@ -380,6 +427,17 @@ const richCopy = EditorView.domEventHandlers({
  * same value (#2480), so editors opened afterwards match the others.
  */
 let sharedFontZoom = 0;
+
+const fontZoomListeners = new WeakMap<EditorView, (zoom: number | null) => void>();
+let activeFontZoomListener: ((zoom: number | null) => void) | undefined;
+
+export function observeEditorFontZoom(view: EditorView, listener: (zoom: number | null) => void) {
+  fontZoomListeners.set(view, listener);
+  return () => {
+    fontZoomListeners.delete(view);
+    if (activeFontZoomListener === listener) activeFontZoomListener = undefined;
+  };
+}
 
 /** Font zoom of one editor (⌘ + wheel), in px relative to the configured size. */
 export const setFontZoom = StateEffect.define<number>();
@@ -423,19 +481,48 @@ export function stepAllEditorsFontZoom(origin: EditorView, delta: number): void 
   }
 }
 
+/** Resets one editor's font zoom to 0. */
+export function resetEditorFontZoom(view: EditorView): void {
+  if (view.state.field(fontZoom, false)) view.dispatch({ effects: setFontZoom.of(0) });
+  const listener = fontZoomListeners.get(view);
+  if (listener && activeFontZoomListener === listener) {
+    activeFontZoomListener = undefined;
+    listener(null);
+  }
+}
+
 /** Resets every open editor's font zoom, and the value new editors start from. */
 export function resetAllEditorsFontZoom(): void {
   sharedFontZoom = 0;
-  for (const ed of useEditorRegistry.getState().editors)
-    if (ed.view.state.field(fontZoom, false)) ed.view.dispatch({ effects: setFontZoom.of(0) });
+  for (const ed of useEditorRegistry.getState().editors) resetEditorFontZoom(ed.view);
+}
+
+/** Steps font zoom according to `editor.general.wheelZoomScope` (`active` editor by default, or `all` editors). */
+export function stepConfiguredEditorsFontZoom(origin: EditorView, delta: number): void {
+  const before = origin.state.field(fontZoom, false);
+  if (editorPrefs().general.wheelZoomScope === "all") stepAllEditorsFontZoom(origin, delta);
+  else stepFontZoom(origin, delta);
+  const zoom = origin.state.field(fontZoom, false);
+  const listener = fontZoomListeners.get(origin);
+  if (zoom === undefined || zoom === before || !listener) return;
+  if (activeFontZoomListener !== listener) activeFontZoomListener?.(null);
+  activeFontZoomListener = listener;
+  listener(zoom);
+}
+
+/** Resets font zoom according to `editor.general.wheelZoomScope` (`active` editor by default, or `all` editors). */
+export function resetConfiguredEditorsFontZoom(origin: EditorView): void {
+  if (editorPrefs().general.wheelZoomScope === "all") resetAllEditorsFontZoom();
+  else resetEditorFontZoom(origin);
 }
 
 /** Exported for tests: the ⌘/Ctrl+wheel handler of the prefs compartment. */
 export const wheelZoom = EditorView.domEventHandlers({
   wheel(e, view) {
-    if (!e.metaKey && !e.ctrlKey) return false;
+    const step = wheelZoomStep(e);
+    if (step === null) return false;
     e.preventDefault();
-    stepAllEditorsFontZoom(view, e.deltaY < 0 ? 1 : -1);
+    if (step) stepConfiguredEditorsFontZoom(view, step);
     return true;
   },
 });
@@ -469,14 +556,35 @@ const noSurround = EditorView.inputHandler.of((view, from, to, text) => {
   return true;
 });
 
-/** Gutter icon groups of Settings › Editor › General › Gutter Icons (stable gutter classes). */
+/**
+ * Gutter icon groups of Settings › Editor › General › Gutter Icons. A hidden group sets
+ * `cm-openidea-hideGutter-<id>` on the editor (the theme hides the bookmark, color and
+ * script/compose run columns by it); the icon area's run and inheritance icons read the
+ * setting themselves.
+ */
 export const GUTTER_ICON_GROUPS = [
-  { id: "run", gutterClass: "cm-openidea-gutter-run" },
-  { id: "bookmarks", gutterClass: "cm-openidea-bookmarks" },
-  { id: "inheritors", gutterClass: "cm-openidea-gutter-lineMarkers" },
-  { id: "supers", gutterClass: "cm-openidea-gutter-lineMarkers" },
-  { id: "colors", gutterClass: "cm-openidea-gutter-colors" },
+  { id: "run" },
+  { id: "bookmarks" },
+  { id: "inheritors" },
+  { id: "supers" },
+  { id: "colors" },
 ] as const;
+
+/**
+ * Languages whose outer parser is `@lezer/html`, plus JSX / TSX, where
+ * simultaneous `<tag></tag>` editing works from the syntax tree. Angular
+ * templates carry the `html` backend id (the Angular mode is picked per
+ * project), `erb` is a token-based mode without a syntax tree and stays out.
+ */
+const LINKED_TAG_LANGUAGES = new Set([
+  "html",
+  "vue",
+  "jsp",
+  "django-html",
+  "astro",
+  "typescriptreact",
+  "javascriptreact",
+]);
 
 export interface PrefsOptions {
   prefs: EditorExtras;
@@ -484,6 +592,8 @@ export interface PrefsOptions {
   softWrap: boolean | undefined;
   /** Soft wraps toggled for the file, overriding `softWrap` and the file patterns. */
   wrapOverride?: boolean | null;
+  /** Rendered doc comments toggled for the file, overriding `appearance.renderDocComments`. */
+  renderedDocsOverride?: boolean | null;
   showWhitespace: boolean | undefined;
   /** Hard wrap column for this file's language. */
   hardWrapAt: number;
@@ -503,34 +613,103 @@ function caretOnScreen(view: EditorView, pos: number): boolean {
   return c.top >= r.top && c.bottom <= r.bottom;
 }
 
+/** Movement in px that turns an editor press into a drag rather than a click. */
+const POINTER_DRAG_SLOP = 4;
+
+/** The caret position transitions the glide adds; nothing else on a caret is ours to cancel. */
+const CARET_MOVE_PROPERTIES = new Set(["left", "top", "width", "height"]);
+
 /**
  * Use smooth caret movement. The cursor layer reuses its caret elements, so a
  * CSS transition on their position animates a move (VS Code's
  * `cursorSmoothCaretAnimation: "explicit"`). Only moves of the selection
- * alone glide; typing, edits, a changed number of carets, layout changes and
- * moves that scroll the editor put the caret in place at once.
+ * alone glide; typing, edits, a changed number of carets, layout changes,
+ * scrolling and pointer drags put the caret in place at once (a drag moves the
+ * selection end on every mousemove, so a transition would leave it trailing).
+ * Clicks, double-clicks and Shift+clicks still glide.
  */
 const caretGlide = ViewPlugin.fromClass(
   class {
     on = false;
-    constructor(readonly view: EditorView) {}
+    private measureId = 0;
+    private readonly win: Window;
+    /** The pointer is down over the editor, and how far it moved since it went down. */
+    private pointerDown = false;
+    private pointerDragged = false;
+    private pointerOrigin = { x: 0, y: 0 };
+    constructor(readonly view: EditorView) {
+      this.win = view.dom.ownerDocument.defaultView ?? window;
+      // Capture on the window: this plugin is built before CodeMirror's mouse selection and the
+      // gutter's drag, so the movement is already known when their `select.pointer` updates arrive.
+      view.dom.addEventListener("mousedown", this.onMouseDown, true);
+      this.win.addEventListener("mousemove", this.onMouseMove, true);
+      this.win.addEventListener("mouseup", this.onMouseUp, true);
+      this.win.addEventListener("blur", this.onMouseUp);
+    }
+    onMouseDown = (e: MouseEvent) => {
+      this.pointerDown = true;
+      this.pointerDragged = false;
+      this.pointerOrigin = { x: e.clientX, y: e.clientY };
+    };
+    onMouseMove = (e: MouseEvent) => {
+      if (!this.pointerDown) return;
+      if (Math.hypot(e.clientX - this.pointerOrigin.x, e.clientY - this.pointerOrigin.y) > POINTER_DRAG_SLOP)
+        this.pointerDragged = true;
+    };
+    onMouseUp = () => {
+      this.pointerDown = false;
+      this.pointerDragged = false;
+    };
+    destroy() {
+      // The cursor layer outlives the plugin (e.g. when the setting is reconfigured).
+      this.measureId++;
+      this.cancelMoves();
+      this.view.scrollDOM.querySelector(":scope > .cm-cursorLayer")?.classList.remove("cm-openidea-caretGlide");
+      this.view.dom.removeEventListener("mousedown", this.onMouseDown, true);
+      this.win.removeEventListener("mousemove", this.onMouseMove, true);
+      this.win.removeEventListener("mouseup", this.onMouseUp, true);
+      this.win.removeEventListener("blur", this.onMouseUp);
+    }
     update(u: ViewUpdate) {
       const from = u.startState.selection;
       const to = u.state.selection;
-      if (!u.selectionSet || u.docChanged || u.geometryChanged || from.ranges.length !== to.ranges.length) {
+      const dragging =
+        this.pointerDown && this.pointerDragged && u.transactions.some((tr) => tr.isUserEvent("select.pointer"));
+      if (!u.selectionSet || u.docChanged || u.geometryChanged || from.ranges.length !== to.ranges.length || dragging) {
+        // A drag can start before the click's measure runs; its write must not turn the
+        // transition back on after the caret has moved (#5928).
+        this.measureId++;
         this.set(false);
         return;
       }
+      const measureId = ++this.measureId;
       // Measured before the editor scrolls the new caret into view.
       u.view.requestMeasure({
         key: this,
         read: (view) => caretOnScreen(view, from.main.head) && caretOnScreen(view, to.main.head),
-        write: (on) => this.set(on),
+        write: (on) => {
+          if (measureId === this.measureId) this.set(on);
+        },
       });
+    }
+    /**
+     * WebKit keeps a caret's CSS transition running after the class that declares it is
+     * removed, so a drag that starts mid-move would keep the caret travelling to the
+     * click. Cancelling the running animations lands it at once (#5928).
+     */
+    private cancelMoves() {
+      const layer = this.view.scrollDOM.querySelector(":scope > .cm-cursorLayer");
+      if (!layer) return;
+      for (const caret of layer.querySelectorAll(".cm-cursor"))
+        for (const animation of caret.getAnimations?.() ?? []) {
+          const property = (animation as CSSTransition).transitionProperty;
+          if (property && CARET_MOVE_PROPERTIES.has(property)) animation.cancel();
+        }
     }
     set(on: boolean) {
       if (on === this.on) return;
       this.on = on;
+      if (!on) this.cancelMoves();
       this.view.scrollDOM.querySelector(":scope > .cm-cursorLayer")?.classList.toggle("cm-openidea-caretGlide", on);
     }
   },
@@ -553,11 +732,37 @@ export function caretExtension(prefs: EditorExtras): Extension {
   ];
 }
 
+/** Template literals and raw strings open with a backtick. */
+const BACKTICK_LANGS = new Set([
+  "javascript",
+  "javascriptreact",
+  "typescript",
+  "typescriptreact",
+  "vue",
+  "svelte",
+  "astro",
+  "go",
+]);
+const PYTHON_PREFIXES = ["f", "r", "u", "b", "fr", "rf", "br", "rb"].flatMap((p) =>
+  p.length === 1 ? [p, p.toUpperCase()] : [p, p.toUpperCase(), p[0]!.toUpperCase() + p[1], p[0] + p[1]!.toUpperCase()],
+);
+
+/** The quotes that pair in `language`, and the string prefixes that may come before them. */
+function languageQuotes(language: string | undefined): { quotes: string[]; prefixes?: string[] } {
+  if (language === "python") return { quotes: ["'", '"', "'''", '"""'], prefixes: PYTHON_PREFIXES };
+  return { quotes: BACKTICK_LANGS.has(language ?? "") ? ["'", '"', "`"] : ["'", '"'] };
+}
+
 export function prefsExtension(o: PrefsOptions): Extension {
   const { prefs } = o;
   const g = prefs.general;
   const k = prefs.smartKeys;
-  const out: Extension[] = [];
+  const out: Extension[] = [
+    codeLensPositions.of({
+      usages: prefs.inlay.codeVisionUsagesPosition,
+      author: prefs.inlay.codeVisionAuthorPosition,
+    }),
+  ];
   if (!o.readOnly)
     out.push(markdownImages({ path: o.path, folder: g.markdownImageFolder, pattern: g.markdownImageNamePattern }));
   if (g.scrollPastEnd) out.push(scrollPastEnd());
@@ -572,6 +777,7 @@ export function prefsExtension(o: PrefsOptions): Extension {
     out.push(marginGuides([o.hardWrapAt, ...prefs.codeStyle.visualGuides]));
   if (prefs.appearance.methodSeparators)
     out.push(EditorView.editorAttributes.of({ class: "cm-openidea-methodSeparators" }));
+  if (o.renderedDocsOverride ?? prefs.appearance.renderDocComments) out.push(renderDocComments.of(true));
   const hidden = GUTTER_ICON_GROUPS.filter(
     (grp) => !prefs.showGutterIcons || prefs.gutterIconsDisabled.includes(grp.id),
   );
@@ -580,19 +786,32 @@ export function prefsExtension(o: PrefsOptions): Extension {
       EditorView.editorAttributes.of({ class: hidden.map((grp) => `cm-openidea-hideGutter-${grp.id}`).join(" ") }),
     );
   if (g.wheelZoom) out.push(wheelZoom);
-  if (!g.dragAndDrop) out.push(noTextDrag);
+  out.push(g.dragAndDrop ? textDrag : noTextDrag);
   if (g.caretScroll === "center") out.push(centerCaret);
-  if (g.richTextCopy) out.push(richCopy);
+  out.push(g.richTextCopy ? richCopyByDefault : plainCopyByDefault);
   if (k.escapeOnPaste) out.push(stringClipboard(o.language));
   if (!o.readOnly && (k.reformatOnPaste === "indentBlock" || k.reformatOnPaste === "indentEachLine"))
     out.push(pasteReindentFilter(k.reformatOnPaste));
 
   // Pairing: closeBrackets() reads the brackets list from language data; ours comes first.
-  const brackets = [...(k.pairBrackets ? ["(", "[", "{"] : []), ...(k.pairQuotes ? ["'", '"'] : [])];
-  out.push(Prec.highest(EditorState.languageData.of(() => [{ closeBrackets: { brackets } }])));
+  const quotes = k.pairQuotes ? languageQuotes(o.language) : null;
+  const brackets = [...(k.pairBrackets ? ["(", "[", "{"] : []), ...(quotes?.quotes ?? [])];
+  const pairing = { brackets, ...(quotes?.prefixes ? { stringPrefixes: quotes.prefixes } : {}) };
+  out.push(Prec.highest(EditorState.languageData.of(() => [{ closeBrackets: pairing }])));
+  // `<` pairs where the syntax says a generic type list starts, as in IDEA — no separate option.
+  if (k.pairBrackets && !o.readOnly) out.push(smartAngleBrackets(o.language));
+  if (k.pairBrackets && !o.readOnly) out.push(Prec.highest(templateBrace(o.language ?? "")));
   if (!k.surroundSelection) out.push(Prec.highest(noSurround));
   if (k.pairQuotes) out.push(Prec.highest(skipClosingQuote));
+  if (k.pairQuotes && !o.readOnly && o.language === "rust") out.push(Prec.highest(rustLifetimeQuote));
+  if (k.pairBrackets && !o.readOnly) out.push(Prec.highest(skipClosingBracket));
   if (k.tabOutOfPair) out.push(tabOut);
+  if (!o.readOnly && k.semicolonAtStatementEnd) out.push(semicolonAtStatementEnd(o.language));
+  // Simultaneous `<tag></tag>` editing, from the syntax tree: every mode whose outer
+  // parser is `@lezer/html` — plain HTML plus the HTML-based modes (Vue SFCs, Angular
+  // templates, JSP, Django and Astro; Angular templates carry the `html` backend id),
+  // and JSX / TSX. ERB is token-based (no syntax tree), so it stays out.
+  if (!o.readOnly && k.simultaneousTagEditing && LINKED_TAG_LANGUAGES.has(o.language ?? "")) out.push(linkedTags);
   if (o.commentStyle) out.push(lineCommentStyle.of(o.commentStyle));
 
   const keys = [];
@@ -614,7 +833,15 @@ export function prefsExtension(o: PrefsOptions): Extension {
       { mac: "Mod-ArrowLeft", run: cursorLineStart, shift: selectLineStart, preventDefault: true },
     );
   if (!o.readOnly && k.insertDocStub) keys.push({ key: "Enter", run: enterInDocComment(o.language) });
-  if (!o.readOnly) keys.push({ key: "Enter", run: enterInLineComment });
+  if (!o.readOnly && k.insertDocStub && o.language === "python")
+    keys.push({ key: "Enter", run: enterInDocstring(() => editorPrefs().docstringFormat) });
+  if (!o.readOnly)
+    keys.push(
+      { key: "Enter", run: enterInBlockComment },
+      { key: "Enter", run: enterInLineComment },
+      { key: "Enter", run: enterAfterDocLineComment(o.language ?? "") },
+      { key: "Enter", run: enterInStringLiteral(o.language ?? "") },
+    );
   if (!k.smartIndent) keys.push({ key: "Enter", run: insertNewlineKeepIndent });
   if (k.backspaceUnindent === "none") keys.push({ key: "Backspace", run: deleteCharBackwardStrict });
   else if (smartBackspaceApplies(k.backspaceUnindent, o.language)) keys.push({ key: "Backspace", run: smartBackspace });

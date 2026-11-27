@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { FileMove, WorkspaceEdit } from "@/bindings";
+import { movedPath } from "@/editor/fileMoves";
 import { onFilesMoved } from "@/platform/fileOps";
 import { provideNotificationService } from "@/workbench/contributions";
 import {
   lastFileRefactoring,
   mergeEdits,
-  movedPath,
   runFileRefactoring,
   setRefactorBackendForTests,
   touchesOtherFiles,

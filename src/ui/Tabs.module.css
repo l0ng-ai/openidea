@@ -1,23 +1,33 @@
 .strip {
+  --tab-selected-bg: var(--bg-tab-selected);
+  --tab-selected-border: var(--border-tab-selected);
   flex: none;
   display: flex;
   align-items: stretch;
   min-width: 0;
 }
-/* Islands tabs: the selected tab is a rounded pill (tab-selected-bg / -border); no underline, no separators. */
+/* IDEA: only the part holding focus accents its selected tab (src/ui/focusScope.ts). */
+:where([data-focus-scope]:not([data-focus-active])) .strip {
+  --tab-selected-bg: var(--bg-tab-selected-inactive);
+  --tab-selected-border: var(--border-tab-selected-inactive);
+}
+/* Islands tabs: the selected tab is a rounded pill (tab-selected-bg / -border); no underline, no separators.
+   EditorTabs.tabInsets -6,8,-6,8 (tabInsets.compact -2,6,-2,4) put 8px (6px compact) around the tab label. */
 .editor {
+  --tab-inline-padding: var(--tab-pad-x, 8px);
   height: var(--h-header);
+  font-size: var(--fs-chrome);
   padding: 0 4px;
 }
 .compact {
   /* Shrinks inside tool window headers so the overflow dropdown can take over. */
   flex: 0 1 auto;
-  height: 28px;
+  height: var(--h-tab);
 }
 .scroller {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-0-5);
   min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
@@ -33,33 +43,43 @@
   align-items: stretch;
   height: calc(100% - 6px);
   min-height: 22px;
-  max-height: 28px;
+  max-height: var(--h-tab);
   border-radius: var(--radius-tab, 6px);
   color: var(--fg-strong);
   transition:
     color var(--dur-fast) var(--ease),
     background var(--dur-fast) var(--ease);
 }
-.tab:hover {
+/* showContextMenu's owner keeps its hover appearance while the menu is open. */
+.tab:hover,
+.tab:where([data-context-menu-open]) {
   background: var(--bg-toolbar-hover);
 }
 .selected,
 .selected:hover {
-  background: var(--bg-tab-selected);
-  box-shadow: inset 0 0 0 1px var(--border-tab-selected);
+  background: var(--tab-selected-bg);
+  box-shadow: inset 0 0 0 1px var(--tab-selected-border);
 }
-.tinted,
-.tinted:hover {
-  background: color-mix(in srgb, var(--tab-tint) var(--tint-strength, 22%), transparent);
+.tinted {
+  --tab-tint-mix: color-mix(in srgb, var(--tab-tint) var(--tab-tint-strength, var(--tint-strength, 22%)), transparent);
+  background: var(--tab-tint-mix);
+}
+.tinted:hover,
+.tinted:where([data-context-menu-open]) {
+  background: linear-gradient(var(--bg-toolbar-hover), var(--bg-toolbar-hover)), var(--tab-tint-mix);
 }
 .tinted.selected {
-  background: color-mix(in srgb, var(--tab-tint) var(--tint-strength, 22%), var(--bg-tab-selected));
+  background: color-mix(
+    in srgb,
+    var(--tab-tint) var(--tab-tint-strength, var(--tint-strength, 22%)),
+    var(--tab-selected-bg)
+  );
 }
 .tabButton {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 10px;
+  gap: var(--space-1-5);
+  padding: 0 var(--tab-inline-padding, 10px);
   border-radius: inherit;
   white-space: nowrap;
   color: inherit;
@@ -86,6 +106,20 @@
 .italic {
   font-style: italic;
 }
+/* A file with errors, as the Project view marks it. */
+.error {
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-color: var(--danger);
+  text-decoration-skip-ink: none;
+  text-underline-offset: 3px;
+  /* Room for the wave below the line box, which the ellipsis' overflow would clip. */
+  padding-block: 4px;
+  margin-block: -4px;
+}
+.dimmed {
+  opacity: 0.6;
+}
 .closeSlot {
   position: relative;
   display: flex;
@@ -100,7 +134,21 @@
   opacity: 0;
   transition: opacity var(--dur-fast) var(--ease);
 }
+.unpin {
+  color: var(--fg-muted);
+}
+.pinModified {
+  position: absolute;
+  top: calc(50% - 7px);
+  inset-inline-end: 1px;
+  width: var(--space-1);
+  height: var(--space-1);
+  border-radius: 50%;
+  background: var(--accent);
+  pointer-events: none;
+}
 .tab:hover .close,
+.tab:where([data-context-menu-open]) .close,
 .selected .close,
 .close:focus-visible {
   opacity: 1;
@@ -119,6 +167,7 @@
   transition: opacity var(--dur-fast) var(--ease);
 }
 .tab:hover .closeSlot .modified,
+.tab:where([data-context-menu-open]) .closeSlot .modified,
 .selected .closeSlot .modified {
   opacity: 0;
 }
@@ -134,7 +183,13 @@
   justify-content: flex-end;
 }
 
-/* Tabs that don't fit: squeezed (labels ellipsized) or wrapped into rows. */
+/* A scrolling tab can shorten its label to keep the close button in view. */
+.fit .tab {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* Squeezed tabs share the available width. */
 .squeeze .scroller {
   flex: 0 1 auto;
 }
@@ -149,12 +204,14 @@
 .squeeze .closeSlot {
   flex: none;
 }
-.squeeze .tabButton {
+.squeeze .tabButton,
+.fit .tabButton {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
 }
-.squeeze .tabLabel {
+.squeeze .tabLabel,
+.fit .tabLabel {
   min-width: 0;
 }
 .wrap {
@@ -165,7 +222,7 @@
   flex: 1;
   flex-wrap: wrap;
   overflow: visible;
-  row-gap: 2px;
+  row-gap: var(--space-0-5);
   padding: 3px 0;
 }
 .wrap .tab {
@@ -230,7 +287,45 @@
   margin: 0 0 0 4px;
 }
 .closeLeft .closable .tabButton {
-  padding: 0 10px 0 2px;
+  padding: 0 var(--tab-inline-padding, 10px) 0 2px;
+}
+
+/* Editor tabs in a row sit 4px apart; wrapped rows keep their row gap. */
+.editor:not(.vertical) .scroller {
+  column-gap: var(--space-1);
+}
+/* A long label can shrink to fit its split and keep the close slot in view. */
+.editor:not(.vertical, .squeeze) .tab {
+  max-inline-size: 100%;
+}
+.editor:not(.vertical, .squeeze) .tabButton {
+  min-inline-size: 0;
+}
+/* Every closable tab keeps a close slot at one edge (IDEA), cut to what the close glyph needs: 18px, a 2px
+   inset and the 16px button. The label side keeps the 8px inset, so the side doesn't change a tab's width. */
+.editor:not(.vertical) .closeSlot {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 2px;
+  width: auto;
+  margin: 0;
+}
+.editor:not(.vertical) :is(.close, .unpin) {
+  width: 16px;
+}
+.editor:not(.vertical) .closeSlot .modified {
+  left: 5px;
+}
+.editor:not(.vertical, .closeLeft) .closable .tabButton {
+  padding-right: 18px;
+}
+.editor.closeLeft:not(.vertical) .closeSlot {
+  right: auto;
+  left: 2px;
+}
+.editor.closeLeft:not(.vertical) .closable .tabButton {
+  padding-left: 18px;
 }
 
 /* drag & drop: the dragged tab is an empty slot the other tabs make room for (IDEA) */

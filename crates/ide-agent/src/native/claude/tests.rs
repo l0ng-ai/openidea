@@ -311,6 +311,8 @@ struct Replay {
     sent: Arc<Mutex<Vec<Vec<Value>>>>,
     launched: Mutex<Vec<Vec<String>>>,
     errors: Arc<Mutex<Vec<String>>>,
+    /// Each process's kill token.
+    kills: Mutex<Vec<CancellationToken>>,
 }
 
 impl Cli for Replay {
@@ -331,6 +333,7 @@ impl Cli for Replay {
         let (shim_in, cli_in) = tokio::io::duplex(1 << 20);
         let (mut cli_out, shim_out) = tokio::io::duplex(1 << 20);
         let kill = CancellationToken::new();
+        self.kills.lock().push(kill.clone());
         let (sent, errors, token) = (self.sent.clone(), self.errors.clone(), kill.clone());
         sent.lock().push(Vec::new());
         tokio::spawn(async move {
@@ -421,14 +424,18 @@ impl Replayed {
     }
 }
 
-async fn replay(name: &str) -> Replayed {
-    let processes = load_fixture(name);
-    let cli = Arc::new(Replay {
+fn replay_cli(processes: Vec<Vec<Frame>>) -> Arc<Replay> {
+    Arc::new(Replay {
         processes: Mutex::new(processes.into()),
         sent: Arc::default(),
         launched: Mutex::default(),
         errors: Arc::default(),
-    });
+        kills: Mutex::default(),
+    })
+}
+
+async fn replay(name: &str) -> Replayed {
+    let cli = replay_cli(load_fixture(name));
     let (config, cwd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let cwd_path = std::fs::canonicalize(cwd.path()).unwrap();
     let h =
@@ -457,8 +464,104 @@ async fn replay_simple() {
     let args = r.cli.launched.lock()[0].clone();
     assert!(args.windows(2).any(|w| w == ["--session-id", r.session.as_str()]), "{args:?}");
     assert!(args.contains(&"--permission-prompt-tool".to_owned()));
+    assert!(!args.contains(&"--no-session-persistence".to_owned()));
     let user = r.sent(0).into_iter().find(|m| m["type"] == "user").unwrap();
     assert_eq!(user["message"]["content"][0]["text"], "Reply with exactly: hello there");
+}
+
+/// The app closing the connection (an idle task released, archived or deleted) stops the
+/// CLI processes of its sessions, idle ones included.
+#[tokio::test(flavor = "multi_thread")]
+async fn closing_the_connection_stops_the_processes() {
+    let r = replay("simple").await;
+    assert!(r.cli.kills.lock().iter().all(|k| !k.is_cancelled()));
+    r.h.client.kill();
+    let kills = r.cli.kills.lock().clone();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        for k in kills {
+            k.cancelled().await;
+        }
+    })
+    .await
+    .expect("every process was stopped");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sessions_without_a_title_get_one_generated() {
+    let mut processes = load_fixture("simple");
+    processes[0].extend([
+        Frame::Shim(json!({"type": "control_request", "request_id": "req_3",
+            "request": {"subtype": "generate_session_title"}})),
+        Frame::Cli(json!({"type": "control_response",
+            "response": {"subtype": "success", "request_id": "req_3", "response": {"title": "Say hello"}}})),
+    ]);
+    let cli = replay_cli(processes);
+    let (config, cwd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let cwd_path = std::fs::canonicalize(cwd.path()).unwrap();
+    let h = Harness::connect(
+        cli.clone(),
+        config.path().into(),
+        config.path().join("pending"),
+        cwd_path.clone(),
+        Vec::new(),
+    )
+    .await;
+    let session = h.new_session().await;
+    // The transcript Claude Code writes, without the title it gives sessions in a terminal.
+    let dir = config.path().join("projects").join(history::escape(&cwd_path));
+    std::fs::create_dir_all(&dir).unwrap();
+    let prompt = json!({"type": "user", "uuid": "u1", "parentUuid": null,
+        "message": {"role": "user", "content": "Reply with exactly: hello there"}});
+    std::fs::write(dir.join(format!("{session}.jsonl")), format!("{prompt}\n")).unwrap();
+
+    h.prompt(&session, "Reply with exactly: hello there").await.unwrap();
+    let mut titles = Vec::new();
+    for _ in 0..100 {
+        titles = h.updates(&session, "session_info_update");
+        if !titles.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(cli.errors.lock().is_empty(), "{:?}", cli.errors.lock());
+    assert_eq!(titles.iter().map(|t| t["title"].clone()).collect::<Vec<_>>(), [json!("Say hello")]);
+    let sent = cli.sent.lock()[0].clone();
+    let request =
+        sent.iter().find(|m| m.pointer("/request/subtype") == Some(&json!("generate_session_title"))).unwrap();
+    assert_eq!(request["request"]["description"], "Reply with exactly: hello there");
+    assert_eq!(request["request"]["persist"], true);
+}
+
+/// A compaction that doesn't report what the context holds now (no `post_tokens`): the
+/// driver asks Claude Code, and the meter shows that instead of the count from before.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_compaction_without_its_token_count_reads_the_context_usage() {
+    let mut processes = load_fixture("simple");
+    processes[0].extend([
+        Frame::Cli(json!({"type": "system", "subtype": "compact_boundary",
+            "compact_metadata": {"trigger": "manual", "pre_tokens": 120000}})),
+        Frame::Shim(json!({"type": "control_request", "request_id": "req_3",
+            "request": {"subtype": "get_context_usage"}})),
+        Frame::Cli(json!({"type": "control_response", "response": {"subtype": "success", "request_id": "req_3",
+            "response": {"categories": [], "totalTokens": 4200, "maxTokens": 200000, "model": "claude"}}})),
+    ]);
+    let cli = replay_cli(processes);
+    let (config, cwd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let cwd_path = std::fs::canonicalize(cwd.path()).unwrap();
+    let h =
+        Harness::connect(cli.clone(), config.path().into(), config.path().join("pending"), cwd_path, Vec::new()).await;
+    let session = h.new_session().await;
+    h.prompt(&session, "Reply with exactly: hello there").await.unwrap();
+    let mut usage = Vec::new();
+    for _ in 0..100 {
+        usage = h.updates(&session, "usage_update");
+        if usage.last().is_some_and(|u| u["used"] == 4200) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(cli.errors.lock().is_empty(), "{:?}", cli.errors.lock());
+    assert_eq!(usage.last().map(|u| (u["used"].clone(), u["size"].clone())), Some((json!(4200), json!(200000))));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -548,6 +651,84 @@ async fn replay_resume() {
     assert!(r.h.text(&r.session, "agent_message_chunk").contains("MANGO"));
     let args = r.cli.launched.lock()[1].clone();
     assert!(args.windows(2).any(|w| w == ["--resume", r.session.as_str()]), "{args:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fork_session_can_start_a_recorded_session_under_the_hosts_id() {
+    /// Registering a fork must not start a process: its first prompt does.
+    struct NoLaunch;
+    impl Cli for NoLaunch {
+        fn launch(&self, _: &Launch, _: OnStderr) -> std::io::Result<cli::CliIo> {
+            panic!("session/fork must not launch the CLI")
+        }
+    }
+
+    let config = tempfile::tempdir().unwrap();
+    let pending = tempfile::tempdir().unwrap();
+    let h = Harness::connect(
+        Arc::new(NoLaunch),
+        config.path().to_path_buf(),
+        pending.path().to_path_buf(),
+        std::env::temp_dir(),
+        Vec::new(),
+    )
+    .await;
+    let source = "11111111-1111-4111-8111-111111111111";
+    let target = "22222222-2222-4222-8222-222222222222";
+    let reply = h
+        .request(
+            "session/fork",
+            json!({
+                "sessionId": source,
+                "cwd": h.cwd,
+                "mcpServers": [],
+                "_meta": { "openidea": { "forkSessionId": target } }
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reply["sessionId"], target);
+    // The host chose this id for the fork: the next process must fork the recorded
+    // session under exactly it.
+    let saved: Value =
+        serde_json::from_slice(&std::fs::read(pending.path().join(format!("{target}.json"))).unwrap()).unwrap();
+    assert_eq!(saved, json!({ "fork": source, "id": target, "at": null }));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn fork_session_rejects_a_requested_id_that_is_not_canonical() {
+    struct NoLaunch;
+    impl Cli for NoLaunch {
+        fn launch(&self, _: &Launch, _: OnStderr) -> std::io::Result<cli::CliIo> {
+            panic!("no process")
+        }
+    }
+
+    let config = tempfile::tempdir().unwrap();
+    let pending = tempfile::tempdir().unwrap();
+    let h = Harness::connect(
+        Arc::new(NoLaunch),
+        config.path().to_path_buf(),
+        pending.path().to_path_buf(),
+        std::env::temp_dir(),
+        Vec::new(),
+    )
+    .await;
+    for rejected in ["../../x", "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA", ""] {
+        let error = h
+            .request(
+                "session/fork",
+                json!({
+                    "sessionId": "11111111-1111-4111-8111-111111111111",
+                    "cwd": h.cwd,
+                    "mcpServers": [],
+                    "_meta": { "openidea": { "forkSessionId": rejected } }
+                }),
+            )
+            .await
+            .expect_err("only a canonical id may name the fork");
+        assert!(error.to_string().contains("canonical"), "{rejected}: {error}");
+    }
 }
 
 // ---------- recording ----------
@@ -727,6 +908,7 @@ async fn a_stop_ahead_of_its_prompt_cancels_it() {
         sent: Arc::default(),
         launched: Mutex::default(),
         errors: Arc::default(),
+        kills: Mutex::default(),
     });
     let (dir, cwd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let h = Harness::connect(cli.clone(), dir.path().into(), dir.path().join("p"), cwd.path().into(), Vec::new()).await;
@@ -770,6 +952,7 @@ async fn a_failed_turn_reports_its_failure() {
             sent: Arc::default(),
             launched: Mutex::default(),
             errors: Arc::default(),
+            kills: Mutex::default(),
         });
         let (dir, cwd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let h =
@@ -1027,6 +1210,42 @@ fn streamed_text_is_not_sent_twice() {
 }
 
 #[test]
+fn a_compaction_replaces_the_context_usage() {
+    let mut t = Translator::new("s", PathBuf::from("/w"), true);
+    let assistant = json!({"type": "assistant", "parent_tool_use_id": null,
+        "message": {"id": "m1", "model": "x", "content": [], "usage": {"input_tokens": 900, "output_tokens": 50}}});
+    t.on_message(&assistant);
+    let result = json!({"modelUsage": {"x": {"contextWindow": 1000}}});
+    assert_eq!(t.on_result(&result)[0].update["used"], 950);
+    let boundary = |meta: Value| json!({"type": "system", "subtype": "compact_boundary", "compact_metadata": meta});
+    let out = t.on_message(&boundary(json!({"trigger": "manual", "pre_tokens": 950, "post_tokens": 120})));
+    assert_eq!(out[0].update, json!({"sessionUpdate": "usage_update", "used": 120, "size": 1000}));
+    // The `/compact` turn's result reports what compaction left, not the count from before.
+    assert_eq!(t.on_result(&result)[0].update["used"], 120);
+    // Without `post_tokens` nothing is known yet (the driver asks): the stale count stays out.
+    assert!(t.on_message(&boundary(json!({"trigger": "auto", "pre_tokens": 950}))).is_empty());
+    assert!(t.on_result(&result).is_empty());
+}
+
+#[test]
+fn claude_codes_own_window_wins_over_the_results_context_window() {
+    let mut t = Translator::new("s", PathBuf::from("/w"), true);
+    let assistant = |model: &str| {
+        json!({"type": "assistant", "parent_tool_use_id": null,
+        "message": {"id": "m1", "model": model, "content": [], "usage": {"input_tokens": 900, "output_tokens": 100}}})
+    };
+    t.on_message(&assistant("x"));
+    let result = json!({"modelUsage": {"x": {"contextWindow": 1_000_000}, "y": {"contextWindow": 200_000}}});
+    assert_eq!(t.on_result(&result)[0].update["size"], 1_000_000);
+    // `get_context_usage` reports the window Claude Code compacts against.
+    assert_eq!(t.on_context_usage(1000, 400_000).update["size"], 400_000);
+    assert_eq!(t.on_result(&result)[0].update["size"], 400_000);
+    // Another model: its own window again until Claude Code reports one for it.
+    t.on_message(&assistant("y"));
+    assert_eq!(t.on_result(&result)[0].update["size"], 200_000);
+}
+
+#[test]
 fn rate_limits_and_cost() {
     let mut t = Translator::new("s", PathBuf::from("/w"), false);
     let info = json!({"status": "allowed", "rateLimitType": "five_hour", "unifiedWindows": {
@@ -1172,6 +1391,13 @@ async fn skipped_questions_have_no_answers() {
 }
 
 #[test]
+fn servers_switched_off_become_disallowed_tools() {
+    assert!(mcp_off(&json!({})).is_empty());
+    let off = mcp_off(&json!({ "_meta": { "openidea": { "mcpServersOff": ["github", "my server.v2"] } } }));
+    assert_eq!(off, ["mcp__github", "mcp__my_server_v2"]);
+}
+
+#[test]
 fn mcp_servers_become_an_mcp_config() {
     assert_eq!(mcp_config(&json!({ "mcpServers": [] })), None);
     assert_eq!(mcp_config(&json!({})), None);
@@ -1195,4 +1421,24 @@ fn mcp_servers_become_an_mcp_config() {
     let kept = path.to_path_buf();
     drop(path);
     assert!(!kept.exists());
+}
+
+#[test]
+fn additional_directories_are_read_from_the_session_params() {
+    let params = json!({ "cwd": "/w/api", "additionalDirectories": ["/w/web", 3, "/w/docs"] });
+    assert_eq!(additional_dirs(&params), ["/w/web", "/w/docs"]);
+    assert!(additional_dirs(&json!({ "cwd": "/w/api" })).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ephemeral_session_is_not_saved() {
+    let cli = replay_cli(load_fixture("simple"));
+    let (config, cwd) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let cwd_path = std::fs::canonicalize(cwd.path()).unwrap();
+    let h =
+        Harness::connect(cli.clone(), config.path().into(), config.path().join("pending"), cwd_path, Vec::new()).await;
+    let params = json!({ "cwd": h.cwd, "mcpServers": [], "_meta": { "openidea": { "ephemeral": true } } });
+    h.request("session/new", params).await.unwrap();
+    let args = cli.launched.lock()[0].clone();
+    assert!(args.contains(&"--no-session-persistence".to_owned()), "{args:?}");
 }

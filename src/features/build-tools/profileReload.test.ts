@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { BuildModel, MavenModel, ProjectInfo } from "@/platform/ipc";
 import { useProject } from "@/platform/project";
-import { loadModel, PROFILE_RELOAD_DELAY_MS, resetBuild, setProfile, useBuild } from "./store";
+import { loadModel, PROFILE_RELOAD_DELAY_MS, resetBuild, setProfile, toggleMavenOffline, useBuild } from "./store";
 
 const mocks = vi.hoisted(() => ({ model: vi.fn(), sync: vi.fn() }));
 vi.mock("@/platform/ipc", async (original) => {
@@ -89,4 +89,17 @@ it("does not reload a project closed before the delay ran out", async () => {
   resetBuild();
   await vi.advanceTimersByTimeAsync(PROFILE_RELOAD_DELAY_MS);
   expect(mocks.sync).not.toHaveBeenCalled();
+});
+
+it("reloads Maven offline after offline mode is turned on, and online after it is turned off", async () => {
+  mocks.sync.mockResolvedValue(model);
+  const offline = () => mocks.sync.mock.calls.map((c) => c[2] as boolean);
+  toggleMavenOffline();
+  await vi.advanceTimersByTimeAsync(PROFILE_RELOAD_DELAY_MS);
+  await vi.runAllTimersAsync();
+  expect(offline()).toEqual([true]);
+  toggleMavenOffline();
+  await vi.advanceTimersByTimeAsync(PROFILE_RELOAD_DELAY_MS);
+  await vi.runAllTimersAsync();
+  expect(offline()).toEqual([true, false]);
 });

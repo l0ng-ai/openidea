@@ -130,8 +130,11 @@ interface DiffInsights {
 }
 
 const insights = new WeakMap<readonly Chunk[], DiffInsights>();
+const lineChanges = new WeakMap<readonly Chunk[], readonly LineFragment[]>();
 const NO_INSIGHTS: DiffInsights = { moves: [], whitespaceOnly: false };
 export const getDiffInsights = (chunks: readonly Chunk[]): DiffInsights => insights.get(chunks) ?? NO_INSIGHTS;
+export const getDiffLineChanges = (chunks: readonly Chunk[]): readonly LineFragment[] | undefined =>
+  lineChanges.get(chunks);
 
 /**
  * Whether the chunk has IDEA's inner fragments (its words were compared):
@@ -140,7 +143,7 @@ export const getDiffInsights = (chunks: readonly Chunk[]): DiffInsights => insig
  */
 export const hasInnerFragments = (chunk: Chunk) => !!fragments.get(chunk)?.inner;
 
-/** IDEA's line fragments as chunks; `changes` hold the inner fragments, or the whole block. */
+/** IDEA's line fragments as chunks; `changes` hold the inner fragments, if any. */
 export function ideaChunks(a: Text, b: Text, ignore: IgnorePolicy, highlight: HighlightPolicy): readonly Chunk[] {
   return toChunks(a, b, ideaOf(ideaDiffConfig(ignore, highlight))!);
 }
@@ -155,25 +158,28 @@ function toChunks(a: Text, b: Text, idea: IdeaDiff): readonly Chunk[] {
     });
     return chunks;
   };
-  let compared: LineFragment[];
+  let compared: ReturnType<typeof compareTexts>;
   try {
     compared = compareTexts(textA, textB, idea);
   } catch (error) {
     if (!(error instanceof DiffTooBigError)) throw error;
-    // Repeated lines can exhaust IDEA's search. Keep the viewer usable with a bounded, coarser diff.
-    return remember(build.call(Chunk, a, b, { scanLimit: 500 }));
+    // Repeated lines can exhaust IDEA's search. Keep the viewer usable with a bounded, coarser diff,
+    // its blocks without words as IDEA's own.
+    const coarse = build.call(Chunk, a, b, { scanLimit: 500 });
+    return remember(coarse.map((c) => new Chunk([], c.fromA, c.toA, c.fromB, c.toB, c.precise)));
   }
-  const chunks = compared.map((f) => {
+  const chunks = compared.fragments.map((f) => {
     // `to` is one past the last line's end, past the document for its last line.
     const toA = f.startLine1 === f.endLine1 ? f.startOffset1 : f.endLine1 === a.lines ? a.length + 1 : f.endOffset1;
     const toB = f.startLine2 === f.endLine2 ? f.startOffset2 : f.endLine2 === b.lines ? b.length + 1 : f.endOffset2;
-    const changes = f.inner
-      ? f.inner.map((r) => new Change(r.start1, r.end1, r.start2, r.end2))
-      : [new Change(0, f.endOffset1 - f.startOffset1, 0, f.endOffset2 - f.startOffset2)];
+    // A block without inner fragments has no words to mark (the unified viewer marks `changes`).
+    // A fresh array each: @codemirror/merge caches deleted-line widgets by it.
+    const changes = f.inner ? f.inner.map((r) => new Change(r.start1, r.end1, r.start2, r.end2)) : [];
     const chunk = new Chunk(changes, f.startOffset1, toA, f.startOffset2, toB);
     fragments.set(chunk, f);
     return chunk;
   });
+  lineChanges.set(chunks, compared.lineChanges);
   return remember(chunks);
 }
 
@@ -202,15 +208,38 @@ const linesContent = (doc: Text, from: number, to: number) => doc.sliceString(do
  * replaced as DiffUtil.applyModification does, so a missing final line break
  * stays missing.
  */
-export function transferChunk(chunk: Chunk, source: "a" | "b", src: Text, dst: Text) {
+export function transferChunk(
+  chunk: Chunk,
+  source: "a" | "b",
+  src: Text,
+  dst: Text,
+  ranges?: { source: import("./stagingRange").DiffRange; destination: import("./stagingRange").DiffRange },
+) {
   const f = fragments.get(chunk);
-  if (!f) return transferByOffsets(chunk, source, src, dst);
-  const [srcFrom, srcTo, dstFrom, dstTo] =
-    source === "a"
-      ? [f.startLine1, f.endLine1, f.startLine2, f.endLine2]
-      : [f.startLine2, f.endLine2, f.startLine1, f.endLine1];
+  if (!f && !ranges) return transferByOffsets(chunk, source, src, dst);
+  const wholeLines = (doc: Text, range: NonNullable<typeof ranges>["source"], from: number, to: number) => {
+    const start = Math.max(0, doc.lineAt(Math.min(range.from + from, range.to)).number - 1 - range.line);
+    const end =
+      to === from ? start : Math.max(start, doc.lineAt(Math.min(range.from + to - 1, range.to)).number - range.line);
+    return [start, end] as const;
+  };
+  const fromA = source === "a";
+  const a = f
+    ? ([f.startLine1, f.endLine1] as const)
+    : wholeLines(fromA ? src : dst, fromA ? ranges!.source : ranges!.destination, chunk.fromA, chunk.toA);
+  const b = f
+    ? ([f.startLine2, f.endLine2] as const)
+    : wholeLines(fromA ? dst : src, fromA ? ranges!.destination : ranges!.source, chunk.fromB, chunk.toB);
+  const restore = (span: readonly [number, number], range: NonNullable<typeof ranges>["source"] | undefined) =>
+    range
+      ? ([range.line + Math.min(span[0], range.lines), range.line + Math.min(span[1], range.lines)] as const)
+      : span;
+  const [srcFrom, srcTo] = restore(fromA ? a : b, ranges?.source);
+  const [dstFrom, dstTo] = restore(fromA ? b : a, ranges?.destination);
   if (dstFrom === dstTo) {
+    if (srcFrom === srcTo) return { from: 0, to: 0, insert: "" };
     const text = linesContent(src, srcFrom, srcTo);
+    if (ranges && dst.length === 0) return { from: 0, to: 0, insert: text };
     return dstFrom === dst.lines
       ? { from: dst.length, to: dst.length, insert: "\n" + text }
       : { from: dst.line(dstFrom + 1).from, to: dst.line(dstFrom + 1).from, insert: text + "\n" };

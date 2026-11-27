@@ -1,14 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, render, screen } from "@testing-library/react";
-import { getAction } from "@/platform/actions";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { getAction, registerAction } from "@/platform/actions";
 import { getContext } from "@/platform/context";
 import * as ipc from "@/platform/ipc";
 import { provideToolWindowService, useContributions, type ToolWindowService } from "@/workbench/contributions";
 import { activate } from "../index";
 import { setCurrentRepository } from "../api/client";
 import type { GHRepository, GHUser } from "../api/types";
+import { useGhProjectAccount } from "../data/account";
+import * as repositoryData from "../data/repository";
 import { useGhRepository } from "../data/repository";
-import { PullRequestsTabs, PullRequestsToolWindow } from "./PullRequestsToolWindow";
+import {
+  PullRequestsHeaderActions,
+  PullRequestsTabs,
+  PullRequestsToolWindow,
+  headerMenu,
+} from "./PullRequestsToolWindow";
 import {
   closeTab,
   contextPullRequest,
@@ -85,6 +92,7 @@ describe("tool window", () => {
     vi.restoreAllMocks();
     setCurrentRepository(null);
     useGhRepository.setState({ connection: null, availability: null, remotes: [] });
+    useGhProjectAccount.setState({ status: null, loading: false, saving: false, revision: 0 });
     resetTabs();
   });
 
@@ -122,10 +130,21 @@ describe("tool window", () => {
     expect(show).toHaveBeenCalledWith("pullRequests", true);
   });
 
-  it("shows gh's state when it is not ready", () => {
-    useGhRepository.setState({ availability: { kind: "notInstalled" } });
-    render(<PullRequestsToolWindow />);
-    expect(screen.getByText("GitHub CLI is not installed")).toBeTruthy();
+  it("shows gh's state when it is not ready and installs gh on click", async () => {
+    const install = vi.fn().mockResolvedValue(undefined);
+    const dispose = registerAction({ id: "tools.install", title: "Install", run: install });
+    const refresh = vi.spyOn(repositoryData, "refreshConnection").mockResolvedValue(undefined);
+    try {
+      useGhRepository.setState({ availability: { kind: "notInstalled" } });
+      render(<PullRequestsToolWindow />);
+      expect(screen.getByText("GitHub CLI is not installed")).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Install GitHub CLI" }));
+      await waitFor(() => expect(install).toHaveBeenCalledWith(expect.objectContaining({ arg: "gh" })));
+      await waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+    } finally {
+      refresh.mockRestore();
+      dispose();
+    }
   });
 
   it("offers the repository selector for several GitHub remotes", () => {
@@ -180,5 +199,42 @@ describe("tool window", () => {
     expect(body.variables).toMatchObject({ query: "type:pr repo:org/app is:open", pageSize: 50 });
     await act(async () => openPullRequestTab(4));
     expect(screen.getByRole("tab", { name: /#4/ })).toBeTruthy();
+  });
+
+  it("suggests a matching GitHub account in the header menu and shows the active account badge", () => {
+    const connState = {
+      connection: {
+        coordinates: { owner: "org", name: "app" },
+        repository,
+        currentUser: { ...me, login: "alice" },
+        root: null,
+        remotes: [],
+      },
+      remotes: [{ owner: "org", name: "app", remote: "origin", url: "" }],
+    };
+    expect(headerMenu(connState, null)).toEqual([]);
+    const multiStatus = {
+      ghInstalled: true,
+      accounts: [
+        { login: "alice", active: true },
+        { login: "alice-work", active: false },
+      ],
+      configuredAccount: "",
+      effectiveAccount: "alice",
+      suggestedAccount: "alice-work",
+    };
+    expect(headerMenu(connState, multiStatus).map((i) => ("label" in i ? i.label : ""))).toEqual([
+      "Use alice-work for this project",
+      "Change Repository or Account…",
+    ]);
+
+    useGhRepository.setState({
+      availability: { kind: "ready", repo: {} as never, login: "alice" },
+      ...connState,
+    });
+    useGhProjectAccount.setState({ status: multiStatus });
+    render(<PullRequestsHeaderActions />);
+    const badge = screen.getByRole("button", { name: "@alice" });
+    expect(badge).toHaveAttribute("title", "Use alice-work for this project");
   });
 });

@@ -21,20 +21,36 @@ const target: Location = {
   range: { start: { line: 3, col: 4 }, end: { line: 3, col: 9 } },
 };
 const views: EditorView[] = [];
-function editor(doc = 1, language = "yaml", text = "server:\n  port: 8080\n") {
+function editor(doc = 1, language = "yaml", text = "server:\n  port: 8080\n", path = `/p/${doc}.${language}`) {
   const view = new EditorView({
     state: EditorState.create({
       doc: text,
-      extensions: [
-        lspDoc.of({ doc, path: `/p/${doc}.${language}`, language, uiMode: language, readOnly: false }),
-        navigationExtension(),
-      ],
+      extensions: [lspDoc.of({ doc, path, language, uiMode: language, readOnly: false }), navigationExtension()],
     }),
     parent: document.body,
   });
   views.push(view);
   return view;
 }
+
+it("uses the whole Maven element value for the navigation underline", () => {
+  const text = "    <artifactId>cdf-parent</artifactId>\n    <version>${revision}</version>";
+  const view = editor(1, "xml", text, "/p/pom.xml");
+  const parent = text.indexOf("cdf-parent");
+  for (const offset of [parent, parent + 3, parent + 4, parent + "cdf-parent".length]) {
+    const range = navigationWord(view, offset)!;
+    expect(view.state.sliceDoc(range.from, range.to)).toBe("cdf-parent");
+  }
+  const revision = text.indexOf("${revision}");
+  const range = navigationWord(view, revision + 4)!;
+  expect(view.state.sliceDoc(range.from, range.to)).toBe("${revision}");
+
+  const multiline = "<artifactId>\n    cdf-parent\n  </artifactId>";
+  const multilineView = editor(2, "xml", multiline, "/p/multiline/pom.xml");
+  const multilineRange = navigationWord(multilineView, multiline.indexOf("parent"))!;
+  expect(multilineView.state.sliceDoc(multilineRange.from, multilineRange.to)).toBe("cdf-parent");
+});
+
 let off: () => void;
 beforeEach(() => {
   vi.useFakeTimers();
@@ -200,27 +216,39 @@ describe("configuration navigation result reuse", () => {
     expect(lspGoto).toHaveBeenCalledTimes(2);
   });
 
-  it.each(["settled", "refresh"])("does not swallow an in-flight click on its own server %s event", async (event) => {
-    let resolve!: (r: Awaited<ReturnType<typeof commands.lspGoto>>) => void;
-    lspGoto.mockImplementationOnce(
-      () =>
-        new Promise((r) => {
-          resolve = r;
-        }),
-    );
-    const view = editor();
-    const pending = requestNavigation(view, 10, "definition");
-    await vi.waitFor(() => expect(lspGoto).toHaveBeenCalledOnce());
-    if (event === "settled") {
-      emitLocalIdeEvent({ type: "languageServer", server: 1, name: "jdtls", status: "busy", message: null });
-      vi.setSystemTime(Date.now() + 1600);
-      emitLocalIdeEvent({ type: "languageServer", server: 1, name: "jdtls", status: "ready", message: null });
-    } else emitLocalIdeEvent({ type: "lspRefresh", server: 1, kind: "codeLens" });
-    resolve({ status: "ok", data: [target] });
-    expect(await pending).toEqual([target]);
-    await requestNavigation(view, 10, "definition");
-    expect(lspGoto).toHaveBeenCalledTimes(2);
-  });
+  it.each(["settled", "refresh", "fsChanged", "excludedDirsChanged"])(
+    "does not swallow an in-flight click on a %s event",
+    async (event) => {
+      let resolve!: (r: Awaited<ReturnType<typeof commands.lspGoto>>) => void;
+      lspGoto.mockImplementationOnce(
+        () =>
+          new Promise((r) => {
+            resolve = r;
+          }),
+      );
+      const view = editor();
+      const pending = requestNavigation(view, 10, "definition");
+      await vi.waitFor(() => expect(lspGoto).toHaveBeenCalledOnce());
+      if (event === "settled") {
+        emitLocalIdeEvent({ type: "languageServer", server: 1, name: "jdtls", status: "busy", message: null });
+        vi.setSystemTime(Date.now() + 1600);
+        emitLocalIdeEvent({ type: "languageServer", server: 1, name: "jdtls", status: "ready", message: null });
+      } else if (event === "refresh") emitLocalIdeEvent({ type: "lspRefresh", server: 1, kind: "codeLens" });
+      // The build writing its output right after an edit.
+      else if (event === "fsChanged")
+        emitLocalIdeEvent({
+          type: "fsChanged",
+          created: ["/p/target/classes/Config.class"],
+          modified: [],
+          removed: [],
+        });
+      else emitLocalIdeEvent({ type: "excludedDirsChanged", dirs: ["/p/target"] });
+      resolve({ status: "ok", data: [target] });
+      expect(await pending).toEqual([target]);
+      await requestNavigation(view, 10, "definition");
+      expect(lspGoto).toHaveBeenCalledTimes(2);
+    },
+  );
 
   it("does not retain errors or missing targets during import", async () => {
     const view = editor();
@@ -242,7 +270,9 @@ describe("configuration navigation result reuse", () => {
 
   it("bounds retained entries", async () => {
     const view = editor(1, "properties", Array.from({ length: 130 }, (_, i) => `key${i}=x\n`).join(""));
-    for (let i = 1; i <= 130; i++) await requestNavigation(view, view.state.doc.line(i).from, "definition");
+    await Promise.all(
+      Array.from({ length: 130 }, (_, i) => requestNavigation(view, view.state.doc.line(i + 1).from, "definition")),
+    );
     await requestNavigation(view, 0, "definition");
     expect(lspGoto).toHaveBeenCalledTimes(131);
   });

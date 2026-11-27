@@ -18,7 +18,7 @@ pub struct WordSpan {
 pub fn words(text: &str, start: usize, end: usize, kind: RegionKind, out: &mut Vec<WordSpan>) {
     let Some(slice) = text.get(start..end) else { return };
     let escapes = match kind {
-        RegionKind::Name => Escapes::None,
+        RegionKind::Name | RegionKind::RawString => Escapes::None,
         RegionKind::String => Escapes::Char,
         RegionKind::Comment | RegionKind::Prose => Escapes::Word,
     };
@@ -184,6 +184,17 @@ mod tests {
         assert_eq!(split("deadbeefcafe NASA ok", RegionKind::Comment), Vec::<&str>::new());
         assert_eq!(split("\"line\\nbreak\\twith tab\"", RegionKind::String), ["line", "break", "with", "tab"]);
         assert_eq!(split("// 中文注释 naïve", RegionKind::Comment), ["naïve"]);
+    }
+
+    #[test]
+    fn raw_strings_keep_the_letter_after_a_backslash() {
+        // `\u` in a normal string is an escape: the letter is consumed and only
+        // `ser` is prose. In a raw string the backslash is literal, so `user`
+        // must be checked whole (issue: r"\user" flagged as typo 'ser').
+        assert_eq!(split(r#""\user""#, RegionKind::String), ["ser"]);
+        assert_eq!(split(r#""\user""#, RegionKind::RawString), ["user"]);
+        assert_eq!(split(r"\n\t \wrd", RegionKind::RawString), ["wrd"]);
+        assert_eq!(split(r"C:\Users\mesage", RegionKind::RawString), ["Users", "mesage"]);
     }
 
     #[test]

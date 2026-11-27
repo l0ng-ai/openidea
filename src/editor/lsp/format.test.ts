@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { EditorState, Text } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { CONTRIBUTED_FORMAT } from "@/editor/api";
@@ -12,8 +12,11 @@ import {
   type FormatGuardOptions,
 } from "@/platform/formatGuard";
 import { indentExtension } from "@/editor/core/cm/setup";
+import { IpcError } from "@/platform/ipc";
+import type { TextEdit } from "@/bindings";
 import { dedentsToColumnZero, formatDocument, formatOptionsOf, formattedLines } from "./format";
 import { formatsOnSave } from "./actions";
+import * as lsp from "./lsp";
 
 describe("formatOptionsOf", () => {
   const stateWith = (...args: Parameters<typeof indentExtension>) =>
@@ -170,17 +173,172 @@ describe("format on save provider isolation", () => {
     }
   });
 
-  it("formats on save for the languages whose Prettier or oxfmt Run on save is on", () => {
+  it("formats on save for the languages whose Prettier, oxfmt or Biome Run on save is on", () => {
     const settings = (languages: Settings["languages"], formatOnSave = false) =>
       ({ editor: { formatOnSave }, languages }) as Settings;
     const oxfmt = settings({ oxfmt: { runOnSave: true, languages: ["typescript"] } });
     expect(formatsOnSave(oxfmt, "typescript")).toBe(true);
     expect(formatsOnSave(oxfmt, "markdown")).toBe(false);
     expect(formatsOnSave(settings({ prettier: { runOnSave: true } }), "markdown")).toBe(true);
+    expect(formatsOnSave(settings({ biome: { runOnSave: true } }), "json")).toBe(true);
+    expect(formatsOnSave(settings({ biome: { runOnSave: true } }), "markdown")).toBe(false);
     expect(formatsOnSave(settings({ ruff: { runOnSave: true } }), "python")).toBe(true);
     expect(formatsOnSave(settings({ ruff: { runOnSave: true } }), "typescript")).toBe(false);
     expect(formatsOnSave(settings({}), "typescript")).toBe(false);
+    // dprint's configuration decides which files it formats.
+    expect(formatsOnSave(settings({ dprint: { runOnSave: true } }), "toml")).toBe(true);
     expect(formatsOnSave(settings({}, true), "rust")).toBe(true);
     expect(formatsOnSave(null, "typescript")).toBe(false);
+  });
+});
+
+const lines = ["a  =  1", "b  =  2", "c  =  3"];
+const viewOf = () =>
+  new EditorView({
+    state: EditorState.create({
+      doc: lines.join("\n"),
+      extensions: [lsp.lspDoc.of({ doc: 1, path: "/p/a.py", language: "python", uiMode: null, readOnly: false })],
+    }),
+  });
+/** A server answering every request, range or not, with edits for the whole file. */
+const wholeFile = (): TextEdit[] =>
+  lines.map((_, line) => ({ range: { start: { line, col: 1 }, end: { line, col: 3 } }, new_text: " " }));
+
+describe("formatting given ranges (Only VCS changed text)", () => {
+  const lineRange = (view: EditorView, n: number) => ({
+    from: view.state.doc.line(n).from,
+    to: view.state.doc.line(n).to,
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("changes only the lines inside the ranges, one request per range", async () => {
+    const request = vi.spyOn(lsp, "lspRequest").mockImplementation(async () => wholeFile());
+    const view = viewOf();
+    try {
+      const ranges = [lineRange(view, 1), lineRange(view, 3)];
+      expect((await formatDocument(view, { explicit: false, ranges })).applied).toBe(true);
+      expect(request).toHaveBeenCalledTimes(2);
+      expect(view.state.doc.toString()).toBe(["a =  1", "b  =  2", "c =  3"].join("\n"));
+    } finally {
+      view.destroy();
+    }
+  });
+
+  it("formats nothing for no ranges, as in a file without changes", async () => {
+    const request = vi.spyOn(lsp, "lspRequest").mockImplementation(async () => wholeFile());
+    const view = viewOf();
+    try {
+      expect((await formatDocument(view, { explicit: false, ranges: [] })).applied).toBe(false);
+      expect(request).not.toHaveBeenCalled();
+      expect(view.state.doc.toString()).toBe(lines.join("\n"));
+    } finally {
+      view.destroy();
+    }
+  });
+
+  it("tells a file without a formatter apart from one already formatted", async () => {
+    const view = viewOf();
+    try {
+      vi.spyOn(lsp, "lspRequest").mockRejectedValue(
+        new IpcError({ kind: "unavailable", message: "No language server available" }),
+      );
+      expect(await formatDocument(view, { explicit: false })).toMatchObject({ applied: false, noFormatter: true });
+      // The file's formatter (Prettier here) is not installed.
+      vi.spyOn(lsp, "lspRequest").mockRejectedValue(
+        new IpcError({
+          kind: "notFound",
+          message: "prettier is not installed",
+          data: { type: "tool", tool: "prettier", missing: true },
+        } as ConstructorParameters<typeof IpcError>[0]),
+      );
+      expect(await formatDocument(view, { explicit: false })).toMatchObject({ applied: false, noFormatter: true });
+      vi.spyOn(lsp, "lspRequest").mockResolvedValue([]);
+      expect((await formatDocument(view, { explicit: false })).noFormatter).toBeUndefined();
+    } finally {
+      view.destroy();
+    }
+  });
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+describe("a document edited while the formatter runs", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it.each([
+    { mode: "format on save", opts: { explicit: false, onSave: true }, hint: null },
+    { mode: "explicit formatting", opts: { explicit: true }, hint: "The file changed while formatting; try again" },
+  ])("$mode discards stale edits and shows only the expected hint", async ({ opts, hint }) => {
+    const reply = deferred<TextEdit[]>();
+    const request = vi.spyOn(lsp, "lspRequest").mockImplementation(() => reply.promise);
+    const view = viewOf();
+    const pending = formatDocument(view, opts);
+    try {
+      await vi.waitFor(() => expect(request).toHaveBeenCalled());
+      view.dispatch({ changes: { from: 0, insert: "x" } });
+      reply.resolve(wholeFile());
+      const result = await pending;
+
+      expect({
+        applied: result.applied,
+        text: view.state.doc.toString(),
+        hint: view.dom.querySelector(".cm-lsp-hint")?.textContent ?? null,
+      }).toEqual({ applied: false, text: `x${lines.join("\n")}`, hint });
+    } finally {
+      reply.resolve([]);
+      await Promise.allSettled([pending]);
+      view.destroy();
+    }
+  });
+
+  it("applies formatting when the document has not changed", async () => {
+    const reply = deferred<TextEdit[]>();
+    const request = vi.spyOn(lsp, "lspRequest").mockImplementation(() => reply.promise);
+    const view = viewOf();
+    const pending = formatDocument(view, { explicit: false });
+    try {
+      await vi.waitFor(() => expect(request).toHaveBeenCalled());
+      reply.resolve(wholeFile());
+
+      expect((await pending).applied).toBe(true);
+      expect(view.state.doc.toString()).toBe(["a =  1", "b =  2", "c =  3"].join("\n"));
+    } finally {
+      reply.resolve([]);
+      await Promise.allSettled([pending]);
+      view.destroy();
+    }
+  });
+
+  it("discards stale edits after a same-length replacement", async () => {
+    const reply = deferred<TextEdit[]>();
+    const request = vi.spyOn(lsp, "lspRequest").mockImplementation(() => reply.promise);
+    const view = viewOf();
+    const originalLength = view.state.doc.length;
+    const pending = formatDocument(view, { explicit: false });
+    try {
+      await vi.waitFor(() => expect(request).toHaveBeenCalled());
+      view.dispatch({ changes: { from: 0, to: 1, insert: "x" } });
+      expect(view.state.doc.length).toBe(originalLength);
+      reply.resolve(wholeFile());
+      const result = await pending;
+
+      expect(view.state.doc.toString()).toBe(["x  =  1", "b  =  2", "c  =  3"].join("\n"));
+      expect(result.applied).toBe(false);
+    } finally {
+      reply.resolve([]);
+      await Promise.allSettled([pending]);
+      view.destroy();
+    }
   });
 });

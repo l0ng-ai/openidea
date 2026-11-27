@@ -43,6 +43,25 @@ type SearchHandler = Box<dyn Fn(&TextQuery, u32) -> Result<TextSearch, Error>>;
 type NetHandler = Box<dyn Fn(&HttpRequest) -> Result<HttpResponse, Error>>;
 type ProcessHandler = Box<dyn Fn(&[String], Option<&str>) -> Result<ProcessOutput, Error>>;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WebSocketState {
+    project: String,
+    request: crate::host::WebSocketRequest,
+    sent: Vec<Vec<u8>>,
+    incoming: VecDeque<Vec<u8>>,
+    closed: bool,
+}
+
+/// A background WebSocket recorded by [`MockHost`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MockWebSocket {
+    pub id: u64,
+    pub project: String,
+    pub request: crate::host::WebSocketRequest,
+    pub sent: Vec<Vec<u8>>,
+    pub closed: bool,
+}
+
 /// A process run the plugin made.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProcessRun {
@@ -102,6 +121,8 @@ struct State {
     logs: Vec<(LogLevel, String)>,
     status: BTreeMap<String, StatusItem>,
     window_status: BTreeMap<String, StatusItem>,
+    status_menus: BTreeMap<String, Vec<StatusMenuEntry>>,
+    console_rules: Vec<ConsoleRule>,
     ipc: BTreeMap<u64, VecDeque<u8>>,
     next_ipc: u64,
     loopbacks: BTreeSet<u64>,
@@ -112,13 +133,19 @@ struct State {
     storage: BTreeMap<String, String>,
     subscriptions: BTreeSet<EventKind>,
     path_subscriptions: BTreeMap<String, Vec<String>>,
+    project_generations: BTreeMap<String, u64>,
+    debounce_ms: BTreeMap<String, u32>,
+    watched_paths: Vec<String>,
     tasks: Vec<MockTask>,
     vcs: Option<RepositoryStatus>,
+    repositories: Vec<RepositoryInfo>,
     remotes: Vec<(String, String)>,
     commit: Option<CommitDraft>,
     fetches: u32,
     fetch_error: Option<Error>,
     clipboard: Option<String>,
+    clipboard_image: Option<Vec<u8>>,
+    unattended: bool,
     opened_urls: Vec<String>,
     opened_projects: Vec<(String, bool)>,
     answers: VecDeque<Option<Vec<String>>>,
@@ -132,15 +159,22 @@ struct State {
     owned_commands: BTreeSet<String>,
     search: Option<SearchHandler>,
     commits: Vec<CommitInfo>,
+    build_graph: Vec<DependencyNode>,
     blame: BTreeMap<String, Vec<BlameLine>>,
     patch: Option<String>,
     restricted: bool,
     decorations: BTreeMap<(String, String), Vec<Decoration>>,
+    markdown_decorations: BTreeMap<(String, String), Vec<MarkdownDecoration>>,
+    styled_decorations: BTreeMap<(String, String), Vec<StyledDecoration>>,
     file_decorations: BTreeMap<(String, String), FileDecoration>,
+    file_notes: BTreeMap<(String, String), (String, Option<String>)>,
+    file_icons: BTreeMap<(String, String), (String, Option<String>)>,
     revealed_ranges: Vec<Range>,
     loopback_queries: VecDeque<Option<String>>,
     net: Option<NetHandler>,
     requests: Vec<HttpRequest>,
+    websockets: BTreeMap<u64, WebSocketState>,
+    next_websocket: u64,
     processes: BTreeMap<String, ProcessHandler>,
     runs: Vec<ProcessRun>,
     /// The programs `start`ed, by handle id.
@@ -150,21 +184,43 @@ struct State {
     view_messages: Vec<(String, String)>,
     terminals: Vec<MockTerminal>,
     terminal_sessions: BTreeMap<String, (String, crate::host::Command, String)>,
+    /// Directory a keyed terminal was opened in with `open_terminal_session_in`.
+    terminal_cwds: BTreeMap<String, String>,
     terminal_writes: Vec<(String, String)>,
     content_tabs: BTreeMap<String, crate::ContentTab>,
     content_replies: Vec<(String, crate::ContentTabReply)>,
+    diffs: Vec<(crate::FileDiff, Option<String>)>,
     database_sources: BTreeMap<(String, String), PluginDataSource>,
     database_credentials: BTreeSet<(String, String)>,
     database_connections: Vec<(String, String)>,
+    lsp_responses: BTreeMap<(String, String), String>,
+    lsp_requests: Vec<MockServerMessage>,
+    lsp_notifications: Vec<MockServerMessage>,
     mcp_stdio: Option<Vec<String>>,
     extension_points: BTreeMap<String, Vec<crate::Contribution>>,
     run_targets: BTreeMap<(String, String), crate::PluginRunTargetWithOverrides>,
     run_configurations: BTreeMap<String, crate::PluginRunConfiguration>,
+    execution_configurations: BTreeMap<String, crate::PluginExecutionConfiguration>,
+    user_run_output_overrides: BTreeMap<String, crate::OutputMode>,
+    run_stdin_files: BTreeSet<String>,
+    run_remote_targets: BTreeSet<String>,
     configuration_runs: Vec<(String, String, Vec<String>, bool)>,
+    configuration_run_options: Vec<(String, String, Vec<String>, crate::RunStartOptions, crate::OutputMode)>,
+    /// `(agent, session_id, cwd)` of each `fork_agent_session` call.
+    agent_forks: Vec<(String, String, String)>,
     log_tabs: Vec<MockLogTab>,
     locations: Vec<(String, u32, u32)>,
     settings: BTreeMap<String, String>,
     locale: Option<String>,
+}
+
+/// What the plugin sent a language server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MockServerMessage {
+    pub server: String,
+    pub method: String,
+    /// JSON, as the plugin passed it.
+    pub params: Option<String>,
 }
 
 /// A terminal the plugin opened.
@@ -204,13 +260,52 @@ const ALL: &[&str] = &[
     "editor.write",
     "vcs.read",
     "vcs.write",
+    "build.read",
     "storage",
     "events",
     "events.input",
     "clipboard",
+    "clipboard.read",
 ];
 
 impl MockHost {
+    /// Background WebSockets opened by the plugin, including sent frames.
+    pub fn websockets(&self) -> Vec<MockWebSocket> {
+        self.state
+            .borrow()
+            .websockets
+            .iter()
+            .map(|(id, socket)| MockWebSocket {
+                id: *id,
+                project: socket.project.clone(),
+                request: socket.request.clone(),
+                sent: socket.sent.clone(),
+                closed: socket.closed,
+            })
+            .collect()
+    }
+
+    /// Queues one binary server frame for the next `WebSocket::drain` call.
+    pub fn push_websocket_message(&self, connection: u64, bytes: &[u8]) -> Result<(), Error> {
+        let mut state = self.state.borrow_mut();
+        let socket =
+            state.websockets.get_mut(&connection).ok_or_else(|| Error::NotFound("WebSocket connection".into()))?;
+        if socket.closed {
+            return Err(Error::NotFound("WebSocket connection".into()));
+        }
+        socket.incoming.push_back(bytes.to_vec());
+        Ok(())
+    }
+
+    /// Makes the next drain report a final remote close after queued frames.
+    pub fn close_websocket(&self, connection: u64) -> Result<(), Error> {
+        let mut state = self.state.borrow_mut();
+        let socket =
+            state.websockets.get_mut(&connection).ok_or_else(|| Error::NotFound("WebSocket connection".into()))?;
+        socket.closed = true;
+        Ok(())
+    }
+
     /// Registers one of this plugin's declared commands, callable without ide.commands.
     pub fn on_own_command(&self, id: &str, handler: impl Fn(Option<&str>) -> Result<Option<String>, Error> + 'static) {
         let stable = format!("plugin.mock.{id}");
@@ -229,6 +324,11 @@ impl MockHost {
         s.blame.insert(path.into(), blame);
         s.patch = patch;
     }
+    /// The project's dependency graph as the IDE would answer `build_dependencies(None)`:
+    /// modules are the roots, every parent comes before its children.
+    pub fn set_build_dependencies(&self, nodes: Vec<DependencyNode>) {
+        self.state.borrow_mut().build_graph = nodes;
+    }
     /// Simulates Restricted Mode for new VCS read APIs.
     pub fn set_restricted(&self, restricted: bool) {
         self.state.borrow_mut().restricted = restricted;
@@ -237,9 +337,25 @@ impl MockHost {
     pub fn decorations(&self) -> BTreeMap<(String, String), Vec<Decoration>> {
         self.state.borrow().decorations.clone()
     }
+    /// Markdown decoration snapshots keyed by (set id, absolute path).
+    pub fn markdown_decorations(&self) -> BTreeMap<(String, String), Vec<MarkdownDecoration>> {
+        self.state.borrow().markdown_decorations.clone()
+    }
+    /// Styled decoration snapshots (API 1.17) keyed by (set id, absolute path), colors normalized.
+    pub fn styled_decorations(&self) -> BTreeMap<(String, String), Vec<StyledDecoration>> {
+        self.state.borrow().styled_decorations.clone()
+    }
     /// Tree decoration snapshots keyed by (set id, absolute path).
     pub fn file_decorations(&self) -> BTreeMap<(String, String), FileDecoration> {
         self.state.borrow().file_decorations.clone()
+    }
+    /// `(set, path)` → `(note, tooltip)` set with `set_file_note`.
+    pub fn file_notes(&self) -> BTreeMap<(String, String), (String, Option<String>)> {
+        self.state.borrow().file_notes.clone()
+    }
+    /// `(set, path)` → `(icon, tooltip)` set with `set_file_icon` or `set_file_icons`.
+    pub fn file_icons(&self) -> BTreeMap<(String, String), (String, Option<String>)> {
+        self.state.borrow().file_icons.clone()
     }
     /// Ranges requested to scroll into view.
     pub fn revealed_ranges(&self) -> Vec<Range> {
@@ -276,6 +392,21 @@ impl MockHost {
     /// More open projects (for [`crate::host::projects`]).
     pub fn add_project(&self, root: &str) {
         self.state.borrow_mut().other_projects.push(root.to_owned());
+    }
+
+    /// Bumps the generation for project `root` and returns the new generation.
+    pub fn bump_project_generation(&self, root: &str) -> u64 {
+        let mut s = self.state.borrow_mut();
+        let entry = s.project_generations.entry(root.to_owned()).or_insert(1);
+        *entry += 1;
+        *entry
+    }
+
+    /// Simulates closing project `root`: removes its generation and run targets.
+    pub fn project_closed(&self, root: &str) {
+        let mut s = self.state.borrow_mut();
+        s.project_generations.remove(root);
+        s.run_targets.retain(|(r, _), _| r != root);
     }
 
     /// Replaces a project's indexed symbols. Filtering in the mock is a
@@ -360,9 +491,19 @@ impl MockHost {
         self.state.borrow().logs.clone()
     }
 
+    /// The menu of status item `id`, as the last [`crate::host::set_status_item_menu`] set it.
+    pub fn status_menu(&self, id: &str) -> Vec<StatusMenuEntry> {
+        self.state.borrow().status_menus.get(id).cloned().unwrap_or_default()
+    }
+
     pub fn status_items(&self) -> BTreeMap<String, StatusItem> {
         let s = self.state.borrow();
         s.status.iter().chain(&s.window_status).map(|(k, v)| (k.clone(), v.clone())).collect()
+    }
+
+    /// The rules of the last successful [`crate::host::set_console_rules`].
+    pub fn console_rules(&self) -> Vec<ConsoleRule> {
+        self.state.borrow().console_rules.clone()
     }
 
     pub fn context_keys(&self) -> BTreeMap<String, ContextValue> {
@@ -375,6 +516,11 @@ impl MockHost {
 
     pub fn path_subscriptions(&self) -> BTreeMap<String, Vec<String>> {
         self.state.borrow().path_subscriptions.clone()
+    }
+
+    /// What [`crate::host::watch_paths`] last asked to watch.
+    pub fn watched_paths(&self) -> Vec<String> {
+        self.state.borrow().watched_paths.clone()
     }
 
     pub fn subscriptions(&self) -> BTreeSet<EventKind> {
@@ -402,9 +548,27 @@ impl MockHost {
         self.state.borrow_mut().remotes = remotes.iter().map(|&(n, u)| (n.to_owned(), u.to_owned())).collect();
     }
 
+    /// Mapped worktrees for `vcs_roots` and `vcs_repository_at`.
+    pub fn set_vcs_repositories(&self, repositories: Vec<RepositoryInfo>) {
+        self.state.borrow_mut().repositories = repositories;
+    }
+
     /// Last text copied with [`crate::host::copy_to_clipboard`].
     pub fn clipboard(&self) -> Option<String> {
         self.state.borrow().clipboard.clone()
+    }
+
+    /// What [`crate::host::read_clipboard`] finds: text and an image's PNG bytes.
+    pub fn set_clipboard(&self, text: Option<&str>, image: Option<&[u8]>) {
+        let mut state = self.state.borrow_mut();
+        state.clipboard = text.map(str::to_owned);
+        state.clipboard_image = image.map(<[u8]>::to_vec);
+    }
+
+    /// Calls run as an event handler or background work does (`true`), where reading the
+    /// clipboard is denied, or as a command the user ran (`false`, the default).
+    pub fn set_unattended(&self, unattended: bool) {
+        self.state.borrow_mut().unattended = unattended;
     }
 
     /// URLs opened with [`crate::host::open_url`], in order.
@@ -460,6 +624,23 @@ impl MockHost {
         self.state.borrow().diagnostics.clone()
     }
 
+    /// Asks a Run Anything provider (API 1.18) for its entries in the mock project.
+    pub fn run_anything_suggest(
+        &self,
+        provider: &mut impl crate::RunAnything,
+        prefix: &str,
+        text: &str,
+    ) -> Vec<crate::RunAnythingItem> {
+        let project = self.invocation().project().expect("mock project").root().expect("mock root");
+        provider.suggest(&project, prefix, text).into_iter().take(100).collect()
+    }
+
+    /// Runs a Run Anything line (API 1.18) in the mock project: whether it was claimed.
+    pub fn run_anything_run(&self, provider: &mut impl crate::RunAnything, prefix: &str, line: &str) -> bool {
+        let project = self.invocation().project().expect("mock project").root().expect("mock root");
+        provider.run(&project, prefix, line)
+    }
+
     /// Calls a target validator with the mock project's root and launch metadata.
     pub fn validate_run_target(
         &self,
@@ -479,6 +660,19 @@ impl MockHost {
             version: e.version,
             text: e.text.clone(),
         })
+    }
+
+    /// Asks a provider for completion at `at` in the mock editor's document, as the host
+    /// does: [`Providers::completion_list`](crate::providers::Providers::completion_list),
+    /// whose `incomplete` says whether typing on asks again. `None` without an editor.
+    pub fn completion_list(
+        &self,
+        provider: &mut impl crate::providers::Providers,
+        at: crate::Position,
+        trigger: Option<&str>,
+    ) -> Option<crate::providers::CompletionList> {
+        let document = self.provider_document()?;
+        Some(provider.completion_list(&document, at, trigger))
     }
 
     /// Runs a diagnostics provider against the current mock editor snapshot.
@@ -549,6 +743,29 @@ impl MockHost {
     pub fn configuration_runs(&self) -> Vec<(String, String, Vec<String>, bool)> {
         self.state.borrow().configuration_runs.clone()
     }
+    /// Run launches recorded with start options and resolved effective output mode (API 1.18).
+    pub fn configuration_run_options(
+        &self,
+    ) -> Vec<(String, String, Vec<String>, crate::RunStartOptions, crate::OutputMode)> {
+        self.state.borrow().configuration_run_options.clone()
+    }
+    /// Recorded `fork_agent_session` calls as `(agent, session_id, cwd)` (API 1.18).
+    pub fn agent_forks(&self) -> Vec<(String, String, String)> {
+        self.state.borrow().agent_forks.clone()
+    }
+    /// Makes the language server `server` run and answer `method` with `result` (JSON).
+    /// A server with no answer set is not running: requests to it are not-found.
+    pub fn set_language_server_response(&self, server: &str, method: &str, result: &str) {
+        self.state.borrow_mut().lsp_responses.insert((server.into(), method.into()), result.into());
+    }
+    /// The requests the plugin sent to language servers, in order.
+    pub fn language_server_requests(&self) -> Vec<MockServerMessage> {
+        self.state.borrow().lsp_requests.clone()
+    }
+    /// The notifications the plugin sent to language servers, in order.
+    pub fn language_server_notifications(&self) -> Vec<MockServerMessage> {
+        self.state.borrow().lsp_notifications.clone()
+    }
     /// Configures only argv discovery; the mock has no token or URL.
     pub fn set_mcp_stdio_command(&self, command: Option<Vec<String>>) {
         self.state.borrow_mut().mcp_stdio = command;
@@ -563,7 +780,49 @@ impl MockHost {
         self.state.borrow_mut().extension_points.insert(point.into(), list);
     }
     pub fn set_run_configurations(&self, configs: Vec<crate::PluginRunConfiguration>) {
-        self.state.borrow_mut().run_configurations = configs.into_iter().map(|c| (c.id.clone(), c)).collect();
+        let mut s = self.state.borrow_mut();
+        s.run_configurations = configs.into_iter().map(|c| (c.id.clone(), c)).collect();
+        s.execution_configurations.clear();
+    }
+    /// Configurations with environment, debugger, and default output mode (API 1.18).
+    pub fn set_execution_configurations(&self, configs: Vec<crate::PluginExecutionConfiguration>) {
+        let mut s = self.state.borrow_mut();
+        s.run_configurations = configs.iter().map(|c| (c.launch.config.id.clone(), c.launch.config.clone())).collect();
+        s.execution_configurations = configs.into_iter().map(|c| (c.launch.config.id.clone(), c)).collect();
+    }
+    /// Simulates a user-saved output-mode override in `.openidea/run.toml` (API 1.18).
+    pub fn set_user_run_output_override(&self, config: &str, mode: Option<crate::OutputMode>) {
+        let mut s = self.state.borrow_mut();
+        match mode {
+            Some(mode) => {
+                s.user_run_output_overrides.insert(config.into(), mode);
+            }
+            None => {
+                s.user_run_output_overrides.remove(config);
+            }
+        }
+    }
+    /// Marks a configuration as having stdin file redirection in native tests.
+    pub fn set_run_configuration_stdin_file(&self, config: &str, redirected: bool) {
+        let mut s = self.state.borrow_mut();
+        if redirected {
+            s.run_stdin_files.insert(config.into());
+        } else {
+            s.run_stdin_files.remove(config);
+        }
+    }
+    /// Marks a configuration as targeting a remote run target in native tests.
+    pub fn set_run_configuration_remote_target(&self, config: &str, remote: bool) {
+        let mut s = self.state.borrow_mut();
+        if remote {
+            s.run_remote_targets.insert(config.into());
+        } else {
+            s.run_remote_targets.remove(config);
+        }
+    }
+    /// The project-relative directory a keyed terminal was opened in (API 1.18), if any.
+    pub fn terminal_cwd(&self, key: &str) -> Option<String> {
+        self.state.borrow().terminal_cwds.get(key).cloned()
     }
     /// Text written through write_terminal.
     pub fn terminal_writes(&self) -> Vec<(String, String)> {
@@ -572,12 +831,18 @@ impl MockHost {
     /// Simulates exit, releasing the key for another operation.
     pub fn finish_terminal(&self, key: &str) -> Option<crate::Event> {
         let (id, _, _) = self.state.borrow_mut().terminal_sessions.remove(key)?;
+        self.state.borrow_mut().terminal_cwds.remove(key);
         Some(crate::Event::Other {
             kind: "terminal-exited".into(),
             data: serde_json::to_string(&crate::TerminalExited { id, key: key.into(), status: Some(0), closed: false })
                 .unwrap(),
         })
     }
+    /// Diffs the plugin opened (`open_diff` sides are always `Some`), with their file names.
+    pub fn opened_diffs(&self) -> Vec<(crate::FileDiff, Option<String>)> {
+        self.state.borrow().diffs.clone()
+    }
+
     /// Terminals the plugin opened.
     pub fn terminals(&self) -> Vec<MockTerminal> {
         self.state.borrow().terminals.clone()
@@ -676,6 +941,12 @@ pub struct MockInvocation<'a>(PhantomData<&'a ()>);
 #[doc(hidden)]
 pub struct MockProject {
     root: String,
+    generation: u64,
+}
+
+fn make_mock_project(s: &State, root: String) -> MockProject {
+    let generation = s.project_generations.get(&root).copied().unwrap_or(1);
+    MockProject { root, generation }
 }
 
 #[doc(hidden)]
@@ -700,11 +971,13 @@ impl Drop for MockTaskRes {
 pub mod current {
     //! The host functions, backed by the installed mock.
     use super::*;
+    use crate::host::{WebSocketBatch, WebSocketRequest};
 
     pub type InvocationRef<'a> = MockInvocation<'a>;
     pub type ProjectRes = MockProject;
     pub type EditorRes = MockEditor;
     pub type TaskRes = MockTaskRes;
+    pub type WebSocketRes = u64;
 
     pub(super) fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
         CURRENT.with(|c| {
@@ -872,7 +1145,46 @@ pub mod current {
     }
 
     pub fn set_status_item(id: &str, item: &StatusItem) {
-        with(|s| s.status.insert(id.to_owned(), item.clone()));
+        with(|s| {
+            s.status_menus.remove(id);
+            s.status.insert(id.to_owned(), item.clone())
+        });
+    }
+
+    /// The host's entry limit; it also checks the commands against the plugin's declarations.
+    pub fn set_status_item_menu(id: &str, item: &StatusItem, menu: &[StatusMenuEntry]) -> Result<(), Error> {
+        if menu.len() > 64 {
+            return Err(Error::Invalid("a status item menu has at most 64 entries".into()));
+        }
+        with(|s| {
+            s.status.insert(id.to_owned(), item.clone());
+            s.status_menus.insert(id.to_owned(), menu.to_vec());
+        });
+        Ok(())
+    }
+
+    pub fn set_window_status_item_menu(id: &str, item: &StatusItem, menu: &[StatusMenuEntry]) -> Result<(), Error> {
+        if menu.len() > 64 {
+            return Err(Error::Invalid("a status item menu has at most 64 entries".into()));
+        }
+        with(|s| {
+            s.window_status.insert(id.to_owned(), item.clone());
+            s.status_menus.insert(id.to_owned(), menu.to_vec());
+        });
+        Ok(())
+    }
+
+    /// The host's count and length limits; it also refuses patterns that could
+    /// backtrack for long, which the mock doesn't check.
+    pub fn set_console_rules(rules: &[ConsoleRule]) -> Result<(), Error> {
+        if rules.len() > 100 {
+            return Err(Error::Invalid("at most 100 console rules".into()));
+        }
+        if let Some(i) = rules.iter().position(|r| r.pattern.is_empty() || r.pattern.len() > 512) {
+            return Err(Error::Invalid(format!("console rule {i}: a pattern is 1-512 bytes")));
+        }
+        with(|s| s.console_rules = rules.to_vec());
+        Ok(())
     }
 
     pub fn set_window_status_item(id: &str, item: &StatusItem) -> Result<(), Error> {
@@ -971,7 +1283,20 @@ pub mod current {
         with(|s| {
             require(s, "clipboard")?;
             s.clipboard = Some(text.to_owned());
+            s.clipboard_image = None;
             Ok(())
+        })
+    }
+
+    pub fn read_clipboard() -> Result<ClipboardContent, Error> {
+        with(|s| {
+            require(s, "clipboard.read")?;
+            // A command run through `execute_command` is not one the user ran.
+            if s.unattended || s.command_depth > 0 {
+                return Err(Error::Denied("clipboard.read (only in a command or view action the user ran)".into()));
+            }
+            let text = s.clipboard.clone().filter(|t| !t.is_empty());
+            Ok(ClipboardContent { text, image: s.clipboard_image.clone() })
         })
     }
 
@@ -988,6 +1313,14 @@ pub mod current {
             s.opened_urls.push(trimmed.to_owned());
             Ok(())
         })
+    }
+
+    pub fn pick_file(_title: &str, _dialog: &crate::FileDialog) -> Result<Option<String>, Error> {
+        let path = with(|s| s.answers.pop_front().flatten()).and_then(|a| a.into_iter().next());
+        if let Some(path) = &path {
+            ui_path(path)?;
+        }
+        Ok(path)
     }
 
     pub fn pick_directory(_title: &str, initial: Option<&str>) -> Result<Option<String>, Error> {
@@ -1084,7 +1417,7 @@ pub mod current {
     pub fn projects() -> Result<Vec<ProjectRes>, Error> {
         with(|s| {
             require(s, "project.read")?;
-            Ok(s.root.iter().chain(&s.other_projects).map(|root| MockProject { root: root.clone() }).collect())
+            Ok(s.root.iter().chain(&s.other_projects).map(|root| make_mock_project(s, root.clone())).collect())
         })
     }
 
@@ -1105,8 +1438,13 @@ pub mod current {
                         || path.strip_prefix(root.trim_end_matches('/')).is_some_and(|rest| rest.starts_with('/'))
                 })
                 .max_by_key(|root| root.replace('\\', "/").split('/').count())
-                .map(|root| MockProject { root: root.clone() })
+                .map(|root| make_mock_project(s, root.clone()))
         })
+    }
+
+    /// The mock's project: every mocked call serves its window.
+    pub fn invoking_project() -> Option<ProjectRes> {
+        with(|s| s.root.clone().map(|root| make_mock_project(s, root)))
     }
 
     pub fn project_root(p: &ProjectRes) -> Result<String, Error> {
@@ -1114,6 +1452,10 @@ pub mod current {
             require(s, "project.read")?;
             Ok(p.root.clone())
         })
+    }
+
+    pub fn project_generation(p: &ProjectRes) -> Result<u64, Error> {
+        Ok(p.generation)
     }
 
     /// `path` inside `p`'s root as a project-relative key, or `Invalid` for a
@@ -1332,7 +1674,7 @@ pub mod current {
     }
 
     pub fn invocation_project(_: InvocationRef<'_>) -> Option<ProjectRes> {
-        with(|s| s.root.clone().map(|root| MockProject { root }))
+        with(|s| s.root.clone().map(|root| make_mock_project(s, root)))
     }
 
     pub fn invocation_editor(_: InvocationRef<'_>) -> Option<EditorRes> {
@@ -1403,6 +1745,58 @@ pub mod current {
         })
     }
 
+    fn mock_document_path(project: &ProjectRes, path: &str, editor: &Editor) -> bool {
+        path == editor.path
+            || format!("{}/{}", project.root.trim_end_matches('/'), path.trim_start_matches('/')) == editor.path
+    }
+
+    pub fn project_document(project: &ProjectRes, path: &str) -> Result<Document, Error> {
+        editor(|s, e| {
+            require(s, "project.read")?;
+            require(s, "editor.read")?;
+            if !mock_document_path(project, path, e) {
+                return Err(Error::NotFound(format!("{path} is not open")));
+            }
+            Ok(Document { version: e.version, text: e.text.clone() })
+        })
+    }
+
+    pub fn project_apply_document_edits(
+        project: &ProjectRes,
+        path: &str,
+        version: u64,
+        edits: &[TextEdit],
+    ) -> Result<u64, Error> {
+        editor(|s, e| {
+            require(s, "project.read")?;
+            require(s, "editor.write")?;
+            if !mock_document_path(project, path, e) {
+                return Err(Error::NotFound(format!("{path} is not open")));
+            }
+            if version != e.version {
+                return Err(Error::Stale);
+            }
+            let mut spans = Vec::with_capacity(edits.len());
+            for edit in edits {
+                let start = crate::text::offset(&e.text, edit.range.start);
+                let end = crate::text::offset(&e.text, edit.range.end);
+                match (start, end) {
+                    (Some(start), Some(end)) if start <= end => spans.push((start, end, edit.text.clone())),
+                    _ => return Err(Error::Invalid("edit range is outside the document".into())),
+                }
+            }
+            spans.sort_by_key(|(start, _, _)| *start);
+            if spans.windows(2).any(|pair| pair[0].1 > pair[1].0) {
+                return Err(Error::Invalid("overlapping edits".into()));
+            }
+            for (start, end, text) in spans.into_iter().rev() {
+                e.text.replace_range(start..end, &text);
+            }
+            e.version += 1;
+            Ok(e.version)
+        })
+    }
+
     pub fn open_editors() -> Result<Vec<OpenEditor>, Error> {
         with(|s| {
             require(s, "editor.read")?;
@@ -1423,7 +1817,7 @@ pub mod current {
                 return s.external.get(path).cloned().ok_or_else(|| Error::NotFound(path.into()));
             }
             require(s, "project.read")?;
-            let p = MockProject { root: s.root.clone().ok_or_else(|| Error::Invalid("no project".into()))? };
+            let p = make_mock_project(s, s.root.clone().ok_or_else(|| Error::Invalid("no project".into()))?);
             let rel = rel_in_root(&p, path)?;
             s.files.get(rel).or_else(|| s.files.get(path)).cloned().ok_or_else(|| Error::NotFound(path.into()))
         })?;
@@ -1479,7 +1873,7 @@ pub mod current {
     pub fn problems(path: Option<&str>) -> Result<Vec<FileProblems>, Error> {
         with(|s| {
             require(s, "project.read")?;
-            let p = MockProject { root: s.root.clone().ok_or_else(|| Error::Invalid("no project".into()))? };
+            let p = make_mock_project(s, s.root.clone().ok_or_else(|| Error::Invalid("no project".into()))?);
             let wanted = path.map(|path| rel_in_root(&p, path).map(|rel| format!("{}/{rel}", p.root))).transpose()?;
             Ok(s.diagnostics
                 .iter()
@@ -1494,7 +1888,7 @@ pub mod current {
         })
     }
     fn decoration_path(s: &State, path: &str) -> Result<String, Error> {
-        let p = MockProject { root: s.root.clone().ok_or_else(|| Error::Invalid("no project".into()))? };
+        let p = make_mock_project(s, s.root.clone().ok_or_else(|| Error::Invalid("no project".into()))?);
         Ok(format!("{}/{}", p.root, rel_in_root(&p, path)?))
     }
     fn style(s: &str) -> bool {
@@ -1513,25 +1907,94 @@ pub mod current {
                 | "muted"
         )
     }
+    /// Plain, Markdown and styled sets share the set-id namespace and the per-file limit: the last
+    /// call for a (set, path) replaces whichever kind was there.
+    fn replace_decorations(
+        s: &mut State,
+        set: &str,
+        path: &str,
+        insert: impl FnOnce(&mut State, (String, String)),
+    ) -> Result<(), Error> {
+        fn per_file<T>(map: &BTreeMap<(String, String), Vec<T>>, path: &str) -> usize {
+            map.iter().filter(|((_, p), _)| p == path).map(|(_, i)| i.len()).sum()
+        }
+        let key = (set.to_owned(), path.to_owned());
+        let saved = (s.decorations.clone(), s.markdown_decorations.clone(), s.styled_decorations.clone());
+        s.decorations.remove(&key);
+        s.markdown_decorations.remove(&key);
+        s.styled_decorations.remove(&key);
+        insert(s, key);
+        let names = (s.decorations.keys())
+            .chain(s.markdown_decorations.keys())
+            .chain(s.styled_decorations.keys())
+            .map(|(set, _)| set)
+            .collect::<BTreeSet<_>>()
+            .len();
+        let count = per_file(&s.decorations, path)
+            + per_file(&s.markdown_decorations, path)
+            + per_file(&s.styled_decorations, path);
+        if set.is_empty() || set.len() > 128 || names > 50 || count > 10_000 {
+            (s.decorations, s.markdown_decorations, s.styled_decorations) = saved;
+            return Err(Error::Invalid("decoration limit".into()));
+        }
+        Ok(())
+    }
     pub fn set_decorations(path: &str, set: &str, items: &[Decoration]) -> Result<(), Error> {
         with(|s| {
             require(s, "project.read")?;
             let path = decoration_path(s, path)?;
-            let mut next = s.decorations.clone();
-            next.insert((set.into(), path.clone()), items.iter().filter(|d| style(&d.style)).cloned().collect());
-            let names: BTreeSet<_> = next.keys().map(|(set, _)| set).collect();
-            let count: usize = next.iter().filter(|((_, p), _)| *p == path).map(|(_, i)| i.len()).sum();
-            if set.is_empty() || set.len() > 128 || names.len() > 50 || count > 10_000 {
-                return Err(Error::Invalid("decoration limit".into()));
+            let items = items.iter().filter(|d| style(&d.style)).cloned().collect();
+            replace_decorations(s, set, &path, |s, key| {
+                s.decorations.insert(key, items);
+            })
+        })
+    }
+    pub fn set_markdown_decorations(path: &str, set: &str, items: &[MarkdownDecoration]) -> Result<(), Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            let path = decoration_path(s, path)?;
+            let items = items.iter().filter(|d| style(&d.style)).cloned().collect();
+            replace_decorations(s, set, &path, |s, key| {
+                s.markdown_decorations.insert(key, items);
+            })
+        })
+    }
+    /// The host's color rule: `#rrggbb` or `#rrggbbaa`, stored lower case.
+    fn color(color: &str) -> Result<String, Error> {
+        let hex = color.strip_prefix('#').unwrap_or("");
+        if (hex.len() == 6 || hex.len() == 8) && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            Ok(format!("#{}", hex.to_ascii_lowercase()))
+        } else {
+            Err(Error::Invalid(format!("decoration color '{color}' is not #rrggbb or #rrggbbaa")))
+        }
+    }
+    pub fn set_styled_decorations(path: &str, set: &str, items: &[StyledDecoration]) -> Result<(), Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            let path = decoration_path(s, path)?;
+            let mut kept = Vec::new();
+            for item in items {
+                let mut item = item.clone();
+                if let Some(c) = &mut item.colors {
+                    c.foreground = c.foreground.as_deref().map(color).transpose()?;
+                    c.background = c.background.as_deref().map(color).transpose()?;
+                }
+                item.colors = item.colors.filter(|c| c.foreground.is_some() || c.background.is_some());
+                if style(&item.style) || (item.style.is_empty() && item.colors.is_some()) {
+                    kept.push(item);
+                }
             }
-            s.decorations = next;
-            Ok(())
+            replace_decorations(s, set, &path, |s, key| {
+                s.styled_decorations.insert(key, kept);
+            })
         })
     }
     pub fn clear_decorations(set: &str) -> Result<(), Error> {
         with(|s| {
             require(s, "project.read")?;
             s.decorations.retain(|(id, _), _| id != set);
+            s.markdown_decorations.retain(|(id, _), _| id != set);
+            s.styled_decorations.retain(|(id, _), _| id != set);
             Ok(())
         })
     }
@@ -1542,9 +2005,10 @@ pub mod current {
             let mut next = s.file_decorations.clone();
             next.remove(&(set.into(), path.clone()));
             if style(&item.style) {
-                next.insert((set.into(), path), item.clone());
+                next.insert((set.into(), path.clone()), item.clone());
             }
-            let names: BTreeSet<_> = next.keys().map(|(set, _)| set).collect();
+            let names: BTreeSet<_> =
+                next.keys().chain(s.file_notes.keys()).chain(s.file_icons.keys()).map(|(set, _)| set).collect();
             if set.is_empty()
                 || set.len() > 128
                 || names.len() > 50
@@ -1553,6 +2017,8 @@ pub mod current {
                 return Err(Error::Invalid("file decoration limit".into()));
             }
             s.file_decorations = next;
+            s.file_notes.remove(&(set.into(), path.clone()));
+            s.file_icons.remove(&(set.into(), path));
             Ok(())
         })
     }
@@ -1560,6 +2026,99 @@ pub mod current {
         with(|s| {
             require(s, "project.read")?;
             s.file_decorations.retain(|(id, _), _| id != set);
+            s.file_notes.retain(|(id, _), _| id != set);
+            s.file_icons.retain(|(id, _), _| id != set);
+            Ok(())
+        })
+    }
+    pub fn set_file_note(path: &str, set: &str, note: &str, tooltip: Option<&str>) -> Result<(), Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            let path = decoration_path(s, path)?;
+            let key = (set.to_string(), path);
+            let names: BTreeSet<_> = s
+                .file_decorations
+                .keys()
+                .chain(s.file_notes.keys())
+                .chain(s.file_icons.keys())
+                .chain([&key])
+                .map(|(set, _)| set)
+                .collect();
+            if set.is_empty()
+                || set.len() > 128
+                || names.len() > 50
+                || note.trim().is_empty()
+                || note.chars().count() > 200
+                || note.contains(['\n', '\r'])
+            {
+                return Err(Error::Invalid("a file note is one non-empty line of at most 200 characters".into()));
+            }
+            s.file_decorations.remove(&key);
+            s.file_icons.remove(&key);
+            s.file_notes.insert(key, (note.into(), tooltip.map(Into::into)));
+            Ok(())
+        })
+    }
+    fn valid_icon_id(id: &str) -> bool {
+        let first = id.chars().next().is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+        let rest = id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_' | '.'));
+        first && rest && id.len() <= 64
+    }
+    pub fn set_file_icon(path: &str, set: &str, icon: &str, tooltip: Option<&str>) -> Result<(), Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            let path = decoration_path(s, path)?;
+            if !valid_icon_id(icon) {
+                return Err(Error::Invalid(format!("invalid file icon id {icon:?}")));
+            }
+            let key = (set.to_string(), path);
+            let names: BTreeSet<_> = s
+                .file_decorations
+                .keys()
+                .chain(s.file_notes.keys())
+                .chain(s.file_icons.keys())
+                .chain([&key])
+                .map(|(set, _)| set)
+                .collect();
+            if set.is_empty() || set.len() > 128 || names.len() > 50 {
+                return Err(Error::Invalid("file decoration limit".into()));
+            }
+            s.file_decorations.remove(&key);
+            s.file_notes.remove(&key);
+            s.file_icons.insert(key, (icon.into(), tooltip.map(Into::into)));
+            Ok(())
+        })
+    }
+    pub fn set_file_icons(set: &str, items: &[(String, String)]) -> Result<(), Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            if set.is_empty() || set.len() > 128 || items.len() > 10_000 {
+                return Err(Error::Invalid("file icon decoration limit".into()));
+            }
+            let mut next = BTreeMap::new();
+            for (path, icon) in items {
+                if !valid_icon_id(icon) {
+                    return Err(Error::Invalid(format!("invalid file icon id {icon:?}")));
+                }
+                next.insert((set.to_string(), decoration_path(s, path)?), (icon.clone(), None));
+            }
+            let mut merged = s.file_icons.clone();
+            merged.retain(|(id, _), _| id != set);
+            merged.extend(next);
+            let names: BTreeSet<_> = s
+                .file_decorations
+                .keys()
+                .filter(|(id, _)| id != set)
+                .chain(s.file_notes.keys().filter(|(id, _)| id != set))
+                .chain(merged.keys())
+                .map(|(set, _)| set)
+                .collect();
+            if names.len() > 50 {
+                return Err(Error::Invalid("file decoration limit".into()));
+            }
+            s.file_decorations.retain(|(id, _), _| id != set);
+            s.file_notes.retain(|(id, _), _| id != set);
+            s.file_icons = merged;
             Ok(())
         })
     }
@@ -1626,6 +2185,48 @@ pub mod current {
         })
     }
 
+    pub fn vcs_roots(p: &ProjectRes) -> Result<Vec<String>, Error> {
+        with(|s| {
+            require(s, "vcs.read")?;
+            let project = std::path::Path::new(&p.root);
+            let mut roots: Vec<_> = s
+                .repositories
+                .iter()
+                .map(|r| &r.root)
+                .filter(|r| project.starts_with(r) || std::path::Path::new(r).starts_with(project))
+                .cloned()
+                .collect();
+            roots.sort();
+            Ok(roots)
+        })
+    }
+
+    pub fn vcs_repository_at(p: &ProjectRes, path: &str) -> Result<Option<RepositoryInfo>, Error> {
+        with(|s| {
+            vcs_read(s)?;
+            let project = std::path::Path::new(&p.root);
+            let absolute = project.join(path);
+            let rel = absolute.strip_prefix(project).map_err(|_| Error::Invalid("outside the project root".into()))?;
+            if rel.components().any(|c| c == std::path::Component::ParentDir) {
+                return Err(Error::Invalid("outside the project root".into()));
+            }
+            if !rel.as_os_str().is_empty()
+                && !path_known(s, p, path, &rel.to_string_lossy())
+                && !s.repositories.iter().any(|r| absolute == std::path::Path::new(&r.root))
+            {
+                return Err(Error::Invalid(format!("{path}: no such file")));
+            }
+            Ok(s.repositories
+                .iter()
+                .filter_map(|r| Some((r, absolute.strip_prefix(&r.root).ok()?)))
+                .min_by_key(|(_, rel)| rel.components().count())
+                .map(|(r, rel)| RepositoryInfo {
+                    relative_path: rel.to_string_lossy().replace('\\', "/"),
+                    ..r.clone()
+                }))
+        })
+    }
+
     pub fn pending_commit() -> Result<Option<CommitDraft>, Error> {
         with(|s| {
             require(s, "vcs.read")?;
@@ -1649,7 +2250,11 @@ pub mod current {
     pub fn subscribe_paths(kind: &str, globs: &[&str]) -> Result<(), Error> {
         with(|s| {
             require(s, "events")?;
-            if !matches!(kind, "file-opened" | "file-saved" | "files-changed")
+            if kind == "document-changed" {
+                require(s, "project.read")?;
+                require(s, "editor.read")?;
+            }
+            if !matches!(kind, "file-opened" | "file-saved" | "files-changed" | "document-changed")
                 || globs.len() > 64
                 || globs.iter().any(|g| {
                     let relative = g.trim_start_matches("./");
@@ -1674,9 +2279,55 @@ pub mod current {
                 "files-changed" => {
                     s.subscriptions.insert(EventKind::FilesChanged);
                 }
+                "document-changed" => {
+                    s.subscriptions.insert(EventKind::DocumentChanged);
+                }
                 _ => {}
             }
             s.path_subscriptions.insert(kind.to_owned(), globs.iter().map(|g| (*g).to_owned()).collect());
+            Ok(())
+        })
+    }
+
+    pub fn watch_paths(paths: &[&str]) -> Result<(), Error> {
+        with(|s| {
+            require(s, "events")?;
+            let Some(root) = s.root.clone() else {
+                return Err(Error::Invalid("watch-paths needs a call that serves a window's project".into()));
+            };
+            if paths.len() > 32 {
+                return Err(Error::Invalid("at most 32 watched paths".into()));
+            }
+            for path in paths {
+                check_external(s, "fs.read", path)?;
+                let dir = format!("{}/", path.trim_end_matches('/'));
+                let exists = s.external.contains_key(*path)
+                    || s.external_bytes.contains_key(*path)
+                    || s.external.keys().chain(s.external_bytes.keys()).any(|p| p.starts_with(&dir));
+                if !exists {
+                    return Err(Error::Invalid(format!("{path}: no such file")));
+                }
+                if *path == root || path.starts_with(&format!("{}/", root.trim_end_matches('/'))) {
+                    return Err(Error::Invalid(format!(
+                        "{path} is inside the project: subscribe to files-changed for it"
+                    )));
+                }
+            }
+            if !paths.is_empty() {
+                s.subscriptions.insert(EventKind::WatchedFilesChanged);
+            }
+            s.watched_paths = paths.iter().map(|p| (*p).to_owned()).collect();
+            Ok(())
+        })
+    }
+
+    pub fn subscribe_paths_with_options(kind: &str, options: &crate::SubscriptionOptions) -> Result<(), Error> {
+        let globs_ref: Vec<&str> = options.globs.iter().map(|s| s.as_str()).collect();
+        subscribe_paths(kind, &globs_ref)?;
+        with(|s| {
+            if let Some(ms) = options.debounce_ms {
+                s.debounce_ms.insert(kind.to_owned(), ms);
+            }
             Ok(())
         })
     }
@@ -1693,6 +2344,11 @@ pub mod current {
             };
             if let Some(cap) = cap {
                 require(s, cap)?;
+            }
+            if kind == EventKind::DocumentChanged {
+                return Err(Error::Invalid(
+                    "document-changed is delivered only for paths named with subscribe-paths".into(),
+                ));
             }
             s.path_subscriptions.remove(kind.name());
             s.subscriptions.insert(kind);
@@ -1745,6 +2401,13 @@ pub mod current {
         Some(host.to_ascii_lowercase())
     }
 
+    fn websocket_handshake_header(name: &str) -> bool {
+        name.eq_ignore_ascii_case("host")
+            || name.eq_ignore_ascii_case("connection")
+            || name.eq_ignore_ascii_case("upgrade")
+            || name.get(.."sec-websocket-".len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case("sec-websocket-"))
+    }
+
     pub fn fetch(req: &HttpRequest) -> Result<HttpResponse, Error> {
         with(|s| {
             let host = net_host(&req.url).ok_or_else(|| Error::Invalid(format!("{:?} is not a URL", req.url)))?;
@@ -1779,6 +2442,93 @@ pub mod current {
                 None => Err(Error::Failed("no network in the mock (MockHost::on_fetch)".into())),
             }
         })
+    }
+
+    pub fn websocket_connect(project: &ProjectRes, req: &WebSocketRequest) -> Result<WebSocketRes, Error> {
+        with(|s| {
+            require(s, "project.read")?;
+            if !req.url.starts_with("wss://") {
+                return Err(Error::Invalid("background WebSocket requires wss://".into()));
+            }
+            let host = net_host(&req.url).ok_or_else(|| Error::Invalid("invalid WebSocket URL".into()))?;
+            let capability = format!("net:{host}");
+            if !s.capabilities.iter().any(|candidate| {
+                candidate == &capability
+                    || candidate == "net:*"
+                    || candidate.strip_prefix("net:*.").is_some_and(|suffix| host.ends_with(&format!(".{suffix}")))
+            }) {
+                return Err(Error::Denied(capability));
+            }
+            if req.subprotocol.len() > 256 {
+                return Err(Error::Invalid("WebSocket subprotocol is too long".into()));
+            }
+            if req.headers.iter().any(|(name, _)| websocket_handshake_header(name)) {
+                return Err(Error::Invalid("WebSocket handshake headers are managed by the host".into()));
+            }
+            if s.websockets.values().filter(|socket| !socket.closed).count() >= 8 {
+                return Err(Error::Invalid("at most 8 WebSocket connections per plugin".into()));
+            }
+            let mut request = req.clone();
+            for (_, value) in &mut request.headers {
+                while let Some(start) = value.find("{{secret:") {
+                    require(s, "secrets")?;
+                    let end =
+                        value[start..].find("}}").ok_or_else(|| Error::Invalid("unterminated secret".into()))? + start;
+                    let name = &value[start + 9..end];
+                    let secret =
+                        s.secrets.get(name).cloned().ok_or_else(|| Error::NotFound(format!("secret {name:?}")))?;
+                    value.replace_range(start..end + 2, &secret);
+                }
+            }
+            let id = s.next_websocket.max(1);
+            s.next_websocket = id + 1;
+            s.websockets.insert(
+                id,
+                WebSocketState {
+                    project: project.root.clone(),
+                    request,
+                    sent: Vec::new(),
+                    incoming: VecDeque::new(),
+                    closed: false,
+                },
+            );
+            Ok(id)
+        })
+    }
+    pub fn websocket_id(connection: &WebSocketRes) -> u64 {
+        *connection
+    }
+
+    pub fn websocket_send(connection: &WebSocketRes, bytes: &[u8]) -> Result<(), Error> {
+        with(|s| {
+            let socket = s
+                .websockets
+                .get_mut(connection)
+                .filter(|socket| !socket.closed)
+                .ok_or_else(|| Error::NotFound("WebSocket connection".into()))?;
+            socket.sent.push(bytes.to_vec());
+            Ok(())
+        })
+    }
+    pub fn websocket_drain(connection: &WebSocketRes, limit: u32) -> Result<WebSocketBatch, Error> {
+        with(|s| {
+            if limit == 0 || limit > 256 {
+                return Err(Error::Invalid("WebSocket drain limit must be between 1 and 256".into()));
+            }
+            let socket =
+                s.websockets.get_mut(connection).ok_or_else(|| Error::NotFound("WebSocket connection".into()))?;
+            let count = usize::min(limit as usize, socket.incoming.len());
+            let messages = socket.incoming.drain(..count).collect();
+            Ok(WebSocketBatch { messages, closed: socket.closed && socket.incoming.is_empty() })
+        })
+    }
+    pub fn websocket_close(connection: &WebSocketRes) -> Result<(), Error> {
+        with(|s| {
+            if let Some(socket) = s.websockets.get_mut(connection) {
+                socket.closed = true;
+            }
+        });
+        Ok(())
     }
 
     pub fn secret_set(name: &str, value: &str) -> Result<(), Error> {
@@ -1939,6 +2689,103 @@ pub mod current {
             Ok(())
         })
     }
+    /// The host's rule: only a server's own methods, none of LSP's.
+    fn lsp_method_allowed(method: &str) -> bool {
+        const LSP: [&str; 14] = [
+            "textDocument",
+            "workspace",
+            "window",
+            "notebookDocument",
+            "callHierarchy",
+            "typeHierarchy",
+            "completionItem",
+            "codeAction",
+            "codeLens",
+            "documentLink",
+            "inlayHint",
+            "workspaceSymbol",
+            "client",
+            "telemetry",
+        ];
+        let namespace = method.split('/').next().unwrap_or_default();
+        !(method.is_empty()
+            || method.starts_with("$/")
+            || ["initialize", "initialized", "shutdown", "exit"].contains(&method)
+            || LSP.contains(&namespace))
+    }
+    fn lsp_message(s: &State, server: &str, method: &str, params: Option<&str>) -> Result<MockServerMessage, Error> {
+        require(s, &format!("lsp:{server}"))?;
+        if s.restricted {
+            return Err(Error::Denied("project is not trusted".into()));
+        }
+        if !lsp_method_allowed(method) {
+            return Err(Error::Invalid(format!("`{method}` is not one of the server's own methods")));
+        }
+        if !s.lsp_responses.keys().any(|(running, _)| running == server) {
+            return Err(Error::NotFound(format!("no language server `{server}` is running for this project")));
+        }
+        Ok(MockServerMessage { server: server.into(), method: method.into(), params: params.map(str::to_owned) })
+    }
+    pub fn lsp_request(
+        _project: &ProjectRes,
+        server: &str,
+        method: &str,
+        params: Option<&str>,
+    ) -> Result<String, Error> {
+        with(|s| {
+            let message = lsp_message(s, server, method, params)?;
+            let answer = s.lsp_responses.get(&(server.to_owned(), method.to_owned())).cloned();
+            s.lsp_requests.push(message);
+            answer.ok_or_else(|| Error::Failed(format!("{server}: method not found: {method}")))
+        })
+    }
+    /// The module roots matching `module` (`group:artifact`, or a Gradle path) and what is
+    /// under them, with `parent` renumbered.
+    pub fn build_dependencies(_project: &ProjectRes, module: Option<&str>) -> Result<Vec<DependencyNode>, Error> {
+        with(|s| {
+            require(s, "build.read")?;
+            if s.restricted {
+                return Err(Error::Denied("project is not trusted".into()));
+            }
+            let mut index = vec![None; s.build_graph.len()];
+            let mut out: Vec<DependencyNode> = Vec::new();
+            for (i, node) in s.build_graph.iter().enumerate() {
+                let parent = match node.parent {
+                    // A Maven module is named `group:artifact`, a Gradle project by its path.
+                    None if module.is_none_or(|m| {
+                        if node.group.is_empty() {
+                            m == node.artifact
+                        } else {
+                            m == format!("{}:{}", node.group, node.artifact)
+                        }
+                    }) =>
+                    {
+                        None
+                    }
+                    None => continue,
+                    Some(p) => match index.get(p as usize).copied().flatten() {
+                        Some(p) => Some(p),
+                        None => continue,
+                    },
+                };
+                index[i] = Some(out.len() as u32);
+                out.push(DependencyNode { parent, ..node.clone() });
+            }
+            match module {
+                Some(m) if out.is_empty() => {
+                    Err(Error::NotFound(format!("no Maven or Gradle module `{m}` in this project")))
+                }
+                _ => Ok(out),
+            }
+        })
+    }
+    pub fn lsp_notify(_project: &ProjectRes, server: &str, method: &str, params: Option<&str>) -> Result<(), Error> {
+        with(|s| {
+            let message = lsp_message(s, server, method, params)?;
+            s.lsp_notifications.push(message);
+            Ok(())
+        })
+    }
     pub fn mcp_stdio_command() -> Option<Vec<String>> {
         with(|s| s.mcp_stdio.clone())
     }
@@ -1948,6 +2795,14 @@ pub mod current {
                 .get(point)
                 .cloned()
                 .ok_or_else(|| Error::NotFound(format!("no running plugin declares {point}")))
+        })
+    }
+    pub fn fork_agent_session(agent: &str, session_id: &str, cwd: &str) -> Result<String, Error> {
+        with(|s| {
+            require(s, "agents")?;
+            let id = format!("mock-agent-task-{}", s.agent_forks.len());
+            s.agent_forks.push((agent.into(), session_id.into(), cwd.into()));
+            Ok(id)
         })
     }
 
@@ -1962,6 +2817,10 @@ pub mod current {
             require(s, &format!("process:{}", target.program))?;
             if s.restricted {
                 return Err(Error::Denied("project is not trusted".into()));
+            }
+            let cur_gen = s.project_generations.get(&project.root).copied().unwrap_or(1);
+            if project.generation < cur_gen {
+                return Err(Error::Stale);
             }
             if target.id.is_empty()
                 || target.name.is_empty()
@@ -1984,14 +2843,57 @@ pub mod current {
         });
     }
     pub fn start_run(config: &str, args: &[String], debug: bool) -> Result<String, Error> {
+        start_run_with_options(config, args, &crate::RunStartOptions { debug, output_mode: None })
+    }
+    pub fn start_run_with_options(
+        config: &str,
+        args: &[String],
+        options: &crate::RunStartOptions,
+    ) -> Result<String, Error> {
         with(|s| {
-            let c = s.run_configurations.get(config).ok_or_else(|| Error::NotFound(config.into()))?;
+            let c = s.run_configurations.get(config).ok_or_else(|| Error::NotFound(config.into()))?.clone();
             require(s, &format!("process:{}", c.program))?;
-            if debug {
+            let exec = s.execution_configurations.get(config);
+            let debug = options.debug;
+            let has_debugger = exec.is_some_and(|e| e.launch.debugger.is_some());
+            if debug && !has_debugger {
                 return Err(Error::Invalid("this configuration has no debugger".into()));
+            }
+            let has_target = s.run_remote_targets.contains(config);
+            if debug && has_target {
+                return Err(Error::Invalid("debugging this target is not supported".into()));
+            }
+            if debug && options.output_mode == Some(crate::OutputMode::Pty) {
+                return Err(Error::Invalid("terminal emulation cannot be used when debugging".into()));
+            }
+            let plugin_default = exec.map_or(crate::OutputMode::Pipes, |e| e.output_mode);
+            let effective_mode = if debug {
+                crate::OutputMode::Pipes
+            } else if let Some(&user_mode) = s.user_run_output_overrides.get(config) {
+                user_mode
+            } else if let Some(mode) = options.output_mode {
+                mode
+            } else {
+                plugin_default
+            };
+            let requested_pty =
+                effective_mode == crate::OutputMode::Pty || options.output_mode == Some(crate::OutputMode::Pty);
+            if !debug && requested_pty {
+                if c.test {
+                    return Err(Error::Invalid("terminal emulation cannot be used for test configurations".into()));
+                }
+                if s.run_stdin_files.contains(config) {
+                    return Err(Error::Invalid(
+                        "input cannot be redirected from a file when emulating a terminal".into(),
+                    ));
+                }
+                if has_target {
+                    return Err(Error::Invalid("terminal emulation on this target is not supported".into()));
+                }
             }
             let id = format!("mock-run-{}", s.configuration_runs.len());
             s.configuration_runs.push((id.clone(), config.into(), args.to_vec(), debug));
+            s.configuration_run_options.push((id.clone(), config.into(), args.to_vec(), *options, effective_mode));
             Ok(id)
         })
     }
@@ -2010,6 +2912,22 @@ pub mod current {
             s.terminal_sessions.insert(key.into(), (id.clone(), cmd.clone(), title.into()));
             Ok(id)
         })
+    }
+    pub fn open_terminal_session_in(
+        key: &str,
+        title: &str,
+        cmd: &crate::host::Command,
+        cwd: &str,
+    ) -> Result<String, Error> {
+        let path = std::path::Path::new(cwd);
+        if path.has_root() || path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+            return Err(Error::Invalid(format!("terminal directory {cwd:?}: outside the project")));
+        }
+        let id = open_terminal_session(key, title, cmd)?;
+        with(|s| {
+            s.terminal_cwds.entry(key.into()).or_insert_with(|| cwd.into());
+        });
+        Ok(id)
     }
     pub fn write_terminal(key: &str, text: &str) -> Result<(), Error> {
         with(|s| {
@@ -2031,6 +2949,17 @@ pub mod current {
     }
     pub fn reply_content_tab(request: &str, reply: &crate::ContentTabReply) -> Result<(), Error> {
         with(|s| s.content_replies.push((request.into(), reply.clone())));
+        Ok(())
+    }
+    pub fn open_diff(diff: &crate::ContentDiff, file_name: Option<&str>) -> Result<(), Error> {
+        open_file_diff(&diff.clone().into(), file_name)
+    }
+    pub fn open_file_diff(diff: &crate::FileDiff, file_name: Option<&str>) -> Result<(), Error> {
+        let sides = [&diff.left, &diff.right];
+        if sides.iter().all(|s| s.is_none()) || sides.into_iter().flatten().any(|s| s.contains('\0')) {
+            return Err(Error::Invalid("invalid diff".into()));
+        }
+        with(|s| s.diffs.push((diff.clone(), file_name.map(Into::into))));
         Ok(())
     }
     pub fn open_terminal(title: &str, program: &str, args: &[String]) -> Result<(), Error> {
@@ -2148,6 +3077,25 @@ pub mod current {
             out.stdout.insert_str(0, &env);
             Ok(out)
         })
+    }
+
+    pub fn run_captured(
+        cmd: &crate::host::Command,
+        cwd: Option<&ProjectRes>,
+        stdin: Option<&str>,
+        options: Option<crate::host::ProcessOptions>,
+    ) -> Result<ProcessOutput, Error> {
+        let _ = options;
+        run_command(cmd, cwd, stdin)
+    }
+
+    pub fn start_stream(
+        cmd: &crate::host::Command,
+        cwd: Option<&ProjectRes>,
+        options: Option<crate::host::ProcessOptions>,
+    ) -> Result<ChildRes, Error> {
+        let _ = options;
+        start(cmd, cwd)
     }
 
     /// Starts a [`Command`] and returns its handle (at most 8, as the host allows).
@@ -2292,7 +3240,51 @@ fn glob_match(glob: &str, path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host;
+    use crate::host::{self, WebSocket, WebSocketRequest};
+
+    #[test]
+    fn background_websocket_mock_records_transport_and_resource_lifecycle() {
+        let mock = MockHost::install().with_capabilities(&["project.read", "secrets", "net:relay.example"]);
+        mock.declare_secret("token");
+        host::secret_set("token", "member-secret").unwrap();
+        let project = mock.invocation().project().unwrap();
+        let socket = WebSocket::connect(
+            &project,
+            &WebSocketRequest {
+                url: "wss://relay.example/socket".into(),
+                headers: vec![("authorization".into(), "Bearer {{secret:token}}".into())],
+                subprotocol: "example.v1".into(),
+            },
+        )
+        .unwrap();
+        socket.send(b"outbound").unwrap();
+        mock.push_websocket_message(socket.id(), b"inbound").unwrap();
+        assert_eq!(socket.drain(8).unwrap().messages, [b"inbound"]);
+
+        let recorded = &mock.websockets()[0];
+        assert_eq!(recorded.request.headers[0].1, "Bearer member-secret");
+        assert_eq!(recorded.sent, [b"outbound"]);
+
+        mock.close_websocket(socket.id()).unwrap();
+        assert!(socket.drain(8).unwrap().closed);
+    }
+
+    #[test]
+    fn background_websocket_mock_limits_open_resources_per_plugin() {
+        let mock = MockHost::install().with_capabilities(&["project.read", "net:relay.example"]);
+        let project = mock.invocation().project().unwrap();
+        let request = WebSocketRequest {
+            url: "wss://relay.example/socket".into(),
+            headers: vec![("authorization".into(), "Bearer test".into())],
+            subprotocol: "example.v1".into(),
+        };
+        let sockets: Vec<_> = (0..8).map(|_| WebSocket::connect(&project, &request).unwrap()).collect();
+        assert!(
+            matches!(WebSocket::connect(&project, &request), Err(Error::Invalid(message)) if message.contains("at most 8"))
+        );
+        drop(sockets);
+        assert!(WebSocket::connect(&project, &request).is_ok());
+    }
 
     #[test]
     fn path_subscriptions_replace_pause_and_restore() {
@@ -2357,6 +3349,15 @@ mod tests {
         assert_eq!(host::storage::keys("").unwrap(), ["k"]);
         host::set_status_item("s", &StatusItem { text: "x".into(), tooltip: None, command: None });
         assert_eq!(mock.status_items()["s"].text, "x");
+        let menu = [
+            StatusMenuEntry::Header("App".into()),
+            StatusMenuEntry::action("Open website", "open").with_description("https://app.test").with_argument("web"),
+            StatusMenuEntry::Separator,
+        ];
+        host::set_status_item_menu("s", &StatusItem { text: "y".into(), tooltip: None, command: None }, &menu).unwrap();
+        assert_eq!((mock.status_items()["s"].text.as_str(), mock.status_menu("s")), ("y", menu.to_vec()));
+        host::set_status_item("s", &StatusItem { text: "z".into(), tooltip: None, command: None });
+        assert!(mock.status_menu("s").is_empty(), "a plain update drops the menu");
         host::set_context("a", 1.0).unwrap();
         host::set_context("b", "x").unwrap();
         assert_eq!(mock.context_keys()["a"], ContextValue::Number(1.0));
@@ -2507,6 +3508,38 @@ mod tests {
     }
 
     #[test]
+    fn watched_paths_need_a_grant_an_existing_path_and_stay_outside_the_project() {
+        let mock = MockHost::install().with_capabilities(&["events", "fs.read:/opt/tool"]);
+        mock.add_external_file("/opt/tool/Taskfile.yml", "version: 3");
+        mock.add_external_file("/opt/tool/inc/common.yml", "");
+        mock.add_external_file("/opt/other/secret", "no");
+        host::watch_paths(&["/opt/tool/Taskfile.yml", "/opt/tool/inc"]).unwrap();
+        assert_eq!(mock.watched_paths(), ["/opt/tool/Taskfile.yml", "/opt/tool/inc"]);
+        assert!(mock.subscriptions().contains(&EventKind::WatchedFilesChanged));
+        assert!(matches!(host::watch_paths(&["/opt/other/secret"]), Err(Error::Denied(_))));
+        assert!(matches!(host::watch_paths(&["/opt/tool/missing.yml"]), Err(Error::Invalid(_))));
+        assert_eq!(mock.watched_paths().len(), 2, "a refused call changes nothing");
+        host::watch_paths(&[]).unwrap();
+        assert!(mock.watched_paths().is_empty());
+        let inside = MockHost::install().with_capabilities(&["events", "fs.read:/project"]);
+        inside.add_external_file("/project/Taskfile.yml", "");
+        assert!(matches!(host::watch_paths(&["/project/Taskfile.yml"]), Err(Error::Invalid(_))));
+        assert_eq!(
+            Event::from_other(
+                "watched-files-changed".into(),
+                r#"{"project":"/p","created":[],"modified":["/opt/tool/Taskfile.yml"],"removed":[]}"#.into()
+            ),
+            Event::WatchedFilesChanged(crate::FilesChanged {
+                project: Some("/p".into()),
+                generation: None,
+                created: vec![],
+                modified: vec!["/opt/tool/Taskfile.yml".into()],
+                removed: vec![],
+            })
+        );
+    }
+
+    #[test]
     fn files_outside_the_project_need_an_fs_read_grant() {
         let mock = MockHost::install().with_capabilities(&["fs.read:/opt/tool"]);
         mock.add_external_file("/opt/tool/conf/app.yaml", "port: 8080");
@@ -2649,6 +3682,20 @@ mod tests {
         assert_eq!(mock.log_tabs().len(), 1);
         assert_eq!((mock.log_tabs()[0].title.as_str(), &mock.log_tabs()[0].log), ("api logs again", &log));
         assert!(matches!(host::open_log_tab("", "api logs", &log), Err(Error::Invalid(_))));
+    }
+
+    #[test]
+    fn a_file_diff_may_miss_one_side() {
+        let mock = MockHost::install();
+        let added = crate::FileDiff { right: Some("new\n".into()), ..Default::default() };
+        host::open_file_diff(&added, Some("src/new.rs")).unwrap();
+        host::open_diff(&crate::ContentDiff { left: "a".into(), right: "b".into(), ..Default::default() }, None)
+            .unwrap();
+        assert!(matches!(host::open_file_diff(&crate::FileDiff::default(), None), Err(Error::Invalid(_))));
+        let diffs = mock.opened_diffs();
+        assert_eq!(diffs[0], (added, Some("src/new.rs".into())));
+        assert_eq!((diffs[1].0.left.as_deref(), diffs[1].0.right.as_deref()), (Some("a"), Some("b")));
+        assert_eq!(diffs.len(), 2);
     }
 
     #[test]

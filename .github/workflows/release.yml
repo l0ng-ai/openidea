@@ -1,7 +1,7 @@
 name: Release
 on:
   push:
-    tags: ["v*", "!v*-nightly.*"]
+    tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
@@ -23,7 +23,6 @@ env:
 jobs:
   # Creates (or reuses) one draft release that every platform build uploads into.
   create-release:
-    if: ${{ !contains(github.event.inputs.tag || github.ref_name, '-nightly.') }}
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -62,7 +61,7 @@ jobs:
               core.setOutput("id", existing.id);
               return;
             }
-            // Nightly builds are prereleases: the notes span stable release to stable release.
+            // Prereleases are skipped: the notes span stable release to stable release.
             const previous = releases.find((r) => !r.draft && !r.prerelease);
             const { data: notes } = await github.rest.repos.generateReleaseNotes({
               owner, repo, tag_name: tag, previous_tag_name: previous?.tag_name,
@@ -177,5 +176,12 @@ jobs:
   cnb-mirror:
     needs: publish
     uses: ./.github/workflows/cnb-mirror.yml
+    with: { tag: "${{ github.event.inputs.tag || github.ref_name }}" }
+    secrets: inherit
+
+  # The cask in l0ng-ai/homebrew-tap; skipped for prereleases and without HOMEBREW_TAP_DEPLOY_KEY.
+  homebrew:
+    needs: publish
+    uses: ./.github/workflows/homebrew.yml
     with: { tag: "${{ github.event.inputs.tag || github.ref_name }}" }
     secrets: inherit

@@ -7,11 +7,17 @@ OpenIDEA 开箱即可高亮 PHP 文件（`.php`、`.phtml`、`.phpt` 以及老�
 
 ## 语言服务器
 
-| 服务器         | 启用条件                                                                                                              |
-| -------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `intelephense` | 默认。工作区根：`composer.json`、`.phpactor.json` 或 `index.php`。                                                    |
-| `phpactor`     | 备选：仅在未安装 Intelephense 时使用。                                                                                |
-| `laravel-lsp`  | 仅限 Laravel 项目（`artisan` 文件所在目录之下）：在 `config('…')`、`route('…')`、`view('…')` 中提供悬停、跳转和补全。 |
+| 服务器            | 启用条件                                                                                                                                       |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `intelephense`    | 默认。工作区根：`composer.json`、`.phpactor.json` 或 `index.php`。                                                                             |
+| `phpactor`        | 备选：仅在未安装 Intelephense 时使用。                                                                                                         |
+| `phoxite`         | 备选，自带 Laravel 和 Blade 支持：仅在以上两个服务器都未安装时使用，或在 **设置 › 语言和框架 › 语言服务器** 中选中它时使用。                   |
+| `devsense-php-ls` | 备选，引擎为各平台原生构建，服务器本身无需 Node 或 PHP：仅在以上服务器都未安装时使用，或在 **设置 › 语言和框架 › 语言服务器** 中选中它时使用。 |
+| `laravel-lsp`     | 仅限 Laravel 项目（`artisan` 文件所在目录之下）：在 `config('…')`、`route('…')`、`view('…')` 中提供悬停、跳转和补全。                          |
+
+Phoxite 或 DEVSENSE 为项目提供服务时不会启动 `laravel-lsp`：Laravel 相关的字符串由它们自己处理。
+
+DEVSENSE 无需许可证即可用于日常代码智能（补全、悬停、跳转、查找引用、诊断，以及 Laravel 和 Blade 支持）；其重构以及调用/类型层次结构需要 DEVSENSE 许可证。
 
 Intelephense 会按项目的 PHP 版本检查代码（见下文“语言级别”），并索引你配置的 stub 和包含路径。
 
@@ -25,6 +31,8 @@ Intelephense 会按项目的 PHP 版本检查代码（见下文“语言级别�
 | ------------------ | -------------------------------------------------- |
 | Intelephense       | npm（`intelephense`）                              |
 | Laravel LSP        | GitHub release（`laravel/lsp`）                    |
+| Phoxite            | GitHub release（`samehelhawary/phoxite`）          |
+| DEVSENSE           | npm（`devsense-php-ls`），启动时需要 Node.js       |
 | PHP Debug (Xdebug) | Open VSX（`xdebug.php-debug`），运行时需要 Node.js |
 | phpactor           | IDE 不负责安装，请自行安装并放到 `PATH` 上         |
 
@@ -53,6 +61,7 @@ Composer 项目没有 `vendor/`，或已安装的包与 `composer.lock` 不一�
 
 - **PHPStan**：项目中有 `vendor/bin/phpstan` 时，保存的文件会交给它检查，结果显示为诊断。**PHPStan › 配置文件** 用于指定配置；留空则使用项目根目录下的 `phpstan.neon`、`phpstan.neon.dist` 或 `phpstan.dist.neon`。
 - **PHP-CS-Fixer**：当文件上层目录中有 `.php-cs-fixer.php` 或 `.php-cs-fixer.dist.php`，且项目有 `vendor/bin/php-cs-fixer` 时，**重新格式化代码**（`⌥⌘L` / `Ctrl+Alt+L`）改用 PHP-CS-Fixer，而不是语言服务器。
+- **对齐**：**设置 › 编辑器 › 代码样式 › PHP › 对齐** 提供与 PhpStorm 相同的 **对齐键值对**（多行数组中的 `=>`）和 **对齐连续赋值**（相邻行赋值语句中的 `=`），默认都关闭。它们在语言服务器或 PHP-CS-Fixer 格式化之后生效，保存时格式化也一样；格式化选区时只作用于选中的行。空行、注释行、其他语句或跨多行的值会开始新的一组，嵌套数组单独对齐。
 
 ## 运行与测试
 
@@ -77,12 +86,12 @@ PHPUnit 运行配置类型包含 **目标**、**配置文件**、**测试过滤�
 
 ## 框架支持
 
-- **Laravel**：Laravel LSP 支持 `config()`、`route()`、`view()` 中的字符串，并提供 `artisan serve` 运行配置。
+- **Laravel**：Laravel LSP 支持 `config()`、`route()`、`view()` 中的字符串，并提供 `artisan serve` 运行配置。以 Phoxite 作为 PHP 服务器时，路由、视图、配置、翻译和 Eloquent 模型的补全、跳转和重命名改由它提供。
 - **WordPress** 等平台：在 **附加存根** 中加入对应 stub，在 **包含路径** 中加入平台代码目录。
 
 ## 已知限制
 
-- 不支持 Blade 或 Twig 模板，只有 `.php` 文件有 PHP 代码智能。
+- 使用 Intelephense 时不支持 Blade 或 Twig 模板，只有 `.php` 文件有 PHP 代码智能。Phoxite 为 `.blade.php` 文件提供代码智能，但没有 Blade 语法高亮。
 - IDE 不会安装 phpactor。
 - PHPUnit 不支持使用覆盖率运行。
 - 调试需要 PHP 已安装 Xdebug 扩展，IDE 不负责安装。

@@ -28,7 +28,7 @@ OpenIDEA 直接使用项目自己的测试工具（Cargo、Jest、pytest、Maven
 | 语言                        | 装订区图标位置                                                                                | 运行方式                                              |
 | --------------------------- | --------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
 | Rust                        | `#[test]` 函数、`mod tests`                                                                   | `cargo test`、`cargo nextest`                         |
-| JavaScript / TypeScript     | `test`、`it`、`describe`、`suite`、`context`（含 `.each`、`.only`、`.skip`）                  | 通过项目的测试脚本运行 Jest 或 Vitest；Deno、Bun      |
+| JavaScript / TypeScript     | `test`、`it`、`describe`、`suite`、`context`（含 `.each`、`.only`、`.skip`）                  | Jest / Vitest（脚本）；Playwright；Cypress；Deno、Bun |
 | Python                      | pytest 的 `def test_*`、`class Test*`，unittest 的 `TestCase` 子类                            | pytest、Django `manage.py test`                       |
 | Go                          | `func TestX(t *testing.T)`、基准测试                                                          | `go test`                                             |
 | Java、Kotlin、Scala、Groovy | JUnit `@Test`、`@ParameterizedTest`、`@RepeatedTest`、`@TestFactory`、`@TestTemplate`；TestNG | Maven Surefire（`-Dtest=`）或 Gradle（`--tests`）     |
@@ -47,11 +47,14 @@ RSpec 有自己的配置类型（**RSpec 测试**）和检测到的 `rspec` 配�
 
 测试运行会在 **运行** 工具窗口中打开一个标签页，控制台旁边是测试树。失败的测试套件会自动展开。
 
-- 单击某个测试，控制台只显示它自己的输出。
+- 单击某个测试，控制台只显示它自己的输出；单击类或套件，先显示它自己的准备和清理输出，再显示其下各个测试的输出。控制台上方的 **显示所有输出** 可回到整个运行的输出。
 - 双击、按 `Enter` 或 `F4` 跳到测试源码（**跳转到源代码**）。
 - **显示已通过** 和 **显示已忽略** 用于筛选测试树。默认隐藏已通过的测试，筛选状态会被记住。
+- **⋯ › 测试运行器选项 › 完成后选中第一个失败的测试** 会在运行结束时选中第一个失败的测试并显示它的输出。默认关闭。
+- **⋯ › 测试运行器选项 › 跟踪正在运行的测试** 会在运行过程中，每个测试开始时选中它并显示它的输出。默认开启。
 - 右键单个测试或多选后，可以 **运行 '…'**、**调试 '…'** 或 **跳转到源代码**。
 - 对于带有期望值和实际值的断言失败，**显示差异** 会把两者并排对比。
+- 对于 Jest 或 Vitest 的快照不匹配，**更新快照**（在测试或其文件、套件上，失败输出上方，以及边栏运行菜单中）只用 `-u` 重新运行这些测试，只改写它们的快照。
 
 检测到的测试配置会自动把结果显示在测试树中。自己创建的配置需要打开 **修改选项 › 在测试运行器中显示结果**。
 
@@ -62,7 +65,13 @@ RSpec 有自己的配置类型（**RSpec 测试**）和检测到的 `rspec` 配�
 | **重新运行**（在“运行”工具窗口中） | `⌘R`  | `Ctrl+F5`       |
 | **重新运行失败的测试**             | —     | —               |
 
-**重新运行失败的测试**（在“运行”工具窗口工具栏和“查找操作”中）只运行上一次失败的测试，会按各个工具自己的过滤语法生成命令。支持 Cargo、Jest / Vitest、pytest、Django、PHPUnit、Go、Maven / Gradle 和 .NET，以及插件接入的测试框架。
+**重新运行失败的测试**（在“运行”工具窗口工具栏和“查找操作”中）只运行上一次失败的测试，会按各个工具自己的过滤语法生成命令。支持 Cargo、Jest / Vitest、Playwright、Cypress（需 `@cypress/grep`）、`node --test`、Mocha、pytest、Django、PHPUnit、Go、Maven / Gradle 和 .NET，以及插件接入的测试框架。
+
+Jasmine 运行也支持，用 `--filter=` 选出失败的测试。
+
+### 监视模式（Jest、Vitest）
+
+在 Jest 或 Vitest 测试配置中打开 **修改选项 › 监视更改**，或在测试树工具栏打开 **自动重新运行**，测试运行器会持续监视文件（`jest --watchAll`、`vitest watch`）。每次编辑后测试会在同一个标签页中重新运行，每一轮的结果替换树中上一轮的结果。点击 **停止**、关闭这个开关或关闭标签页都会结束监视进程。调试、**重新运行失败的测试**和运行选中的测试都只运行一次。运行 `vitest run` 的脚本会通过包管理器以 `vitest watch` 启动；除了 Jest 或 Vitest 还运行其他命令的脚本（`jest && eslint .`、`tsc && vitest run`）只运行一次。
 
 ## 在代码和测试之间跳转
 

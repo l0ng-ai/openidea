@@ -1,10 +1,14 @@
-import { describe, expect, it } from "vitest";
 import type { Commit } from "@/bindings";
+import { getAction, isActionEnabled } from "@/platform/actions";
+import { describe, expect, it } from "vitest";
 import { operationActions } from "../BranchWidget";
+import { registerHistoryActions } from "../historyActions";
+import { commitMenu } from "../log/commitMenu";
+import { extendCommitSelection, selectCommit, selectedCommits, toggleCommitSelection, useGitLog } from "../logStore";
+import { commitKey } from "../multiRoot";
 import { controlLabel, inProgress, operationControls, operationTitle, validateTagName } from "../operations";
 import { suggestedPatchName } from "../patches";
-import { commitMenu } from "../GitLog";
-import { extendCommitSelection, selectCommit, selectedCommits, toggleCommitSelection, useGitLog } from "../logStore";
+import { useVcs } from "../store";
 
 const commit = (summary: string, id = "0123456789abcdef0123456789abcdef01234567"): Commit => ({
   id,
@@ -17,6 +21,9 @@ const commit = (summary: string, id = "0123456789abcdef0123456789abcdef01234567"
   message: summary,
   refs: [],
 });
+
+const menuOrder = (items: ReturnType<typeof commitMenu>) =>
+  items.map((item) => (item.kind === "separator" ? "-" : item.kind === "action" ? item.action : item.label));
 
 describe("operations in progress", () => {
   it("recognises the operations git can continue or abort", () => {
@@ -55,71 +62,215 @@ describe("operations in progress", () => {
 });
 
 describe("Git Log commit actions", () => {
-  it("lists IDEA's commit context menu actions, all bound to the commit", () => {
+  it("lists single-commit actions in the IDE's Git Log menu order, all bound to the commit", () => {
     const c = commit("Fix it");
     const items = commitMenu(c);
-    const ids = items.flatMap((i) => ("action" in i && i.kind === "action" ? [i.action] : []));
-    expect(ids).toEqual([
+    expect(menuOrder(items)).toEqual([
       "vcs.log.copyRevision",
       "vcs.log.createPatch",
       "vcs.log.cherryPick",
+      "-",
       "vcs.log.checkoutRevision",
+      "Show Repository at Revision",
       "vcs.log.compareWithLocal",
+      "-",
       "vcs.log.resetToHere",
       "vcs.log.revert",
       "vcs.log.undoCommit",
+      "-",
       "vcs.log.editMessage",
       "vcs.log.fixup",
       "vcs.log.squashInto",
       "vcs.log.dropCommit",
       "vcs.log.interactiveRebase",
       "vcs.log.pushUpToHere",
+      "-",
       "vcs.log.rebaseOntoCommit",
       "vcs.log.newBranch",
       "vcs.log.newTag",
+      "-",
       "vcs.log.goToChild",
       "vcs.log.goToParent",
+      "-",
       "vcs.log.openInBrowser",
     ]);
     expect(items.every((i) => !("arg" in i) || i.arg === c)).toBe(true);
+    // Only these rows carry an icon; the others are explicitly drawn without one.
+    const icons = Object.fromEntries(
+      items.flatMap((i) => (i.kind === "action" && i.icon !== undefined ? [[i.action, i.icon]] : [])),
+    );
+    expect(icons).toMatchObject({
+      "vcs.log.createPatch": "patch",
+      "vcs.log.cherryPick": "cherry-pick",
+      "vcs.log.resetToHere": "revert",
+      "vcs.log.revert": null,
+      "vcs.log.compareWithLocal": null,
+      "vcs.log.goToChild": null,
+    });
+    expect(icons).not.toHaveProperty("vcs.log.copyRevision");
+    expect(icons).not.toHaveProperty("vcs.log.openInBrowser");
   });
 
-  it("disables history rewriting for pushed commits", () => {
+  it("keeps read-only commits to copying, the revision and navigation", () => {
+    const c = { ...commit("Read-only"), readOnly: true };
+    expect(menuOrder(commitMenu(c, [c], "/repo/file.ts"))).toEqual([
+      "vcs.log.copyRevision",
+      "-",
+      "Show Repository at Revision",
+      "vcs.log.showFileAtRevision",
+      "-",
+      "vcs.log.goToChild",
+      "vcs.log.goToParent",
+    ]);
+  });
+
+  it("adds file-scoped revision actions only to a File History commit menu", () => {
+    const c = commit("Rename file");
+    const items = commitMenu(c, [c], "/repo/new.txt");
+    const show = items.find((i) => "action" in i && i.action === "vcs.log.showFileAtRevision");
+    const compare = items.find((i) => "action" in i && i.action === "vcs.log.compareWithLocal");
+    const scoped = { kind: "file-history-commit", commit: c, target: "/repo/new.txt" };
+    expect(show).toMatchObject({ arg: scoped });
+    expect(compare).toMatchObject({ arg: scoped });
+    expect(commitMenu(c).some((i) => "action" in i && i.action === "vcs.log.showFileAtRevision")).toBe(false);
+  });
+
+  it("offers Show in Git Log in a File History commit menu, after Compare with Local (IDEA)", () => {
+    const c = commit("Rename file");
+    const order = menuOrder(commitMenu(c, [c], "/repo/new.txt"));
+    expect(
+      order.slice(order.indexOf("vcs.log.compareWithLocal"), order.indexOf("vcs.log.compareWithLocal") + 2),
+    ).toEqual(["vcs.log.compareWithLocal", "vcs.showCommit"]);
+    const item = commitMenu(c, [c], "/repo/new.txt").find((i) => "action" in i && i.action === "vcs.showCommit");
+    expect(item).toMatchObject({ label: "Show in Git Log", arg: c, disabled: false });
+    expect(commitMenu(c).some((i) => "action" in i && i.action === "vcs.showCommit")).toBe(false);
+  });
+
+  it("offers history rewriting for pushed commits too (IDEA allows it; the run confirms)", () => {
     const local = commit("Local", "1".repeat(40));
     const pushed = commit("Pushed", "2".repeat(40));
-    useGitLog.setState({ outgoing: new Set([local.id]) });
-    const disabled = (c: Commit) => commitMenu(c).flatMap((i) => (i.kind === "action" && i.disabled ? [i.action] : []));
-    expect(disabled(local)).not.toContain("vcs.log.editMessage");
-    expect(disabled(pushed)).toEqual(
-      expect.arrayContaining([
-        "vcs.log.editMessage",
-        "vcs.log.fixup",
-        "vcs.log.squashInto",
-        "vcs.log.dropCommit",
-        "vcs.log.interactiveRebase",
-        "vcs.log.pushUpToHere",
-      ]),
-    );
-    useGitLog.setState({ outgoing: null });
+    const rewriting = (c: Commit) =>
+      commitMenu(c).flatMap((i) =>
+        i.kind === "action" &&
+        i.disabled &&
+        ["editMessage", "fixup", "squashInto", "dropCommit", "interactiveRebase"].some((a) => i.action.endsWith(a))
+          ? [i.action]
+          : [],
+      );
+    expect(rewriting(local)).toEqual([]);
+    expect(rewriting(pushed)).toEqual([]);
   });
 
-  it("offers the multi-commit actions for a multiple selection", () => {
+  it.each(["main", null])("offers pushing a single selected commit when HEAD is %s", (head) => {
+    const { branch } = useVcs.getState();
+    useVcs.setState({
+      branch: {
+        head,
+        headCommit: "1".repeat(40),
+        upstream: head ? "origin/main" : null,
+        ahead: 0,
+        behind: 0,
+        operation: null,
+      },
+    });
+    try {
+      const selected = commit("Selected commit");
+      expect(
+        commitMenu(selected).some(
+          (item) =>
+            item.kind === "action" && item.action === "vcs.log.pushUpToHere" && !item.disabled && item.arg === selected,
+        ),
+      ).toBe(true);
+    } finally {
+      useVcs.setState({ branch });
+    }
+  });
+
+  it("hides one-commit edits and disables the other single-commit actions for a multiple selection", () => {
     const a = commit("A", "a".repeat(40));
     const b = commit("B", "b".repeat(40));
     const c = commit("C", "c".repeat(40));
-    const ids = (sel: Commit[]) => commitMenu(a, sel).flatMap((i) => (i.kind === "action" ? [i.action] : []));
-    expect(ids([a, b])).toEqual([
+    const order = (selection: Commit[]) => menuOrder(commitMenu(a, selection));
+    const multi = (compare: string[]) => [
+      "vcs.log.copyRevision",
+      "vcs.log.createPatch",
+      "vcs.log.cherryPick",
+      "-",
+      "Show Repository at Revision",
+      ...compare,
+      "vcs.log.compareWithLocal",
+      "-",
+      "vcs.log.resetToHere",
+      "vcs.log.revert",
+      "-",
+      "vcs.log.dropCommit",
+      "vcs.log.squashCommits",
+      "vcs.log.pushUpToHere",
+      "-",
+      "vcs.log.newBranch",
+      "vcs.log.newTag",
+      "-",
+      "vcs.log.goToChild",
+      "vcs.log.goToParent",
+      "-",
+      "vcs.log.openInBrowser",
+    ];
+    expect(order([a, b])).toEqual(multi(["vcs.log.compareVersions"]));
+    expect(order([a, b, c])).toEqual(multi([]));
+    const enabled = commitMenu(a, [a, b])
+      .filter((i) => i.kind === "action" && !i.disabled)
+      .map((i) => (i.kind === "action" ? i.action : ""));
+    expect(enabled).toEqual([
       "vcs.log.copyRevision",
       "vcs.log.createPatch",
       "vcs.log.cherryPick",
       "vcs.log.compareVersions",
       "vcs.log.revert",
-      "vcs.log.squashCommits",
       "vcs.log.dropCommit",
+      "vcs.log.squashCommits",
     ]);
-    // Compare Versions needs exactly two commits (IDEA).
-    expect(ids([a, b, c])).not.toContain("vcs.log.compareVersions");
-    expect(ids([a, b, c])).toContain("vcs.log.cherryPick");
+  });
+
+  it("scopes only File History Compare Versions to its selected file", () => {
+    const older = { ...commit("Older", "a".repeat(40)), historyPath: "old/name.ts" };
+    const newer = { ...commit("Newer", "b".repeat(40)), historyPath: "renamed/name.ts" };
+    const target = "/repo/current/name.ts";
+    const normal = commitMenu(newer, [newer, older]).find(
+      (i) => i.kind === "action" && i.action === "vcs.log.compareVersions",
+    );
+    const history = commitMenu(newer, [newer, older], target).find(
+      (i) => i.kind === "action" && i.action === "vcs.log.compareVersions",
+    );
+
+    expect(normal).toMatchObject({ arg: [newer, older] });
+    expect(history).toMatchObject({
+      arg: { kind: "file-history-commits", commits: [newer, older], target },
+    });
+  });
+
+  it("enables Cherry-Pick (toolbar and context menu) only for a selection it can apply", () => {
+    const dispose = registerHistoryActions();
+    const enabled = (ctx = { vcsAvailable: true }) => isActionEnabled(getAction("vcs.log.cherryPick")!, ctx);
+    const [a, b] = [commit("A", "a".repeat(40)), commit("B", "b".repeat(40))];
+    const select = (cs: Commit[]) => useGitLog.setState({ commits: cs, selection: cs.map(commitKey) });
+    try {
+      expect(enabled()).toBe(false);
+      select([a]);
+      expect(enabled()).toBe(true);
+      select([a, b]);
+      expect(enabled()).toBe(true);
+      select([Object.assign({ repo: "/r1" }, a), Object.assign({ repo: "/r2" }, b)]);
+      expect(enabled()).toBe(true);
+      select([a, { ...b, parents: ["1".repeat(40), "2".repeat(40)] }]);
+      expect(enabled()).toBe(false);
+      select([Object.assign({ readOnly: true }, a)]);
+      expect(enabled()).toBe(false);
+      select([a]);
+      expect(enabled({ vcsAvailable: false })).toBe(false);
+    } finally {
+      useGitLog.setState({ commits: [], selection: [], selected: null });
+      dispose();
+    }
   });
 
   it("extends and toggles the log selection", () => {

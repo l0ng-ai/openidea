@@ -1,0 +1,42 @@
+id = "nuxt"
+name = "Nuxt"
+group = "JavaScript"
+icon = "project-nuxt"
+order = 3
+description = "A Vue app on Nuxt from create-nuxt."
+
+[[requires]]
+program = "node"
+min = "20.19"
+hint = "Install Node.js 20.19 or later: https://nodejs.org"
+
+[[requires]]
+program = "{{pm}}"
+when = { pm = ["pnpm", "yarn", "bun"] }
+hint = "Install it, or choose npm."
+
+[[fields]]
+id = "pm"
+label = "Package manager:"
+type = "choice"
+segmented = true
+options = ["npm", "pnpm", "yarn", "bun"]
+default = "npm"
+
+[[fields]]
+id = "install"
+label = "Install dependencies"
+type = "checkbox"
+default = "true"
+
+[[steps]]
+label = "Running create-nuxt"
+package = "create-nuxt@latest"
+cwd = "parent"
+args = ["{{name}}", "--template", "minimal", "--packageManager", "{{pm}}", "--no-install", "--gitInit=false", "--no-modules"]
+
+[[after]]
+label = "Installing dependencies"
+program = "{{pm}}"
+args = ["install"]
+when = { install = "true" }
