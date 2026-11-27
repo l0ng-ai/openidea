@@ -1073,7 +1073,7 @@ export function registerDebugActions(): () => void {
         if (!c || !breakpointPathAllowed(c.path)) return;
         const exists = useBreakpoints.getState().byFile[c.path]?.some((b) => b.line === c.line);
         const language = activeEditor()?.ctx.language ?? "";
-        if (!exists && !canPlaceBreakpoint(language)) {
+        if (!exists && !canPlaceBreakpoint(language, c.path)) {
           notifications().notify({
             level: "info",
             key: "debug.breakpointNotAllowed",

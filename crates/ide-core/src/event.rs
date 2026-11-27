@@ -13,13 +13,34 @@ use std::sync::Arc;
 
 /// What a built-in MCP tool asks the project window for. `AgentRun` runs `command` (a shell
 /// line) in the Run tool window's agent tab `name`, on pipes, answered once the process
-/// started or failed to.
+/// started or failed to. `RunConfiguration` starts a run configuration (a serialized
+/// `RunConfig`, its before launch tasks already done) in the Run tool window as the user's
+/// Run would, answered the same way.
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum McpUiRequest {
-    Confirm { client: String, tool: String, subject: String, project: String, detail: Option<String> },
-    OpenFile { path: crate::IpcPath, line: Option<u32>, column: Option<u32> },
-    AgentRun { name: String, command: String, cwd: crate::IpcPath, env: BTreeMap<String, String> },
+    Confirm {
+        client: String,
+        tool: String,
+        subject: String,
+        project: String,
+        detail: Option<String>,
+    },
+    OpenFile {
+        path: crate::IpcPath,
+        line: Option<u32>,
+        column: Option<u32>,
+    },
+    AgentRun {
+        name: String,
+        command: String,
+        cwd: crate::IpcPath,
+        env: BTreeMap<String, String>,
+    },
+    RunConfiguration {
+        #[specta(type = specta_typescript::Unknown)]
+        config: serde_json::Value,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Type)]

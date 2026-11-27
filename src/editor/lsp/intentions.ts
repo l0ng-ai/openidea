@@ -3,6 +3,7 @@
  * intentions popup (quick fixes first, preferred in bold), Optimize Imports and
  * Generate. Refactor This and the Refactor menu live in `@/editor/refactor`.
  */
+import { beginHistoryGroup, endHistoryGroup } from "./historyGroup";
 import { StateEffect, StateField, type Extension, type Text } from "@codemirror/state";
 import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import { forEachDiagnostic } from "@codemirror/lint";
@@ -262,14 +263,20 @@ export async function applyCodeAction(view: EditorView, action: EditorQuickFix) 
   const client = !action.edit && action.command ? clientCommands.get(action.command.command) : undefined;
   if (client && (await client(view, action.command!.arguments.map(parseArgument)))) return;
   const before = view.state.doc;
+  // The server's edit and its reformatting undo as one step (with the refactoring's own Undo).
+  const grouped = beginHistoryGroup(view);
   try {
-    if (!(await runInteractiveCodeAction(doc.doc, action))) return;
-  } catch (e) {
-    reportLspError(view, e, true);
-    return;
+    try {
+      if (!(await runInteractiveCodeAction(doc.doc, action))) return;
+    } catch (e) {
+      reportLspError(view, e, true);
+      return;
+    }
+    if (!action.kind?.startsWith("source.organizeImports") && !action.kind?.startsWith("source.fixAll"))
+      await reformatGenerated(view, before);
+  } finally {
+    if (grouped) endHistoryGroup(view, "quickfix");
   }
-  if (!action.kind?.startsWith("source.organizeImports") && !action.kind?.startsWith("source.fixAll"))
-    await reformatGenerated(view, before);
 }
 
 /**

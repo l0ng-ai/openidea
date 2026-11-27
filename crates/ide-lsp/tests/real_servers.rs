@@ -969,6 +969,119 @@ async fn bundler_path_aliases_resolve_below_tsconfig_paths() {
     tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
 }
 
+/// CSS Modules Kit (`@css-modules-kit/ts-plugin`) on vtsls, which serves the `.module.css`
+/// files too (`languages: ["css"]`): definition and completion from TSX, references and rename
+/// from the stylesheet (#6071), with the settings hook's own plugin configuration. Exactly the
+/// IDE's copy loads, once: also when the project has the package in its `node_modules`, and when
+/// its tsconfig declares it in `compilerOptions.plugins` (#6336's probe location leaves it out,
+/// and tsserver resolves the declared name from the global plugin's location). Set
+/// `OPENIDEA_TEST_NPM_TOOLS` to a dir with `npm i @vtsls/language-server typescript@6 @css-modules-kit/ts-plugin@1.4.2`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires @vtsls/language-server and @css-modules-kit/ts-plugin (OPENIDEA_TEST_NPM_TOOLS)"]
+async fn css_modules_kit_navigates_between_tsx_and_module_css() {
+    let tools = std::path::PathBuf::from(std::env::var("OPENIDEA_TEST_NPM_TOOLS").expect("OPENIDEA_TEST_NPM_TOOLS"));
+    // (the project has its own package, its tsconfig declares the plugin)
+    for (project_copy, declared) in [(false, false), (true, false), (true, true)] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("package.json"), "{\"name\":\"app\",\"private\":true}").unwrap();
+        if project_copy {
+            // Says so in every file if it is ever loaded.
+            let package = root.join("node_modules/@css-modules-kit/ts-plugin");
+            std::fs::create_dir_all(&package).unwrap();
+            std::fs::write(package.join("package.json"), r#"{"name":"@css-modules-kit/ts-plugin","version":"0.0.1"}"#)
+                .unwrap();
+            std::fs::write(package.join("index.js"), DIAGNOSTIC_PLUGIN.replace("NAME", "'the project copy'")).unwrap();
+        }
+        let plugins = if declared { r#", "plugins": [{ "name": "@css-modules-kit/ts-plugin" }]"# } else { "" };
+        std::fs::write(
+            root.join("tsconfig.json"),
+            format!(
+                "{{\n  // JSON with comments\n  \"compilerOptions\": {{ \"strict\": true, \"jsx\": \"preserve\", \"module\": \"ESNext\", \"moduleResolution\": \"Bundler\"{plugins} }},\n  \"include\": [\"src\"],\n  \"cmkOptions\": {{ \"enabled\": true }}\n}}\n"
+            ),
+        )
+        .unwrap();
+        let css_path = root.join("src/Button.module.css");
+        let css = ".button { color: red; }\n.label { color: blue; }\n";
+        std::fs::write(&css_path, css).unwrap();
+        let tsx_path = root.join("src/Button.tsx");
+        let tsx =
+            "import styles from './Button.module.css';\nexport const a = styles.button;\nexport const b = styles.";
+        std::fs::write(&tsx_path, tsx).unwrap();
+        let mut vtsls = npm_server(&tools, "vtsls", "vtsls", None);
+        vtsls.tsserver_project = true;
+        assert!(ide_sdk::apply::configure_css_modules(&mut vtsls, &root, Some(&tools)));
+        let data = tempfile::tempdir().unwrap();
+        // The plugin is the IDE's global one: no probe location for it.
+        assert!(!ide_sdk::apply::configure_tsconfig_plugins(&mut vtsls, &root, data.path()));
+        let registry = LanguageRegistry::from_configs(vec![
+            lang("typescriptreact", "tsx", vtsls.clone()),
+            lang("css", "css", vtsls),
+        ]);
+        let (mgr, events) = manager(&root, registry);
+        let tsx_doc = DocId::next();
+        mgr.did_open(tsx_doc, &tsx_path, &LanguageId::new("typescriptreact"), 1, tsx);
+        let css_doc = DocId::next();
+        mgr.did_open(css_doc, &css_path, &LanguageId::new("css"), 1, css);
+        assert_eq!(mgr.servers().iter().filter(|s| s.name == "vtsls").count(), 1, "one vtsls for both");
+        let case = format!("project copy: {project_copy}, declared: {declared}");
+
+        // `styles.button` → `.button`.
+        let defs = retry("definition in the stylesheet", Duration::from_secs(90), || {
+            let (mgr, css_path) = (mgr.clone(), css_path.clone());
+            async move {
+                let defs = mgr.goto(tsx_doc, Pos::new(1, 26), GotoKind::Definition).await.ok()?;
+                defs.iter().any(|d| d.path == css_path).then_some(defs)
+            }
+        })
+        .await;
+        assert_eq!(defs.len(), 1, "{case}: {defs:?}");
+        assert_eq!((defs[0].range.start.line, defs[0].range.start.col), (0, 1), "{case}");
+        let list = retry("class name completion", Duration::from_secs(30), || {
+            let mgr = mgr.clone();
+            async move {
+                let list = mgr.completion(tsx_doc, Pos::new(2, 24), Some(".".into()), Default::default()).await.ok()?;
+                list.items.iter().any(|i| i.label == "label").then_some(list)
+            }
+        })
+        .await;
+        let labels: Vec<&str> =
+            list.items.iter().map(|i| i.label.as_str()).filter(|l| ["button", "label"].contains(l)).collect();
+        assert_eq!(labels.len(), 2, "{case}: each class once, {labels:?}");
+
+        // `.button` in the stylesheet → its use in the component, once.
+        let refs = retry("references from the stylesheet", Duration::from_secs(30), || {
+            let (mgr, tsx_path) = (mgr.clone(), tsx_path.clone());
+            async move {
+                let refs = mgr
+                    .references_streaming(css_doc, Pos::new(0, 3), false, true, false, Default::default(), None)
+                    .await
+                    .ok()?;
+                Some(refs.locations).filter(|l| l.iter().any(|l| l.path == tsx_path))
+            }
+        })
+        .await;
+        assert_eq!(refs.len(), 1, "{case}: {refs:?}");
+        assert_eq!((refs[0].path.to_path_buf(), refs[0].range.start.line), (tsx_path.clone(), 1), "{case}");
+        let renamed = mgr.rename(css_doc, Pos::new(0, 3), "primary".into(), Default::default()).await.unwrap().edit;
+        assert_eq!(edited_lines(&renamed, &css_path), [0], "{case}");
+        assert_eq!(edited_lines(&renamed, &tsx_path), [1], "{case}");
+        // The component's diagnostics are in: the plugins have run on it.
+        retry("diagnostics of the component", Duration::from_secs(30), || {
+            let found =
+                events.lock().iter().any(|e| matches!(e, IdeEvent::Diagnostics { path, .. } if path == &tsx_path));
+            async move { found.then_some(()) }
+        })
+        .await;
+        let project_copy_loaded = events.lock().iter().any(|e| {
+            matches!(e, IdeEvent::Diagnostics { items, .. } if items.iter().any(|d| d.message.contains("the project copy")))
+        });
+        assert!(!project_copy_loaded, "{case}");
+        tokio::time::timeout(Duration::from_secs(10), mgr.shutdown_all()).await.unwrap();
+    }
+}
+
 const MDX_BUTTON: &str =
     "export function Button(props: { label: string }) {\n  return <button>{props.label}</button>;\n}\n";
 const MDX_DOC: &str = "import { Button } from \"./Button\"\n\nexport const count = 2\n\n# Hello\n\n<Button label=\"hi\" />\n\n<Button label={count} />\n\n{count.toFixed()}\n";
