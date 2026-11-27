@@ -8,10 +8,12 @@ import { useProject } from "@/platform/project";
 import {
   annotationsShown,
   blameSlot,
+  readAnnotateColors,
   readAnnotateColumns,
   readAnnotateNames,
   shortAuthorName,
   toggleAnnotations,
+  useAnnotateColors,
   useAnnotateColumns,
   useAnnotateNames,
 } from "../blame";
@@ -258,6 +260,7 @@ describe("annotate Options", () => {
     localStorage.clear();
     useAnnotateColumns.setState(readAnnotateColumns());
     useAnnotateNames.setState({ names: readAnnotateNames() });
+    useAnnotateColors.setState({ colors: readAnnotateColors() });
   });
 
   async function annotated(doc = "first\nsecond\nthird") {
@@ -491,6 +494,64 @@ describe("annotate Options", () => {
     for (const raw of ["", "LASTNAME", "email", '"initials"']) {
       localStorage.setItem("openidea.vcs.annotateNames", raw);
       expect(readAnnotateNames()).toBe("lastName");
+    }
+  });
+
+  it("tints by commit order by default and switches every annotated editor from Options › Colors", async () => {
+    const thirdSha = "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b";
+    mocks.blame.mockResolvedValue({
+      status: "ok",
+      data: [...lines, { commit: thirdSha, author: "Dan Crankshaw", timeMs: Date.UTC(2024, 1, 1), summary: "Older" }],
+    });
+    view = await annotated("first\nsecond\nthird\nfourth");
+    const historical = new EditorView({
+      parent: document.body,
+      state: EditorState.create({ doc: "one\ntwo\nthree\nfour", extensions: [blameSlot()] }),
+    });
+    const bg = (v: EditorView, commit: string) =>
+      v.dom.querySelector<HTMLElement>(`.cm-vcs-blame [data-commit="${commit}"]`)!.style.getPropertyValue("--blame-bg");
+    try {
+      await toggleAnnotations(historical, "/repo/src/old.py", "one\ntwo\nthree\nfour", sha);
+      const colors = options(view).find((i) => i.label === "Colors")!.submenu!;
+      expect(colors.map((i) => [i.label, i.checked])).toEqual([
+        ["Author", false],
+        ["Order", true],
+        ["Hide", false],
+      ]);
+      const order = [sha, otherSha, thirdSha].map((c) => bg(view!, c));
+      expect(new Set(order).size).toBe(3);
+
+      await pick(colors[0]!);
+      for (const v of [view, historical]) {
+        expect(bg(v, otherSha)).toBeTruthy();
+        expect(bg(v, otherSha)).toBe(bg(v, thirdSha));
+        expect(bg(v, sha)).not.toBe(bg(v, otherSha));
+      }
+      // IDEA hands sorted authors the palette colours in turn: Aleks the first, Dan the second.
+      expect(bg(view, sha)).toContain("--project-color-5");
+      expect(bg(view, otherSha)).toContain("--project-color-7");
+      expect(localStorage.getItem("openidea.vcs.annotateColors")).toBe("author");
+      expect(
+        options(view)
+          .find((i) => i.label === "Colors")!
+          .submenu!.map((i) => i.checked),
+      ).toEqual([true, false, false]);
+
+      await pick(colors[2]!);
+      for (const v of [view, historical]) expect([sha, otherSha, thirdSha].map((c) => bg(v, c))).toEqual(["", "", ""]);
+
+      localStorage.setItem("openidea.vcs.annotateColors", "order");
+      await act(async () => {
+        window.dispatchEvent(new StorageEvent("storage", { key: "openidea.vcs.annotateColors" }));
+        await vi.advanceTimersByTimeAsync(20);
+      });
+      expect([sha, otherSha, thirdSha].map((c) => bg(view!, c))).toEqual(order);
+      for (const raw of ["", "ORDER", "none", '"author"']) {
+        localStorage.setItem("openidea.vcs.annotateColors", raw);
+        expect(readAnnotateColors()).toBe("order");
+      }
+    } finally {
+      historical.destroy();
     }
   });
 
