@@ -754,6 +754,7 @@ describe("Track Running Test", () => {
   });
 
   it("switched on mid-run, waits for the next test to start", () => {
+    enable(false);
     const results = new TestResults();
     results.apply([{ type: "start", path: ["pkg", "TestA"] }]);
     const { rerender } = render(<Host results={results} version={1} running />);
@@ -765,12 +766,20 @@ describe("Track Running Test", () => {
     expect(selectedRows()).toEqual(["TestB"]);
   });
 
-  it("is off by default, and follows nothing once the run has finished", () => {
+  it("is on by default, as in IDEA, and follows nothing once the run has finished", () => {
     let results = new TestResults();
     results.apply([{ type: "start", path: ["ApiTest", "lists()"] }]);
     const { unmount } = render(<Host results={results} version={1} running />);
-    expect(selectedRows()).toEqual([]);
+    expect(selectedRows()).toEqual(["lists()"]);
     unmount();
+    onSelect.mockClear();
+
+    enable(false);
+    results = new TestResults();
+    results.apply([{ type: "start", path: ["ApiTest", "lists()"] }]);
+    const off = render(<Host results={results} version={1} running />);
+    expect(selectedRows()).toEqual([]);
+    off.unmount();
 
     enable();
     results = new TestResults();
@@ -784,12 +793,12 @@ describe("Track Running Test", () => {
     const results = new TestResults();
     const view = <Host results={results} version={1} running={false} />;
     const { unmount } = render(view);
-    expect(testTree.trackRunning).toBe(false);
-    act(() => testTree.toggleTrackRunning!());
     expect(testTree.trackRunning).toBe(true);
+    act(() => testTree.toggleTrackRunning!());
+    expect(testTree.trackRunning).toBe(false);
     unmount();
     expect(testTree.toggleTrackRunning).toBeNull();
     render(view);
-    expect(testTree.trackRunning).toBe(true);
+    expect(testTree.trackRunning).toBe(false);
   });
 });

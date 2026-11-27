@@ -55,7 +55,7 @@ export function loadTestFilters(): TestFilters {
       showIgnored: v.showIgnored !== false,
       showDurations: v.showDurations !== false,
       selectFirstFailed: v.selectFirstFailed === true,
-      trackRunning: v.trackRunning === true,
+      trackRunning: v.trackRunning !== false,
       sortAlphabetically: v.sortAlphabetically === true && v.sortByDuration !== true,
       sortByDuration: v.sortByDuration === true,
     };
@@ -65,7 +65,7 @@ export function loadTestFilters(): TestFilters {
       showIgnored: true,
       showDurations: true,
       selectFirstFailed: false,
-      trackRunning: false,
+      trackRunning: true,
       sortAlphabetically: false,
       sortByDuration: false,
     };
