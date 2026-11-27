@@ -55,7 +55,10 @@ vi.mock("@/platform/ipc", async (original) => ({
     },
     agentEntries: async () => ({ status: "ok", data: [] as AgentEntry[] }),
     agentChanges: async () => ({ status: "ok", data: [] }),
-    agentGroupedChanges: async () => ({ status: "ok", data: { uncommitted: [], commits: [] } }),
+    agentGroupedChanges: async () => ({
+      status: "ok",
+      data: { uncommitted: [], commits: [] },
+    }),
     agentProviders: async () => ({ status: "ok", data: [] }),
     vcsBranchInfo: async () => ({ status: "ok", data: { head: "main" } }),
     vcsBranches: async () => ({ status: "ok", data: [] }),
@@ -94,9 +97,19 @@ describe("Agent chat font size zoom", () => {
     resetAllAgentFontZoom();
     imageReads.clear();
     disposers.push(registerEditorActions());
-    useContextKeys.setState({ projectOpen: true, textEditorActive: false, editorFocus: true, popupOpen: false });
+    useContextKeys.setState({
+      projectOpen: true,
+      textEditorActive: false,
+      editorFocus: true,
+      popupOpen: false,
+    });
     useProject.setState({
-      project: { name: "openidea", root: "/project", isGit: true, workspace: null } as never,
+      project: {
+        name: "openidea",
+        root: "/project",
+        isGit: true,
+        workspace: null,
+      } as never,
       settings: null,
     });
     const t1 = makeTask("t1");
@@ -132,13 +145,25 @@ describe("Agent chat font size zoom", () => {
           <div data-editor-focus="" tabIndex={-1}>
             <EditorTabIdProvider value="tab-1">
               <EditorShownProvider value={true}>
-                <SessionEditor input={{ kind: SESSION_KIND, key: sessionKey("t1"), data: { task: "t1" } }} />
+                <SessionEditor
+                  input={{
+                    kind: SESSION_KIND,
+                    key: sessionKey("t1"),
+                    data: { task: "t1" },
+                  }}
+                />
               </EditorShownProvider>
             </EditorTabIdProvider>
           </div>
           <EditorTabIdProvider value="tab-kept">
             <EditorShownProvider value={false}>
-              <SessionEditor input={{ kind: SESSION_KIND, key: sessionKey("t2"), data: { task: "t2" } }} />
+              <SessionEditor
+                input={{
+                  kind: SESSION_KIND,
+                  key: sessionKey("t2"),
+                  data: { task: "t2" },
+                }}
+              />
             </EditorShownProvider>
           </EditorTabIdProvider>
         </div>
@@ -146,7 +171,13 @@ describe("Agent chat font size zoom", () => {
           <div data-editor-focus="" tabIndex={-1}>
             <EditorTabIdProvider value="tab-2">
               <EditorShownProvider value={true}>
-                <SessionEditor input={{ kind: SESSION_KIND, key: sessionKey("t1"), data: { task: "t1" } }} />
+                <SessionEditor
+                  input={{
+                    kind: SESSION_KIND,
+                    key: sessionKey("t1"),
+                    data: { task: "t1" },
+                  }}
+                />
               </EditorShownProvider>
             </EditorTabIdProvider>
           </div>
@@ -223,7 +254,12 @@ describe("Agent chat font size zoom", () => {
       uiMode: null,
       readOnly: false,
     };
-    const view = new EditorView({ state: EditorState.create({ doc: "const x = 1;", extensions: [cmFontZoom] }) });
+    const view = new EditorView({
+      state: EditorState.create({
+        doc: "const x = 1;",
+        extensions: [cmFontZoom],
+      }),
+    });
     document.body.appendChild(view.dom);
     const handle = { view, ctx };
     _addEditor(handle);
@@ -235,7 +271,14 @@ describe("Agent chat font size zoom", () => {
     activeSlot = { view, disposed: false };
 
     const { container } = render(
-      <SessionEditor docked input={{ kind: SESSION_KIND, key: sessionKey("t1"), data: { task: "t1" } }} />,
+      <SessionEditor
+        docked
+        input={{
+          kind: SESSION_KIND,
+          key: sessionKey("t1"),
+          data: { task: "t1" },
+        }}
+      />,
     );
     const stream = container.querySelector<HTMLElement>(`.${styles.stream}`)!;
 
@@ -270,17 +313,34 @@ describe("Agent chat font size zoom", () => {
     const { container } = render(
       <div>
         <EditorTabIdProvider value="tab-1">
-          <SessionEditor input={{ kind: SESSION_KIND, key: sessionKey("t1"), data: { task: "t1" } }} />
+          <SessionEditor
+            input={{
+              kind: SESSION_KIND,
+              key: sessionKey("t1"),
+              data: { task: "t1" },
+            }}
+          />
         </EditorTabIdProvider>
         <EditorTabIdProvider value="tab-2">
-          <SessionEditor input={{ kind: SESSION_KIND, key: sessionKey("t2"), data: { task: "t2" } }} />
+          <SessionEditor
+            input={{
+              kind: SESSION_KIND,
+              key: sessionKey("t2"),
+              data: { task: "t2" },
+            }}
+          />
         </EditorTabIdProvider>
       </div>,
     );
     const streams = container.querySelectorAll<HTMLElement>(`.${styles.stream}`);
     const stream1 = streams[0]!;
 
-    const offEvent = new WheelEvent("wheel", { bubbles: true, cancelable: true, metaKey: true, deltaY: -100 });
+    const offEvent = new WheelEvent("wheel", {
+      bubbles: true,
+      cancelable: true,
+      metaKey: true,
+      deltaY: -100,
+    });
     act(() => {
       stream1.dispatchEvent(offEvent);
     });
@@ -294,21 +354,35 @@ describe("Agent chat font size zoom", () => {
       })),
     );
 
-    const up = new WheelEvent("wheel", { bubbles: true, cancelable: true, metaKey: true, deltaY: -100 });
+    const up = new WheelEvent("wheel", {
+      bubbles: true,
+      cancelable: true,
+      metaKey: true,
+      deltaY: -100,
+    });
     act(() => {
       stream1.dispatchEvent(up);
     });
     expect(up.defaultPrevented).toBe(true);
     expect(useAgentFontZoom.getState().bySurface).toEqual({ "tab:tab-1": 1 });
 
-    const down = new WheelEvent("wheel", { bubbles: true, cancelable: true, ctrlKey: true, deltaY: 100 });
+    const down = new WheelEvent("wheel", {
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: true,
+      deltaY: 100,
+    });
     act(() => {
       stream1.dispatchEvent(down);
     });
     expect(down.defaultPrevented).toBe(true);
     expect(useAgentFontZoom.getState().bySurface).toEqual({});
 
-    const plain = new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: -100 });
+    const plain = new WheelEvent("wheel", {
+      bubbles: true,
+      cancelable: true,
+      deltaY: -100,
+    });
     act(() => {
       stream1.dispatchEvent(plain);
     });
@@ -324,13 +398,29 @@ describe("Agent chat font size zoom", () => {
     act(() =>
       useAgents.setState((s) => ({
         ...s,
-        entries: new Map([["t1", [{ type: "agent", text: "![Diagram](diagram.svg)\n\n![Shot](shot.png)" }]]]),
+        entries: new Map([
+          [
+            "t1",
+            [
+              {
+                type: "agent",
+                text: "![Diagram](diagram.svg)\n\n![Shot](shot.png)",
+              },
+            ],
+          ],
+        ]),
       })),
     );
 
     const { container } = render(
       <EditorShownProvider value={true}>
-        <SessionEditor input={{ kind: SESSION_KIND, key: sessionKey("t1"), data: { task: "t1" } }} />
+        <SessionEditor
+          input={{
+            kind: SESSION_KIND,
+            key: sessionKey("t1"),
+            data: { task: "t1" },
+          }}
+        />
       </EditorShownProvider>,
     );
 
@@ -344,13 +434,67 @@ describe("Agent chat font size zoom", () => {
     expect(diag.style.getPropertyValue("--image-width")).toBe("320px");
 
     const shot = container.querySelector<HTMLImageElement>('img[alt="Shot"]')!;
-    Object.defineProperty(shot, "naturalWidth", { value: 640, configurable: true });
-    Object.defineProperty(shot, "naturalHeight", { value: 360, configurable: true });
+    Object.defineProperty(shot, "naturalWidth", {
+      value: 640,
+      configurable: true,
+    });
+    Object.defineProperty(shot, "naturalHeight", {
+      value: 360,
+      configurable: true,
+    });
     act(() => {
       shot.dispatchEvent(new Event("load"));
     });
     expect(shot.hasAttribute("data-natural-width")).toBe(true);
     expect(shot.style.getPropertyValue("--image-width")).toBe("640px");
+  });
+
+  it("applies the Agents › Chat font choices as surface variables, with zoom on top of the chosen size", () => {
+    const { container } = render(
+      <EditorShownProvider value={true}>
+        <SessionEditor
+          input={{
+            kind: SESSION_KIND,
+            key: sessionKey("t1"),
+            data: { task: "t1" },
+          }}
+        />
+      </EditorShownProvider>,
+    );
+    const session = container.querySelector<HTMLElement>(`.${styles.session}`)!;
+    // Defaults follow the interface and built-in code fonts: no surface overrides.
+    expect(session.style.getPropertyValue("--agent-font-ui")).toBe("");
+    expect(session.style.getPropertyValue("--agent-font-code")).toBe("");
+    expect(session.style.getPropertyValue("--agent-fs-code-chosen")).toBe("");
+
+    act(() =>
+      useProject.setState((s) => ({
+        ...s,
+        settings: {
+          agents: {
+            chatUseUiFont: false,
+            chatFontFamily: "Maple Mono NF CN",
+            chatFontFallback: "PingFang SC",
+            chatFontSize: 16,
+            codeUseDefaultFont: false,
+            codeFontFamily: "Hack",
+            codeFontSize: 15,
+          },
+        } as never,
+      })),
+    );
+    expect(session.style.getPropertyValue("--agent-font-ui")).toContain('"Maple Mono NF CN"');
+    expect(session.style.getPropertyValue("--agent-font-ui")).toContain('"PingFang SC"');
+    expect(session.style.getPropertyValue("--agent-fs-ui")).toBe("calc(16px + var(--agent-font-zoom, 0px))");
+    expect(session.style.getPropertyValue("--agent-fs-small")).toBe("calc(15px + var(--agent-font-zoom, 0px))");
+    expect(session.style.getPropertyValue("--agent-font-code")).toContain('"Hack"');
+    expect(session.style.getPropertyValue("--agent-fs-code")).toBe("calc(15px + var(--agent-font-zoom, 0px))");
+    expect(session.style.getPropertyValue("--agent-fs-code-chosen")).toBe("var(--agent-fs-code)");
+    expect(session.style.getPropertyValue("--lh-code")).toBe("25px");
+
+    // Keyboard zoom steps on top of the chosen chat size, not the interface size.
+    act(() => stepAgentSurfaceFontZoom("agent:t1", 2));
+    expect(session.style.getPropertyValue("--markdown-zoom-scale")).toBe("1.125");
   });
 
   it("prunes bySurface entries when a tab closes or a task is removed", () => {

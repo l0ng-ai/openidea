@@ -3174,6 +3174,20 @@ export type AgentSettings_Deserialize = {
 	smoothText?: boolean,
 	/**  Conversations and the composer expand to the full width of the pane instead of staying in a centred column. */
 	fitWindowWidth?: boolean,
+	/**  Chat text follows the interface font (Appearance › Use custom font). */
+	chatUseUiFont?: boolean,
+	/**  Chat text family when it does not follow the interface font. */
+	chatFontFamily?: string,
+	/**  Covers characters the chat font lacks. */
+	chatFontFallback?: string,
+	chatFontSize?: number,
+	/**  Code in chat follows the built-in code font. */
+	codeUseDefaultFont?: boolean,
+	/**  Code family when it does not follow the built-in code font. */
+	codeFontFamily?: string,
+	/**  Covers characters the code font lacks. */
+	codeFontFallback?: string,
+	codeFontSize?: number,
 	thinking?: ThinkingDisplay,
 	toolCalls?: ToolCallDisplay,
 	/**  A tool call's output (a command's, a diff) is shown without opening it. */
@@ -3217,6 +3231,20 @@ export type AgentSettings_Serialize = {
 	smoothText: boolean,
 	/**  Conversations and the composer expand to the full width of the pane instead of staying in a centred column. */
 	fitWindowWidth: boolean,
+	/**  Chat text follows the interface font (Appearance › Use custom font). */
+	chatUseUiFont: boolean,
+	/**  Chat text family when it does not follow the interface font. */
+	chatFontFamily: string,
+	/**  Covers characters the chat font lacks. */
+	chatFontFallback: string,
+	chatFontSize: number,
+	/**  Code in chat follows the built-in code font. */
+	codeUseDefaultFont: boolean,
+	/**  Code family when it does not follow the built-in code font. */
+	codeFontFamily: string,
+	/**  Covers characters the code font lacks. */
+	codeFontFallback: string,
+	codeFontSize: number,
 	thinking: ThinkingDisplay,
 	toolCalls: ToolCallDisplay,
 	/**  A tool call's output (a command's, a diff) is shown without opening it. */
