@@ -4338,5 +4338,8 @@
   "Issue link {text}": "Issue link {text}",
   "Commit link {text}": "Commit link {text}",
   "Link {text}": "Link {text}",
-  "Transpose": "Transpose"
+  "Transpose": "Transpose",
+  "Run manage.py Task…": "Run manage.py Task…",
+  "No manage.py in this project": "No manage.py in this project",
+  "manage.py Tasks": "manage.py Tasks"
 }
