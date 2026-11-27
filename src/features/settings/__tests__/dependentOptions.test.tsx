@@ -109,11 +109,11 @@ describe("dependent options of a checkbox", () => {
     const slider = screen.getByRole("slider", { name: "Project color strength" });
     const input = screen.getByRole("textbox", { name: "Project color strength" });
     expect(slider).toBeEnabled();
-    expect(slider).toHaveValue("32");
-    expect(input).toHaveValue("32");
+    expect(slider).toHaveValue("22");
+    expect(input).toHaveValue("22");
 
-    fireEvent.change(slider, { target: { value: "48" } });
-    expect(input).toHaveValue("48");
+    fireEvent.change(slider, { target: { value: "40" } });
+    expect(input).toHaveValue("40");
 
     fireEvent.click(screen.getByRole("checkbox", { name: "Use project colors in main toolbar" }));
     expect(slider).toBeDisabled();

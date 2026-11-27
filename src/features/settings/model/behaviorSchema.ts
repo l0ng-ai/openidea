@@ -171,7 +171,7 @@ export const DEFAULT_APPEARANCE_EXTRAS: AppearanceExtras = {
   smoothScrolling: true,
   fullPathInTitle: false,
   projectColorsInToolbar: true,
-  projectColorStrength: 32,
+  projectColorStrength: 22,
   dndWithAltOnly: false,
   menuIcons: true,
   mainMenuStyle: "hamburger",

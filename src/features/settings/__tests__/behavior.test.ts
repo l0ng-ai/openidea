@@ -251,16 +251,28 @@ it("loads an old attach setting as ask", () => {
   expect(validateGeneralExtras({ openProjectIn: "tab" }).openProjectIn).toBe("tab");
 });
 
-it("clamps projectColorStrength to 10–70% and updates --project-gradient-strength on non-default values", () => {
-  expect(validateAppearanceExtras({}).projectColorStrength).toBe(32);
+it("clamps projectColorStrength to 10–70%, keeps the 22% radial default, and enables the header band above 22%", () => {
+  expect(validateAppearanceExtras({}).projectColorStrength).toBe(22);
   expect(validateAppearanceExtras({ projectColorStrength: 2 }).projectColorStrength).toBe(10);
   expect(validateAppearanceExtras({ projectColorStrength: 95 }).projectColorStrength).toBe(70);
-  expect(validateAppearanceExtras({ projectColorStrength: "loud" }).projectColorStrength).toBe(32);
+  expect(validateAppearanceExtras({ projectColorStrength: "loud" }).projectColorStrength).toBe(22);
 
   const root = document.createElement("div");
-  applyAppearanceOptions(validateSettings({ appearance: { projectColorStrength: 48 } }), root);
-  expect(root.style.getPropertyValue("--project-gradient-strength")).toBe("48%");
-
-  applyAppearanceOptions(validateSettings({ appearance: { projectColorStrength: 32 } }), root);
+  applyAppearanceOptions(validateSettings({}), root);
   expect(root.style.getPropertyValue("--project-gradient-strength")).toBe("");
+  expect(root.dataset.projectColorBand).toBeUndefined();
+
+  applyAppearanceOptions(validateSettings({ appearance: { projectColorStrength: 15 } }), root);
+  expect(root.style.getPropertyValue("--project-gradient-strength")).toBe("15%");
+  expect(root.dataset.projectColorBand).toBeUndefined();
+
+  applyAppearanceOptions(validateSettings({ appearance: { projectColorStrength: 36 } }), root);
+  expect(root.style.getPropertyValue("--project-gradient-strength")).toBe("36%");
+  expect(root.dataset.projectColorBand).toBe("");
+
+  applyAppearanceOptions(
+    validateSettings({ appearance: { projectColorsInToolbar: false, projectColorStrength: 36 } }),
+    root,
+  );
+  expect(root.dataset.projectColorBand).toBeUndefined();
 });

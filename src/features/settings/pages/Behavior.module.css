@@ -145,7 +145,10 @@
   min-width: 0;
 }
 .strengthSlider {
+  flex: 1 1 80px;
   width: 120px;
+  min-width: 60px;
+  max-width: 100%;
   margin: 0;
   accent-color: var(--accent);
 }

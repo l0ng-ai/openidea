@@ -1003,7 +1003,7 @@ impl Default for AppearanceSettings {
             smooth_scrolling: true,
             full_path_in_title: false,
             project_colors_in_toolbar: true,
-            project_color_strength: 32,
+            project_color_strength: 22,
             dnd_with_alt_only: false,
             menu_icons: true,
             main_menu_style: "hamburger".into(),

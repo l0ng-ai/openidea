@@ -495,7 +495,7 @@ html[data-os="windows"] {
   --bg-progress-track: #40434a;
   --bg-editor: var(--bg-island);
   --bg-editor-gutter: var(--bg-editor);
-  --project-gradient-strength: 32%;
+  --project-gradient-strength: 22%;
 
   color-scheme: dark;
 }
