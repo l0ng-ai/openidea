@@ -593,8 +593,12 @@ function textSelection(): Range[] | null {
   if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
   const node = sel.anchorNode;
   const el = node instanceof Element ? node : node?.parentElement;
-  if (!el || el.closest("input, textarea, [contenteditable]:not([contenteditable='false'])")) return null;
+  if (!el || isEditable(el)) return null;
   return Array.from({ length: sel.rangeCount }, (_, i) => sel.getRangeAt(i).cloneRange());
+}
+
+function isEditable(el: Element | null): boolean {
+  return !!el?.closest("input, textarea, [contenteditable]:not([contenteditable='false'])");
 }
 
 /**
@@ -605,6 +609,8 @@ function textSelection(): Range[] | null {
 function restoreSelection(ranges: readonly Range[]) {
   const sel = document.getSelection();
   if (!sel || !sel.isCollapsed) return;
+  // The chosen item moved focus into a field (Quote focuses the composer): its caret wins.
+  if (isEditable(document.activeElement)) return;
   if (!ranges.every((r) => r.startContainer.isConnected && r.endContainer.isConnected)) return;
   sel.removeAllRanges();
   for (const r of ranges) sel.addRange(r);

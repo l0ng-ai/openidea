@@ -13,6 +13,12 @@
   outline: none;
   padding: 0 var(--tree-inset, 6px);
 }
+/* The thumb is translucent, so rows, including rows wider than the tree, must end where it is
+   painted: the 10px track minus the thumb's 2px border (Scrollbar.module.css). */
+.tree[data-scrollbar-shown] {
+  padding-right: 8px;
+  clip-path: inset(0 8px 0 0);
+}
 .tree::-webkit-scrollbar {
   width: 10px;
   height: 10px;

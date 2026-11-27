@@ -416,6 +416,7 @@ lsp_semantic_tokens                          trusted            project_host bin
 lsp_servers                                  always             project_host bindings sync
 lsp_signature_help                           trusted            project_host bindings async
 lsp_signature_info                           trusted            project_host bindings async
+lsp_snapshot_completion                      trusted            project_host bindings async
 lsp_snapshot_diagnostics                     trusted            project_host bindings async
 lsp_source_action_text                       trusted            project_host bindings async
 lsp_type_hierarchy                           trusted            project_host bindings async
@@ -444,6 +445,7 @@ menu_set_disabled                            always             desktop      bin
 menu_set_remote_recent                       always             desktop      bindings sync
 nav_index_definitions                        always             project_host bindings async
 nav_inheritance                              always             project_host bindings async
+nav_pytest_fixtures                          always             project_host bindings async
 nav_python_stubs                             always             project_host bindings async
 nav_resolve_module                           always             project_host bindings async
 notebook_cell_docs                           trusted            project_host bindings sync

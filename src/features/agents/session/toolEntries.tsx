@@ -105,9 +105,12 @@ export const ToolEntry = memo(function ToolEntry({
   const took = toolDuration(entry);
   const run = entry.kind === "execute" ? toolRun(entry) : null;
   // Commands lose the `cd <dir> &&` agents start them with; another folder shows as a tag.
+  // The structured command, when the agent sent one, names what ran better than a generic title ("Run command").
+  const commandText = entry.kind === "execute" ? entry.command?.trim() || run?.command || null : null;
+  const fullTitle = commandText ?? (entry.title || entry.kind);
   const { title, dir } =
     entry.kind === "execute"
-      ? commandTitle(task, entry.title || entry.kind)
+      ? commandTitle(task, fullTitle)
       : { title: shortTitle(task, entry.title || entry.kind), dir: null };
   // A title that already names the file ("Read pom.xml") needs no second link to it.
   const links =
@@ -120,7 +123,7 @@ export const ToolEntry = memo(function ToolEntry({
           {basename(dir)}
         </span>
       )}
-      <span className={styles.toolTitle} title={entry.title || entry.kind}>
+      <span className={styles.toolTitle} title={fullTitle}>
         {title}
       </span>
       {links.map((path) => (
@@ -194,12 +197,12 @@ export const ToolEntry = memo(function ToolEntry({
           </summary>
         }
       >
-        {run?.command ? (
+        {commandText ? (
           <div className={styles.terminalBlock}>
             <pre className={styles.terminalCommand}>
-              <span className={styles.prompt}>$</span> {run.command}
+              <span className={styles.prompt}>$</span> {commandText}
             </pre>
-            {run.output && <pre className={styles.terminalOutput}>{run.output}</pre>}
+            {run?.output && <pre className={styles.terminalOutput}>{run.output}</pre>}
           </div>
         ) : (
           <pre className={styles.output}>{entry.output}</pre>

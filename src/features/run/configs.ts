@@ -14,6 +14,7 @@ const KIND_LABELS: Record<string, string> = {
   python: "Python",
   pytest: "pytest",
   unittest: "Python unittest",
+  doctest: "Python doctest",
   phpunit: "PHPUnit",
   composer: "Composer",
   make: "Make",
@@ -74,6 +75,7 @@ export const KIND_CATEGORIES: Record<string, string> = {
   python: "Python",
   pytest: "Python",
   unittest: "Python",
+  doctest: "Python",
   cargo: "Rust",
   rustc: "Rust",
   go: "Go",
@@ -184,6 +186,7 @@ export function configIcon(config: Pick<RunConfig, "kind" | "isTest">): string {
     case "python":
     case "pytest":
     case "unittest":
+    case "doctest":
       return "file-python";
     case "phpunit":
     case "composer":

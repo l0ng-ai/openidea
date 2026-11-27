@@ -79,6 +79,11 @@ impl TreeBuilder {
         self.add_self(node, weight);
     }
 
+    /// Nodes so far, the root included.
+    pub fn len(&self) -> usize {
+        self.nodes.len()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.nodes.len() <= 1 && self.nodes[0].self_weight == 0.0
     }
@@ -121,7 +126,16 @@ impl TreeBuilder {
             .map(|k| ProfileFrame { name: k.name, file: k.file.map(Into::into), line: k.line, kind: k.kind })
             .collect();
         let methods = methods(&nodes, frames.len());
-        Profile { profiler: profiler.to_owned(), unit: unit.to_owned(), mode, total: totals[0], frames, nodes, methods }
+        Profile {
+            profiler: profiler.to_owned(),
+            unit: unit.to_owned(),
+            mode,
+            total: totals[0],
+            frames,
+            nodes,
+            methods,
+            calls: Vec::new(),
+        }
     }
 }
 
@@ -150,7 +164,13 @@ fn methods(nodes: &[ProfileNode], frame_count: usize) -> Vec<MethodStat> {
     let root_frame = nodes.first().map(|n| n.frame as usize);
     let mut out: Vec<MethodStat> = (0..frame_count)
         .filter(|f| Some(*f) != root_frame && total_w[*f] > 0.0)
-        .map(|f| MethodStat { frame: f as u32, self_weight: self_w[f], total: total_w[f] })
+        .map(|f| MethodStat {
+            frame: f as u32,
+            self_weight: self_w[f],
+            total: total_w[f],
+            calls: None,
+            primitive_calls: None,
+        })
         .collect();
     out.sort_by(|a, b| b.self_weight.total_cmp(&a.self_weight).then(b.total.total_cmp(&a.total)));
     out

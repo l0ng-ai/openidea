@@ -350,8 +350,10 @@ export function StagingDiff({
       if (!next || !shown) return;
       revealedRequest.current = request;
       const remembered = position.current;
-      if (!remembered && data.reveal && snapshot?.model.changes.length) {
-        reveal(next, data.reveal === "first" ? 0 : snapshot.model.changes.length - 1);
+      // Without a line to show, the diff opens at its first difference, as IDEA's does.
+      const to = data.reveal ?? (data.line == null ? "first" : undefined);
+      if (!remembered && to && snapshot?.model.changes.length) {
+        reveal(next, to === "first" ? 0 : snapshot.model.changes.length - 1);
         return;
       }
       const initial = data.lineSide === "middle" ? 1 : data.lineSide === "left" ? 0 : 2;
