@@ -13,6 +13,7 @@ import { recordsParser } from "./records";
 import { phpunitParser, withTeamcity } from "./phpunit";
 import { playwrightParser } from "./playwright";
 import { pytestParser } from "./pytest";
+import { withUnittestReporter } from "./pythonUnittest";
 import { rubyParser } from "./ruby";
 import { unittestParser } from "./unittest";
 import { zigParser } from "./zig";
@@ -53,7 +54,10 @@ export type Framework =
   | "mocha"
   | "jasmine"
   | "pytest"
+  /** Django's `manage.py test`: unittest's text runner. */
   | "unittest"
+  /** `python -m unittest`: the IDE's reporter. */
+  | "python-unittest"
   | "phpunit"
   | "go"
   | "jvm"
@@ -86,9 +90,12 @@ export function frameworkFor(config: FrameworkConfig): Framework {
       return "js";
     case "pytest":
       return "pytest";
+    case "unittest":
+      return "python-unittest";
     case "python":
       // `manage.py test` made as a Python configuration before the Django tests type existed.
-      return /\bmanage\.py test\b/.test(cmd) ? "unittest" : "pytest";
+      if (/\bmanage\.py test\b/.test(cmd)) return "unittest";
+      return /(^|\s)-m unittest(\s|$)/.test(cmd) ? "python-unittest" : "pytest";
     case "django-test":
       return "unittest";
     case "phpunit":
@@ -141,6 +148,7 @@ export function withTestReporting<T extends FrameworkConfig>(config: T): T {
   if (frameworkFor(config) === "node-test") return { ...config, env: withNodeTestReporter(config.env ?? {}) };
   if (frameworkFor(config) === "mocha") return { ...config, env: withMochaHook(config.env ?? {}) };
   if (frameworkFor(config) === "jasmine") return { ...config, env: withJasmineHook(config.env ?? {}) };
+  if (frameworkFor(config) === "python-unittest") return withUnittestReporter(config);
   if (frameworkFor(config) === "playwright") {
     // The list reporter prints a line per test; a project's own (`html`, `dot` on CI) may print none.
     const chosen = config.args.some((a) => a === "--reporter" || a.startsWith("--reporter="));
@@ -195,6 +203,7 @@ export function createTestParser(config: FrameworkConfig): TestOutputParser {
     case "node-test":
     case "mocha":
     case "jasmine":
+    case "python-unittest":
       return recordsParser();
     case "pytest":
       return pytestParser();

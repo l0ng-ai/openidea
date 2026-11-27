@@ -1,4 +1,4 @@
-package openidea:plugin@1.17.0;
+package openidea:plugin@1.18.0;
 
 /// Workbench events, delivered in batches to `event-handler.handle`.
 interface events {
@@ -39,20 +39,52 @@ interface events {
     /// 0-based UTF-16 positions, when the caret moves in the focused editor;
     /// `settled` is true for the final position once the caret rests, so costly
     /// work waits for it; it requires `events`) through `other`.
+    /// API 1.18 also delivers `project-closed` (JSON project root string) and
+    /// `watched-files-changed` (see `watch-paths`) through `other`.
     /// Kinds: `file-opened`, `file-saved`, `document-changed` (versioned UTF-16
     /// replacements from explicit path subscriptions), `websocket-ready`
     /// (a host-owned connection has messages to drain), `caret-moved`, `files-changed` (batched disk changes
     /// as `other`, with created/modified/removed path lists in JSON), `editor-focused` (the focused editor
     /// changed), `vcs-changed` (a repository's state changed: commit,
-    /// checkout, fetch…), `action-performed` (an IDE action ran) and
+    /// checkout, fetch…), `action-performed` (an IDE action ran),
+    /// `project-closed` (a project closed) and
     /// `scheduled` (the `on-schedule` period elapsed); later IDEs add more,
     /// and an IDE that doesn't know one fails with `invalid`.
     /// Requires `events` (`events.input` for `action-performed`).
     subscribe: func(kind: string) -> result<_, error>;
+    /// Options for file path subscriptions (API 1.18).
+    record subscription-options {
+        globs: list<string>,
+        /// Debounce quiet window in milliseconds before delivering changes (API 1.18).
+        /// When omitted, changes are delivered immediately without debounce.
+        debounce-ms: option<u32>,
+    }
+
     /// Replaces this kind's subscription with project-relative globs (OR).
     /// Empty globs pause delivery; `subscribe` restores unfiltered delivery.
     /// Kinds: file-opened, file-saved, document-changed, files-changed. Requires `events`.
     subscribe-paths: func(kind: string, globs: list<string>) -> result<_, error>;
+    /// Replaces this kind's subscription with project-relative globs and options (API 1.18).
+    /// Kinds: file-opened, file-saved, document-changed, files-changed. Requires `events`.
+    subscribe-paths-with-options: func(kind: string, options: subscription-options) -> result<_, error>;
+    /// Watches files and directories outside the invoking window's project (API 1.18),
+    /// replacing what this plugin watched for that project; an empty list stops.
+    /// Each path is absolute (or `~/…`), exists, and is readable through an
+    /// `fs.read:<path>` grant, checked where it really is: a link out of the grant
+    /// is `denied` (naming the capability). Paths inside the project are `invalid`
+    /// (they come with `files-changed`); at most 32. A file is watched where it is,
+    /// across atomic saves, removal and re-creation; a directory for its own entries,
+    /// not recursively. Changes arrive as `watched-files-changed` events through
+    /// `other`: JSON {project, created, modified, removed} like `files-changed`,
+    /// debounced and coalesced, so read the files again rather than replaying
+    /// steps; a rename is the old path removed and the new one created. A removed
+    /// watched directory is reported once and no longer watched: call again once
+    /// it exists. Watches end when the project or its window closes, or the plugin
+    /// stops (disabled, updated, or a grant revoked); idle reclaim keeps them, and
+    /// an event activates the plugin again. Nothing is watched over the network:
+    /// remote files need the plugin's own refresh. Requires `events` and a call
+    /// that serves a window's project (a command or event).
+    watch-paths: func(paths: list<string>) -> result<_, error>;
     unsubscribe: func(kind: string);
 }
 

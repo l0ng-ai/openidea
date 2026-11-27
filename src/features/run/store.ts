@@ -127,6 +127,8 @@ interface SessionRuntime {
   pluginTests: PluginTestOutput | null;
   /** Machine-readable stdout (`go test -json`, `--teamcity`, the Ruby reporter): fed to the parser, shown decoded. */
   stdout: TestStdout | null;
+  /** "Show console when a message is printed to stderr", for stderr decoded from `stdout` (`testStdErr`). */
+  onDecodedStderr?: () => void;
   queue: OutputChunk[];
   /**
    * rAF id while the page is visible, timeout id while hidden (rAF pauses in
@@ -696,10 +698,12 @@ function flush(sessionId: string) {
   rt.flushedAt = performance.now();
   const chunks = rt.queue.splice(0);
   for (const c of chunks) {
-    const text = c.kind === "stdout" && rt.stdout ? rt.stdout.feed(c.text) : c.text;
-    if (!text) continue;
-    rt.console.append({ ...c, text });
-    for (const l of rt.outputListeners) l(c.kind, text);
+    for (const shown of c.kind === "stdout" && rt.stdout ? rt.stdout.feed(c.text) : [c]) {
+      if (!shown.text) continue;
+      rt.console.append(shown);
+      for (const l of rt.outputListeners) l(shown.kind, shown.text);
+      if (shown.kind === "stderr" && c.kind === "stdout") rt.onDecodedStderr?.();
+    }
   }
   bump(sessionId);
 }
@@ -805,7 +809,7 @@ function newRuntime(config: RunConfig): SessionRuntime {
   };
   const framework = tests && parser ? frameworkFor(config) : null;
   // PHPUnit `--teamcity` and Gradle's test init script report through service messages, Minitest,
-  // node:test, Mocha and Jasmine through the IDE's own reporters (RSpec has none: its progress dots must show as they come).
+  // node:test, Mocha, Jasmine and Python's unittest through the IDE's own reporters (RSpec has none: its progress dots must show as they come).
   const stdout =
     framework === "go"
       ? new GoTestOutput(feed)
@@ -813,7 +817,10 @@ function newRuntime(config: RunConfig): SessionRuntime {
         ? new TeamcityOutput(feed, framework !== "phpunit")
         : framework === "ruby" && config.kind !== "rspec"
           ? new RubyTestOutput(feed)
-          : framework === "node-test" || framework === "mocha" || framework === "jasmine"
+          : framework === "node-test" ||
+              framework === "mocha" ||
+              framework === "jasmine" ||
+              framework === "python-unittest"
             ? new RecordsOutput(feed)
             : null;
   const runtime: SessionRuntime = {
@@ -1117,6 +1124,7 @@ async function startRunIn(
     return getSession(sessionId) ?? null;
   }
 
+  rt.onDecodedStderr = !check && config.showOnStderr ? () => revealSession(sessionId) : undefined;
   const channel = new Channel<OutputChunk>();
   channel.onmessage = (chunk) => {
     if (runtimes.get(sessionId)?.generation !== generation) return;
@@ -1333,10 +1341,7 @@ function finishSession(sessionId: string, code: number | null) {
     void (async () => {
       if (runtimes.get(sessionId) !== rt) return;
       flush(sessionId);
-      if (rt.stdout) {
-        const text = rt.stdout.end();
-        if (text) rt.console.append({ kind: "stdout", text });
-      }
+      if (rt.stdout) for (const shown of rt.stdout.end()) rt.console.append(shown);
       rt.console.flush();
       await rt.pluginTests?.end();
       if (runtimes.get(sessionId) !== rt) return;

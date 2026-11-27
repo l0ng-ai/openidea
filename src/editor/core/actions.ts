@@ -33,7 +33,14 @@ import {
   toggleCase,
   unselectOccurrence,
 } from "./cm/editing";
-import { cutToLineEnd, deleteToLogicalLineEnd, deleteToLogicalLineStart, hungryBackspace } from "./cm/lineDeletion";
+import {
+  cutToLineEnd,
+  deleteToLogicalLineEnd,
+  deleteToLogicalLineStart,
+  hungryBackspace,
+  killToWordEnd,
+  killToWordStart,
+} from "./cm/lineDeletion";
 import {
   emptyStack,
   extendSelection,
@@ -64,7 +71,7 @@ import {
   unfoldAtCaret,
 } from "./cm/folding";
 import { fillParagraph } from "./cm/fillParagraph";
-import { convertIndentsToSpaces, convertIndentsToTabs, reverseLines, sortLines } from "./cm/lines";
+import { convertIndentsToSpaces, convertIndentsToTabs, reverseLines, sortLines, uniqueLines } from "./cm/lines";
 import { hardWrapAt } from "./cm/setup";
 import { customRegions } from "./cm/regions";
 import { toggleRenderedViewAtCaret } from "./cm/renderedDocs";
@@ -82,6 +89,8 @@ import {
   cursorParagraphForward,
   scrollDown,
   scrollDownAndMove,
+  scrollLeft,
+  scrollRight,
   scrollToBottom,
   scrollToCenter,
   scrollToTop,
@@ -96,6 +105,7 @@ import {
   splitLine,
 } from "./cm/caretCommands";
 import { isOverwrite, toggleOverwrite } from "./cm/overwrite";
+import { isStickySelection, toggleStickySelection } from "./cm/stickySelection";
 import { isColumnMode, toggleColumnMode } from "./cm/columnMode";
 import {
   cloneCaretAbove,
@@ -117,6 +127,7 @@ import {
   resetAllEditorsFontZoom,
   resetConfiguredEditorsFontZoom,
   stepConfiguredEditorsFontZoom,
+  stepEveryEditorFontZoom,
 } from "./cm/prefs";
 import { useProject } from "@/platform/project";
 import { call, commands } from "@/platform/ipc";
@@ -915,6 +926,14 @@ export function registerEditorActions(): () => void {
       category: "Editor Actions",
       keyWhen: "editorTextFocus || diffEditorFocus",
     }),
+    edit("code.killToWordStart", "Kill to Word Start", (v) => killToWordStart(editorPrefs().smartKeys.camelHumps)(v), {
+      category: "Editor Actions",
+      keyWhen: "editorTextFocus || diffEditorFocus",
+    }),
+    edit("code.killToWordEnd", "Kill to Word End", (v) => killToWordEnd(editorPrefs().smartKeys.camelHumps)(v), {
+      category: "Editor Actions",
+      keyWhen: "editorTextFocus || diffEditorFocus",
+    }),
     edit("code.hungryBackspace", "Hungry Backspace", (v) => hungryBackspace(v), {
       category: "Editor Actions",
       keyWhen: "editorTextFocus || diffEditorFocus",
@@ -1068,6 +1087,8 @@ export function registerEditorActions(): () => void {
     caret("editor.scrollToCenter", "Scroll to Center", (v) => scrollToCenter(v), { category: "Editor Actions" }),
     caret("editor.scrollUp", "Scroll Up", (v) => scrollUp(v), { category: "Editor Actions" }),
     caret("editor.scrollDown", "Scroll Down", (v) => scrollDown(v), { category: "Editor Actions" }),
+    caret("editor.scrollLeft", "Scroll Left", (v) => scrollLeft(v), { category: "Editor Actions" }),
+    caret("editor.scrollRight", "Scroll Right", (v) => scrollRight(v), { category: "Editor Actions" }),
     caret("editor.scrollUpAndMove", "Scroll Up and Move if Necessary", (v) => scrollUpAndMove(v), {
       category: "Editor Actions",
     }),
@@ -1146,13 +1167,18 @@ export function registerEditorActions(): () => void {
     caret(
       "editor.nextWordInDifferentHumpsMode",
       'Move Caret to Next Word in Different "CamelHumps" Mode',
-      (v) => inDifferentHumpsMode("right", editorPrefs().smartKeys.camelHumps)(v),
+      (v) =>
+        inDifferentHumpsMode(
+          isStickySelection(v.state) ? "selectRight" : "right",
+          editorPrefs().smartKeys.camelHumps,
+        )(v),
       { category: "Editor Actions" },
     ),
     caret(
       "editor.previousWordInDifferentHumpsMode",
       'Move Caret to Previous Word in Different "CamelHumps" Mode',
-      (v) => inDifferentHumpsMode("left", editorPrefs().smartKeys.camelHumps)(v),
+      (v) =>
+        inDifferentHumpsMode(isStickySelection(v.state) ? "selectLeft" : "left", editorPrefs().smartKeys.camelHumps)(v),
       { category: "Editor Actions" },
     ),
     caret(
@@ -1223,6 +1249,14 @@ export function registerEditorActions(): () => void {
         return view ? isOverwrite(view.state) : false;
       },
     }),
+    text("editor.toggleStickySelection", "Toggle Sticky Selection", (v) => toggleStickySelection(v), {
+      category: "Editor Actions",
+      keywords: ["set mark", "selection mode"],
+      toggled: () => {
+        const view = focusedCellEditor() ?? activeSlot()?.view;
+        return view ? isStickySelection(view.state) : false;
+      },
+    }),
     edit("code.joinLines", "Join Lines", (v) => joinLines(v)),
     edit("code.toggleCase", "Toggle Case", (v) => toggleCase(v), { keywords: ["upper", "lower"] }),
     edit("code.cycleCase", "Cycle Identifier Case", (v) => cycleCase(v), {
@@ -1243,6 +1277,10 @@ export function registerEditorActions(): () => void {
     }),
     edit("code.sortLines", "Sort Lines", (v) => sortLines(v), { category: "Edit" }),
     edit("code.reverseLines", "Reverse Lines", (v) => reverseLines(v), { category: "Edit" }),
+    edit("code.uniqueLines", "Delete Duplicate Lines", (v) => uniqueLines(v), {
+      category: "Edit",
+      keywords: ["unique", "dedupe", "remove duplicates"],
+    }),
     text(
       "code.fillParagraph",
       "Fill Paragraph",
@@ -1331,6 +1369,22 @@ export function registerEditorActions(): () => void {
       keywords: ["zoom", "font size", "mouse wheel"],
       when: "projectOpen",
       run: resetAllFontSize,
+    },
+    {
+      id: "editor.increaseFontSizeAll",
+      title: "Increase Font Size in All Editors",
+      category: "View",
+      keywords: ["zoom", "font size"],
+      when: "projectOpen",
+      run: () => stepEveryEditorFontZoom(focusedCellEditor() ?? activeSlot()?.view ?? null, 1),
+    },
+    {
+      id: "editor.decreaseFontSizeAll",
+      title: "Decrease Font Size in All Editors",
+      category: "View",
+      keywords: ["zoom", "font size"],
+      when: "projectOpen",
+      run: () => stepEveryEditorFontZoom(focusedCellEditor() ?? activeSlot()?.view ?? null, -1),
     },
     {
       id: "editor.increaseFontSize",

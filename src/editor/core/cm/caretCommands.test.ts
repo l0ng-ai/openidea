@@ -15,6 +15,8 @@ import {
   previousParagraphBoundary,
   scrollDown,
   scrollDownAndMove,
+  scrollLeft,
+  scrollRight,
   scrollToBottom,
   scrollToTop,
   scrollUp,
@@ -110,6 +112,60 @@ describe("Scroll Up / Scroll Down", () => {
     scrollUp(view);
     expect(view.state.selection.eq(before)).toBe(true);
     expect(view.state.doc.toString()).toBe("a\nb\nc");
+  });
+});
+
+describe("Scroll Left / Scroll Right", () => {
+  /** jsdom has no layout: record what the command asks the scroller for. */
+  function scroller(view: EditorView, start: number, round = (v: number) => v) {
+    let left = start;
+    Object.defineProperty(view.scrollDOM, "scrollLeft", {
+      configurable: true,
+      get: () => left,
+      set: (v: number) => (left = round(v)),
+    });
+    return () => left;
+  }
+
+  it("moves the viewport one column at a time, leaving the vertical position", () => {
+    const view = make("a|\nb");
+    const column = view.defaultCharacterWidth;
+    expect(column).toBeGreaterThan(0);
+    const left = scroller(view, 10 * column);
+    let top = 30;
+    Object.defineProperty(view.scrollDOM, "scrollTop", {
+      configurable: true,
+      get: () => top,
+      set: (v: number) => (top = v),
+    });
+    expect(scrollRight(view)).toBe(true);
+    expect(left()).toBe(11 * column);
+    expect(scrollLeft(view)).toBe(true);
+    expect(scrollLeft(view)).toBe(true);
+    expect(left()).toBe(9 * column);
+    expect(top).toBe(30);
+  });
+
+  it("leaves the carets and the selection where they are", () => {
+    const view = make("|abc\ndef");
+    view.dispatch({ selection: EditorSelection.create([EditorSelection.range(0, 3), EditorSelection.cursor(5)], 1) });
+    const before = view.state.selection;
+    const left = scroller(view, 0);
+    scrollRight(view);
+    expect(left()).toBeGreaterThan(0);
+    scrollLeft(view);
+    expect(view.state.selection.eq(before)).toBe(true);
+    expect(view.state.doc.toString()).toBe("abc\ndef");
+  });
+
+  it("stays on whole columns when the scroller rounds a fractional width", () => {
+    const view = make("|a");
+    Object.defineProperty(view, "defaultCharacterWidth", { configurable: true, get: () => 7.25 });
+    const left = scroller(view, 0, Math.round);
+    for (let i = 0; i < 4; i++) scrollRight(view);
+    expect(left()).toBe(29);
+    for (let i = 0; i < 4; i++) scrollLeft(view);
+    expect(left()).toBe(0);
   });
 });
 

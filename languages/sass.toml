@@ -5,3 +5,12 @@ line-comment = "//"
 block-comment = ["/*", "*/"]
 indent = { tab-size = 2, insert-spaces = true }
 ui-mode = "Sass"
+
+# vscode-css-language-server has no indented syntax; SCSS, CSS and Less stay on it.
+[[language-servers]]
+name = "some-sass-language-server"
+command = "some-sass-language-server"
+args = ["--stdio"]
+# The server fails to read its settings when `somesass` is null; an empty table keeps its defaults.
+settings = { somesass = {} }
+install-hint = "npm i -g some-sass-language-server"

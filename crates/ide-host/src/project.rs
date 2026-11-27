@@ -211,6 +211,8 @@ impl Host {
                 crate::ts_code_style::configure(cfg, server_root, &effective);
                 ide_sdk::apply::configure_vue_module_resolution(cfg, &data_dir);
                 ide_sdk::apply::configure_path_aliases(cfg, server_root, &data_dir);
+                // After the global plugins: they keep the IDE's copies.
+                ide_sdk::apply::configure_tsconfig_plugins(cfg, server_root, &data_dir);
                 let container_python = effective.languages.python.run_target().is_some();
                 crate::ops::sdk::container_python::configure_server(cfg, &data_dir, root, &effective);
                 // Attached dependency projects are source, so basedpyright/Pyright should
@@ -452,7 +454,9 @@ impl Host {
                     phpstan.files_removed(batch.removed.iter());
                     lsp.project_files_changed(batch.created.iter().chain(&batch.removed));
                     lsp.watched_files_changed(&batch.created, &batch.modified, &batch.removed, &batch.excluded_dirs);
-                    if composer_changed(&root, changed.iter().chain(&batch.removed)) {
+                    if composer_changed(&root, changed.iter().chain(&batch.removed))
+                        || ts_config_changed(changed.iter().chain(&batch.removed))
+                    {
                         lsp.reconfigure_soon();
                     }
                     // Not while loading: a first `use flake` may write `flake.lock` itself.
@@ -1530,8 +1534,7 @@ impl Project {
     }
 
     pub fn staged_file_encoding(&self, path: &Path, bytes: &[u8]) -> ide_vcs::TextEncoding {
-        let defaults = self.documents.file_defaults();
-        let charset = ide_vfs::detect_encoding(bytes, defaults.fallback_for(path));
+        let charset = self.documents.detect_encoding(path, bytes);
         self.vcs_text_encoding(path, charset)
     }
 
@@ -1890,7 +1893,9 @@ fn content_root_watcher(
             index.ignore_rules_changed(&batch.ignore_rules);
             index.update(&[&changed[..], &ignored].concat(), &[&batch.removed[..], &ignored_gone].concat());
             // A workspace member's PHP language level follows its own composer.json.
-            if composer_changed(&root, changed.iter().chain(&batch.removed)) {
+            if composer_changed(&root, changed.iter().chain(&batch.removed))
+                || ts_config_changed(changed.iter().chain(&batch.removed))
+            {
                 lsp.reconfigure_soon();
             }
             if let Some(bridge) = &kotlin_bridge {
@@ -1910,6 +1915,17 @@ fn content_root_watcher(
     )
     .map_err(|e| tracing::warn!("content root watcher {}: {e}", dir.display()))
     .ok()
+}
+
+/// A tsconfig.json / jsconfig.json (or a `tsconfig.*.json` one extends) changed: the tsserver
+/// plugins it declares are part of vtsls' configuration.
+fn ts_config_changed<'a>(mut paths: impl Iterator<Item = &'a PathBuf>) -> bool {
+    paths.any(|p| {
+        let name = p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+        !p.components().any(|c| c.as_os_str() == "node_modules")
+            && (name.starts_with("tsconfig") || name.starts_with("jsconfig"))
+            && name.ends_with(".json")
+    })
 }
 
 /// Whether the `composer.json` of `root` is among `paths`: the PHP language level follows it
@@ -2737,8 +2753,19 @@ mod agent_worktree_tests {
 
 #[cfg(test)]
 mod composer_tests {
-    use super::composer_changed;
+    use super::{composer_changed, ts_config_changed};
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn tsconfig_and_jsconfig_files_count_outside_node_modules() {
+        let changed = |p: &str| ts_config_changed([PathBuf::from(p)].iter());
+        for yes in ["/p/tsconfig.json", "/p/apps/web/jsconfig.json", "/p/tsconfig.base.json"] {
+            assert!(changed(yes), "{yes}");
+        }
+        for no in ["/p/package.json", "/p/tsconfig.ts", "/p/node_modules/x/tsconfig.json"] {
+            assert!(!changed(no), "{no}");
+        }
+    }
 
     #[test]
     fn only_the_roots_own_composer_json_counts() {

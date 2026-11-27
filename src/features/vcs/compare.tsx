@@ -5,9 +5,16 @@
 import { activeEditor } from "@/editor/api";
 import { registerActions } from "@/platform/actions";
 import { choosePath } from "@/platform/choosePath";
+import { getContext } from "@/platform/context";
 import { call, commands, isTauri } from "@/platform/ipc";
 import { isRemoteWindow } from "@/platform/remote";
-import { maybeEditorService, notifications, projectViewSelection } from "@/workbench/contributions";
+import { isVirtualUri } from "@/platform/virtualDocs";
+import {
+  maybeEditorService,
+  notifications,
+  projectViewContextLead,
+  projectViewSelection,
+} from "@/workbench/contributions";
 import { promptText } from "./dialogs";
 import { focusedDiffNavigator } from "./diffNavigator";
 import { compareFilesData, displayPath } from "./compareData";
@@ -357,6 +364,38 @@ export function registerCompareActions(): () => void {
         const paths = argPaths(arg).filter((p) => !p.endsWith("/"));
         if (paths.length !== 2) return info("Select two files to compare");
         await openVcsDiff({ ...compareFilesData(paths[0]!, paths[1]!), swappable: true });
+      },
+    },
+    {
+      // IDEA's CompareFileWithEditor: the selected file ↔ the active editor's file, at its caret.
+      id: "diff.compareFileWithEditor",
+      title: "Compare File with Editor",
+      category: "Diff",
+      icon: "diff",
+      when: "projectOpen",
+      run: async ({ arg, ctx }) => {
+        // Over the editor the selected file is the editor's own, as in IDEA: nothing to compare.
+        const fromTree = ctx.projectViewFocus || projectViewContextLead();
+        const paths = arg !== undefined ? argPaths(arg) : fromTree ? projectViewSelection() : [];
+        const path = paths.length === 1 ? paths[0]! : null;
+        const notFile = "Select a file in the Project view to compare with the editor";
+        if (!path || path.endsWith("/")) return info(notFile);
+        // Revisions, library classes and untitled buffers have no file on disk to diff against.
+        const editorPath = getContext().editorPath;
+        if (typeof editorPath !== "string" || !editorPath || isVirtualUri(editorPath))
+          return info("Open a file in the editor to compare with");
+        if (editorPath === path) return info("The selected file is the one open in the editor");
+        if (await isDirectory(path)) return info(notFile);
+        const ed = activeEditor();
+        const state = ed?.ctx.path === editorPath ? ed.view.state : null;
+        const head = state?.selection.main.head ?? 0;
+        const caret = state?.doc.lineAt(head);
+        await openVcsDiff({
+          ...compareFilesData(path, editorPath),
+          line: caret && caret.number - 1,
+          col: caret && head - caret.from,
+          swappable: true,
+        });
       },
     },
     {

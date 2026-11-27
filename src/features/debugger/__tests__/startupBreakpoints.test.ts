@@ -197,6 +197,16 @@ it("leaves the backend alone while no project is open", async () => {
   expect(ipc.debugReplaceBreakpoints).toHaveBeenCalledOnce();
 });
 
+it("doesn't sync the closed project's files once no project is open", async () => {
+  ipc.debugSetBreakpoints.mockResolvedValue({ status: "ok", data: [] });
+  addBreakpoint("/p/Main.java", 4);
+  await vi.advanceTimersByTimeAsync(200);
+  expect(ipc.debugSetBreakpoints).toHaveBeenCalledOnce();
+  loadBreakpoints(null);
+  await vi.advanceTimersByTimeAsync(200);
+  expect(ipc.debugSetBreakpoints).toHaveBeenCalledOnce();
+});
+
 it("flushes persisted breakpoints immediately after project loading", async () => {
   ipc.debugSetBreakpoints.mockResolvedValue({ status: "ok", data: [] });
   localStorage.setItem(

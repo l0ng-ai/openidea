@@ -261,6 +261,12 @@ fn supports_external_format(language: &LanguageConfig, tool: ExternalFormatter) 
     }
 }
 
+/// The entry of the formatters' language lists that covers `language`. MDX was part of Markdown
+/// and follows its entry, so lists saved before it had its own language keep formatting it.
+fn formatter_language(language: &str) -> &str {
+    if language == "mdx" { "markdown" } else { language }
+}
+
 /// The external formatter of a file, for a language with an external formatter.
 /// `forced` names the tool (Reformat with Prettier, oxfmt, Biome, Ruff, or Black). Ruff is
 /// the base formatter for Python, replaced by Black when configured or selected; Biome,
@@ -295,7 +301,8 @@ fn external_tool(
             )))
         };
     }
-    let enabled = |tool| settings.formatter(tool).languages.iter().any(|l| l == language.id.as_str());
+    let id = formatter_language(language.id.as_str());
+    let enabled = |tool| settings.formatter(tool).languages.iter().any(|l| l == id);
     if language.formatter.as_ref().is_some_and(|f| f.tool == "ruff") {
         return Ok(if enabled(Black) && (settings.black.prefer || black_configured(file)) {
             Some(Black)
@@ -895,6 +902,24 @@ mod tests {
     ) -> IdeResult<Option<ExternalFormatter>> {
         let language = LanguageRegistry::load(None).unwrap().get(&LanguageId::new(language));
         external_tool(forced, language.as_ref(), file, settings)
+    }
+
+    #[test]
+    fn mdx_follows_the_markdown_entry_of_saved_language_lists() {
+        // Saved before MDX had its own language: the whole list, with no `mdx` in it.
+        let old: ide_core::settings::Settings = serde_json::from_str(
+            r#"{"languages":{"prettier":{"languages":["markdown","css"]},"oxfmt":{"languages":["css"]}}}"#,
+        )
+        .unwrap();
+        let file = Path::new("/project/docs/intro.mdx");
+        assert_eq!(tool(None, "mdx", file, &old.languages).unwrap(), Some(Prettier));
+        let mut no_markdown = old.languages.clone();
+        no_markdown.prettier.languages.retain(|l| l != "markdown");
+        assert_eq!(tool(None, "mdx", file, &no_markdown).unwrap(), None);
+        let mut oxfmt = old.languages.clone();
+        oxfmt.oxfmt.languages.push("markdown".into());
+        oxfmt.oxfmt.prefer = true;
+        assert_eq!(tool(None, "mdx", file, &oxfmt).unwrap(), Some(Oxfmt));
     }
 
     #[test]

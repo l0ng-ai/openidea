@@ -110,6 +110,22 @@ pub fn settings_removed_theme(host: &Host, window: &str) -> Option<String> {
     }
 }
 
+/// What a changed setting `key` starts or stops right away. Both `settings_set` commands (this
+/// crate's and the desktop's) call it after writing the value.
+pub fn apply_setting(host: &Arc<Host>, window: &str, key: &str) {
+    if key == "mcpServer" || key.starts_with("mcpServer.") {
+        host.mcp.apply(host);
+    }
+    if key == "terminal" || key.starts_with("terminal.") {
+        super::term::apply_output_rate(host, window);
+    }
+    if "languages.typescript.watchProblems".starts_with(key)
+        && let Some(watch) = host.project(window).ok().and_then(|p| p.tsc_watch.clone())
+    {
+        watch.apply(&host.runtime);
+    }
+}
+
 /// `value` is JSON text, e.g. `14` or `"dark"`. Every window (for a project
 /// value: that project's windows) is told (`IdeEvent::SettingsChanged`) so it
 /// re-reads its effective settings.
@@ -122,17 +138,7 @@ pub fn settings_set(
     value: String,
 ) -> IdeResult<Settings> {
     let applied = set_settings(host, window, scope, &key, &value)?;
-    if key == "mcpServer" || key.starts_with("mcpServer.") {
-        host.mcp.apply(host);
-    }
-    if key == "terminal" || key.starts_with("terminal.") {
-        super::term::apply_output_rate(host, window);
-    }
-    if "languages.typescript.watchProblems".starts_with(&key)
-        && let Some(watch) = host.project(window).ok().and_then(|p| p.tsc_watch.clone())
-    {
-        watch.apply(&host.runtime);
-    }
+    apply_setting(host, window, &key);
     let sink = host.window_sink(window);
     sink.emit(IdeEvent::SettingsChanged { key });
     if let Some(root) = applied.roots_changed {

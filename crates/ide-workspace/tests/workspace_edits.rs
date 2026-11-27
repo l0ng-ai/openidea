@@ -242,6 +242,21 @@ fn undo_keeps_the_encoding_chosen_for_a_file_opened_after_the_edit() {
 }
 
 #[test]
+fn undo_keeps_the_editorconfig_charset_of_a_file_opened_after_the_edit() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join(".editorconfig"), "root = true\n[*.txt]\ncharset = iso-8859-15\n").unwrap();
+    let path = tmp.path().join("legacy.txt");
+    std::fs::write(&path, b"abc\xA4").unwrap();
+    let (docs, events) = recorded_documents();
+    docs.apply_workspace_edit(&WorkspaceEdit { files: vec![edit(&path, "new")], ..Default::default() }).unwrap();
+    let info = docs.open(&path).unwrap();
+    assert_eq!((info.text.as_str(), info.encoding.as_str()), ("new€", "iso-8859-15"));
+    docs.undo_workspace_edit(undo_id(&events)).unwrap();
+    let snapshot = docs.snapshot(info.id).unwrap();
+    assert_eq!((snapshot.text.as_str(), snapshot.encoding.as_str()), ("abc€", "iso-8859-15"));
+}
+
+#[test]
 fn stale_document_version_rejects_the_whole_edit() {
     let tmp = tempfile::tempdir().unwrap();
     let a = tmp.path().join("a.txt");
