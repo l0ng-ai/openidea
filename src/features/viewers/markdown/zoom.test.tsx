@@ -482,16 +482,21 @@ describe("editor font size actions", () => {
   });
 
   it("leaves ⌘= / ⌘- to fold and unfold", () => {
-    for (const km of [intellijMacos, intellijWindows]) {
-      expect(km["editor.increaseFontSize"]).toEqual(["Alt+Shift+."]);
-      expect(km["editor.decreaseFontSize"]).toEqual(["Alt+Shift+,"]);
-    }
+    expect(intellijWindows["editor.increaseFontSizeAll"]).toEqual(["Alt+Shift+."]);
+    expect(intellijWindows["editor.decreaseFontSizeAll"]).toEqual(["Alt+Shift+,"]);
+    expect(intellijMacos["editor.increaseFontSizeAll"]).toEqual(["Ctrl+Shift+."]);
+    expect(intellijMacos["editor.decreaseFontSizeAll"]).toEqual(["Ctrl+Shift+,"]);
     expect(intellijMacos["code.fold"]).toEqual(["Meta+-"]);
     expect(intellijMacos["code.unfold"]).toEqual(["Meta+="]);
     expect(intellijWindows["code.fold"]).toEqual(["Ctrl+-"]);
     expect(intellijWindows["code.unfold"]).toEqual(["Ctrl+="]);
     for (const km of [intellijMacos, intellijWindows, vscodeMacos]) {
-      const keys = [...(km["editor.increaseFontSize"] ?? []), ...(km["editor.decreaseFontSize"] ?? [])];
+      const keys = [
+        "editor.increaseFontSize",
+        "editor.decreaseFontSize",
+        "editor.increaseFontSizeAll",
+        "editor.decreaseFontSizeAll",
+      ].flatMap((id) => km[id] ?? []);
       expect(keys.filter((k) => /^(Meta|Ctrl)\+(Shift\+)?[=-]$/.test(k))).toEqual([]);
       expect(Object.keys(km).filter((id) => id.startsWith("markdown.zoom"))).toEqual([]);
     }
