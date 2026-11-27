@@ -480,6 +480,95 @@ pub async fn format_text(
     format_source(host, window, &project, source, None, options).await
 }
 
+/// Ruff safe fixes are independent of the formatter selection, language server and format-on-save setting.
+fn ruff_fix_enabled(language: &LanguageId, on_save: bool, settings: &Settings) -> bool {
+    language.as_str() == "python" && (!on_save || settings.languages.ruff.fix_on_save)
+}
+
+/// Apply `ruff check --fix-only` to the supplied (possibly unsaved) text without writing the file.
+fn ruff_fix_edits(
+    tools: &Tools,
+    settings: &Settings,
+    root: &Path,
+    path: &Path,
+    language: &LanguageId,
+    text: &str,
+    on_save: bool,
+) -> IdeResult<Vec<TextEdit>> {
+    if !ruff_fix_enabled(language, on_save, settings) {
+        return Ok(Vec::new());
+    }
+    let config_file = ide_sdk::apply::ruff_configuration(root, &settings.languages.ruff.configuration_directory)?;
+    let custom = ide_sdk::apply::setting_path(root, &settings.languages.ruff.path)
+        .or_else(|| interpreter_tool(root, path.parent(), settings, "ruff"));
+    let mut command = tools.formatter_command("ruff", path, custom.as_deref())?;
+    let dir = config_file.as_deref().and_then(Path::parent).or_else(|| path.parent());
+    if let Some(dir) = dir {
+        command.current_dir(dir);
+    }
+    command.args(formatter::ruff_safe_fix_arguments(path, config_file.as_deref()));
+    let fixed = formatter::run("ruff", command, text, &Default::default())?;
+    if excluded_output(text, &fixed) {
+        return Ok(Vec::new());
+    }
+    Ok(diff_edits(&ide_text::Document::new(text), &fixed))
+}
+
+async fn ruff_fix_source(
+    host: &Host,
+    window: &str,
+    project: &crate::Project,
+    snap: &FormatSource,
+    on_save: bool,
+) -> IdeResult<Vec<TextEdit>> {
+    let settings = project.settings.effective();
+    if !ruff_fix_enabled(&snap.language, on_save, &settings) {
+        return Ok(Vec::new());
+    }
+    host.require_trust(window)?;
+    if snap.read_only {
+        return Err(IdeError::invalid("The file is read-only"));
+    }
+    let tools = Tools::new(&host.local_data_dir);
+    let root = project.root.clone();
+    let path = snap.path.0.clone();
+    let language = snap.language.clone();
+    let text = snap.text.clone();
+    tokio::task::spawn_blocking(move || ruff_fix_edits(&tools, &settings, &root, &path, &language, &text, on_save))
+        .await
+        .map_err(|e| IdeError::internal(e.to_string()))?
+        .map_err(|e| e.with_tool("ruff"))
+}
+
+/// Apply Ruff's safe lint fixes to the current unsaved document.
+pub async fn ruff_fix(host: &Host, window: &str, doc: DocId) -> IdeResult<Vec<TextEdit>> {
+    let project = host.project(window)?;
+    let snap = project.documents.snapshot(doc)?;
+    let source = FormatSource {
+        path: snap.path,
+        language: snap.language,
+        text: snap.text,
+        doc: Some(doc),
+        version: snap.version,
+        read_only: snap.read_only,
+    };
+    ruff_fix_source(host, window, &project, &source, true).await
+}
+
+/// Apply Ruff's safe lint fixes to a separate snapshot using the file's language and Ruff settings.
+pub async fn ruff_fix_text(host: &Host, window: &str, path: PathBuf, text: String) -> IdeResult<Vec<TextEdit>> {
+    let project = host.project(window)?;
+    if !path.is_absolute() || path.file_name().is_none() {
+        return Err(IdeError::invalid("Ruff safe fixes require a file path"));
+    }
+    if text.len() as u64 > ide_vfs::LARGE_FILE_THRESHOLD {
+        return Ok(Vec::new());
+    }
+    let language = project.documents.language_of(&path, text.lines().next()).language;
+    let source = FormatSource { path: path.into(), language, text, doc: None, version: 0, read_only: false };
+    ruff_fix_source(host, window, &project, &source, false).await
+}
+
 struct FormatSource {
     path: IpcPath,
     language: LanguageId,
@@ -1323,6 +1412,53 @@ mod tests {
         // Selected by the settings, not taking over: only its own Run on save.
         assert!(!runs_on_save(Prettier, false, false, true));
         assert!(runs_on_save(Prettier, true, false, false));
+    }
+
+    #[test]
+    fn ruff_safe_fixes_on_save_are_opt_in_and_independent_of_formatting() {
+        let mut settings = Settings::default();
+        let python = LanguageId::new("python");
+        assert!(!ruff_fix_enabled(&python, true, &settings));
+        assert!(ruff_fix_enabled(&python, false, &settings), "commit fixes do not require the save option");
+        settings.editor.format_on_save = true;
+        settings.languages.ruff.run_on_save = true;
+        assert!(!ruff_fix_enabled(&python, true, &settings));
+        settings.languages.ruff.fix_on_save = true;
+        assert!(ruff_fix_enabled(&python, true, &settings));
+        assert!(!ruff_fix_enabled(&LanguageId::new("typescript"), true, &settings));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ruff_safe_fixes_use_unsaved_text_and_leave_the_file_on_disk_alone() {
+        use std::ffi::OsString;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let file = root.join("main.py");
+        std::fs::write(&file, "on disk\n").unwrap();
+        let fake = root.join("ruff");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$0.args\"\nwhile IFS= read -r line || [ -n \"$line\" ]; do\n  if [ \"$line\" = 'import os' ]; then printf 'import sys\\n'; else printf '%s\\n' \"$line\"; fi\ndone\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let tools = Tools::with_paths(root.join("tools"), OsString::new(), ide_tools::platform::Platform::current());
+        let mut settings = Settings::default();
+        settings.languages.ruff.path = fake.to_string_lossy().into_owned();
+        let python = LanguageId::new("python");
+        let unsaved = "import os\nprint(os.name)\n";
+
+        assert!(ruff_fix_edits(&tools, &settings, root, &file, &python, unsaved, true).unwrap().is_empty());
+        assert!(!root.join("ruff.args").exists());
+        settings.languages.ruff.fix_on_save = true;
+        let edits = ruff_fix_edits(&tools, &settings, root, &file, &python, unsaved, true).unwrap();
+        assert_eq!(after(unsaved, &edits), "import sys\nprint(os.name)\n");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "on disk\n");
+        let args = std::fs::read_to_string(root.join("ruff.args")).unwrap();
+        assert!(args.starts_with("check\n--fix-only\n--force-exclude\n--stdin-filename\n"), "{args}");
+        assert!(args.ends_with(&format!("{}\n-\n", file.display())), "{args}");
     }
 
     #[test]

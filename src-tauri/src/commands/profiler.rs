@@ -9,7 +9,7 @@ use ide_profiler::{Profile, ProfileMode, ProfilePrepared, ProfileSpec};
 use ide_run::{RunConfig, RunInfo};
 use tauri::{State, Window};
 
-/// How to run `config` under a sampling profiler, or which profiler is missing.
+/// How to run `config` under a profiler, or which profiler is missing.
 #[desktop_command(trust = trusted)]
 #[tauri::command]
 #[specta::specta]
@@ -21,9 +21,10 @@ pub async fn profiler_prepare(
 ) -> IdeResult<ProfilePrepared> {
     let project = state.project(window.label())?;
     let (root, cache) = (project.root.clone(), project.cache_dir.join("profiles"));
+    let python_profiler = project.settings.effective().languages.python.profiler;
     blocking(move || {
         let out = ide_run::wrap::new_output_dir(&cache, KEEP_RUNS)?;
-        Ok(ide_profiler::prepare(&root, &config, &out, mode))
+        Ok(ide_profiler::prepare(&root, &config, &out, mode, &python_profiler))
     })
     .await
 }
