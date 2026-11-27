@@ -87,6 +87,7 @@ const TABLE_COMMANDS: Array<[TableCommand, string, string, string[]]> = [
   ["exportData", "db.exportData", "Export Data", ["export", "save as"]],
   ["deleteRows", "db.deleteRows", "Delete Rows", ["remove rows"]],
   ["restoreRows", "db.restoreRows", "Restore Rows", ["undelete rows"]],
+  ["revertRows", "db.revertSelected", "Revert Selected", ["revert rows", "discard row changes", "undo"]],
 ];
 
 /** The editor and rows a menu passed (focus has moved to the menu), else the focused grid's. */
