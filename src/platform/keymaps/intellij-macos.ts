@@ -470,6 +470,9 @@ export const intellijMacos: Record<string, string[]> = {
   "db.addRow": ["Meta+N"],
   "db.deleteRows": [],
   "db.restoreRows": [],
+  // Revert Selected takes ⌥⌘Z while the selected rows have changes; Revert (everything) otherwise.
+  "db.revertSelected": ["Meta+Alt+Z"],
+  "db.copyAggregationResult": ["Meta+Shift+C"],
   "db.exportData": [],
   "db.editCell": [],
   "db.showToolWindow": [],

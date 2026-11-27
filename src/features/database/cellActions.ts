@@ -1,5 +1,7 @@
 import { registerActions, type ActionContext } from "@/platform/actions";
 import { getContext, setContext } from "@/platform/context";
+import { writeClipboardText } from "@/platform/clipboard";
+import { aggregateText, defaultAggregate, type Aggregates } from "./resultView";
 
 export type CellCopy = "tsv" | "csv" | "onerow" | "header" | "rowsTsv" | "rowsCsv";
 
@@ -19,6 +21,15 @@ export interface CellActions {
   copy(kind: CellCopy): void;
   /** Rows of the selection, top to bottom. */
   selectedRows(): number[];
+  /** The Aggregates panel's figures for the selected cells; null without a selection. */
+  aggregates(): Aggregates | null;
+}
+
+/** Copy Aggregation Result: one aggregate of the selection, as the Aggregates panel shows it. */
+export function copyAggregate(grid: CellActions, key?: keyof Aggregates): void {
+  const a = grid.aggregates();
+  const text = a && aggregateText(a, key ?? defaultAggregate(a));
+  if (text !== null && text !== undefined) void writeClipboardText(text);
 }
 
 const grids = new WeakMap<Element, CellActions>();
@@ -105,6 +116,18 @@ export function installCellActions(): () => void {
       keyWhen: "dbCellGridFocus",
       enabled: (c) => handle(c)?.canEditCell() ?? false,
       run: (c) => handle(c)?.editCell(),
+    },
+    {
+      id: "db.copyAggregationResult",
+      title: "Copy Aggregation Result",
+      category: "Database",
+      keywords: ["sum", "count", "aggregate", "total"],
+      keyWhen: "dbCellGridFocus",
+      enabled: (c) => handle(c)?.hasSelection() ?? false,
+      run: (c) => {
+        const grid = handle(c);
+        if (grid?.hasSelection()) copyAggregate(grid);
+      },
     },
     ...COPIES.map(([kind, id, title]) => ({
       id,

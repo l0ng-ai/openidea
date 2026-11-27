@@ -468,6 +468,9 @@ export const intellijWindows: Record<string, string[]> = {
   "db.addRow": ["Alt+Insert"],
   "db.deleteRows": ["Ctrl+Y", "Alt+Delete"],
   "db.restoreRows": [],
+  // Revert Selected takes ⌥⌘Z while the selected rows have changes; Revert (everything) otherwise.
+  "db.revertSelected": ["Ctrl+Alt+Z"],
+  "db.copyAggregationResult": ["Ctrl+Shift+C"],
   "db.exportData": [],
   "db.editCell": [],
   "db.showToolWindow": [],

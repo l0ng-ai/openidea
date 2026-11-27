@@ -143,6 +143,7 @@ export const eclipseMacos: Record<string, string[]> = {
   "code.surroundWith": ["Meta+Alt+Z"],
   // ⌥⌘Z is Surround With here, not the table editor's Revert.
   "db.revertChanges": [],
+  "db.revertSelected": [],
   "file.reloadFromDisk": [],
   "project.reloadFromDisk": [],
   "navigate.toggleBookmark": [],
