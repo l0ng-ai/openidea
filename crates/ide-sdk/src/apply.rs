@@ -1666,9 +1666,9 @@ pub fn configure_tsconfig_plugins(cfg: &mut LanguageServerConfig, server_root: &
         .iter()
         .filter_map(|p| p.get("name")?.as_str().map(str::to_owned))
         .collect();
-    let mut plugins = crate::tsconfig_plugins::declared(server_root);
-    plugins.retain(|name, _| !global.contains(name));
-    let Some(location) = crate::tsconfig_plugins::probe_location(data_dir, server_root, &plugins) else {
+    let mut declared = crate::tsconfig_plugins::declared(server_root);
+    declared.packages.retain(|name, _| !global.contains(name));
+    let Some(location) = crate::tsconfig_plugins::probe_location(data_dir, server_root, &declared) else {
         return false;
     };
     merge_init_options(cfg, json!({ "typescript": { "tsserver": { "pluginPaths": [location] } } }));
