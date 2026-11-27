@@ -1800,7 +1800,7 @@ impl DbManager {
             return Err(postgres_console_mode_changed());
         }
         if let Pool::Jdbc(p) = &*pool {
-            return p.query_in_schema(statement, skip, max_rows, cancel, schema, console).await;
+            return p.query_in_console(statement, skip, max_rows, cancel, schema, console).await;
         }
         if let Pool::Clickhouse(p) = &*pool
             && console.is_some()

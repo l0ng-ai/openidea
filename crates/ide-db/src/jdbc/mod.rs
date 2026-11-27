@@ -383,10 +383,21 @@ impl JdbcPool {
         max: usize,
         cancel: &CancellationToken,
     ) -> IdeResult<QueryResult> {
-        self.query_in_schema(sql, skip, max, cancel, None, None).await
+        self.query_in_schema(sql, skip, max, cancel, None).await
     }
 
     pub(crate) async fn query_in_schema(
+        &self,
+        sql: &str,
+        skip: usize,
+        max: usize,
+        cancel: &CancellationToken,
+        schema: Option<&str>,
+    ) -> IdeResult<QueryResult> {
+        self.query_in_console(sql, skip, max, cancel, schema, None).await
+    }
+
+    pub(crate) async fn query_in_console(
         &self,
         sql: &str,
         skip: usize,
