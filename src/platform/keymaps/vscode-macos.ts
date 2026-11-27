@@ -257,6 +257,8 @@ export const vscodeMacos: Record<string, string[]> = {
   "editor.scrollToCenter": [],
   "editor.scrollUp": [],
   "editor.scrollDown": [],
+  "editor.scrollLeft": [],
+  "editor.scrollRight": [],
   "editor.scrollUpAndMove": [],
   "editor.scrollDownAndMove": [],
   "editor.moveUpAndScroll": [],

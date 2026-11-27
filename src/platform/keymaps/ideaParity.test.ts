@@ -64,6 +64,8 @@ describe("IDEA keymap parity", () => {
     // `Mac OS X 10.5+` removes the ⌘↑ / ⌘↓ it would inherit from `Mac OS X`.
     ["editor.scrollUp", [], ["Ctrl+Up"]],
     ["editor.scrollDown", [], ["Ctrl+Down"]],
+    ["editor.scrollLeft", [], []],
+    ["editor.scrollRight", [], []],
     ["editor.scrollUpAndMove", [], []],
     ["editor.scrollDownAndMove", [], []],
     ["editor.moveUpAndScroll", [], []],

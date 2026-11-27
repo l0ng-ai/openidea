@@ -141,6 +141,8 @@ export const intellijMacos: Record<string, string[]> = {
   "editor.scrollToCenter": ["Ctrl+L"],
   "editor.scrollUp": [],
   "editor.scrollDown": [],
+  "editor.scrollLeft": [],
+  "editor.scrollRight": [],
   "editor.scrollUpAndMove": [],
   "editor.scrollDownAndMove": [],
   "editor.moveUpAndScroll": [],

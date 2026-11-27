@@ -89,6 +89,8 @@ import {
   cursorParagraphForward,
   scrollDown,
   scrollDownAndMove,
+  scrollLeft,
+  scrollRight,
   scrollToBottom,
   scrollToCenter,
   scrollToTop,
@@ -1084,6 +1086,8 @@ export function registerEditorActions(): () => void {
     caret("editor.scrollToCenter", "Scroll to Center", (v) => scrollToCenter(v), { category: "Editor Actions" }),
     caret("editor.scrollUp", "Scroll Up", (v) => scrollUp(v), { category: "Editor Actions" }),
     caret("editor.scrollDown", "Scroll Down", (v) => scrollDown(v), { category: "Editor Actions" }),
+    caret("editor.scrollLeft", "Scroll Left", (v) => scrollLeft(v), { category: "Editor Actions" }),
+    caret("editor.scrollRight", "Scroll Right", (v) => scrollRight(v), { category: "Editor Actions" }),
     caret("editor.scrollUpAndMove", "Scroll Up and Move if Necessary", (v) => scrollUpAndMove(v), {
       category: "Editor Actions",
     }),
