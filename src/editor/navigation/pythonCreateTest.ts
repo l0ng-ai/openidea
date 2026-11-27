@@ -3,15 +3,15 @@ import { EditorSelection } from "@codemirror/state";
 import { indentUnit } from "@codemirror/language";
 import type { EditorView } from "@codemirror/view";
 import { editorsFor, useEditorRegistry, type EditorDocContext, type TextEditorHandle } from "@/editor/api";
-import { pythonModulePath } from "@/editor/core/copyReference";
 import { showHint } from "@/editor/lsp/hint";
 import { chooseMembers } from "@/editor/lsp/memberChooser";
 import { offsetToPos } from "@/editor/lsp/positions";
 import { tx } from "@/platform/i18n";
 import { call, commands } from "@/platform/ipc";
 import { basename, useProject } from "@/platform/project";
+import { currentRoots } from "@/platform/projectRoots";
 import { editorService } from "@/workbench/contributions";
-import { pytestStubEdit, pythonTestSubjects, subjectsAtLine } from "./pythonTests";
+import { pytestStubEdit, pythonImportPath, pythonTestSubjects, subjectsAtLine } from "./pythonTests";
 
 /** The text editor of `path` once its tab has mounted one (opening a file resolves before that). */
 function editorOf(path: string, timeoutMs = 5000): Promise<TextEditorHandle | null> {
@@ -59,8 +59,12 @@ export async function createPythonTest(
   if (!existing) await call(commands.fsCreateFile(path)).catch(() => undefined);
   await editorService().openFile(target, { focus: true });
   const editor = await editorOf(target);
-  if (!editor || editor.view.state.readOnly) return;
-  const module = pythonModulePath(ctx.path, useProject.getState().project?.root ?? null);
+  if (!editor || editor.view.state.readOnly) return showHint(view, "The test file can't be edited");
+  const root = useProject.getState().project?.root ?? null;
+  const sourceRoots = currentRoots()
+    .filter((r) => r.kind === "source" && r.path)
+    .map((r) => `${root}/${r.path}`);
+  const module = pythonImportPath(ctx.path, root, root ? sourceRoots : []);
   const state = editor.view.state;
   const edit = pytestStubEdit(state.doc.toString(), module, chosen, state.facet(indentUnit));
   if (!edit) return showHint(editor.view, "The chosen tests already exist");
