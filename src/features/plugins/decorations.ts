@@ -383,8 +383,9 @@ export function decorationExtension(ctx: EditorDocContext) {
       const hovers: PlacedHover[] = [];
       const pieces: Piece[] = [];
       for (const piece of value.pieces) {
-        const from = tr.changes.mapPos(piece.from, 1);
         const to = tr.changes.mapPos(piece.to, -1);
+        // An empty range (a point annotation) stays a point before what is typed at it.
+        const from = piece.from === piece.to ? to : tr.changes.mapPos(piece.from, 1);
         if (from > to) continue; // The edit deleted the item's text: drop it until republish.
         pieces.push({ ...piece, from, to, line: tr.newDoc.lineAt(to).number });
       }

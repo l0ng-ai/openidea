@@ -275,6 +275,20 @@ it("keeps a line-end label on its line across Enter, and stretches with its own 
   expect(editor.view.posAtDOM(message())).toBe(editor.view.state.doc.line(2).to);
 });
 
+it("keeps the label of an empty range when typing at its position", () => {
+  const end = { line: 0, col: 6 };
+  setPluginDecorations("test", [
+    {
+      ...set(),
+      items: [{ range: { start: end, end }, style: "highlight", hover: null, after: " lens", markdownHover: null }],
+    },
+  ]);
+  editor.view.dispatch({ changes: { from: 6, insert: "s" } });
+  const label = editor.view.dom.querySelector(".cm-plugin-after");
+  expect(label?.textContent).toBe(" lens");
+  expect(editor.view.posAtDOM(label!)).toBe(editor.view.state.doc.line(1).to);
+});
+
 it("updates an open hover card when the plugin loads the conversation", async () => {
   const item = (markdownHover: string) => ({
     ...set(),
