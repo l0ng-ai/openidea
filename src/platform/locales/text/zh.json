@@ -10836,5 +10836,9 @@
   "Delimiter: {delimiter}": "分隔符：{delimiter}",
   "Table view of the file": "文件的表格视图",
   "Data": "数据",
-  "CSV editor view": "CSV 编辑器视图"
+  "CSV editor view": "CSV 编辑器视图",
+  "Pull request link {text}": "拉取请求链接 {text}",
+  "Issue link {text}": "Issue 链接 {text}",
+  "Commit link {text}": "提交链接 {text}",
+  "Link {text}": "链接 {text}"
 }
