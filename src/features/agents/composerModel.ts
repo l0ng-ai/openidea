@@ -1,7 +1,9 @@
 /** Pure composer helpers: `@` / `/` completion, attachments, history recall, settings. */
 import type {
   AgentCommand,
+  AgentCommandChoice,
   AgentConfigOption,
+  AgentContextCategory,
   AgentCost,
   AgentEntry,
   AgentImage,
@@ -62,12 +64,15 @@ export function messageTokens(text: string): MessageToken[] {
 export type Completion =
   | { kind: "file"; query: string; from: number; to: number }
   | { kind: "command"; query: string; from: number; to: number }
-  /** A word of a `!` command line: its first word (`command`) or an argument. */
+  /** First (or second) argument of a leading `/command …` at `caret`. */
+  | { kind: "commandArg"; command: string; subcommand?: string; query: string; from: number; to: number }
+  /** A `!` command line's completion: an earlier command, or a path for the word at the caret. */
   | { kind: "shell"; query: string; from: number; to: number; command: boolean };
 
 /**
  * The `@file` or `/command` being typed at `caret`, if any; both may follow other text. In a
- * `!` command line, the word at `caret` instead.
+ * `!` command line, the word at `caret` instead. After a leading `/command `, completes the
+ * command's first (or second) argument.
  */
 export function completionAt(text: string, caret: number): Completion | null {
   const before = text.slice(0, caret);
@@ -78,14 +83,40 @@ export function completionAt(text: string, caret: number): Completion | null {
     return { kind: "shell", query, from, to: caret, command: !before.slice(1, from).trim() };
   }
   const word = /(^|\s)([@/])([^\s@]*)$/.exec(before);
-  if (!word) return null;
-  const from = caret - word[3]!.length - 1;
-  return {
-    kind: word[2] === "/" ? "command" : "file",
-    query: word[3]!,
-    from,
-    to: caret,
-  };
+  if (word) {
+    const from = caret - word[3]!.length - 1;
+    return {
+      kind: word[2] === "/" ? "command" : "file",
+      query: word[3]!,
+      from,
+      to: caret,
+    };
+  }
+  if (before.includes("\n")) return null;
+  const firstArg = /^\s*\/([A-Za-z][\w:.-]*)\s+([^\s]*)$/.exec(before);
+  if (firstArg) {
+    const query = firstArg[2]!;
+    return {
+      kind: "commandArg",
+      command: firstArg[1]!,
+      query,
+      from: caret - query.length,
+      to: caret,
+    };
+  }
+  const secondArg = /^\s*\/([A-Za-z][\w:.-]*)\s+([^\s]+)\s+([^\s]*)$/.exec(before);
+  if (secondArg) {
+    const query = secondArg[3]!;
+    return {
+      kind: "commandArg",
+      command: secondArg[1]!,
+      subcommand: secondArg[2]!,
+      query,
+      from: caret - query.length,
+      to: caret,
+    };
+  }
+  return null;
 }
 
 /**
@@ -133,6 +164,105 @@ function inOrder(text: string, query: string): boolean {
   let i = 0;
   for (const ch of text) if (ch === query[i]) i++;
   return i >= query.length;
+}
+
+const LITERAL_CHOICE = /^[a-z][a-z0-9_-]*$/;
+
+/**
+ * Fixed first-argument choices for `command`: structured `choices` reported by the agent, or
+ * literal pipe-separated options parsed from a leading `[a|b|c]` / `(a|b|c)` hint (skipping
+ * `<placeholder>` tokens and prose).
+ */
+export function commandChoices(command: AgentCommand): readonly AgentCommandChoice[] {
+  if (command.choices && command.choices.length > 0) return command.choices;
+  const hint = command.hint?.trim();
+  if (!hint) return [];
+  const group = /^[[(]([^\]()]+)[\])]/.exec(hint);
+  if (!group || !group[1]!.includes("|")) return [];
+  const seen = new Set<string>();
+  const out: AgentCommandChoice[] = [];
+  for (const raw of group[1]!.split("|")) {
+    const parts = raw.trim().split(/\s+/).filter(Boolean);
+    if (parts.length === 0) continue;
+    const head = parts[0]!;
+    if (!LITERAL_CHOICE.test(head)) continue;
+    // Allow a literal subcommand followed by flags/placeholders (`collect --run`, `advance <commit>`),
+    // but skip multi-word prose (`pull request`).
+    if (parts.length > 1 && !/^[-<[]/.test(parts[1]!)) continue;
+    const key = head.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ name: head, description: "" });
+  }
+  return out;
+}
+
+/** Matches argument choices: prefix first, then segment prefix (`-`, `_`, `:`), then substring (2+ chars). */
+export function matchCommandChoices(choices: readonly AgentCommandChoice[], query: string): AgentCommandChoice[] {
+  if (!query) return [...choices];
+  const q = query.toLowerCase();
+  const rank = (name: string) => {
+    const n = name.toLowerCase();
+    if (n.startsWith(q)) return 0;
+    if (n.split(/[-_:]/).some((part) => part.startsWith(q))) return 1;
+    if (q.length >= 2 && n.includes(q)) return 2;
+    return -1;
+  };
+  return choices
+    .map((choice) => ({ choice, rank: rank(choice.name) }))
+    .filter((m) => m.rank >= 0)
+    .sort((a, b) => a.rank - b.rank)
+    .map((m) => m.choice);
+}
+
+function findCommand(commands: readonly AgentCommand[], name: string): AgentCommand | undefined {
+  const lower = name.toLowerCase();
+  return (
+    commands.find((c) => c.source !== "skill" && c.name.toLowerCase() === lower) ??
+    commands.find((c) => c.name.toLowerCase() === lower)
+  );
+}
+
+/**
+ * Suggestions for the first or second argument of a leading `/command …`.
+ * First-arg suggestions come from `commandChoices`; second-arg suggestions complete active
+ * skills for `/skills info <skill>` and `/skills remove <skill>` when supported by the command.
+ */
+export function commandArgSuggestions(
+  commands: readonly AgentCommand[],
+  commandName: string,
+  subcommand: string | undefined,
+  query: string,
+): AgentCommandChoice[] {
+  const cmd = findCommand(commands, commandName);
+  if (!cmd) return [];
+  const choices = commandChoices(cmd);
+  if (subcommand === undefined) return matchCommandChoices(choices, query);
+  const sub = subcommand.toLowerCase();
+  if (!choices.some((c) => c.name.toLowerCase() === sub)) return [];
+  if (cmd.name.toLowerCase() === "skills" && (sub === "info" || sub === "remove")) {
+    const seen = new Set<string>();
+    const skills: AgentCommandChoice[] = [];
+    for (const c of commands) {
+      if (c.source !== "skill") continue;
+      const name = c.name.replace(/^\$/, "");
+      const key = name.toLowerCase();
+      if (!name || seen.has(key)) continue;
+      seen.add(key);
+      skills.push({ name, description: c.description });
+    }
+    return matchCommandChoices(skills, query);
+  }
+  return [];
+}
+
+/** Inline argument hint shown after a leading `/command ` when the caret sits at the end. */
+export function commandArgHintAt(text: string, caret: number, commands: readonly AgentCommand[]): string | null {
+  if (caret !== text.length || text.includes("\n")) return null;
+  const match = /^\s*\/([A-Za-z][\w:.-]*)\s+$/.exec(text);
+  if (!match) return null;
+  const hint = findCommand(commands, match[1]!)?.hint?.trim();
+  return hint || null;
 }
 
 /** Whether an `@` query is a typed-out path (`../x`, `./x`, `/x`) rather than a project file search. */
@@ -598,7 +728,78 @@ const LIMIT_WINDOWS: Record<string, { short: string; name: string }> = {
   seven_day: { short: "7d", name: "Weekly limit" },
   seven_day_opus: { short: "7d Opus", name: "Weekly Opus limit" },
   seven_day_sonnet: { short: "7d Sonnet", name: "Weekly Sonnet limit" },
+  chat: { short: "Chat", name: "Chat" },
+  completions: { short: "Completions", name: "Completions" },
+  premium_interactions: { short: "Premium", name: "Premium requests" },
 };
+
+const SYSTEM_CATEGORY_NAMES = new Set([
+  "System prompt",
+  "Custom instructions",
+  "Tool Definitions",
+  "System tools",
+  "System tools (deferred)",
+  "MCP tools",
+  "MCP tools (deferred)",
+  "MCP server instructions",
+  "Custom agents",
+]);
+
+/** Known user-context categories from Claude Code and Copilot (kept explicit so translations stay active). */
+const USER_CONTEXT_CATEGORY_NAMES = new Set([
+  "Tool Results",
+  "Messages",
+  "Memory files",
+  "Skills",
+  "Sub-agents",
+  "Plugins",
+]);
+
+const FREE_CATEGORY_NAMES = new Set(["Free space"]);
+
+/** Splits context categories into `System` and `User Context` sections plus any buffer tokens. */
+export function groupContextCategories(categories: readonly AgentContextCategory[]): {
+  system: AgentContextCategory[];
+  userContext: AgentContextCategory[];
+  bufferTokens: number;
+} {
+  const system: AgentContextCategory[] = [];
+  const userContext: AgentContextCategory[] = [];
+  let bufferTokens = 0;
+  for (const c of categories) {
+    if (
+      c.tokens <= 0 ||
+      c.kind === "free" ||
+      c.kind === "deferred" ||
+      FREE_CATEGORY_NAMES.has(c.name) ||
+      c.name.endsWith(" (deferred)")
+    ) {
+      continue;
+    }
+    if (c.name === "Autocompact buffer") {
+      bufferTokens += c.tokens;
+      continue;
+    }
+    const group =
+      c.group ??
+      (SYSTEM_CATEGORY_NAMES.has(c.name)
+        ? "System"
+        : USER_CONTEXT_CATEGORY_NAMES.has(c.name)
+          ? "User Context"
+          : "User Context");
+    if (group === "System") system.push(c);
+    else userContext.push(c);
+  }
+  return { system, userContext, bufferTokens };
+}
+
+/** Share of the context window as a compact percentage ("2.0%", "20.3%", "<0.1%"). */
+export function contextShareLabel(used: number, max: number): string {
+  if (max <= 0 || used <= 0) return "0.0%";
+  const pct = (used / max) * 100;
+  if (pct < 0.05) return "<0.1%";
+  return `${pct.toFixed(1)}%`;
+}
 
 /** Visual severity for a usage percentage meter: quiet until nearing the cap. */
 export type MeterTone = "warning" | "danger";
@@ -657,8 +858,16 @@ function untilReset(ms: number): string {
   return `${Math.floor(h / 24)}d ${h % 24}h`;
 }
 
-/** "$0.42": what the session has cost so far. */
+/** "$0.42" or "4,211.4 credits": what the session has cost so far. */
 export function costLabel(c: AgentCost): string {
+  if (c.currency === "credits") {
+    const amount = c.amount ?? 0;
+    const formatted = new Intl.NumberFormat("en-US", {
+      minimumFractionDigits: amount > 0 && amount < 10 ? 1 : 0,
+      maximumFractionDigits: 1,
+    }).format(amount);
+    return tx`${formatted} credits`;
+  }
   try {
     return new Intl.NumberFormat("en-US", {
       style: "currency",

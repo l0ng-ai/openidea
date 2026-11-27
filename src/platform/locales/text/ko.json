@@ -6301,5 +6301,19 @@
   "Context": "컨텍스트",
   "Allow all optional permissions": "모든 선택 권한 허용",
   "Get from Version Control": "버전 관리에서 가져오기",
-  "Cannot connect to the remote host": "원격 호스트에 연결할 수 없음"
+  "Cannot connect to the remote host": "원격 호스트에 연결할 수 없음",
+  "{formatted} credits": "{formatted} 크레딧",
+  "Session Info": "세션 정보",
+  "Session Cost": "세션 비용",
+  "Context Window": "컨텍스트 창",
+  "Reserved for response": "응답용 예약",
+  "System": "시스템",
+  "User Context": "사용자 컨텍스트",
+  "Tool Definitions": "도구 정의",
+  "Tool Results": "도구 결과",
+  "Custom instructions": "사용자 지정 지침",
+  "Sub-agents": "하위 에이전트",
+  "Last turn": "마지막 턴",
+  "Compact Conversation": "대화 압축",
+  "Premium requests": "프리미엄 요청"
 }

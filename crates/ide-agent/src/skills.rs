@@ -209,6 +209,7 @@ impl Frontmatter {
             source,
             description: truncate(&description),
             hint: self.get("argument-hint").filter(|h| !h.is_empty()).map(str::to_owned),
+            choices: Vec::new(),
         }
     }
 }
@@ -913,6 +914,7 @@ pub fn menu_commands(offered: Vec<AgentCommand>, states: &[AgentSkillState]) -> 
                 description: state.skill.description.clone(),
                 hint: state.skill.hint.clone(),
                 source: AgentCommandSource::Skill,
+                choices: Vec::new(),
             });
         }
     }
@@ -938,6 +940,7 @@ mod tests {
             description: description.into(),
             hint: None,
             source: AgentCommandSource::Command,
+            choices: Vec::new(),
         }
     }
 

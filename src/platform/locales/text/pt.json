@@ -6015,5 +6015,19 @@
   "Context": "Contexto",
   "Allow all optional permissions": "Permitir todas as permissões opcionais",
   "Get from Version Control": "Obter do controle de versão",
-  "Cannot connect to the remote host": "Não é possível conectar ao host remoto"
+  "Cannot connect to the remote host": "Não é possível conectar ao host remoto",
+  "{formatted} credits": "{formatted} créditos",
+  "Session Info": "Informações da sessão",
+  "Session Cost": "Custo da sessão",
+  "Context Window": "Janela de contexto",
+  "Reserved for response": "Reservado para resposta",
+  "System": "Sistema",
+  "User Context": "Contexto do usuário",
+  "Tool Definitions": "Definições de ferramentas",
+  "Tool Results": "Resultados de ferramentas",
+  "Custom instructions": "Instruções personalizadas",
+  "Sub-agents": "Subagentes",
+  "Last turn": "Último turno",
+  "Compact Conversation": "Compactar conversa",
+  "Premium requests": "Solicitações premium"
 }

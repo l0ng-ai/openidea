@@ -85,6 +85,13 @@
   color: var(--accent);
   background: var(--accent-soft);
 }
+/* Muted argument placeholder rendered after a leading `/command ` while no argument is typed. */
+.argHint {
+  color: var(--fg-faint);
+  font-style: italic;
+  pointer-events: none;
+  user-select: none;
+}
 /* `@something` that names no referenced file: as typed, just marked. */
 .pending {
   color: var(--fg-strong);
