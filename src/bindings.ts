@@ -417,7 +417,7 @@ export const commands = {
 	/**  The version line of the executable at `path`. */
 	dbToolVersion: (path: string) => typedError<string, IdeError>(__TAURI_INVOKE("db_tool_version", { path })),
 	dbTrustSshHost: (id: string) => typedError<null, IdeError>(__TAURI_INVOKE("db_trust_ssh_host", { id })),
-	dbWorkspaceJoin: (request: RequestId, driver: string, left: DbWorkspaceJoinTable, right: DbWorkspaceJoinTable) => typedError<DbQueryResult, IdeError>(__TAURI_INVOKE("db_workspace_join", { request, driver, left, right })),
+	dbWorkspaceJoin: (request: RequestId, driver: string, plan: DbWorkspaceJoinPlan) => typedError<DbQueryResult, IdeError>(__TAURI_INVOKE("db_workspace_join", { request, driver, plan })),
 	/**  Attach to Process: the user's processes a debugger can attach to. */
 	debugAttachableProcesses: () => typedError<AttachableProcess[], IdeError>(__TAURI_INVOKE("debug_attachable_processes")),
 	/**  Last known verification states of a file's breakpoints (refetch on `breakpointsChanged`). */
@@ -5761,13 +5761,35 @@ export type DbTxMode = "auto" | "manual";
 
 export type DbVisibilityChange = { kind: "databases"; selection: DbSchemaSelection } | { kind: "schemas"; selection: DbSchemaSelection } | { kind: "databaseSchemas"; database: string; selection: DbSchemaSelection | null };
 
-/**  A table explicitly selected as one side of a project workspace join. */
-export type DbWorkspaceJoinTable = {
+export type DbWorkspaceJoinColumn = {
+	relation: number,
+	column: string,
+};
+
+export type DbWorkspaceJoinCondition = {
+	/**  The right relation is the next table in the chain. */
+	left: DbWorkspaceJoinColumn,
+	rightColumn: string,
+};
+
+export type DbWorkspaceJoinPlan = {
+	tables: DbWorkspaceJoinRelation[],
+	joins: DbWorkspaceJoinCondition[],
+	/**  None expands all relations in FROM/JOIN order. */
+	projection: DbWorkspaceJoinProjection[] | null,
+};
+
+export type DbWorkspaceJoinProjection = {
+	relation: number,
+	/**  None expands this relation's columns in source order. */
+	column: string | null,
+};
+
+export type DbWorkspaceJoinRelation = {
 	sourceId: string,
 	database: string,
 	schema: string,
 	table: string,
-	key: string,
 };
 
 /**  What a session's adapter supports, for enabling actions. */
