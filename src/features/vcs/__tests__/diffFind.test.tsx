@@ -57,7 +57,8 @@ const diff = (right: object) =>
   ({
     kind: "diff",
     key: `diff:${JSON.stringify(right)}`,
-    data: { path: "/p/a.ts", left: { type: "rev", rev: "HEAD" }, right },
+    // Opened at the top (not at the first difference) so searches start from the first line.
+    data: { path: "/p/a.ts", left: { type: "rev", rev: "HEAD" }, right, line: 0 },
   }) as unknown as EditorInput;
 
 const revisions = diff({ type: "rev", rev: "abc123" });
