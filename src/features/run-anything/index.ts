@@ -18,7 +18,7 @@ export function activate(): () => void {
         icon: "run-anything",
         keywords: ["command", "shell", "execute", "npm", "mvn", "gradle"],
         when: "projectOpen",
-        run: showRunAnything,
+        run: ({ arg }) => showRunAnything(arg),
       },
     ]),
   ];

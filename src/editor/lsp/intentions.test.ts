@@ -43,6 +43,7 @@ const {
   INTENTIONS_POPUP_DELAY_MS,
   quickFixesAt,
   applyKindSilently,
+  runKindAction,
   bulbLine,
   changedLines,
   indentUnderBrace,
@@ -57,6 +58,7 @@ const { useLspPopup, closePopup } = await import("./popupStore");
 const { asyncIntentionProviders, inspectionControlProviders } = await import("@/editor/api");
 const { setFileDiagnostics, toLintDiagnostics } = await import("./diagnostics");
 const { lspDoc } = await import("./lsp");
+const { inForeground } = await import("./foreground");
 
 const views: EditorView[] = [];
 afterEach(() => {
@@ -623,5 +625,76 @@ describe("quick fixes for overlapping diagnostics", () => {
     expect(await quickFixesAt(view, 2, 3, problem)).toEqual([preferred, first]);
     await applyQuickFix(view);
     expect(runInteractiveCodeAction).toHaveBeenCalledWith(1, preferred);
+  });
+});
+
+// #6381: Code Vision's usage counts search the whole project on the same server; while the user
+// waits for code actions they give way (`foreground.ts`), but never for background lookups.
+describe("code actions the user waits for go before background requests", () => {
+  const editor = (doc = "f(1);\n", caret = 0) => {
+    const view = new EditorView({
+      state: EditorState.create({
+        doc,
+        selection: { anchor: caret },
+        extensions: [lspDoc.of({ doc: 1, path: "/p/a.ts", language: "typescript", uiMode: null, readOnly: false })],
+      }),
+    });
+    views.push(view);
+    return view;
+  };
+  const held = () => {
+    let release!: () => void;
+    lspCodeActions.mockImplementation(
+      () => new Promise((r) => (release = () => r({ status: "ok", data: [{ ...resolved, edit: null }] }))),
+    );
+    return () => release();
+  };
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+
+  it.each([
+    ["⌥↵", (view: EditorView) => showIntentions(view)],
+    [
+      "a code action by kind",
+      (view: EditorView) => runKindAction(view, "refactor", { none: "Nothing", label: "Refactor" }),
+    ],
+  ])("%s holds background requests back until the server answers", async (_name, run) => {
+    const release = held();
+    const view = editor();
+    const running = run(view);
+    await tick();
+    expect(lspCodeActions).toHaveBeenCalled();
+    expect(inForeground()).toBe(true);
+    release();
+    await running;
+    expect(inForeground()).toBe(false);
+  });
+
+  it("Apply Quick Fix holds background requests back while it looks for the fix", async () => {
+    const view = editor("f(1);\n", 1);
+    const problem: Diagnostic = {
+      range: { start: { line: 0, col: 0 }, end: { line: 0, col: 4 } },
+      severity: "error",
+      message: "broken",
+      source: "ts",
+      code: null,
+    };
+    view.dispatch(setDiagnostics(view.state, toLintDiagnostics(view.state.doc, [problem])));
+    const release = held();
+    const running = applyQuickFix(view);
+    await tick();
+    expect(inForeground()).toBe(true);
+    release();
+    await running;
+    expect(inForeground()).toBe(false);
+  });
+
+  it("an Actions on Save lookup does not hold them back", async () => {
+    const release = held();
+    const running = applyKindSilently(editor(), "source.fixAll");
+    await tick();
+    expect(lspCodeActions).toHaveBeenCalled();
+    expect(inForeground()).toBe(false);
+    release();
+    await running;
   });
 });

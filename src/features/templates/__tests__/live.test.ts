@@ -12,9 +12,10 @@ import {
   formatDate,
   parseBody,
   type LiveTemplate,
+  unsupportedExpressionFunctions,
 } from "../live/model";
 import { BUILTIN_TEMPLATES } from "../live/builtins";
-import { mergeTemplates } from "../live/store";
+import { mergeImportedTemplates, mergeTemplates } from "../live/store";
 import { enclosingName, suggestVariableName, templateFunctions } from "../editorContext";
 
 /** Applies a snippet template to a state and returns the resulting text and selection. */
@@ -55,6 +56,13 @@ describe("expressions", () => {
     expect(evaluateExpression("camelCase(NAME)", {}, { NAME: "foo-bar" })).toBe("fooBar");
     expect(evaluateExpression("unknownFn()", {})).toBe("");
     expect(evaluateExpression("broken(", {})).toBe("");
+  });
+
+  it("identifies expressions the evaluator cannot run without inventing values", () => {
+    expect(unsupportedExpressionFunctions("capitalize(fileNameWithoutExtension())")).toEqual([]);
+    expect(unsupportedExpressionFunctions("className()")).toEqual([]);
+    expect(unsupportedExpressionFunctions('groovyScript("return 1")')).toEqual(["groovyScript"]);
+    expect(unsupportedExpressionFunctions("broken(")).toEqual(["broken("]);
   });
 
   it("formats dates", () => {
@@ -224,6 +232,40 @@ describe("expansion", () => {
     expect(merged.find((t) => t.id === edited.id)?.body).toBe("edited");
     expect(merged.some((t) => t.id === BUILTIN_TEMPLATES[1]!.id)).toBe(false);
     expect(merged.at(-1)).toBe(user);
+  });
+
+  it("merges imports by stable id without touching unrelated templates or built-ins", () => {
+    const builtin = BUILTIN_TEMPLATES[0]!;
+    const edited = { ...builtin, body: "my built-in edit" };
+    const keep: LiveTemplate = {
+      id: "user.keep",
+      group: "User",
+      abbrev: "keep",
+      description: "",
+      body: "keep",
+      contexts: ["python"],
+    };
+    const imported: LiveTemplate = {
+      id: "jetbrains.Python.iter",
+      group: "Python",
+      abbrev: "iter",
+      description: "",
+      body: "for $ITEM$ in $ITEMS$: $END$",
+      contexts: ["python"],
+    };
+    const custom = {
+      templates: { [builtin.id]: edited, [keep.id]: keep, [imported.id]: { ...imported, body: "old" } },
+      deleted: [builtin.id, imported.id, BUILTIN_TEMPLATES[1]!.id],
+    };
+    const merged = mergeImportedTemplates(custom, [imported, { ...builtin, body: "must not replace" }]);
+    expect(merged.templates[builtin.id]).toBe(edited);
+    expect(merged.templates[keep.id]).toBe(keep);
+    expect(merged.templates[imported.id]).toBe(imported);
+    expect(merged.deleted).toEqual([builtin.id, BUILTIN_TEMPLATES[1]!.id]);
+    expect(custom.templates[imported.id]!.body).toBe("old");
+    const again = mergeImportedTemplates(merged, [{ ...imported, body: "updated" }]);
+    expect(Object.keys(again.templates).filter((id) => id === imported.id)).toHaveLength(1);
+    expect(again.templates[imported.id]!.body).toBe("updated");
   });
 });
 
