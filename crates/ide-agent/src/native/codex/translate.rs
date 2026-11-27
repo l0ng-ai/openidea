@@ -740,7 +740,7 @@ pub(super) enum Failure {
     UsageLimit(Option<f64>),
     /// Signed out or refused.
     Auth,
-    /// The model declined.
+    /// The server blocked the turn under a safety policy.
     Refusal,
     Other,
 }
@@ -780,13 +780,27 @@ fn resets_at(rate_limits: Option<&Value>) -> Option<f64> {
     exhausted.map(|s| s * 1000.0)
 }
 
-/// The text a failed turn reports: codex's message, with its details.
+/// The text a failed turn reports: Codex's message, details and diagnostic code.
 pub(super) fn error_message(error: &Value) -> String {
-    let message = error.get("message").and_then(Value::as_str).unwrap_or("Codex failed").trim();
-    match error.get("additionalDetails").and_then(Value::as_str).map(str::trim).filter(|d| !d.is_empty()) {
-        Some(details) if !message.contains(details) => format!("{message}\n{details}"),
-        _ => message.to_owned(),
+    let original =
+        error.get("message").and_then(Value::as_str).map(str::trim).filter(|m| !m.is_empty()).unwrap_or("Codex failed");
+    let mut message = original.to_owned();
+    if let Some(details) =
+        error.get("additionalDetails").and_then(Value::as_str).map(str::trim).filter(|d| !d.is_empty())
+        && !original.contains(details)
+    {
+        message.push('\n');
+        message.push_str(details);
     }
+    let info = error.get("codexErrorInfo").unwrap_or(&Value::Null);
+    let code = info.as_str().or_else(|| info.as_object()?.keys().next().map(String::as_str));
+    if let Some(code) = code.map(str::trim).filter(|c| !c.is_empty()) {
+        message.push_str(&format!("\nCodex error: {code}"));
+        if let Some(status) = info.get(code).and_then(|details| details.get("httpStatusCode")).and_then(Value::as_u64) {
+            message.push_str(&format!(" (HTTP {status})"));
+        }
+    }
+    message
 }
 
 /// One choice of an approval: what ACP shows and what codex gets back.
