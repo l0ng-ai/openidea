@@ -832,6 +832,11 @@ impl AgentManager {
         *self.shared.git_executable.write() = Some(hook);
     }
 
+    /// Directory holding linked Git worktrees created for agent tasks of this project.
+    pub fn worktrees_dir(&self) -> &Path {
+        &self.shared.paths.worktrees_dir
+    }
+
     /// The agents (custom ones re-read), whether each is installed, and what they offered last time.
     pub fn providers(&self) -> Vec<AgentProvider> {
         let specs = provider::load(self.shared.paths.custom_agents_dir.as_deref(), self.shared.env_secrets());

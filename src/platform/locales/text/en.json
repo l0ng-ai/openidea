@@ -4199,5 +4199,11 @@
   "Checking sign-in status…": "Checking sign-in status…",
   "Sign in above to view and choose models available for this account.": "Sign in above to view and choose models available for this account.",
   "Click Apply to load the models available for the selected account.": "Click Apply to load the models available for the selected account.",
-  "Loading models for this account…": "Loading models for this account…"
+  "Loading models for this account…": "Loading models for this account…",
+  "Account": "Account",
+  "Automatic ({activeLogin})": "Automatic ({activeLogin})",
+  "Use {suggested} for this project": "Use {suggested} for this project",
+  "GitHub account: @{activeLogin}": "GitHub account: @{activeLogin}",
+  "Uses GitHub CLI's active account without setting GH_TOKEN in the project environment.": "Uses GitHub CLI's active account without setting GH_TOKEN in the project environment.",
+  "Passes this account's GH_TOKEN to processes started in this project (terminals, agents, Git, and run configurations).": "Passes this account's GH_TOKEN to processes started in this project (terminals, agents, Git, and run configurations)."
 }

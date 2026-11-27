@@ -154,12 +154,26 @@ impl ProviderSpec {
         cwd: &Path,
         strip_ambient_tokens: bool,
     ) -> Result<Self, String> {
-        let account = is_copilot_provider(&self.id).then(|| copilot_github_account(&self.env)).flatten();
+        let is_copilot = is_copilot_provider(&self.id);
+        let account = is_copilot.then(|| copilot_github_account(&self.env)).flatten();
+        let explicit_copilot_token =
+            self.env.iter().any(|(name, value)| name == "COPILOT_GITHUB_TOKEN" && !value.is_empty());
         let mut resolved = self.resolve_for_launch_base(cwd, strip_ambient_tokens || account.is_some());
         if let Some(account) = account {
             let token = github_token_for_account(&account)?;
+            // Keep any project-scoped `GH_TOKEN` untouched so `gh` commands inside Copilot's
+            // shell use the project's GitHub account while `COPILOT_GITHUB_TOKEN` bills `account`.
             resolved.env.retain(|(name, _)| !AMBIENT_COPILOT_AUTH_VARS.contains(&name.as_str()));
             resolved.env.push(("COPILOT_GITHUB_TOKEN".into(), token));
+        } else if is_copilot
+            && !strip_ambient_tokens
+            && !explicit_copilot_token
+            && ide_core::project_env::github_token(cwd).is_some()
+            && let Some(default_token) = default_github_token()
+        {
+            // A project-scoped `GH_TOKEN` targets repository/PR commands, not Copilot model
+            // billing: pin `COPILOT_GITHUB_TOKEN` to the user's global `gh` account when present.
+            resolved.env.push(("COPILOT_GITHUB_TOKEN".into(), default_token));
         }
         Ok(resolved)
     }
@@ -169,7 +183,7 @@ impl ProviderSpec {
             self.command = crate::native::newest_install(&self.command);
         }
         if is_copilot_provider(&self.id) {
-            self.env = sanitized_copilot_env(&self.env, strip_ambient_tokens);
+            self.env = sanitized_copilot_env(&self.env, cwd, strip_ambient_tokens);
             self.env.retain(|(name, _)| name != COPILOT_GITHUB_ACCOUNT_ENV);
         }
         let program = ide_jsonrpc::resolve_spawn_program(&self.command, &self.env);
@@ -386,7 +400,8 @@ fn parse_gh_auth_status_json(text: &str) -> Option<Vec<GhAuthAccount>> {
             if entry.state.as_deref().is_some_and(|s| s != "success") {
                 continue;
             }
-            if matches!(entry.token_source.as_deref(), Some("GITHUB_TOKEN" | "GH_TOKEN" | "COPILOT_GITHUB_TOKEN")) {
+            // Tokens from the environment (`GH_TOKEN`, `GITHUB_TOKEN`, …) are not keyring accounts.
+            if entry.token_source.as_deref().is_some_and(|source| source.ends_with("_TOKEN") || source == "env") {
                 continue;
             }
             if let Some(existing) = accounts.iter_mut().find(|a| a.login == login) {
@@ -406,7 +421,8 @@ fn parse_gh_auth_status_text(text: &str) -> Vec<GhAuthAccount> {
         let trimmed = line.trim();
         if let Some((_, rest)) = trimmed.split_once("Logged in to github.com account ") {
             let login = rest.split_whitespace().next().unwrap_or("").trim();
-            if !login.is_empty() {
+            current = None;
+            if !login.is_empty() && !rest.contains("_TOKEN") {
                 if let Some(idx) = accounts.iter().position(|a| a.login == login) {
                     current = Some(idx);
                 } else {
@@ -423,6 +439,20 @@ fn parse_gh_auth_status_text(text: &str) -> Vec<GhAuthAccount> {
     accounts
 }
 
+fn default_github_token() -> Option<String> {
+    let program = find_gh_executable()?;
+    let mut command = std::process::Command::new(program);
+    ide_core::process::prepare(&mut command);
+    command.args(["auth", "token", "--hostname", "github.com"]).envs(ide_core::process::shell_env());
+    for name in AMBIENT_COPILOT_AUTH_VARS {
+        command.env_remove(name);
+    }
+    let output = command.output().ok().filter(|out| out.status.success())?;
+    let token = String::from_utf8(output.stdout).ok()?;
+    let token = token.trim();
+    (!token.is_empty()).then(|| token.to_owned())
+}
+
 pub(crate) fn prefer_stored_copilot_auth() -> bool {
     PREFER_STORED_COPILOT_AUTH.load(std::sync::atomic::Ordering::Acquire)
 }
@@ -431,18 +461,17 @@ pub(crate) fn mark_prefer_stored_copilot_auth() {
     PREFER_STORED_COPILOT_AUTH.store(true, std::sync::atomic::Ordering::Release);
 }
 
-pub(crate) fn has_unconfigured_copilot_ambient_token(spec_env: &[(String, String)]) -> bool {
+pub(crate) fn has_unconfigured_copilot_ambient_token(spec_env: &[(String, String)], cwd: &Path) -> bool {
     AMBIENT_COPILOT_AUTH_VARS.iter().any(|&key| {
         !spec_env.iter().any(|(k, v)| k == key && !v.is_empty())
-            && ambient_copilot_env_value(key).is_some_and(|v| !v.is_empty())
+            && ambient_copilot_env_value(key, cwd).is_some_and(|v| !v.is_empty())
     })
 }
 
-fn ambient_copilot_env_value(key: &str) -> Option<String> {
-    ide_core::process::shell_env()
-        .find(|(k, _)| *k == key)
-        .map(|(_, v)| v.to_string_lossy().into_owned())
-        .or_else(|| ide_core::process::host_var_os(key).map(|v| v.to_string_lossy().into_owned()))
+fn ambient_copilot_env_value(key: &str, cwd: &Path) -> Option<String> {
+    ide_core::process::host_var_os_in(cwd, key).map(|v| v.to_string_lossy().into_owned()).or_else(|| {
+        ide_core::process::shell_env().find(|(k, _)| *k == key).map(|(_, v)| v.to_string_lossy().into_owned())
+    })
 }
 
 /// Builds child environment overrides for `copilot`:
@@ -453,9 +482,10 @@ fn ambient_copilot_env_value(key: &str) -> Option<String> {
 ///   while preserving any token explicitly configured in OpenIDEA's agent `spec_env`.
 pub(crate) fn sanitized_copilot_env(
     spec_env: &[(String, String)],
+    cwd: &Path,
     strip_ambient_tokens: bool,
 ) -> Vec<(String, String)> {
-    sanitize_copilot_env_with(spec_env, strip_ambient_tokens, ambient_copilot_env_value)
+    sanitize_copilot_env_with(spec_env, strip_ambient_tokens, |key| ambient_copilot_env_value(key, cwd))
 }
 
 pub(crate) fn sanitize_copilot_env_with(
@@ -1695,6 +1725,8 @@ mod tests {
 
         let text = "\
 github.com
+  ✓ Logged in to github.com account env_user (GH_TOKEN)
+  - Active account: true
   ✓ Logged in to github.com account alice (keyring)
   - Active account: false
   ✓ Logged in to github.com account alice-work (keyring)

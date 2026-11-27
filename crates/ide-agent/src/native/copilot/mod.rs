@@ -114,7 +114,7 @@ pub(crate) fn is_missing_binary_error(err: &std::io::Error) -> bool {
 pub(crate) async fn discover(spec: ProviderSpec, cwd: PathBuf) -> Result<Discovered, DiscoverError> {
     tokio::time::timeout(DISCOVER_TIMEOUT, async move {
         let prefer_stored = crate::provider::prefer_stored_copilot_auth();
-        let has_ambient = crate::provider::has_unconfigured_copilot_ambient_token(&spec.env);
+        let has_ambient = crate::provider::has_unconfigured_copilot_ambient_token(&spec.env, &cwd);
         match discover_once(spec.clone(), cwd.clone(), prefer_stored).await {
             Err(err)
                 if !prefer_stored
@@ -199,7 +199,7 @@ pub(crate) async fn probe_auth_status(mut spec: ProviderSpec, cwd: PathBuf) -> O
     spec.env.retain(|(name, _)| name != crate::provider::COPILOT_GITHUB_ACCOUNT_ENV);
     tokio::time::timeout(Duration::from_secs(8), async move {
         let prefer_stored = crate::provider::prefer_stored_copilot_auth();
-        let has_ambient = crate::provider::has_unconfigured_copilot_ambient_token(&spec.env);
+        let has_ambient = crate::provider::has_unconfigured_copilot_ambient_token(&spec.env, &cwd);
         let first = probe_auth_once(spec.clone(), cwd.clone(), prefer_stored).await;
         if !prefer_stored
             && has_ambient
