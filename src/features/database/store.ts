@@ -609,6 +609,7 @@ export async function removeSources(sources: readonly DataSource[]): Promise<voi
   const current = projectRequest();
   const mutations = unique.map((source) => sourceMutation(source.id!));
   try {
+    await Promise.all([...ids].filter((id) => connectedTargets(id).length).map((id) => disconnect(id)));
     await call(commands.dbSaveSources(useDatabase.getState().sources.filter((source) => !ids.has(source.id ?? ""))));
     if (!current() || mutations.some((unchanged) => !unchanged())) return;
     for (const id of ids) forget(id);

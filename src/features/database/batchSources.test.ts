@@ -57,6 +57,25 @@ describe("batch data source actions", () => {
     expect(useDatabase.getState().selectedNode).toBeNull();
   });
 
+  it.each([1, 2])("disconnects %i connected source(s) before removal", async (count) => {
+    const selection = nodes.slice(0, count);
+    const ids = selection.map((node) => node.source.id!);
+    useDatabase.setState({
+      connected: new Set(ids),
+      selectedNode: selection[0]!,
+      selectedNodes: selection,
+    });
+    const disconnect = vi.spyOn(commands, "dbDisconnect").mockResolvedValue({ status: "ok", data: null });
+    const save = vi.spyOn(commands, "dbSaveSources").mockResolvedValue({ status: "ok", data: null });
+    vi.spyOn(commands, "dbSources").mockResolvedValue({ status: "ok", data: [] });
+
+    act(() => void executeAction("db.drop"));
+    await vi.waitFor(() => expect(save).toHaveBeenCalledOnce());
+
+    expect(disconnect.mock.calls).toEqual(ids.map((id) => [id, null]));
+    expect(Math.max(...disconnect.mock.invocationCallOrder)).toBeLessThan(save.mock.invocationCallOrder[0]!);
+  });
+
   it("deactivates only the selected sources that are connected", async () => {
     useDatabase.setState({ connected: new Set(["a", "a:other"]) });
     const disconnect = vi.spyOn(commands, "dbDisconnect").mockResolvedValue({ status: "ok", data: null });
