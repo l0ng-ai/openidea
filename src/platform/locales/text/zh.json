@@ -10867,5 +10867,16 @@
   "Pull request link {text}": "拉取请求链接 {text}",
   "Issue link {text}": "Issue 链接 {text}",
   "Commit link {text}": "提交链接 {text}",
-  "Link {text}": "链接 {text}"
+  "Link {text}": "链接 {text}",
+  "Plots": "绘图",
+  "Save Plot": "保存绘图",
+  "Cannot save the plot": "无法保存绘图",
+  "Cannot copy the plot": "无法复制绘图",
+  "Plot {n}": "绘图 {n}",
+  "Figures that Python code shows with plt.show() appear here.": "Python 代码用 plt.show() 显示的图形会出现在这里。",
+  "Save as PNG": "另存为 PNG",
+  "Delete Plot": "删除绘图",
+  "Delete All Plots": "删除全部绘图",
+  "Show plots in tool window": "在工具窗口中显示绘图",
+  "Runs, debug sessions and the Python Console send matplotlib figures to the Plots tool window, unless the run sets MPLBACKEND. Off: figures open in matplotlib's own window.": "运行、调试会话和 Python 控制台的 matplotlib 图形会发送到“绘图”工具窗口，除非运行自行设置了 MPLBACKEND。关闭后，图形在 matplotlib 自己的窗口中打开。"
 }
