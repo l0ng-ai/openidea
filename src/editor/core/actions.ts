@@ -96,6 +96,7 @@ import {
   splitLine,
 } from "./cm/caretCommands";
 import { isOverwrite, toggleOverwrite } from "./cm/overwrite";
+import { isStickySelection, toggleStickySelection } from "./cm/stickySelection";
 import { isColumnMode, toggleColumnMode } from "./cm/columnMode";
 import {
   cloneCaretAbove,
@@ -1146,13 +1147,18 @@ export function registerEditorActions(): () => void {
     caret(
       "editor.nextWordInDifferentHumpsMode",
       'Move Caret to Next Word in Different "CamelHumps" Mode',
-      (v) => inDifferentHumpsMode("right", editorPrefs().smartKeys.camelHumps)(v),
+      (v) =>
+        inDifferentHumpsMode(
+          isStickySelection(v.state) ? "selectRight" : "right",
+          editorPrefs().smartKeys.camelHumps,
+        )(v),
       { category: "Editor Actions" },
     ),
     caret(
       "editor.previousWordInDifferentHumpsMode",
       'Move Caret to Previous Word in Different "CamelHumps" Mode',
-      (v) => inDifferentHumpsMode("left", editorPrefs().smartKeys.camelHumps)(v),
+      (v) =>
+        inDifferentHumpsMode(isStickySelection(v.state) ? "selectLeft" : "left", editorPrefs().smartKeys.camelHumps)(v),
       { category: "Editor Actions" },
     ),
     caret(
@@ -1221,6 +1227,14 @@ export function registerEditorActions(): () => void {
       toggled: () => {
         const view = focusedCellEditor() ?? activeSlot()?.view;
         return view ? isOverwrite(view.state) : false;
+      },
+    }),
+    text("editor.toggleStickySelection", "Toggle Sticky Selection", (v) => toggleStickySelection(v), {
+      category: "Editor Actions",
+      keywords: ["set mark", "selection mode"],
+      toggled: () => {
+        const view = focusedCellEditor() ?? activeSlot()?.view;
+        return view ? isStickySelection(view.state) : false;
       },
     }),
     edit("code.joinLines", "Join Lines", (v) => joinLines(v)),

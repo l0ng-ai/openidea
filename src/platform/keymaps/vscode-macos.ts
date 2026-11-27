@@ -161,6 +161,7 @@ export const vscodeMacos: Record<string, string[]> = {
   "code.cutLineEnd": [],
   "code.hungryBackspace": [],
   "editor.swapSelectionBoundaries": [],
+  "editor.toggleStickySelection": [],
   "code.moveLineUp": ["Alt+Up"],
   "code.moveLineDown": ["Alt+Down"],
   "code.moveStatementUp": [],

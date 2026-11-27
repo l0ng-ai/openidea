@@ -87,6 +87,8 @@ describe("IDEA keymap parity", () => {
     ["code.hungryBackspace", [], []],
     // EditorSwapSelectionBoundaries has no shortcut.
     ["editor.swapSelectionBoundaries", [], []],
+    // EditorToggleStickySelection has no shortcut.
+    ["editor.toggleStickySelection", [], []],
     // EditorSelectLine has no shortcut.
     ["editor.selectLine", [], []],
     // CopyAsPlainText / CopyAsRichText have no shortcut.
