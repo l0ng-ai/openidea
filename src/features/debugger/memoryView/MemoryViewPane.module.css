@@ -1,0 +1,104 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.toolbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.toolbar .address {
+  flex: 1;
+  min-width: 0;
+  max-width: 480px;
+  margin-right: var(--space-1);
+}
+
+.note,
+.error {
+  flex: none;
+  padding: 4px 12px;
+  font-size: var(--fs-ui);
+  border-bottom: 1px solid var(--border);
+}
+.note {
+  color: var(--fg-subtle);
+}
+.error {
+  color: var(--fg);
+  background: var(--bg-feedback-error);
+  border-bottom-color: var(--border-feedback-error);
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Every column is in the code font, so the hex and the ASCII of a row line up with the rows above. */
+.grid {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  line-height: var(--lh-code);
+  white-space: pre;
+  -webkit-user-select: text;
+  user-select: text;
+}
+.dimmed {
+  color: var(--fg-muted);
+}
+
+.row {
+  display: flex;
+  gap: 2ch;
+  padding: 0 12px;
+  width: max-content;
+}
+.head {
+  position: sticky;
+  top: -4px;
+  color: var(--fg-subtle);
+  background: var(--bg-app);
+}
+.row:not(.head):hover {
+  background: var(--bg-hover);
+}
+
+.row > .address {
+  color: var(--fg-subtle);
+  min-width: 18ch;
+}
+
+.hex {
+  display: flex;
+  gap: 1ch;
+}
+/* A wider gap halfway, like a hex editor's two groups of eight. */
+.hex > .byte:nth-child(8) {
+  margin-right: 1ch;
+}
+
+.target {
+  color: var(--fg-strong);
+  background: var(--bg-selected);
+  border-radius: 2px;
+}
+.unreadable {
+  color: var(--fg-faint);
+}

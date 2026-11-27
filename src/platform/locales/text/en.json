@@ -4426,5 +4426,15 @@
   "Keep Key": "Keep Key",
   "Drop Index": "Drop Index",
   "Keep Index": "Keep Index",
-  "SQLite cannot drop the index of a primary key or unique constraint.": "SQLite cannot drop the index of a primary key or unique constraint."
+  "SQLite cannot drop the index of a primary key or unique constraint.": "SQLite cannot drop the index of a primary key or unique constraint.",
+  "Memory View": "Memory View",
+  "View Memory": "View Memory",
+  "Address or expression, such as &buffer[0]": "Address or expression, such as &buffer[0]",
+  "Address or expression": "Address or expression",
+  "Go to Address": "Go to Address",
+  "ASCII": "ASCII",
+  "Memory is read while the program is paused.": "Memory is read while the program is paused.",
+  "The memory at {address} cannot be read.": "The memory at {address} cannot be read.",
+  "Enter an address or an expression, or choose View Memory on a variable.": "Enter an address or an expression, or choose View Memory on a variable.",
+  "“{expression}” is not an address. Enter a pointer or an address, such as &buffer[0].": "“{expression}” is not an address. Enter a pointer or an address, such as &buffer[0]."
 }

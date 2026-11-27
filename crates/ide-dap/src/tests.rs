@@ -6,6 +6,7 @@ mod stream_trace;
 
 use super::*;
 use crate::adapter::{AdapterIo, LaunchFuture};
+use base64::Engine;
 use ide_core::IdeEvent;
 use ide_core::event::DebugEvent;
 use ide_jsonrpc::framing;
@@ -195,6 +196,9 @@ struct Script {
     accept: &'static [&'static str],
     /// Requests of the adapter's own answered with a body and followed by events.
     custom: Option<fn(&Value) -> Option<CustomReply>>,
+    /// Advertise `supportsReadMemoryRequest`: memory below 0x1010 reads as its low address byte,
+    /// memory from there on is unmapped.
+    read_memory: bool,
 }
 
 /// The answer to a request of the adapter's own: the response body, then events (name, body).
@@ -242,6 +246,7 @@ impl Default for Script {
             empty_thread_responses: 0,
             accept: &[],
             custom: None,
+            read_memory: false,
         }
     }
 }
@@ -328,6 +333,7 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                         "supportsDataBreakpoints": true,
                         "supportsStepInTargetsRequest": true,
                         "supportsRestartFrame": true,
+                        "supportsReadMemoryRequest": script.read_memory,
                         "exceptionBreakpointFilters": [
                             {"filter": "raised", "label": "Raised"},
                             {"filter": "uncaught", "label": "Uncaught", "default": true, "description": "Uncaught exceptions"},
@@ -570,7 +576,29 @@ async fn fake_adapter<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(stream
                     ]})
                 ),
             },
+            "evaluate" if msg["arguments"]["expression"] == "&msg[0]" => ok!(
+                msg,
+                json!({"result": "0x1000 \"Hello\"", "type": "char *", "variablesReference": 1, "memoryReference": "0x1000"})
+            ),
             "evaluate" => ok!(msg, json!({"result": "42", "type": "int", "variablesReference": 0})),
+            "readMemory" => {
+                let args = &msg["arguments"];
+                let reference = args["memoryReference"].as_str().unwrap().trim_start_matches("0x");
+                let start = i64::from_str_radix(reference, 16).unwrap() + args["offset"].as_i64().unwrap_or(0);
+                let count = args["count"].as_i64().unwrap();
+                const END: i64 = 0x1010;
+                if start >= END {
+                    send!(
+                        json!({"type": "response", "request_seq": msg["seq"], "command": "readMemory", "success": false, "message": format!("Cannot access memory at address {start:#x}")})
+                    );
+                } else {
+                    let bytes: Vec<u8> = (start..(start + count).min(END)).map(|a| a as u8).collect();
+                    ok!(
+                        msg,
+                        json!({"address": format!("{start:#x}"), "data": base64::engine::general_purpose::STANDARD.encode(&bytes), "unreadableBytes": count - bytes.len() as i64})
+                    );
+                }
+            }
             "completions" => ok!(
                 msg,
                 json!({"targets": [
@@ -1950,6 +1978,68 @@ async fn function_and_data_breakpoints_are_stored_and_sent() {
     assert!(caps.function_breakpoints && caps.data_breakpoints && caps.restart_frame && caps.step_in_targets);
     assert!(caps.set_value && !caps.log_points);
     h.manager.stop(id).await.unwrap();
+}
+
+#[tokio::test]
+async fn memory_view_reads_memory_from_a_reference() {
+    let h = harness(Script { read_memory: true, ..Script::default() });
+    let id = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    assert_eq!(
+        h.request("initialize")["arguments"]["supportsMemoryReferences"],
+        true,
+        "adapters only send references when asked"
+    );
+    assert!(h.manager.capabilities(id).unwrap().read_memory);
+
+    let pointer = h.manager.evaluate_in(id, Some(10), "&msg[0]".into(), Some("watch".into())).await.unwrap();
+    assert_eq!(pointer.memory_reference.as_deref(), Some("0x1000"));
+    let plain = h.manager.evaluate(id, Some(10), "n".into()).await.unwrap();
+    assert_eq!(plain.memory_reference, None);
+
+    let block = h.manager.read_memory(id, "0x1000".into(), 0, 8).await.unwrap();
+    assert_eq!(block, MemoryBlock { address: "0x1000".into(), data: (0..8).collect(), unreadable_bytes: 0 });
+    assert_eq!(h.request("readMemory")["arguments"], json!({"memoryReference": "0x1000", "offset": 0, "count": 8}));
+
+    // Paging back and forth goes through `offset` on the same reference; the end of the mapping
+    // comes back as unreadable bytes.
+    let block = h.manager.read_memory(id, "0x1000".into(), 8, 16).await.unwrap();
+    assert_eq!((block.address.as_str(), block.data.len(), block.unreadable_bytes), ("0x1008", 8, 8));
+    assert_eq!(block.data[0], 0x08);
+
+    // Unmapped memory is the adapter's error, and the session goes on.
+    let err = h.manager.read_memory(id, "0x1000".into(), 0x20, 16).await.unwrap_err();
+    assert!(err.to_string().contains("Cannot access memory at address 0x1020"), "{err}");
+    assert!(!h.manager.threads(id).await.unwrap().is_empty());
+
+    let _ = h.manager.read_memory(id, "0x1000".into(), 0, u32::MAX).await;
+    let last = h.log.lock().iter().rev().find(|m| m["command"] == "readMemory").cloned().unwrap();
+    assert_eq!(last["arguments"]["count"], MAX_READ, "one read never asks for more than a few pages");
+    h.manager.stop(id).await.unwrap();
+}
+
+#[tokio::test]
+async fn memory_view_says_when_the_adapter_cannot_read_memory() {
+    let h = harness(Script::default());
+    let id = h.start(config()).await.unwrap();
+    h.wait_event(|e| matches!(e, DebugEvent::Stopped { .. })).await;
+    assert!(!h.manager.capabilities(id).unwrap().read_memory);
+    let err = h.manager.read_memory(id, "0x1000".into(), 0, 16).await.unwrap_err();
+    assert_eq!(err.kind, ide_core::error::ErrorKind::Unavailable);
+    assert!(err.to_string().contains("debug adapter `debugpy` cannot read memory"), "{err}");
+    assert!(!h.commands().iter().any(|c| c == "readMemory"), "nothing is sent to an adapter without support");
+    h.manager.stop(id).await.unwrap();
+}
+
+#[test]
+fn variables_keep_their_memory_reference() {
+    let v = variable_from(
+        &json!({"name": "words", "value": "0x4010", "variablesReference": 3, "memoryReference": "0x4010"}),
+    );
+    assert_eq!(v.memory_reference.as_deref(), Some("0x4010"));
+    assert_eq!(variable_from(&json!({"name": "n", "value": "1", "memoryReference": ""})).memory_reference, None);
+    let json = serde_json::to_value(variable_from(&json!({"name": "n", "value": "1"}))).unwrap();
+    assert!(json.get("memoryReference").is_none(), "absent, not null, for the UI's optional field");
 }
 
 #[tokio::test]

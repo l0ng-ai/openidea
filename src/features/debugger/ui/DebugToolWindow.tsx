@@ -59,6 +59,8 @@ import { NetworkView } from "../js/NetworkView";
 import { liveWatchesApply, useLiveWatches } from "../js/liveWatches";
 import { pageProfileItems, useJsProfile } from "../js/profile";
 import { MemoryView } from "../memory/MemoryView";
+import { MemoryViewPane } from "../memoryView/MemoryViewPane";
+import { memoryViewRevealed, useMemoryView } from "../memoryView/memoryViewState";
 import { DebugConsole } from "./DebugConsole";
 import { VariablesView, type VarRoot } from "./VariablesView";
 import { useExpressionCompletion } from "./ExpressionCompletion";
@@ -129,7 +131,7 @@ function MoreActions() {
   );
 }
 
-type Tab = "variables" | "console" | "memory" | "network";
+type Tab = "variables" | "console" | "memory" | "memoryView" | "network";
 
 /** The view the user last picked; the tool window opens on it again (Console until one is picked). */
 let chosenTab: Tab = "console";
@@ -225,19 +227,35 @@ function DebugView({ consolePane, sideDocked = false }: { consolePane?: ReactNod
     session: number | undefined;
     status: DebugSession["status"] | undefined;
     tab: Tab;
-  }>({ session: undefined, status: undefined, tab: chosenTab });
+  }>(() => ({
+    session: undefined,
+    status: undefined,
+    tab: useMemoryView.getState().revealPending ? "memoryView" : chosenTab,
+  }));
+  // View Memory brings the Memory View to the front, also in the tool window it opens (above).
+  useEffect(() => {
+    const reveal = (pending: boolean, shown: boolean) => {
+      if (!pending) return;
+      memoryViewRevealed();
+      chosenTab = "memoryView";
+      if (!shown) setView((v) => (v.tab === "memoryView" ? v : { ...v, tab: "memoryView" }));
+    };
+    reveal(useMemoryView.getState().revealPending, true);
+    return useMemoryView.subscribe((s) => reveal(s.revealPending, false));
+  }, []);
   if (active && (view.session !== active.startedAt || view.status !== active.status))
     setView({
       session: active.startedAt,
       status: active.status,
       // A breakpoint or exception brings Threads & Variables to the front unless its Focus On Breakpoint
       // is off; finishing a step keeps the tab the user is on (e.g. Console, to watch the output while
-      // stepping), and so does Memory.
+      // stepping), and so do Memory and the Memory View.
       tab:
         active.status === "starting"
           ? "console"
           : active.status === "paused" &&
               view.tab !== "memory" &&
+              view.tab !== "memoryView" &&
               active.stopReason !== "step" &&
               workflowSettings().debugger.variablesOnBreakpoint
             ? "variables"
@@ -247,9 +265,15 @@ function DebugView({ consolePane, sideDocked = false }: { consolePane?: ReactNod
   const memoryPending = !!active && !active.caps && JVM_ADAPTERS.has(rootOf(active).adapter);
   const hasMemory = !!active && (sessionSupports("jvmMemory", active) || memoryPending);
   const hasNetwork = !!active && sessionSupports("jsPage", active);
-  // The selected session may be one without the Memory or the Network tab.
+  // The native Memory View follows the adapter's `readMemory` support.
+  const hasMemoryView = !!active && sessionSupports("readMemory", active);
+  // The selected session may be one without the Memory, Memory View or Network tab.
   const tab: Tab =
-    (view.tab === "memory" && !hasMemory) || (view.tab === "network" && !hasNetwork) ? "variables" : view.tab;
+    (view.tab === "memory" && !hasMemory) ||
+    (view.tab === "memoryView" && !hasMemoryView) ||
+    (view.tab === "network" && !hasNetwork)
+      ? "variables"
+      : view.tab;
 
   if (!active) {
     return (
@@ -307,6 +331,7 @@ function DebugView({ consolePane, sideDocked = false }: { consolePane?: ReactNod
               ["variables", "Threads & Variables"],
               ["console", "Console"],
               ...(hasMemory ? [["memory", "Memory"] as const] : []),
+              ...(hasMemoryView ? [["memoryView", "Memory View"] as const] : []),
               ...(hasNetwork ? [["network", "Network"] as const] : []),
             ] as const
           ).map(([id, label]) => (
@@ -355,6 +380,8 @@ function DebugView({ consolePane, sideDocked = false }: { consolePane?: ReactNod
           ) : (
             <MemoryView key={active.id} session={active} />
           )
+        ) : tab === "memoryView" ? (
+          <MemoryViewPane key={active.id} session={active} />
         ) : tab === "network" ? (
           <NetworkView key={active.id} session={active.id} />
         ) : (

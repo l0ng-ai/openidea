@@ -55,6 +55,7 @@ import { cancelHotSwapBuild, reloadChangedClasses } from "./hotswap";
 import { refreshMemory, useMemory } from "./memory/memoryState";
 import { closeInstances, instancesOutdated, showInstances, showReferrers, useInstances } from "./memory/instancesState";
 import { jumpToClass } from "./memory/jumpToClass";
+import { revealMemoryView, showMemoryAt } from "./memoryView/memoryViewState";
 import { captureHeap } from "./heap/heapState";
 import { stopRecording, traceStreamChain } from "./streams/streamState";
 import { isTracing, useStreamTrace } from "./streams/streamStore";
@@ -183,6 +184,20 @@ function notSupported(what: string, s: DebugSession) {
     key: "debug.unsupported",
     title: `${what} is not supported by ${s.adapter || "this debugger"}`,
   });
+}
+
+/**
+ * View Memory: the Memory View, at `reference` (a variable's or watch's memory reference) when given.
+ * Adapters without `readMemory` (most besides the native ones) say so instead.
+ */
+function viewMemory(reference: unknown) {
+  const s = activeSession();
+  if (!s || !isLive(s)) return;
+  if (!sessionSupports("readMemory", s)) return notSupported("View Memory", s);
+  // The address field shows the address itself: entered again, it reads the same memory.
+  if (typeof reference === "string") void showMemoryAt(s.id, reference, reference);
+  revealMemoryView();
+  toolWindowService().show("debug", true);
 }
 
 /**
@@ -1209,6 +1224,15 @@ export function registerDebugActions(): () => void {
         removeFileBreakpoints(path);
         removeSpecialIn(path);
       },
+    },
+    {
+      // Variables and watches pass their memory reference; without one the Memory View opens on its address field.
+      id: "debug.viewMemory",
+      title: "View Memory",
+      category: "Debug",
+      keywords: ["memory", "hex", "bytes", "address", "pointer", "dump"],
+      when: "debugSessionActive",
+      run: ({ arg }) => viewMemory(arg),
     },
     {
       id: "debug.evaluate",
