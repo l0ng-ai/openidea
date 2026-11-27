@@ -134,6 +134,24 @@ def test_parse():
     );
   });
 
+  it("reads a parenthesized import over several lines and adds a new one after it", () => {
+    const text = `import os\nfrom tasks.models import (\n    TaskList,  # the list\n)\n\n\ndef test_env():\n    assert os.sep\n`;
+    const out = apply(text, pytestStubEdit(text, "tasks.models", pick("TaskList.add", "parse"))!);
+    expect(
+      out.startsWith(
+        `import os\nfrom tasks.models import (\n    TaskList,  # the list\n)\nfrom tasks.models import parse\n`,
+      ),
+    ).toBe(true);
+    expect(out).not.toContain("import TaskList");
+  });
+
+  it("reads a backslash-continued import", () => {
+    const text = `from tasks.models import Priority, \\\n    TaskList\n\n\ndef test_x():\n    pass\n`;
+    const out = apply(text, pytestStubEdit(text, "tasks.models", pick("TaskList.add"))!);
+    expect(out.split("\n").slice(0, 3)).toEqual(["from tasks.models import Priority, \\", "    TaskList", ""]);
+    expect(out).toContain("class TestTaskList:");
+  });
+
   it("is null when every chosen test exists", () => {
     const text = `from m import parse\n\n\ndef test_parse():\n    pass\n`;
     expect(pytestStubEdit(text, "m", pick("parse"))).toBeNull();

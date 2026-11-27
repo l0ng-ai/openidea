@@ -78,6 +78,33 @@ function lineStarts(lines: readonly string[]): number[] {
 }
 
 /**
+ * The file's top-level `import …` / `from … import …` statements (lines `first`..`last`, a
+ * parenthesized or backslash-continued list included) and the names `from` imports bind.
+ */
+function importStatements(lines: readonly string[]): Array<{ first: number; last: number; names: string[] }> {
+  const out: Array<{ first: number; last: number; names: string[] }> = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!/^(import|from)\s/.test(lines[i]!)) continue;
+    const first = i;
+    let text = lines[i]!.replace(/#.*$/, "");
+    const open = () => (text.includes("(") && !text.includes(")")) || /\\\s*$/.test(text);
+    while (open() && i + 1 < lines.length) text = `${text.replace(/\\\s*$/, "")} ${lines[++i]!.replace(/#.*$/, "")}`;
+    const from = /^from\s+\S+\s+import\s+\(?([^)]*)/.exec(text);
+    const names = (from?.[1] ?? "")
+      .split(",")
+      .map((n) =>
+        n
+          .trim()
+          .split(/\s+as\s+/)
+          .pop()!,
+      )
+      .filter(Boolean);
+    out.push({ first, last: i, names });
+  }
+  return out;
+}
+
+/**
  * The edit that adds pytest stubs for `chosen` to the test file `text` (empty for a new
  * file): `from module import …` gains the names it lacks, methods of an existing `Test<Class>`
  * go to the end of that class, the rest to the end of the file. Null when every test exists.
@@ -124,21 +151,12 @@ export function pytestStubEdit(
   const bodies: Array<{ change: Change; rel: number }> = [];
 
   // Imports: names the file already imports, from this module or another (`from pkg import X`), stay as they are.
-  const imported = new Set<string>();
-  for (const l of lines) {
-    const m = /^from\s+\S+\s+import\s+([^()#\\]+)/.exec(l);
-    for (const n of m?.[1]!.split(",") ?? [])
-      imported.add(
-        n
-          .trim()
-          .split(/\s+as\s+/)
-          .pop()!,
-      );
-  }
+  const statements = importStatements(lines);
+  const imported = new Set(statements.flatMap((st) => st.names));
   const names = [...new Set(missing.map((s) => s.cls ?? s.name))].filter((n) => !imported.has(n));
   const escaped = module.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const importRe = new RegExp(`^from\\s+${escaped}\\s+import\\s+([^()#\\\\]+?)\\s*(#.*)?$`);
-  const importLine = lines.findIndex((l) => importRe.test(l));
+  const importLine = statements.find((st) => st.first === st.last && importRe.test(lines[st.first]!))?.first ?? -1;
   if (names.length && importLine >= 0) {
     const m = importRe.exec(lines[importLine]!)!;
     changes.push({ from: at(importLine) + m[0].indexOf(m[1]!) + m[1]!.length, insert: `, ${names.join(", ")}` });
@@ -146,7 +164,8 @@ export function pytestStubEdit(
     let last = -1;
     for (let i = 0; i < lines.length; i++) {
       const l = lines[i]!;
-      if (/^(import|from)\s/.test(l)) last = i;
+      const st = statements.find((s) => s.first === i);
+      if (st) last = i = st.last;
       else if (!blank(l) && indentOf(l) === 0 && !/^["']/.test(l)) break;
     }
     const line = `from ${module} import ${names.join(", ")}\n`;
