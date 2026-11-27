@@ -17,7 +17,33 @@ const task: AgentTask = {
   createdMs: 0,
   updatedMs: 0,
   config: [],
-  commands: [],
+  commands: [
+    {
+      name: "skills",
+      description: "Manage skills for enhanced capabilities",
+      hint: "[list|info|reload|add|remove]",
+      source: "command",
+      choices: [
+        { name: "list", description: "List all available skills" },
+        { name: "info", description: "Show details for a skill" },
+        { name: "reload", description: "Reload skills from disk" },
+        { name: "add", description: "Install a skill file, directory or HTTPS URL" },
+        { name: "remove", description: "Remove a personal or project skill" },
+      ],
+    },
+    {
+      name: "review",
+      description: "Run code review agent to analyze changes",
+      hint: "additional instructions",
+      source: "command",
+    },
+    {
+      name: "triage",
+      description: "One pass over open issues and PRs",
+      hint: null,
+      source: "skill",
+    },
+  ],
   usage: null,
   queue: [],
 };
@@ -114,4 +140,37 @@ test("first-open @ results can grow and flip after asynchronous file search", as
   await expect(list.getByText("file0.ts", { exact: true })).toBeVisible();
   await expect.poll(() => geometry(list)).toMatchObject(fullList);
   await expect(editor).toBeFocused();
+});
+
+test("slash command arguments autocomplete subcommands, skills, and inline hints", async ({ workbench: page }) => {
+  const { editor } = await openTask(page);
+  const commandsList = page.getByRole("listbox", { name: "Commands", exact: true });
+
+  await editor.pressSequentially("/skills ");
+  await expect(commandsList).toBeVisible();
+  await expect(commandsList.getByRole("option")).toHaveCount(5);
+  await expect(commandsList.getByRole("option").nth(1)).toContainText("/skills info");
+  await expect(commandsList.getByRole("option").nth(1)).toContainText("Show details for a skill");
+
+  await editor.pressSequentially("in");
+  await expect(commandsList.getByRole("option")).toHaveCount(1);
+  await editor.press("Enter");
+  await expect(editor).toContainText("/skills info ");
+
+  // Choosing `info` chains into active skills.
+  await expect(commandsList).toBeVisible();
+  await expect(commandsList.getByRole("option")).toHaveCount(1);
+  await expect(commandsList.getByRole("option").first()).toContainText("/skills info triage");
+  await editor.press("Enter");
+  await expect(commandsList).toBeHidden();
+  await expect(editor).toHaveText("/skills info triage ");
+
+  // Free-text hints show inline after `/command ` and vanish once typing begins.
+  await editor.press("ControlOrMeta+a");
+  await editor.press("Backspace");
+  await editor.pressSequentially("/review ");
+  await expect(commandsList).toBeHidden();
+  await expect(editor.locator('span[aria-hidden="true"]')).toHaveText("additional instructions");
+  await editor.pressSequentially("auth");
+  await expect(editor.locator('span[aria-hidden="true"]')).toHaveCount(0);
 });

@@ -1281,6 +1281,7 @@ async fn builtin_commands_only_fill_verified_gaps_and_preserve_advertised_metada
         description: "Agent supplied description".into(),
         hint: Some("instructions".into()),
         source: AgentCommandSource::Command,
+        choices: Vec::new(),
     };
     mgr.task(&task.id).unwrap().state.lock().task.commands = vec![advertised.clone()];
     // The task's provider wins over the caller's provider; metadata is not replaced.

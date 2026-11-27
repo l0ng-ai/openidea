@@ -385,6 +385,151 @@ describe("New Task composer commands", () => {
     });
     useSkillsCatalog.setState({ skills: [], loaded: false });
   });
+
+  it("autocompletes command choices after accepting or typing a slash command", async () => {
+    agentCommands.mockResolvedValue({
+      status: "ok",
+      data: [
+        {
+          name: "sandbox",
+          description: "Manage sandbox settings",
+          hint: "[config|status|enable]",
+          source: "command",
+          choices: [
+            { name: "config", description: "Open sandbox settings" },
+            { name: "status", description: "Show whether sandboxing is enabled" },
+            { name: "enable", description: "Enable sandboxing" },
+          ],
+        },
+        {
+          name: "remote",
+          description: "Toggle remote control",
+          hint: "[on|off|show]",
+          source: "command",
+        },
+      ],
+    });
+    render(<HomeEditor />);
+    await waitFor(() => expect(agentCommands).toHaveBeenCalled());
+    const box = screen.getByRole("textbox");
+
+    // Accepting a command with choices immediately opens its subcommand menu.
+    typeIn(box, "/san");
+    await screen.findByRole("listbox", { name: "Commands" });
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(textOf(box)).toBe("/sandbox ");
+
+    const argList = await screen.findByRole("listbox", { name: "Commands" });
+    expect(
+      within(argList)
+        .getAllByRole("option")
+        .map((o) => o.textContent),
+    ).toEqual([
+      "/sandbox configOpen sandbox settings",
+      "/sandbox statusShow whether sandboxing is enabled",
+      "/sandbox enableEnable sandboxing",
+    ]);
+
+    // Filtering and accepting inserts the subcommand and closes the popup.
+    typeIn(box, "/sandbox st");
+    expect(
+      within(argList)
+        .getAllByRole("option")
+        .map((o) => o.textContent),
+    ).toEqual(["/sandbox statusShow whether sandboxing is enabled"]);
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(textOf(box)).toBe("/sandbox status ");
+    await waitFor(() => expect(screen.queryByRole("listbox", { name: "Commands" })).toBeNull());
+
+    // Fallback bracketed pipe hints work without explicit backend choices.
+    typeIn(box, "/remote ");
+    const remoteList = await screen.findByRole("listbox", { name: "Commands" });
+    expect(
+      within(remoteList)
+        .getAllByRole("option")
+        .map((o) => o.textContent),
+    ).toEqual(["/remote on", "/remote off", "/remote show"]);
+  });
+
+  it("chains /skills subcommands into active skills while Enter on /skills keeps opening the picker", async () => {
+    agentCommands.mockResolvedValue({
+      status: "ok",
+      data: [
+        {
+          name: "skills",
+          description: "Manage skills",
+          hint: "[list|info|reload]",
+          source: "command",
+          choices: [
+            { name: "list", description: "List all available skills" },
+            { name: "info", description: "Show details for a skill" },
+            { name: "reload", description: "Reload skills from disk" },
+          ],
+        },
+        command("triage", "One pass over open issues", "skill"),
+      ],
+    });
+    render(<HomeEditor />);
+    await waitFor(() => expect(agentCommands).toHaveBeenCalled());
+    const box = screen.getByRole("textbox");
+
+    // Tab on `/skills` descends into subcommands instead of opening the picker.
+    typeIn(box, "/sk");
+    await screen.findByRole("listbox", { name: "Commands" });
+    fireEvent.keyDown(box, { key: "Tab" });
+    expect(textOf(box)).toBe("/skills ");
+    const subList = await screen.findByRole("listbox", { name: "Commands" });
+    expect(
+      within(subList)
+        .getAllByRole("option")
+        .map((o) => o.textContent),
+    ).toEqual([
+      "/skills listList all available skills",
+      "/skills infoShow details for a skill",
+      "/skills reloadReload skills from disk",
+    ]);
+
+    // Selecting `info` chains into the active skills list.
+    fireEvent.keyDown(box, { key: "ArrowDown" });
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(textOf(box)).toBe("/skills info ");
+    const skillList = await screen.findByRole("listbox", { name: "Commands" });
+    expect(
+      within(skillList)
+        .getAllByRole("option")
+        .map((o) => o.textContent),
+    ).toEqual(["/skills info triageOne pass over open issues"]);
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(textOf(box)).toBe("/skills info triage ");
+    await waitFor(() => expect(screen.queryByRole("listbox", { name: "Commands" })).toBeNull());
+
+    // Enter on `/skills` still opens the Session Skills picker.
+    typeIn(box, "/sk");
+    await screen.findByRole("listbox", { name: "Commands" });
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(textOf(box)).toBe("");
+    expect(await screen.findByText("Session Skills")).toBeInTheDocument();
+  });
+
+  it("shows an inline argument hint after /command space without altering the composer text", async () => {
+    agentCommands.mockResolvedValue({
+      status: "ok",
+      data: [{ name: "review", description: "Run code review", hint: "additional instructions", source: "command" }],
+    });
+    render(<HomeEditor />);
+    await waitFor(() => expect(agentCommands).toHaveBeenCalled());
+    const box = screen.getByRole("textbox");
+
+    typeIn(box, "/review ");
+    expect(textOf(box)).toBe("/review ");
+    await waitFor(() =>
+      expect(box.querySelector(`.${chipStyles.argHint!}`)?.textContent).toBe("additional instructions"),
+    );
+
+    typeIn(box, "/review check auth");
+    expect(textOf(box)).toBe("/review check auth");
+    expect(box.querySelector(`.${chipStyles.argHint!}`)).toBeNull();
+  });
 });
 
 describe("New Task composer paste", () => {

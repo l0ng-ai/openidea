@@ -2736,6 +2736,13 @@ export type AgentCommand = {
 	/**  What to type after the command, when it takes input. */
 	hint: string | null,
 	source?: AgentCommandSource,
+	/**  Fixed subcommand/argument choices advertised by the agent (e.g. `list`, `info` for `/skills`). */
+	choices?: AgentCommandChoice[],
+};
+
+export type AgentCommandChoice = {
+	name: string,
+	description?: string,
 };
 
 /**  Why the executable cannot be changed in built-in agent settings. */

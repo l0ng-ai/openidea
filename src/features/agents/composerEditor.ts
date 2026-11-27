@@ -14,7 +14,16 @@
  */
 import { EditorState, StateEffect, StateField, type Extension, type Range, type Text } from "@codemirror/state";
 import { Decoration, EditorView, WidgetType, keymap, type DecorationSet } from "@codemirror/view";
-import { fencedBlocks, isQuoteLine, messageTokens, parseMention, type FileRef, type Mention } from "./composerModel";
+import type { AgentCommand } from "@/bindings";
+import {
+  commandArgHintAt,
+  fencedBlocks,
+  isQuoteLine,
+  messageTokens,
+  parseMention,
+  type FileRef,
+  type Mention,
+} from "./composerModel";
 import { linkSpans } from "./composerLinks";
 import { chipElement, chipStyles, codeCardElement, linkChipElement, openReference } from "./ReferenceChip";
 
@@ -24,6 +33,16 @@ const references = StateField.define<readonly FileRef[]>({
   create: () => [],
   update(value, tr) {
     for (const e of tr.effects) if (e.is(setReferences)) return e.value;
+    return value;
+  },
+});
+
+/** Available slash commands: drives the inline argument hint after `/command `. */
+export const setCommands = StateEffect.define<readonly AgentCommand[]>();
+const commandsField = StateField.define<readonly AgentCommand[]>({
+  create: () => [],
+  update(value, tr) {
+    for (const e of tr.effects) if (e.is(setCommands)) return e.value;
     return value;
   },
 });
@@ -177,6 +196,25 @@ class CodeCardWidget extends WidgetType {
   }
 }
 
+class ArgHintWidget extends WidgetType {
+  constructor(readonly hint: string) {
+    super();
+  }
+  eq(other: ArgHintWidget) {
+    return other.hint === this.hint;
+  }
+  toDOM() {
+    const el = document.createElement("span");
+    el.className = chipStyles.argHint!;
+    el.setAttribute("aria-hidden", "true");
+    el.textContent = this.hint;
+    return el;
+  }
+  ignoreEvent() {
+    return true;
+  }
+}
+
 const quoteMarker = Decoration.replace({});
 const codeLine = Decoration.line({ class: chipStyles.codeLine });
 
@@ -256,6 +294,10 @@ function paint(state: EditorState): Painted {
       chips.push({ from: token.from, to: token.to });
     }
   }
+  const argHint = commandArgHintAt(doc.toString(), head, state.field(commandsField));
+  if (argHint) {
+    decorations.push(Decoration.widget({ widget: new ArgHintWidget(argHint), side: 1 }).range(head));
+  }
   return {
     decorations: Decoration.set(decorations, true),
     atomic: Decoration.set(atomic, true),
@@ -267,13 +309,14 @@ function paint(state: EditorState): Painted {
 const painted = StateField.define<Painted>({
   create: paint,
   update(value, tr) {
-    // A ``` block opens while the caret is in it; a link is text while the caret is at its end.
+    // A ``` block opens while the caret is in it; a link is text while the caret is at its end;
+    // a leading `/command ` shows its inline argument hint only while the caret sits at the end.
     const doc = tr.selection && tr.state.doc.toString();
-    const fences = !!doc && (doc.includes("```") || doc.includes("://"));
+    const selectionSensitive = !!doc && (doc.includes("```") || doc.includes("://") || doc.trimStart().startsWith("/"));
     const changed =
       tr.docChanged ||
-      fences ||
-      tr.effects.some((e) => e.is(setReferences) || e.is(unfold)) ||
+      selectionSensitive ||
+      tr.effects.some((e) => e.is(setReferences) || e.is(setCommands) || e.is(unfold)) ||
       tr.startState.field(unfolded) !== tr.state.field(unfolded);
     return changed ? paint(tr.state) : value;
   },
@@ -299,5 +342,5 @@ const unfoldOnBackspace = keymap.of([
 ]);
 
 export function referenceExtensions(): Extension {
-  return [references, unfolded, painted, unfoldOnBackspace];
+  return [references, commandsField, unfolded, painted, unfoldOnBackspace];
 }

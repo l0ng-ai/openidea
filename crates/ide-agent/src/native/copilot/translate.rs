@@ -542,11 +542,34 @@ pub(super) fn available_commands(commands_res: Option<&Value>, skills_res: Optio
             continue;
         }
         let hint = cmd.pointer("/input/hint").and_then(Value::as_str).filter(|h| !h.is_empty());
+        let mut seen_choices = HashSet::new();
+        let choices: Vec<Value> = cmd
+            .pointer("/input/choices")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|ch| {
+                let choice_name = str_of(ch, "name").map(str::trim).filter(|n| !n.is_empty())?;
+                if !seen_choices.insert(choice_name.to_ascii_lowercase()) {
+                    return None;
+                }
+                Some(json!({
+                    "name": choice_name,
+                    "description": str_of(ch, "description").unwrap_or_default(),
+                }))
+            })
+            .collect();
+        let input = match (hint, choices.is_empty()) {
+            (Some(h), false) => Some(json!({ "hint": h, "choices": choices })),
+            (Some(h), true) => Some(json!({ "hint": h })),
+            (None, false) => Some(json!({ "choices": choices })),
+            (None, true) => None,
+        };
         out.push(json!({
             "name": name,
             "description": str_of(cmd, "description").unwrap_or_default(),
             "source": "command",
-            "input": hint.map(|h| json!({ "hint": h })),
+            "input": input,
         }));
     }
     for skill in skills_res.and_then(|v| v.get("skills")).and_then(Value::as_array).into_iter().flatten() {
